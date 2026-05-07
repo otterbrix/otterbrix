@@ -1,7 +1,9 @@
 #include "row_group.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <unordered_map>
 
 #include <components/table/persistent_column_data.hpp>
@@ -14,6 +16,7 @@
 #include "row_version_manager.hpp"
 #include "standard_column_data.hpp"
 #include "struct_column_data.hpp"
+#include <components/vector/indexing_vector.hpp>
 #include <components/vector/vector_operations.hpp>
 
 namespace {
@@ -74,6 +77,8 @@ namespace {
     }
 
     bool is_supported_pax_fixed_layout_version(uint16_t version) { return version == 1 || version == 2; }
+
+    bool is_supported_pax_generic_layout_version(uint16_t version) { return version == 1 || version == 2; }
 
     void write_pax_fixed_slice(components::table::column_data_t& column,
                                uint64_t row_group_start,
@@ -149,8 +154,55 @@ namespace {
         return type.type() == components::types::logical_type::STRING_LITERAL;
     }
 
+    bool is_pax_generic_struct_type(const components::types::complex_logical_type& type) {
+        return type.type() == components::types::logical_type::STRUCT;
+    }
+
+    bool is_pax_generic_fixed_plain_type(const components::types::complex_logical_type& type) {
+        using components::types::physical_type;
+
+        switch (type.to_physical_type()) {
+            case physical_type::BOOL:
+            case physical_type::INT8:
+            case physical_type::INT16:
+            case physical_type::INT32:
+            case physical_type::INT64:
+            case physical_type::INT128:
+            case physical_type::UINT8:
+            case physical_type::UINT16:
+            case physical_type::UINT32:
+            case physical_type::UINT64:
+            case physical_type::UINT128:
+            case physical_type::FLOAT:
+            case physical_type::DOUBLE:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    bool is_supported_pax_generic_column_type(const components::types::complex_logical_type& type) {
+        if (is_pax_generic_string_type(type) || is_pax_generic_fixed_plain_type(type)) {
+            return true;
+        }
+        if (!is_pax_generic_struct_type(type)) {
+            return false;
+        }
+        for (const auto& child_type : type.child_types()) {
+            if (!is_supported_pax_generic_column_type(child_type)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     uint64_t pax_string_block_limit(uint64_t block_size) {
         return std::min((block_size / 4) / 8 * 8, PAX_STRING_DEFAULT_BLOCK_LIMIT);
+    }
+
+    const std::vector<uint16_t>& empty_pax_generic_field_path() {
+        static const std::vector<uint16_t> EMPTY_FIELD_PATH;
+        return EMPTY_FIELD_PATH;
     }
 
     void append_unique_block_id(std::vector<uint32_t>& block_ids, uint32_t block_id) {
@@ -162,6 +214,19 @@ namespace {
     struct pax_generic_string_page_write_result_t {
         components::table::storage::data_pointer_t main_pointer;
         std::vector<uint32_t> extra_block_ids;
+        components::table::storage::pax_generic_codec_kind validity_codec{
+            components::table::storage::pax_generic_codec_kind::VALIDITY_ALL_VALID};
+        std::optional<components::table::storage::data_pointer_t> validity_pointer;
+    };
+
+    struct pax_generic_fixed_page_write_result_t {
+        components::table::storage::data_pointer_t main_pointer;
+        components::table::storage::pax_generic_codec_kind validity_codec{
+            components::table::storage::pax_generic_codec_kind::VALIDITY_ALL_VALID};
+        std::optional<components::table::storage::data_pointer_t> validity_pointer;
+    };
+
+    struct pax_generic_validity_write_result_t {
         components::table::storage::pax_generic_codec_kind validity_codec{
             components::table::storage::pax_generic_codec_kind::VALIDITY_ALL_VALID};
         std::optional<components::table::storage::data_pointer_t> validity_pointer;
@@ -321,7 +386,215 @@ namespace {
         return result;
     }
 
-    bool is_supported_pax_fixed_filter_compare(components::expressions::compare_type type) {
+    pax_generic_fixed_page_write_result_t
+    write_pax_generic_fixed_page(components::table::column_data_t& column,
+                                 uint64_t row_group_start,
+                                 uint32_t row_offset,
+                                 uint32_t tuple_count,
+                                 components::table::storage::partial_block_manager_t& partial_block_manager) {
+        using components::table::compression::compression_type;
+        using components::table::storage::block_pointer_t;
+        using components::table::storage::data_pointer_t;
+        using components::table::storage::pax_generic_codec_kind;
+
+        components::vector::vector_t slice(column.resource(), column.type(), tuple_count);
+        column.scan_committed_range(row_group_start, row_offset, tuple_count, slice);
+        slice.flatten(tuple_count);
+        for (uint32_t i = 0; i < tuple_count; i++) {
+            if (!column.check_validity(static_cast<int64_t>(row_group_start + row_offset + i))) {
+                slice.validity().set(i, false);
+            }
+        }
+
+        const auto slice_size = static_cast<uint64_t>(tuple_count) * column.type().size();
+        auto allocation = partial_block_manager.get_block_allocation(slice_size);
+        if (slice_size > 0) {
+            partial_block_manager.write_to_block(allocation.block_id,
+                                                 allocation.offset_in_block,
+                                                 slice.data(),
+                                                 slice_size);
+        }
+
+        pax_generic_fixed_page_write_result_t result;
+        result.main_pointer.row_start = row_group_start + row_offset;
+        result.main_pointer.tuple_count = tuple_count;
+        result.main_pointer.block_pointer = block_pointer_t(allocation.block_id, allocation.offset_in_block);
+        result.main_pointer.compression = compression_type::UNCOMPRESSED;
+        result.main_pointer.segment_size = slice_size;
+
+        const auto valid_count = slice.validity().count_valid(tuple_count);
+        if (valid_count == tuple_count) {
+            result.validity_codec = pax_generic_codec_kind::VALIDITY_ALL_VALID;
+        } else if (valid_count == 0) {
+            result.validity_codec = pax_generic_codec_kind::VALIDITY_ALL_INVALID;
+        } else {
+            const auto validity_size = pax_fixed_validity_payload_size(tuple_count);
+            auto validity_allocation = partial_block_manager.get_block_allocation(validity_size);
+            partial_block_manager.write_to_block(validity_allocation.block_id,
+                                                 validity_allocation.offset_in_block,
+                                                 slice.validity().data(),
+                                                 validity_size);
+
+            data_pointer_t validity_pointer;
+            validity_pointer.row_start = row_group_start + row_offset;
+            validity_pointer.tuple_count = tuple_count;
+            validity_pointer.block_pointer =
+                block_pointer_t(validity_allocation.block_id, validity_allocation.offset_in_block);
+            validity_pointer.compression = compression_type::VALIDITY_UNCOMPRESSED;
+            validity_pointer.segment_size = validity_size;
+
+            result.validity_codec = pax_generic_codec_kind::VALIDITY_BITMASK;
+            result.validity_pointer = std::move(validity_pointer);
+        }
+
+        return result;
+    }
+
+    pax_generic_validity_write_result_t
+    write_pax_generic_validity_page(components::table::column_data_t& column,
+                                    uint64_t row_group_start,
+                                    uint32_t row_offset,
+                                    uint32_t tuple_count,
+                                    components::table::storage::partial_block_manager_t& partial_block_manager) {
+        using components::table::compression::compression_type;
+        using components::table::storage::block_pointer_t;
+        using components::table::storage::data_pointer_t;
+        using components::table::storage::pax_generic_codec_kind;
+
+        components::vector::validity_mask_t validity(column.resource(), tuple_count);
+        uint64_t valid_count = 0;
+        for (uint32_t i = 0; i < tuple_count; i++) {
+            const auto is_valid = column.check_validity(static_cast<int64_t>(row_group_start + row_offset + i));
+            validity.set(i, is_valid);
+            valid_count += static_cast<uint64_t>(is_valid);
+        }
+
+        pax_generic_validity_write_result_t result;
+        if (valid_count == tuple_count) {
+            result.validity_codec = pax_generic_codec_kind::VALIDITY_ALL_VALID;
+        } else if (valid_count == 0) {
+            result.validity_codec = pax_generic_codec_kind::VALIDITY_ALL_INVALID;
+        } else {
+            const auto validity_size = pax_fixed_validity_payload_size(tuple_count);
+            auto allocation = partial_block_manager.get_block_allocation(validity_size);
+            partial_block_manager.write_to_block(allocation.block_id,
+                                                 allocation.offset_in_block,
+                                                 validity.data(),
+                                                 validity_size);
+
+            data_pointer_t validity_pointer;
+            validity_pointer.row_start = row_group_start + row_offset;
+            validity_pointer.tuple_count = tuple_count;
+            validity_pointer.block_pointer = block_pointer_t(allocation.block_id, allocation.offset_in_block);
+            validity_pointer.compression = compression_type::VALIDITY_UNCOMPRESSED;
+            validity_pointer.segment_size = validity_size;
+
+            result.validity_codec = pax_generic_codec_kind::VALIDITY_BITMASK;
+            result.validity_pointer = std::move(validity_pointer);
+        }
+
+        return result;
+    }
+
+    void append_pax_generic_validity_slice(components::table::storage::pax_generic_page_t& page,
+                                           uint32_t root_column_index,
+                                           const std::vector<uint16_t>& field_path,
+                                           const pax_generic_validity_write_result_t& validity_result) {
+        components::table::storage::pax_generic_slice_t validity_slice;
+        validity_slice.column_index = root_column_index;
+        validity_slice.slice_kind = components::table::storage::pax_generic_slice_kind::VALIDITY;
+        validity_slice.codec_kind = validity_result.validity_codec;
+        validity_slice.field_path = field_path;
+        if (validity_result.validity_pointer.has_value()) {
+            validity_slice.payload = components::table::storage::pax_block_payload_t{*validity_result.validity_pointer,
+                                                                                     {}};
+        }
+        page.slices.push_back(std::move(validity_slice));
+    }
+
+    void write_pax_generic_column_page(components::table::column_data_t& column,
+                                       uint32_t root_column_index,
+                                       const std::vector<uint16_t>& field_path,
+                                       uint64_t row_group_start,
+                                       uint32_t row_offset,
+                                       uint32_t tuple_count,
+                                       components::table::storage::partial_block_manager_t& partial_block_manager,
+                                       components::table::storage::pax_generic_page_t& page) {
+        using components::table::storage::pax_block_payload_t;
+        using components::table::storage::pax_generic_codec_kind;
+        using components::table::storage::pax_generic_slice_kind;
+        using components::types::logical_type;
+
+        if (is_pax_generic_struct_type(column.type())) {
+            auto validity_result =
+                write_pax_generic_validity_page(column, row_group_start, row_offset, tuple_count, partial_block_manager);
+            append_pax_generic_validity_slice(page, root_column_index, field_path, validity_result);
+
+            auto& struct_column = dynamic_cast<components::table::struct_column_data_t&>(column);
+            for (uint16_t child_index = 0; child_index < struct_column.sub_columns.size(); child_index++) {
+                auto child_path = field_path;
+                child_path.push_back(child_index);
+                write_pax_generic_column_page(*struct_column.sub_columns[child_index],
+                                              root_column_index,
+                                              child_path,
+                                              row_group_start,
+                                              row_offset,
+                                              tuple_count,
+                                              partial_block_manager,
+                                              page);
+            }
+            return;
+        }
+
+        if (is_pax_generic_string_type(column.type())) {
+            auto page_result = write_pax_generic_string_page(column,
+                                                             row_group_start,
+                                                             row_offset,
+                                                             tuple_count,
+                                                             partial_block_manager);
+
+            components::table::storage::pax_generic_slice_t value_slice;
+            value_slice.column_index = root_column_index;
+            value_slice.slice_kind = pax_generic_slice_kind::STRING_VALUES;
+            value_slice.codec_kind = pax_generic_codec_kind::STRING_SEGMENT;
+            value_slice.field_path = field_path;
+            value_slice.payload = pax_block_payload_t{page_result.main_pointer, page_result.extra_block_ids};
+            page.slices.push_back(std::move(value_slice));
+
+            append_pax_generic_validity_slice(page,
+                                              root_column_index,
+                                              field_path,
+                                              {page_result.validity_codec, page_result.validity_pointer});
+            return;
+        }
+
+        if (is_pax_generic_fixed_plain_type(column.type())) {
+            auto page_result = write_pax_generic_fixed_page(column,
+                                                            row_group_start,
+                                                            row_offset,
+                                                            tuple_count,
+                                                            partial_block_manager);
+
+            components::table::storage::pax_generic_slice_t value_slice;
+            value_slice.column_index = root_column_index;
+            value_slice.slice_kind = pax_generic_slice_kind::FIXED_VALUES;
+            value_slice.codec_kind = pax_generic_codec_kind::FIXED_PLAIN;
+            value_slice.field_path = field_path;
+            value_slice.fixed_logical_type = column.type().type();
+            value_slice.payload = pax_block_payload_t{page_result.main_pointer, {}};
+            page.slices.push_back(std::move(value_slice));
+
+            append_pax_generic_validity_slice(page,
+                                              root_column_index,
+                                              field_path,
+                                              {page_result.validity_codec, page_result.validity_pointer});
+            return;
+        }
+
+        throw std::logic_error("unsupported column type for pax_generic page writer");
+    }
+
+    bool is_supported_pax_projected_filter_compare(components::expressions::compare_type type) {
         using components::expressions::compare_type;
 
         switch (type) {
@@ -350,9 +623,11 @@ namespace {
     const components::table::storage::pax_generic_slice_t*
     find_pax_generic_slice(const components::table::storage::pax_generic_page_t& page,
                            uint32_t column_index,
-                           components::table::storage::pax_generic_slice_kind slice_kind) {
+                           components::table::storage::pax_generic_slice_kind slice_kind,
+                           const std::vector<uint16_t>& field_path = empty_pax_generic_field_path()) {
         for (const auto& slice : page.slices) {
-            if (slice.column_index == column_index && slice.slice_kind == slice_kind) {
+            if (slice.column_index == column_index && slice.slice_kind == slice_kind &&
+                slice.field_path == field_path) {
                 return &slice;
             }
         }
@@ -360,6 +635,14 @@ namespace {
     }
 
     uint64_t pax_fixed_layout_tuple_count(const components::table::storage::pax_fixed_row_group_layout_t& layout) {
+        uint64_t total = 0;
+        for (const auto& page : layout.pages) {
+            total += page.tuple_count;
+        }
+        return total;
+    }
+
+    uint64_t pax_generic_layout_tuple_count(const components::table::storage::pax_generic_row_group_layout_t& layout) {
         uint64_t total = 0;
         for (const auto& page : layout.pages) {
             total += page.tuple_count;
@@ -404,6 +687,48 @@ namespace {
         }
     }
 
+    bool validate_pax_generic_string_slice(const components::table::storage::pax_generic_slice_t& slice,
+                                           uint32_t tuple_count) {
+        if (slice.slice_kind != components::table::storage::pax_generic_slice_kind::STRING_VALUES ||
+            slice.codec_kind != components::table::storage::pax_generic_codec_kind::STRING_SEGMENT ||
+            !slice.payload.has_value()) {
+            return false;
+        }
+
+        const auto& pointer = slice.payload->main_pointer;
+        return pointer.compression == components::table::compression::compression_type::UNCOMPRESSED &&
+               pointer.tuple_count == tuple_count &&
+               pointer.segment_size >=
+                   static_cast<uint64_t>(PAX_STRING_DICTIONARY_HEADER_SIZE) +
+                       static_cast<uint64_t>(tuple_count) * sizeof(int32_t);
+    }
+
+    bool validate_pax_generic_validity_slice(const components::table::storage::pax_generic_slice_t& slice,
+                                             uint32_t tuple_count) {
+        if (slice.slice_kind != components::table::storage::pax_generic_slice_kind::VALIDITY) {
+            return false;
+        }
+
+        switch (slice.codec_kind) {
+            case components::table::storage::pax_generic_codec_kind::VALIDITY_ALL_VALID:
+            case components::table::storage::pax_generic_codec_kind::VALIDITY_ALL_INVALID:
+                return !slice.payload.has_value();
+            case components::table::storage::pax_generic_codec_kind::VALIDITY_BITMASK:
+                if (!slice.payload.has_value()) {
+                    return false;
+                }
+                return slice.payload->extra_block_ids.empty() &&
+                       slice.payload->main_pointer.compression ==
+                           components::table::compression::compression_type::VALIDITY_UNCOMPRESSED &&
+                       slice.payload->main_pointer.tuple_count == tuple_count &&
+                       slice.payload->main_pointer.segment_size == pax_fixed_validity_payload_size(tuple_count);
+            case components::table::storage::pax_generic_codec_kind::STRING_SEGMENT:
+            case components::table::storage::pax_generic_codec_kind::FIXED_PLAIN:
+            default:
+                return false;
+        }
+    }
+
     using pax_fixed_block_cache_t =
         std::unordered_map<uint64_t, components::table::storage::buffer_handle_t>;
 
@@ -411,6 +736,24 @@ namespace {
     get_or_pin_pax_fixed_block(components::table::row_group_t& row_group,
                                uint64_t block_id,
                                pax_fixed_block_cache_t& block_cache) {
+        auto entry = block_cache.find(block_id);
+        if (entry != block_cache.end()) {
+            return entry->second;
+        }
+
+        auto block = row_group.block_manager().register_block(block_id);
+        auto handle = row_group.block_manager().buffer_manager.pin(block);
+        handle.set_ownership(block);
+        return block_cache.emplace(block_id, std::move(handle)).first->second;
+    }
+
+    using pax_generic_block_cache_t =
+        std::unordered_map<uint64_t, components::table::storage::buffer_handle_t>;
+
+    components::table::storage::buffer_handle_t&
+    get_or_pin_pax_generic_block(components::table::row_group_t& row_group,
+                                 uint64_t block_id,
+                                 pax_generic_block_cache_t& block_cache) {
         auto entry = block_cache.find(block_id);
         if (entry != block_cache.end()) {
             return entry->second;
@@ -597,6 +940,186 @@ namespace {
             default:
                 return 0;
         }
+    }
+
+    std::string_view materialize_pax_generic_string(components::vector::vector_t& result,
+                                                    uint64_t row_index,
+                                                    const std::string_view& value) {
+        auto* auxiliary = static_cast<components::vector::string_vector_buffer_t*>(result.auxiliary().get());
+        if (!auxiliary) {
+            throw std::logic_error("missing string auxiliary buffer for pax_generic decode");
+        }
+
+        auto* result_data = result.data<std::string_view>();
+        if (value.empty()) {
+            auto* empty = auxiliary->empty_string(0);
+            result_data[row_index] = std::string_view(reinterpret_cast<char*>(empty), 0);
+        } else {
+            auto* stored = auxiliary->insert(value);
+            result_data[row_index] = std::string_view(reinterpret_cast<char*>(stored), value.size());
+        }
+        return result_data[row_index];
+    }
+
+    bool decode_pax_generic_string_window(components::table::row_group_t& row_group,
+                                          const components::table::storage::pax_generic_row_group_layout_t& layout,
+                                          uint32_t column_index,
+                                          uint64_t window_row_offset,
+                                          uint64_t window_count,
+                                          components::vector::vector_t& result,
+                                          uint64_t result_offset,
+                                          pax_generic_block_cache_t& block_cache) {
+        using components::table::storage::pax_generic_codec_kind;
+        using components::table::storage::pax_generic_slice_kind;
+
+        if (window_count == 0) {
+            return true;
+        }
+        if (result.type().to_physical_type() != components::types::physical_type::STRING) {
+            return false;
+        }
+
+        result.set_vector_type(components::vector::vector_type::FLAT);
+        mark_vector_range_valid(result, result_offset, window_count);
+
+        const auto window_end = window_row_offset + window_count;
+        uint64_t copied_rows = 0;
+        for (const auto& page : layout.pages) {
+            const auto page_start = static_cast<uint64_t>(page.row_offset_in_group);
+            const auto page_end = page_start + static_cast<uint64_t>(page.tuple_count);
+            if (page_end <= window_row_offset || page_start >= window_end) {
+                continue;
+            }
+
+            const auto* value_slice = find_pax_generic_slice(page, column_index, pax_generic_slice_kind::STRING_VALUES);
+            const auto* validity_slice = find_pax_generic_slice(page, column_index, pax_generic_slice_kind::VALIDITY);
+            if (!value_slice || !validity_slice || !validate_pax_generic_string_slice(*value_slice, page.tuple_count) ||
+                !validate_pax_generic_validity_slice(*validity_slice, page.tuple_count)) {
+                return false;
+            }
+
+            auto& value_pointer = value_slice->payload->main_pointer;
+            auto& block_handle =
+                get_or_pin_pax_generic_block(row_group, value_pointer.block_pointer.block_id, block_cache);
+            auto* base_ptr = block_handle.ptr() + value_pointer.block_pointer.offset;
+            uint32_t dict_size = 0;
+            uint32_t dict_end = 0;
+            std::memcpy(&dict_size, base_ptr, sizeof(uint32_t));
+            std::memcpy(&dict_end, base_ptr + sizeof(uint32_t), sizeof(uint32_t));
+
+            const auto offset_bytes = static_cast<uint64_t>(page.tuple_count) * sizeof(int32_t);
+            const auto minimum_payload_size =
+                static_cast<uint64_t>(PAX_STRING_DICTIONARY_HEADER_SIZE) + offset_bytes;
+            if (value_pointer.segment_size < minimum_payload_size || dict_end > value_pointer.segment_size ||
+                dict_size > dict_end || dict_end < minimum_payload_size) {
+                return false;
+            }
+
+            std::optional<components::vector::validity_mask_t> page_validity_mask;
+            if (validity_slice->codec_kind == pax_generic_codec_kind::VALIDITY_BITMASK) {
+                auto& validity_pointer = validity_slice->payload->main_pointer;
+                auto& validity_handle =
+                    get_or_pin_pax_generic_block(row_group, validity_pointer.block_pointer.block_id, block_cache);
+                auto* validity_data =
+                    reinterpret_cast<uint64_t*>(validity_handle.ptr() + validity_pointer.block_pointer.offset);
+                page_validity_mask.emplace(validity_data);
+            }
+
+            auto* page_offsets = reinterpret_cast<int32_t*>(base_ptr + PAX_STRING_DICTIONARY_HEADER_SIZE);
+            const auto overlap_start = std::max(window_row_offset, page_start);
+            const auto overlap_end = std::min(window_end, page_end);
+            const auto copy_count = overlap_end - overlap_start;
+            const auto page_row_offset = overlap_start - page_start;
+
+            for (uint64_t i = 0; i < copy_count; i++) {
+                const auto page_index = static_cast<uint64_t>(page_row_offset + i);
+                const auto target_index = result_offset + (overlap_start - window_row_offset) + i;
+
+                bool is_valid = true;
+                switch (validity_slice->codec_kind) {
+                    case pax_generic_codec_kind::VALIDITY_ALL_VALID:
+                        break;
+                    case pax_generic_codec_kind::VALIDITY_ALL_INVALID:
+                        is_valid = false;
+                        break;
+                    case pax_generic_codec_kind::VALIDITY_BITMASK:
+                        is_valid = page_validity_mask->row_is_valid(page_index);
+                        break;
+                    case pax_generic_codec_kind::STRING_SEGMENT:
+                    default:
+                        return false;
+                }
+
+                if (!is_valid) {
+                    result.validity().set(target_index, false);
+                    result.data<std::string_view>()[target_index] = std::string_view(nullptr, 0);
+                    continue;
+                }
+
+                const auto dict_offset = page_offsets[page_index];
+                const auto prev_offset = page_index == 0 ? 0 : page_offsets[page_index - 1];
+                const auto abs_dict_offset = static_cast<uint64_t>(std::abs(dict_offset));
+                const auto abs_prev_offset = static_cast<uint64_t>(std::abs(prev_offset));
+                if (abs_dict_offset < abs_prev_offset || abs_dict_offset > dict_end) {
+                    return false;
+                }
+
+                const auto string_length =
+                    static_cast<uint32_t>(abs_dict_offset - abs_prev_offset);
+                if (dict_offset < 0) {
+                    if (abs_dict_offset < PAX_STRING_BIG_MARKER_SIZE) {
+                        return false;
+                    }
+                    auto* marker_ptr = base_ptr + dict_end - abs_dict_offset;
+                    uint32_t overflow_block_id = 0;
+                    int32_t overflow_offset = 0;
+                    std::memcpy(&overflow_block_id, marker_ptr, sizeof(uint32_t));
+                    std::memcpy(&overflow_offset, marker_ptr + sizeof(uint32_t), sizeof(int32_t));
+                    if (overflow_offset < 0 ||
+                        std::find(value_slice->payload->extra_block_ids.begin(),
+                                  value_slice->payload->extra_block_ids.end(),
+                                  overflow_block_id) == value_slice->payload->extra_block_ids.end()) {
+                        return false;
+                    }
+
+                    auto& overflow_handle =
+                        get_or_pin_pax_generic_block(row_group, overflow_block_id, block_cache);
+                    auto* overflow_ptr = overflow_handle.ptr() + static_cast<uint64_t>(overflow_offset);
+                    uint32_t overflow_length = 0;
+                    std::memcpy(&overflow_length, overflow_ptr, sizeof(uint32_t));
+                    materialize_pax_generic_string(result,
+                                                  target_index,
+                                                  std::string_view(reinterpret_cast<char*>(overflow_ptr + sizeof(uint32_t)),
+                                                                   overflow_length));
+                } else {
+                    auto* source_ptr = reinterpret_cast<char*>(base_ptr + dict_end - abs_dict_offset);
+                    materialize_pax_generic_string(result,
+                                                  target_index,
+                                                  std::string_view(source_ptr, string_length));
+                }
+            }
+            copied_rows += copy_count;
+        }
+
+        return copied_rows == window_count;
+    }
+
+    uint64_t apply_pax_generic_string_constant_filter(const components::vector::vector_t& values,
+                                                      const components::table::constant_filter_t& filter,
+                                                      uint64_t count,
+                                                      components::vector::indexing_vector_t& indexing) {
+        const auto* data = values.data<std::string_view>();
+        const auto& validity = values.validity();
+        uint64_t approved_count = 0;
+        for (uint64_t i = 0; i < count; i++) {
+            if (!validity.row_is_valid(i)) {
+                continue;
+            }
+            if (filter.compare(data[i])) {
+                indexing.set_index(approved_count++, i);
+            }
+        }
+        return approved_count;
     }
 
 } // namespace
@@ -867,6 +1390,244 @@ namespace components::table {
         approved_tuple_count = result_count;
     }
 
+    bool row_group_t::try_scan_pax_generic_projected(collection_scan_state& state, vector::data_chunk_t& result) {
+        if (layout_kind_ != storage::row_group_layout_kind::PAX_GENERIC || !pax_generic_layout_.has_value()) {
+            return false;
+        }
+        if (version_info_.load() != nullptr || !deletes_pointers_.empty()) {
+            return false;
+        }
+        if (state.txn.transaction_id != 0 || state.txn.start_time != 0) {
+            return false;
+        }
+
+        const auto& column_ids = state.column_ids();
+        if (column_ids.empty()) {
+            return false;
+        }
+
+        const constant_filter_t* constant_filter = nullptr;
+        uint32_t filter_column_index = 0;
+        int64_t filter_scan_index = -1;
+
+        auto* filter = state.filter();
+        if (filter) {
+            if (!is_supported_pax_projected_filter_compare(filter->filter_type)) {
+                return false;
+            }
+
+            auto* constant = dynamic_cast<const constant_filter_t*>(filter);
+            if (!constant || constant->table_indices.size() != 1) {
+                return false;
+            }
+            filter_column_index = static_cast<uint32_t>(constant->table_indices.front());
+            constant_filter = constant;
+        }
+
+        for (uint64_t i = 0; i < column_ids.size(); i++) {
+            const auto& column = column_ids[i];
+            if (column.is_row_id_column() || column.has_children()) {
+                return false;
+            }
+
+            const auto column_index = column.primary_index();
+            if (column_index >= get_column_count()) {
+                return false;
+            }
+
+            auto& column_data = get_column(column_index);
+            if (!is_pax_generic_string_type(column_data.type()) || column_data.has_updates()) {
+                return false;
+            }
+            if (constant_filter && column_index == filter_column_index) {
+                filter_scan_index = static_cast<int64_t>(i);
+            }
+        }
+
+        if (constant_filter) {
+            if (filter_column_index >= get_column_count()) {
+                return false;
+            }
+            auto& filter_column = get_column(filter_column_index);
+            if (!is_pax_generic_string_type(filter_column.type()) || filter_column.has_updates()) {
+                return false;
+            }
+            if (filter_scan_index < 0) {
+                return false;
+            }
+        }
+
+        const auto& layout = *pax_generic_layout_;
+        if (!is_supported_pax_generic_layout_version(layout.version) || layout.rows_per_page == 0 ||
+            layout.pages.empty()) {
+            return false;
+        }
+
+        uint64_t expected_row_offset = 0;
+        for (const auto& page : layout.pages) {
+            if (page.tuple_count == 0 || page.row_offset_in_group != expected_row_offset ||
+                page.tuple_count > layout.rows_per_page) {
+                return false;
+            }
+            expected_row_offset += page.tuple_count;
+        }
+        if (expected_row_offset != count.load() || pax_generic_layout_tuple_count(layout) != count.load()) {
+            return false;
+        }
+
+        for (const auto& column : column_ids) {
+            const auto column_index = static_cast<uint32_t>(column.primary_index());
+            for (const auto& page : layout.pages) {
+                const auto* value_slice =
+                    find_pax_generic_slice(page, column_index, storage::pax_generic_slice_kind::STRING_VALUES);
+                const auto* validity_slice =
+                    find_pax_generic_slice(page, column_index, storage::pax_generic_slice_kind::VALIDITY);
+                if (!value_slice || !validity_slice || !validate_pax_generic_string_slice(*value_slice, page.tuple_count) ||
+                    !validate_pax_generic_validity_slice(*validity_slice, page.tuple_count)) {
+                    return false;
+                }
+            }
+        }
+
+        for (auto& column_state : state.column_scans) {
+            column_state.result_offset = result.size();
+        }
+
+        pax_generic_block_cache_t block_cache;
+        const auto local_max_row_group_row =
+            start > state.max_row ? 0 : static_cast<uint64_t>(std::min(static_cast<int64_t>(count.load()),
+                                                                       state.max_row - start));
+
+        while (true) {
+            const auto current_row = current_pax_fixed_row_offset(*this, state);
+            if (current_row >= local_max_row_group_row) {
+                return true;
+            }
+
+            const auto max_count =
+                std::min<uint64_t>(vector::DEFAULT_VECTOR_CAPACITY, local_max_row_group_row - current_row);
+
+            if (!check_zonemap_segments(state)) {
+                continue;
+            }
+
+            const auto result_offset = result.size();
+            if (!constant_filter) {
+                validate_chunk_capacity(result, result_offset + max_count);
+                for (const auto& column : column_ids) {
+                    const auto out_idx = column.primary_index();
+                    if (out_idx >= result.data.size() || !result.data[out_idx].data() ||
+                        result.data[out_idx].type().to_physical_type() != types::physical_type::STRING) {
+                        return false;
+                    }
+                    if (!decode_pax_generic_string_window(*this,
+                                                          layout,
+                                                          static_cast<uint32_t>(column.primary_index()),
+                                                          current_row,
+                                                          max_count,
+                                                          result.data[out_idx],
+                                                          result_offset,
+                                                          block_cache)) {
+                        return false;
+                    }
+                }
+
+                result.row_ids.set_vector_type(vector::vector_type::FLAT);
+                auto* row_ids = result.row_ids.data<int64_t>();
+                for (uint64_t i = 0; i < max_count; i++) {
+                    row_ids[result_offset + i] = start + static_cast<int64_t>(current_row + i);
+                }
+                mark_vector_range_valid(result.row_ids, result_offset, max_count);
+
+                result.set_cardinality(result_offset + max_count);
+                state.valid_indexing = vector::indexing_vector_t(result.resource(), 0, result.capacity());
+                state.vector_index++;
+                for (auto& column_state : state.column_scans) {
+                    advance_pax_fixed_scan_state(column_state, max_count);
+                    column_state.result_offset += max_count;
+                }
+                return true;
+            }
+
+            vector::vector_t filter_values(result.resource(), get_column(filter_column_index).type(), max_count);
+            if (!decode_pax_generic_string_window(*this,
+                                                  layout,
+                                                  filter_column_index,
+                                                  current_row,
+                                                  max_count,
+                                                  filter_values,
+                                                  0,
+                                                  block_cache)) {
+                return false;
+            }
+
+            vector::indexing_vector_t indexing(result.resource(), max_count);
+            auto approved_count =
+                apply_pax_generic_string_constant_filter(filter_values, *constant_filter, max_count, indexing);
+            if (approved_count == 0) {
+                state.vector_index++;
+                for (auto& column_state : state.column_scans) {
+                    advance_pax_fixed_scan_state(column_state, max_count);
+                }
+                continue;
+            }
+
+            validate_chunk_capacity(result, result_offset + approved_count);
+            for (uint64_t i = 0; i < column_ids.size(); i++) {
+                const auto& column = column_ids[i];
+                const auto out_idx = column.primary_index();
+                if (out_idx >= result.data.size() || !result.data[out_idx].data() ||
+                    result.data[out_idx].type().to_physical_type() != types::physical_type::STRING) {
+                    return false;
+                }
+
+                if (static_cast<int64_t>(i) == filter_scan_index) {
+                    vector::vector_ops::copy(filter_values,
+                                             result.data[out_idx],
+                                             indexing,
+                                             approved_count,
+                                             0,
+                                             result_offset);
+                    continue;
+                }
+
+                vector::vector_t temp_values(result.resource(), get_column(column).type(), max_count);
+                if (!decode_pax_generic_string_window(*this,
+                                                      layout,
+                                                      static_cast<uint32_t>(column.primary_index()),
+                                                      current_row,
+                                                      max_count,
+                                                      temp_values,
+                                                      0,
+                                                      block_cache)) {
+                    return false;
+                }
+                vector::vector_ops::copy(temp_values,
+                                         result.data[out_idx],
+                                         indexing,
+                                         approved_count,
+                                         0,
+                                         result_offset);
+            }
+
+            result.row_ids.set_vector_type(vector::vector_type::FLAT);
+            auto* row_ids = result.row_ids.data<int64_t>();
+            for (uint64_t i = 0; i < approved_count; i++) {
+                row_ids[result_offset + i] = start + static_cast<int64_t>(current_row + indexing.get_index(i));
+            }
+            mark_vector_range_valid(result.row_ids, result_offset, approved_count);
+
+            result.set_cardinality(result_offset + approved_count);
+            state.valid_indexing = indexing;
+            state.vector_index++;
+            for (auto& column_state : state.column_scans) {
+                advance_pax_fixed_scan_state(column_state, max_count);
+                column_state.result_offset += approved_count;
+            }
+            return true;
+        }
+    }
+
     bool row_group_t::try_scan_pax_fixed_projected(collection_scan_state& state, vector::data_chunk_t& result) {
         if (layout_kind_ != storage::row_group_layout_kind::PAX_FIXED || !pax_fixed_layout_.has_value()) {
             return false;
@@ -889,7 +1650,7 @@ namespace components::table {
 
         auto* filter = state.filter();
         if (filter) {
-            if (!is_supported_pax_fixed_filter_compare(filter->filter_type)) {
+            if (!is_supported_pax_projected_filter_compare(filter->filter_type)) {
                 return false;
             }
 
@@ -1257,6 +2018,9 @@ namespace components::table {
     }
 
     void row_group_t::scan(collection_scan_state& state, vector::data_chunk_t& result) {
+        if (try_scan_pax_generic_projected(state, result)) {
+            return;
+        }
         if (try_scan_pax_fixed_projected(state, result)) {
             return;
         }
@@ -1300,6 +2064,31 @@ namespace components::table {
                 col_data.fetch_row(state, row_id, result_vector, result_idx);
             }
         }
+    }
+
+    bool row_group_t::row_visible(transaction_data txn, int64_t row_id) {
+        auto vinfo = version_info();
+        if (!vinfo) {
+            return true;
+        }
+
+        auto local_row = static_cast<uint64_t>(row_id - start);
+        auto vector_idx = local_row / vector::DEFAULT_VECTOR_CAPACITY;
+        auto row_in_vector = local_row % vector::DEFAULT_VECTOR_CAPACITY;
+        vector::indexing_vector_t visible_rows(collection().resource(), row_in_vector + 1);
+
+        uint64_t visible_count = (txn.transaction_id == 0 && txn.start_time == 0)
+                                     ? commited_indexing_vector(vector_idx, visible_rows, row_in_vector + 1)
+                                     : indexing_vector(txn, vector_idx, visible_rows, row_in_vector + 1);
+        if (visible_count == row_in_vector + 1) {
+            return true;
+        }
+        for (uint64_t i = 0; i < visible_count; i++) {
+            if (visible_rows.get_index(i) == row_in_vector) {
+                return true;
+            }
+        }
+        return false;
     }
 
     void row_group_t::append_version_info(transaction_data txn, uint64_t count) {
@@ -1597,10 +2386,19 @@ namespace components::table {
         pax_generic_columns.reserve(col_count);
         std::vector<uint64_t> pax_fixed_columns;
         pax_fixed_columns.reserve(col_count);
+        bool pax_generic_requires_v2 = false;
         for (uint64_t i = 0; i < col_count; i++) {
             auto& column = get_column(i);
             if (is_pax_generic_string_type(column.type())) {
                 pax_generic_columns.push_back(i);
+            } else if (is_pax_generic_struct_type(column.type())) {
+                if (!is_supported_pax_generic_column_type(column.type())) {
+                    auto persistent = column.checkpoint(partial_block_manager);
+                    pointer.columnar_data_pointers[i] = std::move(persistent.data_pointers);
+                    continue;
+                }
+                pax_generic_columns.push_back(i);
+                pax_generic_requires_v2 = true;
             } else if (is_pax_fixed_integer_type(column.type())) {
                 pax_fixed_columns.push_back(i);
             } else {
@@ -1622,7 +2420,7 @@ namespace components::table {
             }
 
             storage::pax_generic_row_group_layout_t pax_layout;
-            pax_layout.version = 1;
+            pax_layout.version = pax_generic_requires_v2 ? 2 : 1;
             pax_layout.rows_per_page = PAX_GENERIC_ROWS_PER_PAGE;
 
             for (uint64_t row_offset = 0; row_offset < pointer.tuple_count; row_offset += PAX_GENERIC_ROWS_PER_PAGE) {
@@ -1633,30 +2431,36 @@ namespace components::table {
 
                 for (auto column_index : pax_generic_columns) {
                     auto& column = get_column(column_index);
-                    auto page_result = write_pax_generic_string_page(column,
-                                                                     pointer.row_start,
-                                                                     page.row_offset_in_group,
-                                                                     page.tuple_count,
-                                                                     partial_block_manager);
-                    pointer.columnar_data_pointers[column_index].push_back(page_result.main_pointer);
+                    if (is_pax_generic_string_type(column.type())) {
+                        auto page_result = write_pax_generic_string_page(column,
+                                                                         pointer.row_start,
+                                                                         page.row_offset_in_group,
+                                                                         page.tuple_count,
+                                                                         partial_block_manager);
+                        pointer.columnar_data_pointers[column_index].push_back(page_result.main_pointer);
 
-                    storage::pax_generic_slice_t value_slice;
-                    value_slice.column_index = static_cast<uint32_t>(column_index);
-                    value_slice.slice_kind = storage::pax_generic_slice_kind::STRING_VALUES;
-                    value_slice.codec_kind = storage::pax_generic_codec_kind::STRING_SEGMENT;
-                    value_slice.payload = storage::pax_block_payload_t{page_result.main_pointer,
-                                                                       page_result.extra_block_ids};
-                    page.slices.push_back(std::move(value_slice));
+                        storage::pax_generic_slice_t value_slice;
+                        value_slice.column_index = static_cast<uint32_t>(column_index);
+                        value_slice.slice_kind = storage::pax_generic_slice_kind::STRING_VALUES;
+                        value_slice.codec_kind = storage::pax_generic_codec_kind::STRING_SEGMENT;
+                        value_slice.payload = storage::pax_block_payload_t{page_result.main_pointer,
+                                                                           page_result.extra_block_ids};
+                        page.slices.push_back(std::move(value_slice));
 
-                    storage::pax_generic_slice_t validity_slice;
-                    validity_slice.column_index = static_cast<uint32_t>(column_index);
-                    validity_slice.slice_kind = storage::pax_generic_slice_kind::VALIDITY;
-                    validity_slice.codec_kind = page_result.validity_codec;
-                    if (page_result.validity_pointer.has_value()) {
-                        validity_slice.payload =
-                            storage::pax_block_payload_t{*page_result.validity_pointer, {}};
+                        append_pax_generic_validity_slice(page,
+                                                          static_cast<uint32_t>(column_index),
+                                                          empty_pax_generic_field_path(),
+                                                          {page_result.validity_codec, page_result.validity_pointer});
+                    } else {
+                        write_pax_generic_column_page(column,
+                                                      static_cast<uint32_t>(column_index),
+                                                      empty_pax_generic_field_path(),
+                                                      pointer.row_start,
+                                                      page.row_offset_in_group,
+                                                      page.tuple_count,
+                                                      partial_block_manager,
+                                                      page);
                     }
-                    page.slices.push_back(std::move(validity_slice));
                 }
 
                 pax_layout.pages.push_back(std::move(page));
@@ -1739,78 +2543,233 @@ namespace components::table {
             return;
         }
 
-        std::vector<uint64_t> segment_index_by_column(col_count, 0);
-        for (const auto& page : pax_generic_layout_->pages) {
-            for (const auto& slice : page.slices) {
-                if (slice.slice_kind != storage::pax_generic_slice_kind::STRING_VALUES) {
+        if (!is_supported_pax_generic_layout_version(pax_generic_layout_->version)) {
+            throw std::logic_error("unsupported pax_generic layout version");
+        }
+
+        struct pax_generic_validity_page_info_t {
+            uint64_t row_start;
+            uint32_t tuple_count;
+            storage::pax_generic_codec_kind codec_kind;
+            std::optional<storage::pax_block_payload_t> payload;
+        };
+
+        auto collect_generic_slices =
+            [&](uint32_t root_column_index,
+                const std::vector<uint16_t>& field_path,
+                storage::pax_generic_slice_kind slice_kind) -> std::vector<const storage::pax_generic_slice_t*> {
+            std::vector<const storage::pax_generic_slice_t*> slices;
+            for (const auto& page : pax_generic_layout_->pages) {
+                const auto* slice = find_pax_generic_slice(page, root_column_index, slice_kind, field_path);
+                if (slice) {
+                    slices.push_back(slice);
+                }
+            }
+            return slices;
+        };
+
+        auto collect_generic_validity_infos =
+            [&](uint32_t root_column_index,
+                const std::vector<uint16_t>& field_path) -> std::vector<pax_generic_validity_page_info_t> {
+            std::vector<pax_generic_validity_page_info_t> infos;
+            for (const auto& page : pax_generic_layout_->pages) {
+                const auto* slice =
+                    find_pax_generic_slice(page, root_column_index, storage::pax_generic_slice_kind::VALIDITY, field_path);
+                if (!slice) {
                     continue;
                 }
-                if (slice.codec_kind != storage::pax_generic_codec_kind::STRING_SEGMENT || !slice.payload.has_value()) {
-                    throw std::logic_error("invalid pax_generic string slice payload");
+                infos.push_back({static_cast<uint64_t>(start) + page.row_offset_in_group,
+                                 page.tuple_count,
+                                 slice->codec_kind,
+                                 slice->payload});
+            }
+            return infos;
+        };
+
+        auto apply_validity_infos = [&](column_data_t& validity_column,
+                                        const std::vector<pax_generic_validity_page_info_t>& infos,
+                                        bool initialize_segments) {
+            if (infos.empty()) {
+                return;
+            }
+
+            if (initialize_segments) {
+                persistent_column_data_t pcd(validity_column.resource());
+                pcd.data_pointers.reserve(infos.size());
+                for (const auto& info : infos) {
+                    storage::data_pointer_t pointer_info;
+                    pointer_info.row_start = info.row_start;
+                    pointer_info.tuple_count = info.tuple_count;
+                    pointer_info.segment_size = vector::validity_mask_t::validity_mask_size(info.tuple_count);
+                    pcd.data_pointers.push_back(pointer_info);
                 }
+                validity_column.initialize_column_validity(pcd);
+            }
 
-                const auto column_index = static_cast<uint64_t>(slice.column_index);
-                if (column_index >= columns_.size() || !is_pax_generic_string_type(columns_[column_index]->type())) {
-                    continue;
-                }
-
-                auto* standard_column = dynamic_cast<standard_column_data_t*>(columns_[column_index].get());
-                if (!standard_column) {
-                    throw std::logic_error("pax_generic string column is not a standard column");
-                }
-
-                const auto segment_index = static_cast<int64_t>(segment_index_by_column[column_index]++);
-
-                {
-                    auto l = standard_column->data_.lock();
-                    auto* segment = standard_column->data_.segment_at(l, segment_index);
-                    if (!segment || !segment->segment_state()) {
-                        throw std::logic_error("missing string segment state for pax_generic load");
-                    }
-                    auto& string_state = segment->segment_state()->cast<uncompressed_string_segment_state>();
-                    for (auto block_id : slice.payload->extra_block_ids) {
-                        string_state.register_block(block_manager(), block_id);
-                    }
-                }
-
-                const auto* validity_slice =
-                    find_pax_generic_slice(page, slice.column_index, storage::pax_generic_slice_kind::VALIDITY);
-                if (!validity_slice) {
-                    continue;
-                }
-
-                auto validity_lock = standard_column->validity.data_.lock();
-                auto* validity_segment = standard_column->validity.data_.segment_at(validity_lock, segment_index);
+            auto validity_lock = validity_column.data_.lock();
+            for (uint64_t segment_index = 0; segment_index < infos.size(); segment_index++) {
+                const auto& info = infos[segment_index];
+                auto* validity_segment = validity_column.data_.segment_at(validity_lock,
+                                                                         static_cast<int64_t>(segment_index));
                 if (!validity_segment) {
                     throw std::logic_error("missing validity segment for pax_generic load");
                 }
 
                 auto validity_handle = block_manager().buffer_manager.pin(validity_segment->block);
                 auto* target_ptr = validity_handle.ptr() + validity_segment->block_offset();
-                switch (validity_slice->codec_kind) {
+                switch (info.codec_kind) {
                     case storage::pax_generic_codec_kind::VALIDITY_ALL_VALID:
                         break;
                     case storage::pax_generic_codec_kind::VALIDITY_ALL_INVALID:
                         std::memset(target_ptr, 0, validity_segment->segment_size());
                         break;
                     case storage::pax_generic_codec_kind::VALIDITY_BITMASK: {
-                        if (!validity_slice->payload.has_value()) {
+                        if (!info.payload.has_value()) {
                             throw std::logic_error("missing pax_generic validity payload");
                         }
-                        auto source_block = block_manager().register_block(
-                            validity_slice->payload->main_pointer.block_pointer.block_id);
+                        auto source_block =
+                            block_manager().register_block(info.payload->main_pointer.block_pointer.block_id);
                         auto source_handle = block_manager().buffer_manager.pin(source_block);
-                        auto* source_ptr = source_handle.ptr() +
-                                           validity_slice->payload->main_pointer.block_pointer.offset;
-                        std::memcpy(target_ptr,
-                                    source_ptr,
-                                    validity_slice->payload->main_pointer.segment_size);
+                        auto* source_ptr =
+                            source_handle.ptr() + info.payload->main_pointer.block_pointer.offset;
+                        std::memcpy(target_ptr, source_ptr, info.payload->main_pointer.segment_size);
                         break;
                     }
                     case storage::pax_generic_codec_kind::STRING_SEGMENT:
+                    case storage::pax_generic_codec_kind::FIXED_PLAIN:
                     default:
                         throw std::logic_error("invalid pax_generic validity codec");
                 }
+            }
+        };
+
+        auto register_string_blocks =
+            [&](standard_column_data_t& standard_column,
+                const std::vector<const storage::pax_generic_slice_t*>& slices) {
+            auto data_lock = standard_column.data_.lock();
+            for (uint64_t segment_index = 0; segment_index < slices.size(); segment_index++) {
+                const auto* slice = slices[segment_index];
+                if (!slice->payload.has_value()) {
+                    throw std::logic_error("missing pax_generic string payload");
+                }
+
+                auto* segment = standard_column.data_.segment_at(data_lock, static_cast<int64_t>(segment_index));
+                if (!segment || !segment->segment_state()) {
+                    throw std::logic_error("missing string segment state for pax_generic load");
+                }
+                auto& string_state = segment->segment_state()->cast<uncompressed_string_segment_state>();
+                for (auto block_id : slice->payload->extra_block_ids) {
+                    string_state.register_block(block_manager(), block_id);
+                }
+            }
+        };
+
+        std::function<void(column_data_t&, uint32_t, const std::vector<uint16_t>&, bool)> load_generic_column;
+        load_generic_column = [&](column_data_t& column,
+                                  uint32_t root_column_index,
+                                  const std::vector<uint16_t>& field_path,
+                                  bool is_top_level) {
+            if (is_pax_generic_struct_type(column.type())) {
+                auto* struct_column = dynamic_cast<struct_column_data_t*>(&column);
+                if (!struct_column) {
+                    throw std::logic_error("pax_generic struct column is not a struct column");
+                }
+
+                auto validity_infos = collect_generic_validity_infos(root_column_index, field_path);
+                apply_validity_infos(struct_column->validity, validity_infos, true);
+                struct_column->count_ = count.load();
+
+                for (uint16_t child_index = 0; child_index < struct_column->sub_columns.size(); child_index++) {
+                    auto child_path = field_path;
+                    child_path.push_back(child_index);
+                    load_generic_column(*struct_column->sub_columns[child_index],
+                                        root_column_index,
+                                        child_path,
+                                        false);
+                }
+                return;
+            }
+
+            if (is_pax_generic_string_type(column.type())) {
+                auto* standard_column = dynamic_cast<standard_column_data_t*>(&column);
+                if (!standard_column) {
+                    throw std::logic_error("pax_generic string column is not a standard column");
+                }
+
+                auto value_slices =
+                    collect_generic_slices(root_column_index, field_path, storage::pax_generic_slice_kind::STRING_VALUES);
+                if (value_slices.empty()) {
+                    throw std::logic_error("missing pax_generic string slices");
+                }
+
+                const bool already_initialized =
+                    is_top_level && root_column_index < pointer.columnar_data_pointers.size() &&
+                    !pointer.columnar_data_pointers[root_column_index].empty();
+                if (!already_initialized) {
+                    persistent_column_data_t pcd(standard_column->resource());
+                    pcd.data_pointers.reserve(value_slices.size());
+                    for (const auto* slice : value_slices) {
+                        if (slice->codec_kind != storage::pax_generic_codec_kind::STRING_SEGMENT ||
+                            !slice->payload.has_value()) {
+                            throw std::logic_error("invalid pax_generic string slice payload");
+                        }
+                        pcd.data_pointers.push_back(slice->payload->main_pointer);
+                    }
+                    standard_column->initialize_column(pcd);
+                }
+
+                register_string_blocks(*standard_column, value_slices);
+                auto validity_infos = collect_generic_validity_infos(root_column_index, field_path);
+                apply_validity_infos(standard_column->validity, validity_infos, false);
+                return;
+            }
+
+            if (is_pax_generic_fixed_plain_type(column.type())) {
+                auto* standard_column = dynamic_cast<standard_column_data_t*>(&column);
+                if (!standard_column) {
+                    throw std::logic_error("pax_generic fixed column is not a standard column");
+                }
+
+                auto value_slices =
+                    collect_generic_slices(root_column_index, field_path, storage::pax_generic_slice_kind::FIXED_VALUES);
+                if (value_slices.empty()) {
+                    throw std::logic_error("missing pax_generic fixed slices");
+                }
+
+                persistent_column_data_t pcd(standard_column->resource());
+                pcd.data_pointers.reserve(value_slices.size());
+                for (const auto* slice : value_slices) {
+                    if (slice->codec_kind != storage::pax_generic_codec_kind::FIXED_PLAIN ||
+                        !slice->payload.has_value()) {
+                        throw std::logic_error("invalid pax_generic fixed slice payload");
+                    }
+                    if (pax_generic_layout_->version >= 2 && slice->fixed_logical_type != column.type().type()) {
+                        throw std::logic_error("pax_generic fixed slice type mismatch");
+                    }
+                    pcd.data_pointers.push_back(slice->payload->main_pointer);
+                }
+                standard_column->initialize_column(pcd);
+
+                auto validity_infos = collect_generic_validity_infos(root_column_index, field_path);
+                apply_validity_infos(standard_column->validity, validity_infos, false);
+                return;
+            }
+
+            throw std::logic_error("unsupported column type in pax_generic load");
+        };
+
+        std::vector<bool> initialized_roots(col_count, false);
+        for (const auto& page : pax_generic_layout_->pages) {
+            for (const auto& slice : page.slices) {
+                const auto column_index = static_cast<uint64_t>(slice.column_index);
+                if (column_index >= columns_.size() || initialized_roots[column_index]) {
+                    continue;
+                }
+                load_generic_column(*columns_[column_index],
+                                    slice.column_index,
+                                    empty_pax_generic_field_path(),
+                                    true);
+                initialized_roots[column_index] = true;
             }
         }
     }

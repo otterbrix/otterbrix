@@ -167,6 +167,36 @@ namespace components::table {
         result.set_cardinality(count);
     }
 
+    void collection_t::fetch(vector::data_chunk_t& result,
+                             const std::vector<storage_index_t>& column_ids,
+                             const vector::vector_t& row_identifiers,
+                             uint64_t fetch_count,
+                             transaction_data txn,
+                             column_fetch_state& state) {
+        auto row_ids = row_identifiers.data<int64_t>();
+        auto* result_row_ids = result.row_ids.data<int64_t>();
+        uint64_t count = 0;
+        for (uint64_t i = 0; i < fetch_count; i++) {
+            auto row_id = row_ids[i];
+            row_group_t* row_group;
+            {
+                uint64_t segment_index;
+                auto l = row_groups_->lock();
+                if (!row_groups_->try_segment_index(l, row_id, segment_index)) {
+                    continue;
+                }
+                row_group = row_groups_->segment_at(l, static_cast<int64_t>(segment_index));
+            }
+            if (!row_group->row_visible(txn, row_id)) {
+                continue;
+            }
+            row_group->fetch_row(state, column_ids, row_id, result, count);
+            result_row_ids[count] = row_id;
+            count++;
+        }
+        result.set_cardinality(count);
+    }
+
     bool collection_t::is_empty() const {
         auto l = row_groups_->lock();
         return is_empty(l);

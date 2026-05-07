@@ -5,6 +5,7 @@
 #include <vector>
 
 #include <components/table/compression/compression_type.hpp>
+#include <components/types/types.hpp>
 
 #include "file_buffer.hpp"
 
@@ -47,7 +48,8 @@ namespace components::table::storage {
     enum class pax_generic_slice_kind : uint8_t
     {
         STRING_VALUES = 0,
-        VALIDITY = 1
+        VALIDITY = 1,
+        FIXED_VALUES = 2
     };
 
     enum class pax_generic_codec_kind : uint8_t
@@ -55,7 +57,8 @@ namespace components::table::storage {
         STRING_SEGMENT = 0,
         VALIDITY_ALL_VALID = 1,
         VALIDITY_ALL_INVALID = 2,
-        VALIDITY_BITMASK = 3
+        VALIDITY_BITMASK = 3,
+        FIXED_PLAIN = 4
     };
 
     struct data_pointer_t {
@@ -110,6 +113,8 @@ namespace components::table::storage {
         uint32_t column_index{0};
         pax_generic_slice_kind slice_kind{pax_generic_slice_kind::STRING_VALUES};
         pax_generic_codec_kind codec_kind{pax_generic_codec_kind::STRING_SEGMENT};
+        std::vector<uint16_t> field_path;
+        types::logical_type fixed_logical_type{types::logical_type::INVALID};
         std::optional<pax_block_payload_t> payload;
 
         void serialize(metadata_writer_t& writer, uint16_t version) const;

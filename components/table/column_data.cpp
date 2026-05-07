@@ -340,6 +340,10 @@ namespace components::table {
             apend_transient_segment(l, start_);
         }
         auto segment = data_.last_segment(l);
+        if (segment && segment->block_offset() != 0) {
+            apend_transient_segment(l, segment->start + static_cast<int64_t>(segment->count));
+            segment = data_.last_segment(l);
+        }
         state.current = segment;
         state.current->initialize_append(state);
     }

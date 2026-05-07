@@ -765,8 +765,14 @@ namespace components::types {
             deserializer->pop_array();
         }
         deserializer->pop_array();
-        auto res =
-            std::make_unique<struct_logical_type_extension>(std::move(name), std::move(types), std::move(descriptions));
+        std::unique_ptr<struct_logical_type_extension> res;
+        if (descriptions.empty()) {
+            res = std::make_unique<struct_logical_type_extension>(std::move(name), types);
+        } else {
+            res = std::make_unique<struct_logical_type_extension>(std::move(name),
+                                                                  std::move(types),
+                                                                  std::move(descriptions));
+        }
         res->set_alias(alias);
         return res;
     }

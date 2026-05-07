@@ -10,6 +10,7 @@
 #include <core/executor.hpp>
 #include <msgpack.hpp>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace {
     using namespace core::b_plus_tree;
@@ -320,10 +321,20 @@ namespace services::index {
 
                             auto* idx = components::index::search_index(engine, keys);
                             if (idx) {
+                                std::unordered_set<int64_t> seen_row_ids;
+                                seen_row_ids.reserve(raw.size());
+                                size_t loaded_count = 0;
                                 for (auto& e : raw) {
+                                    if (!seen_row_ids.emplace(e.row_id).second) {
+                                        continue;
+                                    }
                                     idx->insert(reverse_convert(resource_, e.key), e.row_id);
+                                    loaded_count++;
                                 }
-                                trace(log_, "create_index: loaded {} entries from btree", raw.size());
+                                trace(log_,
+                                      "create_index: loaded {} unique entries from btree ({} raw)",
+                                      loaded_count,
+                                      raw.size());
                             }
                         }
                     } catch (const std::exception& e) {
@@ -614,7 +625,25 @@ namespace services::index {
         if (!index)
             co_return result;
 
-        co_return index->search(compare, value, start_time, txn_id);
+        result = index->search(compare, value, start_time, txn_id);
+        if (result.size() < 2) {
+            co_return result;
+        }
+
+        // Persisted index state may contain duplicate row ids after restart/reload cycles.
+        // Keep query results functionally correct even if the backing index is not perfectly deduplicated.
+        std::unordered_set<int64_t> seen;
+        seen.reserve(result.size());
+
+        std::pmr::vector<int64_t> deduplicated(resource_);
+        deduplicated.reserve(result.size());
+        for (auto row_id : result) {
+            if (seen.emplace(row_id).second) {
+                deduplicated.emplace_back(row_id);
+            }
+        }
+
+        co_return deduplicated;
     }
 
     manager_index_t::unique_future<std::pmr::vector<components::index::keys_base_storage_t>>

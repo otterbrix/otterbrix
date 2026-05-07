@@ -1,5 +1,7 @@
 #include "data_table.hpp"
 
+#include <components/serialization/deserializer.hpp>
+#include <components/serialization/serializer.hpp>
 #include <components/table/storage/partial_block_manager.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/vector_operations.hpp>
@@ -10,7 +12,33 @@
 namespace {
 
     constexpr uint32_t ROW_GROUP_LAYOUTS_MAGIC = 0x31584150U; // "PAX1"
+    constexpr uint32_t COLUMN_TYPES_METADATA_MAGIC = 0x31484353U; // "SCH1"
+    constexpr uint32_t TABLE_COLUMN_TYPES_METADATA_FLAG = 1U << 31;
     constexpr uint32_t TABLE_LAYOUT_METADATA_FLAG = 1U << 31;
+
+    bool requires_column_type_metadata(const components::types::complex_logical_type& type) {
+        if (type.extension() &&
+            type.extension()->type() != components::types::logical_type_extension::extension_type::GENERIC) {
+            return true;
+        }
+
+        switch (type.type()) {
+            case components::types::logical_type::ARRAY:
+            case components::types::logical_type::STRUCT:
+            case components::types::logical_type::UNION:
+            case components::types::logical_type::VARIANT:
+            case components::types::logical_type::LIST:
+            case components::types::logical_type::MAP:
+            case components::types::logical_type::DECIMAL:
+            case components::types::logical_type::ENUM:
+            case components::types::logical_type::USER:
+            case components::types::logical_type::FUNCTION:
+            case components::types::logical_type::UNKNOWN:
+                return true;
+            default:
+                return false;
+        }
+    }
 
 }
 
@@ -197,6 +225,15 @@ namespace components::table {
                              uint64_t fetch_count,
                              column_fetch_state& state) {
         row_groups_->fetch(result, column_ids, row_identifiers, fetch_count, state);
+    }
+
+    void data_table_t::fetch(vector::data_chunk_t& result,
+                             const std::vector<storage_index_t>& column_ids,
+                             const vector::vector_t& row_identifiers,
+                             uint64_t fetch_count,
+                             transaction_data txn,
+                             column_fetch_state& state) {
+        row_groups_->fetch(result, column_ids, row_identifiers, fetch_count, txn, state);
     }
 
     std::unique_ptr<constraint_state> data_table_t::initialize_constraint_state(
@@ -448,6 +485,13 @@ namespace components::table {
         storage::partial_block_manager_t partial_block_manager(row_groups_->block_manager());
 
         auto row_group_pointers = row_groups_->checkpoint(partial_block_manager);
+        bool has_column_type_metadata = false;
+        for (const auto& column_def : column_definitions_) {
+            if (requires_column_type_metadata(column_def.type())) {
+                has_column_type_metadata = true;
+                break;
+            }
+        }
         bool has_layout_metadata = false;
         for (const auto& pointer : row_group_pointers) {
             if (pointer.layout_kind != storage::row_group_layout_kind::COLUMNAR) {
@@ -460,11 +504,26 @@ namespace components::table {
         writer.write_string(name_);
 
         // write column definitions
-        writer.write<uint32_t>(static_cast<uint32_t>(column_definitions_.size()));
+        auto column_count = static_cast<uint32_t>(column_definitions_.size());
+        if (has_column_type_metadata) {
+            column_count |= TABLE_COLUMN_TYPES_METADATA_FLAG;
+        }
+        writer.write<uint32_t>(column_count);
         for (const auto& col : column_definitions_) {
             writer.write_string(col.name());
             writer.write<uint8_t>(static_cast<uint8_t>(col.type().type()));
             writer.write<uint8_t>(col.is_not_null() ? 1 : 0);
+        }
+
+        if (has_column_type_metadata) {
+            writer.write<uint32_t>(COLUMN_TYPES_METADATA_MAGIC);
+            writer.write<uint32_t>(static_cast<uint32_t>(column_definitions_.size()));
+            for (const auto& col : column_definitions_) {
+                components::serializer::msgpack_serializer_t serializer(resource_);
+                col.type().serialize(&serializer);
+                auto payload = serializer.result();
+                writer.write_string(std::string(payload.data(), payload.size()));
+            }
         }
 
         // write row group count and pointers
@@ -504,7 +563,9 @@ namespace components::table {
                                                                storage::metadata_reader_t& reader) {
         auto name = reader.read_string();
 
-        auto col_count = reader.read<uint32_t>();
+        auto col_count_value = reader.read<uint32_t>();
+        bool has_column_type_metadata = (col_count_value & TABLE_COLUMN_TYPES_METADATA_FLAG) != 0;
+        auto col_count = col_count_value & ~TABLE_COLUMN_TYPES_METADATA_FLAG;
         std::vector<column_definition_t> columns;
         columns.reserve(col_count);
         for (uint32_t i = 0; i < col_count; i++) {
@@ -514,6 +575,27 @@ namespace components::table {
             types::complex_logical_type col_type(logical_type);
             col_type.set_alias(col_name);
             columns.emplace_back(col_name, std::move(col_type), not_null);
+        }
+
+        if (has_column_type_metadata) {
+            auto magic = reader.read<uint32_t>();
+            if (magic != COLUMN_TYPES_METADATA_MAGIC) {
+                throw std::logic_error("unknown table column types metadata extension section");
+            }
+            auto type_count = reader.read<uint32_t>();
+            if (type_count != columns.size()) {
+                throw std::logic_error("table column types metadata count mismatch");
+            }
+            for (uint32_t i = 0; i < type_count; i++) {
+                auto payload = reader.read_string();
+                std::pmr::string serialized_type(payload.begin(), payload.end(), resource);
+                components::serializer::msgpack_deserializer_t deserializer(serialized_type);
+                auto full_type = types::complex_logical_type::deserialize(resource, &deserializer);
+                if (!full_type.has_alias()) {
+                    full_type.set_alias(columns[i].name());
+                }
+                columns[i].type() = std::move(full_type);
+            }
         }
 
         auto table = std::make_unique<data_table_t>(resource, block_manager, std::move(columns), std::move(name));

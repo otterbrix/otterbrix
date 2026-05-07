@@ -136,14 +136,24 @@ namespace components::table::storage {
         return result;
     }
 
-    void pax_generic_slice_t::serialize(metadata_writer_t& writer, uint16_t) const {
+    void pax_generic_slice_t::serialize(metadata_writer_t& writer, uint16_t version) const {
         writer.write<uint32_t>(column_index);
         writer.write<uint8_t>(static_cast<uint8_t>(slice_kind));
         writer.write<uint8_t>(static_cast<uint8_t>(codec_kind));
+        if (version >= 2) {
+            writer.write<uint16_t>(static_cast<uint16_t>(field_path.size()));
+            for (auto path_entry : field_path) {
+                writer.write<uint16_t>(path_entry);
+            }
+            if (slice_kind == pax_generic_slice_kind::FIXED_VALUES) {
+                writer.write<uint8_t>(static_cast<uint8_t>(fixed_logical_type));
+            }
+        }
 
         switch (codec_kind) {
             case pax_generic_codec_kind::STRING_SEGMENT:
             case pax_generic_codec_kind::VALIDITY_BITMASK:
+            case pax_generic_codec_kind::FIXED_PLAIN:
                 if (!payload.has_value()) {
                     throw std::logic_error("missing pax_generic payload");
                 }
@@ -157,15 +167,26 @@ namespace components::table::storage {
         }
     }
 
-    pax_generic_slice_t pax_generic_slice_t::deserialize(metadata_reader_t& reader, uint16_t) {
+    pax_generic_slice_t pax_generic_slice_t::deserialize(metadata_reader_t& reader, uint16_t version) {
         pax_generic_slice_t result;
         result.column_index = reader.read<uint32_t>();
         result.slice_kind = static_cast<pax_generic_slice_kind>(reader.read<uint8_t>());
         result.codec_kind = static_cast<pax_generic_codec_kind>(reader.read<uint8_t>());
+        if (version >= 2) {
+            auto path_count = reader.read<uint16_t>();
+            result.field_path.resize(path_count);
+            for (uint16_t i = 0; i < path_count; i++) {
+                result.field_path[i] = reader.read<uint16_t>();
+            }
+            if (result.slice_kind == pax_generic_slice_kind::FIXED_VALUES) {
+                result.fixed_logical_type = static_cast<types::logical_type>(reader.read<uint8_t>());
+            }
+        }
 
         switch (result.codec_kind) {
             case pax_generic_codec_kind::STRING_SEGMENT:
             case pax_generic_codec_kind::VALIDITY_BITMASK:
+            case pax_generic_codec_kind::FIXED_PLAIN:
                 result.payload = pax_block_payload_t::deserialize(reader);
                 break;
             case pax_generic_codec_kind::VALIDITY_ALL_VALID:

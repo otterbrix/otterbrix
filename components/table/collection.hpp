@@ -69,6 +69,12 @@ namespace components::table {
                    const vector::vector_t& row_identifiers,
                    uint64_t fetch_count,
                    column_fetch_state& state);
+        void fetch(vector::data_chunk_t& result,
+                   const std::vector<storage_index_t>& column_ids,
+                   const vector::vector_t& row_identifiers,
+                   uint64_t fetch_count,
+                   transaction_data txn,
+                   column_fetch_state& state);
 
         void initialize_append(table_append_state& state);
         bool append(vector::data_chunk_t& chunk, table_append_state& state);

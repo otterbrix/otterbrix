@@ -63,6 +63,7 @@ namespace components::table {
         void scan_committed(collection_scan_state& state, vector::data_chunk_t& result, table_scan_type type);
 
         bool check_predicate(int64_t row_id, const table_filter_t* filter);
+        bool row_visible(transaction_data txn, int64_t row_id);
 
         void fetch_row(column_fetch_state& state,
                        const std::vector<storage_index_t>& column_ids,
@@ -130,6 +131,7 @@ namespace components::table {
                              vector::indexing_vector_t& indexing,
                              const table_filter_t* filter,
                              uint64_t& approved_tuple_count);
+        bool try_scan_pax_generic_projected(collection_scan_state& state, vector::data_chunk_t& result);
         bool try_scan_pax_fixed_projected(collection_scan_state& state, vector::data_chunk_t& result);
 
         template<table_scan_type TYPE>

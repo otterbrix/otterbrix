@@ -109,7 +109,7 @@ namespace components::storage {
             for (size_t i = 0; i < table_.column_count(); i++) {
                 column_indices.emplace_back(static_cast<int64_t>(i));
             }
-            table_.fetch(output, column_indices, row_ids, count, state);
+            table_.fetch(output, column_indices, row_ids, count, table::transaction_data{0, 0}, state);
         }
 
         void scan_segment(int64_t start,

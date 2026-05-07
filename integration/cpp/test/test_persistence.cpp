@@ -1157,3 +1157,102 @@ TEST_CASE("integration::cpp::test_persistence::disk_dml_full_cycle") {
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 90;", 1);
     }
 }
+
+TEST_CASE("integration::cpp::test_persistence::disk_pax_fixed_full_cycle") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_pax_fixed_full_cycle");
+    test_clear_directory(config);
+
+    INFO("phase 1: create pure fixed-width DISK table, insert 100 rows, checkpoint") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->create_database(session, database_name);
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE TABLE TestDatabase.TestCollection (id bigint, value bigint) "
+                                               "WITH (storage = 'disk');");
+            REQUIRE(cur->is_success());
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            std::stringstream query;
+            query << "INSERT INTO TestDatabase.TestCollection (id, value) VALUES ";
+            for (int i = 0; i < 100; ++i) {
+                query << "(" << i << ", " << (i * 10) << ")" << (i == 99 ? ";" : ", ");
+            }
+            auto cur = dispatcher->execute_sql(session, query.str());
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 100);
+        }
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 100);
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("phase 2: restart, apply DML on PAX_FIXED-backed rows, checkpoint again") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 100);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 50 AND value = 500;", 1);
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE id >= 90;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 10);
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "UPDATE TestDatabase.TestCollection SET value = 9999 WHERE id = 50;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.TestCollection (id, value) VALUES "
+                                               "(100, 1000), (101, 1010), (102, 1020);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+        }
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 93);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 50 AND value = 9999;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 95;", 0);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 102 AND value = 1020;", 1);
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("phase 3: second restart keeps final pure PAX_FIXED table state") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 93);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 50 AND value = 9999;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE value = 500;", 0);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 95;", 0);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 100 AND value = 1000;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 101 AND value = 1010;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 102 AND value = 1020;", 1);
+    }
+}

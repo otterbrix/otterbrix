@@ -429,6 +429,120 @@ TEST_CASE("integration::cpp::test_disk_index::concurrent_large_dataset") {
     }
 }
 
+TEST_CASE("integration::cpp::test_disk_index::sql_disk_pax_checkpoint_lifecycle") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_disk_index/sql_disk_pax_checkpoint_lifecycle");
+    test_clear_directory(config);
+
+    INFO("phase 1: create PAX-backed DISK table, build count index before insert, checkpoint") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->create_database(session, database_name);
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
+                                               "WITH (storage = 'disk');");
+            REQUIRE(cur->is_success());
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur =
+                dispatcher->execute_sql(session, "CREATE INDEX idx_count ON TestDatabase.TestCollection (count);");
+            REQUIRE(cur->is_success());
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            std::stringstream query;
+            query << "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
+            for (int i = 0; i < 100; ++i) {
+                query << "('row_" << i << "', " << i << ")" << (i == 99 ? ";" : ", ");
+            }
+            auto cur = dispatcher->execute_sql(session, query.str());
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 100);
+        }
+
+        CHECK_FIND("count", compare_type::eq, logical_value_t(dispatcher->resource(), 50), 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'row_50';", 1);
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("phase 2: restart, query indexes, apply DML, checkpoint again") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        CHECK_FIND("count", compare_type::eq, logical_value_t(dispatcher->resource(), 50), 1);
+        CHECK_FIND("count", compare_type::gt, logical_value_t(dispatcher->resource(), 90), 9);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'row_50';", 1);
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "UPDATE TestDatabase.TestCollection "
+                                               "SET name = 'patched_50', count = 5000 WHERE count = 50;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "DELETE FROM TestDatabase.TestCollection "
+                                               "WHERE count >= 95 AND count < 100;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 5);
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.TestCollection (name, count) VALUES "
+                                               "('late_100', 100), ('late_101', 101);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2);
+        }
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'patched_50';", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'row_50';", 0);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'row_97';", 0);
+        CHECK_FIND("count", compare_type::eq, logical_value_t(dispatcher->resource(), 5000), 1);
+        CHECK_FIND("count", compare_type::eq, logical_value_t(dispatcher->resource(), 97), 0);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 97);
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("phase 3: second restart keeps PAX-backed index results correct") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 97);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'patched_50';", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'row_50';", 0);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'late_100';", 1);
+        CHECK_FIND("count", compare_type::eq, logical_value_t(dispatcher->resource(), 5000), 1);
+        CHECK_FIND("count", compare_type::eq, logical_value_t(dispatcher->resource(), 95), 0);
+        CHECK_FIND("count", compare_type::eq, logical_value_t(dispatcher->resource(), 100), 1);
+        CHECK_FIND("count", compare_type::eq, logical_value_t(dispatcher->resource(), 101), 1);
+    }
+}
+
 TEST_CASE("integration::cpp::test_disk_index::io_error_handling") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_disk_index/io_error_handling");
     test_clear_directory(config);

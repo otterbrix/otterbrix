@@ -27,6 +27,9 @@ namespace components::catalog {
     inline types::logical_value_t lv_bool(std::pmr::memory_resource* r, bool v) {
         return types::logical_value_t(r, v);
     }
+    inline types::logical_value_t lv_i64(std::pmr::memory_resource* r, std::int64_t v) {
+        return types::logical_value_t(r, v);
+    }
 
     // Build a single-row data_chunk_t whose schema is derived from `columns`.
     // `fill` receives (chunk, resource) and must call chunk.set_value(col, 0, lv_*(...)).

@@ -24,12 +24,15 @@ namespace components::catalog {
         }
 
         // CASCADE: compute full topological drop order via DFS.
+        // The DFS returns only dependents of the seed; append the seed itself last
+        // so build_drop_sequence deletes its catalog rows after all dependents.
         try {
             auto ordered = topological_drop_order(seed_classid, seed_oid, fetch_deps);
-            plan.steps.reserve(ordered.size());
+            plan.steps.reserve(ordered.size() + 1);
             for (const auto& d : ordered) {
                 plan.steps.push_back({d.classid, d.objid, d.deptype});
             }
+            plan.steps.push_back({seed_classid, seed_oid, 'n'});
         } catch (const cycle_detected_error& e) {
             plan.status       = ddl_status::cycle_detected;
             plan.blocking_oid = e.offending_oid();

@@ -16,6 +16,7 @@ set(${PROJECT_NAME}_SOURCES
         impl/create_plan_fk_cascade.cpp
         impl/create_plan_sequence.cpp
         impl/create_plan_primitive_write.cpp
+        impl/create_plan_primitive_delete.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}

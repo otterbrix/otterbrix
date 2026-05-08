@@ -183,6 +183,6 @@ namespace services::dispatcher {
                 components::logical_plan::node_ptr logical_plan,
                 components::table::transaction_data txn_data,
                 catalog_view_t& view,
-                const ddl_context_t& dctx);
+                ddl_context_t dctx);
 
 } // namespace services::dispatcher

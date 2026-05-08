@@ -1,6 +1,10 @@
 #include "executor.hpp"
 
 #include <components/catalog/catalog_codes.hpp>
+#include <components/catalog/ddl_metadata_builder.hpp>
+#include <components/catalog/oid_batch.hpp>
+#include <components/planner/planner.hpp>
+#include <components/types/logical_value.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/table/transaction_manager.hpp>
 #include <services/disk/manager_disk.hpp>
@@ -19,6 +23,9 @@
 #include <components/logical_plan/node_create_view.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_drop_index.hpp>
+#include <components/logical_plan/node_primitive_delete.hpp>
+#include <components/logical_plan/node_primitive_write.hpp>
+#include <components/logical_plan/node_sequence.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/operators/operator_delete.hpp>
 #include <components/physical_plan/operators/operator_insert.hpp>
@@ -210,24 +217,73 @@ namespace services::collection::executor {
                             for (auto& key : node_ci->keys()) {
                                 column_names.emplace_back(key.as_string());
                             }
-                            auto [_di, dif] = actor_zeta::send(disk_address_,
-                                                                &disk::manager_disk_t::ddl_create_index,
-                                                                ddl_ctx,
-                                                                rns.oid,
-                                                                rt.oid,
-                                                                std::string(node_ci->name()),
-                                                                std::move(column_names));
-                            auto created = co_await std::move(dif);
-                            // Decision 3: backfill completed above (insert_rows + index build) —
-                            // flip indisvalid=true so the optimizer starts using this index.
-                            if (created.created_oid != components::catalog::INVALID_OID) {
-                                auto [_sv, svf] = actor_zeta::send(disk_address_,
-                                                                    &disk::manager_disk_t::ddl_index_set_valid,
-                                                                    ddl_ctx,
-                                                                    created.created_oid,
-                                                                    true);
-                                if (auto r = co_await std::move(svf); r.failed())
-                                    trace(log_, "ddl_index_set_valid failed: status={}, blocker={}", static_cast<int>(r.status), r.blocking_oid);
+                            // Read pg_attribute to resolve column names → attoids.
+                            const collection_full_name_t pg_attr_coll{"pg_catalog", "main", "pg_attribute"};
+                            components::types::logical_value_t toid_lv(resource(), rt.oid);
+                            auto [_pa, paf] = actor_zeta::send(disk_address_,
+                                                                &disk::manager_disk_t::read_rows_by_key,
+                                                                ddl_ctx, pg_attr_coll,
+                                                                std::vector<std::string>{"attrelid"},
+                                                                std::vector<components::types::logical_value_t>{toid_lv});
+                            auto attr_rows = co_await std::move(paf);
+                            std::unordered_map<std::string, components::catalog::oid_t> name_to_attoid;
+                            for (const auto& row : attr_rows) {
+                                if (row.size() < 3 || row[0].is_null() || row[2].is_null()) continue;
+                                name_to_attoid.emplace(
+                                    std::string(row[2].value<std::string_view>()),
+                                    static_cast<components::catalog::oid_t>(row[0].value<std::uint32_t>()));
+                            }
+                            // Allocate index OID.
+                            auto [_oa, oaf] = actor_zeta::send(disk_address_,
+                                                                &disk::manager_disk_t::allocate_oids_batch,
+                                                                std::size_t{1});
+                            components::catalog::oid_batch_t idx_batch;
+                            idx_batch.oids = co_await std::move(oaf);
+                            const components::catalog::oid_t index_oid = idx_batch.allocate();
+                            // Build attoids list + indkey string (CSV of attoids in column order).
+                            std::vector<components::catalog::oid_t> column_attoids;
+                            column_attoids.reserve(column_names.size());
+                            std::string indkey;
+                            for (std::size_t i = 0; i < column_names.size(); ++i) {
+                                if (i) indkey += ",";
+                                auto it = name_to_attoid.find(column_names[i]);
+                                const auto attoid = (it != name_to_attoid.end())
+                                    ? it->second : components::catalog::INVALID_OID;
+                                column_attoids.push_back(attoid);
+                                indkey += std::to_string(attoid);
+                            }
+                            // Write pg_class + pg_index(indisvalid=false) + pg_depend via operators.
+                            {
+                                auto idx_writes = components::catalog::build_create_index_writes(
+                                    resource(), std::string(node_ci->name()),
+                                    rns.oid, rt.oid, index_oid,
+                                    column_names, column_attoids);
+                                auto write_seq = boost::intrusive_ptr(new node_sequence_t(resource()));
+                                for (auto& w : idx_writes) {
+                                    write_seq->append_child(boost::intrusive_ptr(
+                                        new node_primitive_write_t(resource(), std::move(w.table), std::move(w.row))));
+                                }
+                                auto phys = planner::create_plan(context_storage, function_registry_, write_seq,
+                                                                  components::logical_plan::limit_t::unlimit(), &parameters);
+                                phys->set_as_root();
+                                auto pd = traverse_plan_(std::move(phys), components::logical_plan::storage_parameters(parameters), services::context_storage_t(context_storage));
+                                co_await execute_sub_plan_(session, std::move(pd), txn);
+                            }
+                            // Flip indisvalid=true: delete old pg_index row + insert valid row.
+                            if (index_oid != components::catalog::INVALID_OID) {
+                                const collection_full_name_t pg_idx_coll{"pg_catalog", "main", "pg_index"};
+                                auto valid_row = components::catalog::build_pg_index_row(
+                                    resource(), index_oid, rt.oid, indkey, true);
+                                auto flip_seq = boost::intrusive_ptr(new node_sequence_t(resource()));
+                                flip_seq->append_child(boost::intrusive_ptr(
+                                    new node_primitive_delete_t(resource(), pg_idx_coll, std::int64_t{0}, index_oid)));
+                                flip_seq->append_child(boost::intrusive_ptr(
+                                    new node_primitive_write_t(resource(), pg_idx_coll, std::move(valid_row))));
+                                auto phys2 = planner::create_plan(context_storage, function_registry_, flip_seq,
+                                                                   components::logical_plan::limit_t::unlimit(), &parameters);
+                                phys2->set_as_root();
+                                auto pd2 = traverse_plan_(std::move(phys2), std::move(parameters), std::move(context_storage));
+                                co_await execute_sub_plan_(session, std::move(pd2), txn);
                             }
                         }
                     }
@@ -249,7 +305,7 @@ namespace services::collection::executor {
                 co_await std::move(ixf);
             }
             // pg_index/pg_class teardown for the dropped index. We resolve by name to get
-            // the index oid, then ddl_drop_index handles the cascade.
+            // the index oid, then delete catalog rows via the operator pipeline.
             if (disk_address_ != actor_zeta::address_t::empty_address()) {
                 components::execution_context_t ddl_ctx{session, txn, coll_name};
                 auto [_rn, rnf] = actor_zeta::send(disk_address_,
@@ -267,13 +323,23 @@ namespace services::collection::executor {
                                                         std::uint64_t{0});
                     auto ri = co_await std::move(rif);
                     if (ri.found) {
-                        auto [_di, dif] = actor_zeta::send(disk_address_,
-                                                            &disk::manager_disk_t::ddl_drop_index,
-                                                            ddl_ctx,
-                                                            ri.oid,
-                                                            disk::drop_behavior_t::cascade_);
-                        if (auto r = co_await std::move(dif); r.failed())
-                            co_return make_ddl_error(resource(), r);
+                        const collection_full_name_t pg_idx_coll  {"pg_catalog", "main", "pg_index"};
+                        const collection_full_name_t pg_dep_coll  {"pg_catalog", "main", "pg_depend"};
+                        const collection_full_name_t pg_class_coll{"pg_catalog", "main", "pg_class"};
+                        auto del_seq = boost::intrusive_ptr(new node_sequence_t(resource()));
+                        del_seq->append_child(boost::intrusive_ptr(
+                            new node_primitive_delete_t(resource(), pg_idx_coll,   std::int64_t{0}, ri.oid)));
+                        del_seq->append_child(boost::intrusive_ptr(
+                            new node_primitive_delete_t(resource(), pg_dep_coll,   std::int64_t{1}, ri.oid)));
+                        del_seq->append_child(boost::intrusive_ptr(
+                            new node_primitive_delete_t(resource(), pg_dep_coll,   std::int64_t{3}, ri.oid)));
+                        del_seq->append_child(boost::intrusive_ptr(
+                            new node_primitive_delete_t(resource(), pg_class_coll, std::int64_t{0}, ri.oid)));
+                        auto phys = planner::create_plan(context_storage, function_registry_, del_seq,
+                                                          components::logical_plan::limit_t::unlimit(), &parameters);
+                        phys->set_as_root();
+                        auto pd = traverse_plan_(std::move(phys), std::move(parameters), std::move(context_storage));
+                        co_await execute_sub_plan_(session, std::move(pd), txn);
                     }
                 }
             }
@@ -563,6 +629,13 @@ namespace services::collection::executor {
                     result_tracking = co_await intercept_dml_io_(waiting_op, &pipeline_context);
                 } else {
                     co_await waiting_op->await_async_and_resume(&pipeline_context);
+                    // Propagate errors set during async resume (fk_check, fk_cascade, etc.)
+                    if (waiting_op->has_error()) {
+                        cursor = make_cursor(resource(),
+                                             error_code_t::create_physical_plan_error,
+                                             waiting_op->error_message());
+                        break;
+                    }
                 }
                 trace(log_, "executor: after await completed");
                 // Re-execute: completed scan allows parent to proceed, may find next waiting scan
@@ -570,6 +643,14 @@ namespace services::collection::executor {
             }
             if (cursor && cursor->is_error())
                 break;
+
+            // Detect errors set asynchronously in operators (e.g. fk_cascade root with RESTRICT).
+            if (plan->has_error()) {
+                cursor = make_cursor(resource(),
+                                     error_code_t::create_physical_plan_error,
+                                     plan->error_message());
+                break;
+            }
 
             switch (plan->type()) {
                 case components::operators::operator_type::insert: {

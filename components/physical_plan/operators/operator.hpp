@@ -36,7 +36,11 @@ namespace components::operators {
         // DDL sequencing operator
         sequence,
         // DDL primitive write (planner-built pg_catalog row)
-        primitive_write
+        primitive_write,
+        // DDL primitive delete (planner-built pg_catalog row delete)
+        primitive_delete,
+        // DDL create collection (storage + index registration + catalog writes)
+        create_collection
     };
 
     inline bool is_scan(operator_type t) {

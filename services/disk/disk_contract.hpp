@@ -40,31 +40,11 @@ namespace services::disk {
         actor_zeta::unique_future<void> vacuum_all(session_id_t session, uint64_t lowest_active_start_time);
         actor_zeta::unique_future<void> maybe_cleanup(execution_context_t ctx, uint64_t lowest_active_start_time);
 
-        // DDL pipeline + resolve + populate
-        actor_zeta::unique_future<ddl_result_t>
-        ddl_create_database(execution_context_t ctx, std::string name);
-        actor_zeta::unique_future<ddl_result_t>
-        ddl_drop_database(execution_context_t ctx, components::catalog::oid_t database_oid, drop_behavior_t behavior);
-        actor_zeta::unique_future<ddl_result_t>
-        ddl_create_namespace(execution_context_t ctx, std::string name);
-        actor_zeta::unique_future<ddl_result_t>
-        ddl_drop_namespace(execution_context_t ctx, components::catalog::oid_t namespace_oid, drop_behavior_t behavior);
-        actor_zeta::unique_future<ddl_result_t>
-        ddl_create_table(execution_context_t ctx,
-                         components::catalog::oid_t namespace_oid,
-                         std::string name,
-                         std::vector<components::table::column_definition_t> columns,
-                         char relkind);
-        actor_zeta::unique_future<ddl_result_t>
-        ddl_drop_table(execution_context_t ctx, components::catalog::oid_t table_oid, drop_behavior_t behavior);
+        // DDL pipeline — kept methods only
         actor_zeta::unique_future<ddl_result_t>
         ddl_adopt_computing_schema(execution_context_t ctx,
                                     components::catalog::oid_t table_oid,
                                     std::vector<components::table::column_definition_t> columns);
-        actor_zeta::unique_future<ddl_result_t>
-        ddl_create_computing_table(execution_context_t ctx,
-                                    components::catalog::oid_t namespace_oid,
-                                    std::string name);
         actor_zeta::unique_future<ddl_result_t>
         ddl_computed_append(execution_context_t ctx,
                             components::catalog::oid_t table_oid,
@@ -75,65 +55,8 @@ namespace services::disk {
                           components::catalog::oid_t table_oid,
                           std::string field_name);
         actor_zeta::unique_future<ddl_result_t>
-        ddl_create_sequence(execution_context_t ctx, components::catalog::oid_t namespace_oid, std::string name,
-                            std::int64_t start, std::int64_t increment,
-                            std::int64_t min_value, std::int64_t max_value, bool cycle);
-        actor_zeta::unique_future<ddl_result_t>
-        ddl_drop_sequence(execution_context_t ctx, components::catalog::oid_t sequence_oid, drop_behavior_t behavior);
-        actor_zeta::unique_future<ddl_result_t>
-        ddl_create_view(execution_context_t ctx, components::catalog::oid_t namespace_oid, std::string name,
-                        std::string body);
-        actor_zeta::unique_future<ddl_result_t>
-        ddl_drop_view(execution_context_t ctx, components::catalog::oid_t view_oid, drop_behavior_t behavior);
-        actor_zeta::unique_future<ddl_result_t>
-        ddl_create_macro(execution_context_t ctx, components::catalog::oid_t namespace_oid, std::string name,
-                         std::string body);
-        actor_zeta::unique_future<ddl_result_t>
-        ddl_drop_macro(execution_context_t ctx, components::catalog::oid_t macro_oid, drop_behavior_t behavior);
-        actor_zeta::unique_future<ddl_result_t>
-        ddl_create_index(execution_context_t ctx,
-                         components::catalog::oid_t namespace_oid,
-                         components::catalog::oid_t table_oid,
-                         std::string index_name,
-                         std::vector<std::string> column_names);
-        actor_zeta::unique_future<ddl_result_t>
-        ddl_drop_index(execution_context_t ctx, components::catalog::oid_t index_oid, drop_behavior_t behavior);
-        actor_zeta::unique_future<ddl_result_t>
-        ddl_create_type(execution_context_t ctx,
-                        components::catalog::oid_t namespace_oid,
-                        std::string type_name,
-                        std::string type_spec);
-        actor_zeta::unique_future<ddl_result_t>
-        ddl_drop_type(execution_context_t ctx, components::catalog::oid_t type_oid, drop_behavior_t behavior);
-        actor_zeta::unique_future<ddl_result_t>
-        ddl_create_function(execution_context_t ctx, components::catalog::oid_t namespace_oid,
-                            std::string function_name, std::int32_t pronargs, std::int64_t prouid,
-                            std::string proargmatchers, std::string prorettype);
-        actor_zeta::unique_future<ddl_result_t>
-        ddl_drop_function(execution_context_t ctx, components::catalog::oid_t function_oid, drop_behavior_t behavior);
-        actor_zeta::unique_future<ddl_result_t>
-        ddl_index_set_valid(execution_context_t ctx, components::catalog::oid_t index_oid, bool valid);
-        actor_zeta::unique_future<ddl_result_t>
         ddl_add_column(execution_context_t ctx, components::catalog::oid_t table_oid,
                        components::table::column_definition_t column);
-        actor_zeta::unique_future<ddl_result_t>
-        ddl_drop_column(execution_context_t ctx, components::catalog::oid_t table_oid,
-                        std::string column_name,
-                        drop_behavior_t behavior = drop_behavior_t::restrict_);
-        actor_zeta::unique_future<ddl_result_t>
-        ddl_rename_column(execution_context_t ctx, components::catalog::oid_t table_oid,
-                          std::string old_name, std::string new_name);
-        actor_zeta::unique_future<ddl_result_t>
-        ddl_create_constraint(execution_context_t ctx, components::catalog::oid_t table_oid,
-                              std::string constraint_name, char contype,
-                              components::catalog::oid_t ref_table_oid,
-                              std::vector<components::catalog::oid_t> fk_column_attoids,
-                              std::vector<components::catalog::oid_t> ref_column_attoids,
-                              char fk_matchtype, char fk_del_action, char fk_upd_action,
-                              std::string check_expr);
-        actor_zeta::unique_future<ddl_result_t>
-        ddl_drop_constraint(execution_context_t ctx, components::catalog::oid_t constraint_oid,
-                            drop_behavior_t behavior);
 
         actor_zeta::unique_future<resolve_namespace_result_t>
         resolve_namespace(execution_context_t ctx, std::string name, std::uint64_t since_version);
@@ -166,6 +89,13 @@ namespace services::disk {
         append_pg_catalog_row(execution_context_t ctx,
                               collection_full_name_t name,
                               components::vector::data_chunk_t row);
+
+        // WAL-safe delete of all rows where column[oid_col_idx] == target_oid.
+        actor_zeta::unique_future<void>
+        delete_pg_catalog_rows(execution_context_t ctx,
+                               collection_full_name_t name,
+                               std::int64_t oid_col_idx,
+                               components::catalog::oid_t target_oid);
 
         // Pure storage scan: row_ids of committed+txn-visible rows in `name` where
         // every key_col_names[i] == key_values[i].  No FK/semantic knowledge.
@@ -276,34 +206,10 @@ namespace services::disk {
                                                             &disk_contract::storage_revert_append,
                                                             &disk_contract::storage_commit_delete,
                                                             // DDL pipeline
-                                                            &disk_contract::ddl_create_database,
-                                                            &disk_contract::ddl_drop_database,
-                                                            &disk_contract::ddl_create_namespace,
-                                                            &disk_contract::ddl_drop_namespace,
-                                                            &disk_contract::ddl_create_table,
-                                                            &disk_contract::ddl_drop_table,
                                                             &disk_contract::ddl_adopt_computing_schema,
-                                                            &disk_contract::ddl_create_computing_table,
                                                             &disk_contract::ddl_computed_append,
                                                             &disk_contract::ddl_computed_drop,
-                                                            &disk_contract::ddl_create_sequence,
-                                                            &disk_contract::ddl_drop_sequence,
-                                                            &disk_contract::ddl_create_view,
-                                                            &disk_contract::ddl_drop_view,
-                                                            &disk_contract::ddl_create_macro,
-                                                            &disk_contract::ddl_drop_macro,
-                                                            &disk_contract::ddl_create_index,
-                                                            &disk_contract::ddl_drop_index,
-                                                            &disk_contract::ddl_create_type,
-                                                            &disk_contract::ddl_drop_type,
-                                                            &disk_contract::ddl_create_function,
-                                                            &disk_contract::ddl_drop_function,
-                                                            &disk_contract::ddl_index_set_valid,
                                                             &disk_contract::ddl_add_column,
-                                                            &disk_contract::ddl_drop_column,
-                                                            &disk_contract::ddl_rename_column,
-                                                            &disk_contract::ddl_create_constraint,
-                                                            &disk_contract::ddl_drop_constraint,
                                                             // resolve + invalidation pull
                                                             &disk_contract::resolve_namespace,
                                                             &disk_contract::resolve_table,
@@ -317,6 +223,7 @@ namespace services::disk {
                                                             &disk_contract::revert_pg_catalog_appends,
                                                             &disk_contract::allocate_oids_batch,
                                                             &disk_contract::append_pg_catalog_row,
+                                                            &disk_contract::delete_pg_catalog_rows,
                                                             &disk_contract::scan_by_key,
                                                             &disk_contract::point_lookup_by_index,
                                                             &disk_contract::read_rows_by_key,

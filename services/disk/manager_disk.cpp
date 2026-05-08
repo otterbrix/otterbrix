@@ -57,34 +57,10 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_commit_append>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_revert_append>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_commit_delete>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_database>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_database>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_namespace>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_namespace>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_table>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_table>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_adopt_computing_schema>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_computing_table>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_computed_append>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_computed_drop>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_sequence>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_sequence>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_view>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_view>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_macro>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_macro>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_index>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_index>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_type>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_type>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_function>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_function>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_index_set_valid>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_add_column>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_column>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_rename_column>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_constraint>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_constraint>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_namespace>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_table>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_type>,
@@ -97,6 +73,7 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::revert_pg_catalog_appends>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::allocate_oids_batch>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::append_pg_catalog_row>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::delete_pg_catalog_rows>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::scan_by_key>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::point_lookup_by_index>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::read_rows_by_key>,
@@ -347,36 +324,8 @@ namespace services::disk {
                 break;
             }
             // DDL pipeline
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_database>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_create_database, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_database>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_drop_database, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_namespace>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_create_namespace, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_namespace>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_drop_namespace, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_table>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_create_table, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_table>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_drop_table, msg);
-                break;
-            }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_adopt_computing_schema>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_adopt_computing_schema, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_computing_table>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_create_computing_table, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_computed_append>: {
@@ -387,76 +336,8 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_computed_drop, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_sequence>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_create_sequence, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_sequence>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_drop_sequence, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_view>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_create_view, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_view>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_drop_view, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_macro>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_create_macro, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_macro>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_drop_macro, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_index>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_create_index, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_index>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_drop_index, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_type>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_create_type, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_type>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_drop_type, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_function>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_create_function, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_function>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_drop_function, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_index_set_valid>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_index_set_valid, msg);
-                break;
-            }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_add_column>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_add_column, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_column>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_drop_column, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_rename_column>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_rename_column, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_constraint>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_create_constraint, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_constraint>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_drop_constraint, msg);
                 break;
             }
             // resolve + invalidation pull
@@ -518,6 +399,10 @@ namespace services::disk {
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::read_rows_by_key>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::read_rows_by_key, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::delete_pg_catalog_rows>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::delete_pg_catalog_rows, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::scan_by_table_oid>: {

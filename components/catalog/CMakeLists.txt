@@ -4,6 +4,7 @@ set(SOURCE_${PROJECT_NAME}
         builtin_seed.cpp
         cascade_planner.cpp
         catalog_oids.cpp
+        ddl_metadata_builder.cpp
         dependency_walker.cpp
         helpers.cpp
         system_table_schemas.cpp
@@ -24,6 +25,7 @@ target_link_libraries(
         otterbrix::cursor
         otterbrix::vector
         otterbrix::types
+        otterbrix::table
         absl::int128
         Boost::boost
 )

@@ -100,6 +100,7 @@ namespace services::dispatcher {
             rc.attnum = col.attnum;
             rc.attnotnull = col.attnotnull;
             rc.atthasdefault = col.atthasdefault;
+            rc.attdefspec = std::move(col.attdefspec);
             rc.attoid = col.attoid;
             rc.type = column_type_from_info(res_for_decode, col.atttypspec, col.atttypid);
             // populate-path parity: schema columns carry alias=attname so validate's
@@ -472,7 +473,7 @@ namespace services::dispatcher {
             auto cls_rows = co_await std::move(fut_cls);
             if (!cls_rows.empty() && cls_rows[0].size() > kClsRelname) {
                 fk.child_collection_name = std::string(cls_rows[0][kClsRelname].value<std::string_view>());
-                fk.child_schema = "main";
+                fk.child_database = "";
                 const auto ns_oid = static_cast<components::catalog::oid_t>(
                     cls_rows[0][kClsRelnamespace].value<std::uint32_t>());
                 components::types::logical_value_t ns_oid_lv(resource_, ns_oid);
@@ -483,7 +484,7 @@ namespace services::dispatcher {
                                                       std::vector<components::types::logical_value_t>{ns_oid_lv});
                 auto ns_rows = co_await std::move(fut_ns);
                 if (!ns_rows.empty() && ns_rows[0].size() > kNsNspname) {
-                    fk.child_database = std::string(ns_rows[0][kNsNspname].value<std::string_view>());
+                    fk.child_schema = std::string(ns_rows[0][kNsNspname].value<std::string_view>());
                 }
             }
 

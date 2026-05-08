@@ -25,6 +25,7 @@ set(${PROJECT_NAME}_SOURCES
        dispatcher/ddl.cpp
        dispatcher/dispatcher.cpp
        dispatcher/enrich_logical_plan.cpp
+       dispatcher/resolve_type.cpp
        dispatcher/validate_logical_plan.cpp
        dispatcher/versioned_plan_cache.cpp
 

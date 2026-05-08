@@ -288,6 +288,15 @@ namespace services::disk {
                                                    collection_full_name_t name,
                                                    components::vector::data_chunk_t row);
 
+        // WAL-safe delete of all rows where column[oid_col_idx] == target_oid.
+        // Emits WAL write_physical_delete before the MVCC tombstone so drops survive
+        // crash-before-checkpoint. Called by operator_primitive_delete and execute_ddl's
+        // sequence handler for planner-built drop plans.
+        unique_future<void> delete_pg_catalog_rows(execution_context_t ctx,
+                                                    collection_full_name_t name,
+                                                    std::int64_t oid_col_idx,
+                                                    components::catalog::oid_t target_oid);
+
         // Pure storage scan: row_ids of txn-visible rows in `name` where
         // key_col_names[i] == key_values[i] for every i.
         unique_future<std::pmr::vector<std::int64_t>>
@@ -320,45 +329,18 @@ namespace services::disk {
                            std::vector<std::string> key_col_names,
                            std::vector<components::types::logical_value_t> key_values);
 
-        // Async DDL API: coroutine wrappers dispatched through actor messaging
-        // (`co_await actor_zeta::send(disk, &ddl_*, ...)`). Each method takes
-        // execution_context_t and routes every system-table append/delete through
-        // direct_append_sync / direct_delete_sync with ctx.txn — MVCC-aware whenever
-        // the txn is non-zero, so an abort rolls back the writes via storage tombstones.
-        // Bootstrap rows (well-known pg_namespace/pg_type/pg_proc seeded at startup) use
-        // ctx.txn={0,0} for committed-at-txn-0 semantics.
-        unique_future<ddl_result_t> ddl_create_database(execution_context_t ctx, std::string name);
-        unique_future<ddl_result_t> ddl_drop_database(execution_context_t ctx,
-                                                       components::catalog::oid_t database_oid,
-                                                       drop_behavior_t behavior = drop_behavior_t::restrict_);
-        unique_future<ddl_result_t> ddl_create_namespace(execution_context_t ctx, std::string name);
-        unique_future<ddl_result_t> ddl_drop_namespace(execution_context_t ctx,
-                                                        components::catalog::oid_t namespace_oid,
-                                                        drop_behavior_t behavior = drop_behavior_t::restrict_);
-        unique_future<ddl_result_t> ddl_create_table(execution_context_t ctx,
-                                                      components::catalog::oid_t namespace_oid,
-                                                      std::string name,
-                                                      std::vector<components::table::column_definition_t> columns,
-                                                      char relkind);
-        unique_future<ddl_result_t> ddl_drop_table(execution_context_t ctx,
-                                                    components::catalog::oid_t table_oid,
-                                                    drop_behavior_t behavior = drop_behavior_t::restrict_);
         unique_future<ddl_result_t> ddl_adopt_computing_schema(execution_context_t ctx,
                                                                 components::catalog::oid_t table_oid,
                                                                 std::vector<components::table::column_definition_t> columns);
 
         // Computing tables (relkind='g') hold versioned, ref-counted fields in
         // pg_computed_column rather than fixed pg_attribute rows. Lifecycle:
-        //   ddl_create_computing_table → empty pg_class row, no field rows
-        //   ddl_computed_append        → INSERT new (attversion=max+1, attrefcount=1)
+    //   ddl_computed_append        → INSERT new (attversion=max+1, attrefcount=1)
         //                                 OR bump attrefcount when an identical (name, type)
         //                                 row is already live
         //   ddl_computed_drop          → decrement attrefcount; delete row when refcount==0
         // ddl_adopt_computing_schema turns a computing table back into a regular one
         // (relkind 'g' → 'r') by promoting the latest types into pg_attribute.
-        unique_future<ddl_result_t> ddl_create_computing_table(execution_context_t ctx,
-                                                                components::catalog::oid_t namespace_oid,
-                                                                std::string name);
         unique_future<ddl_result_t> ddl_computed_append(execution_context_t ctx,
                                                          components::catalog::oid_t table_oid,
                                                          std::string field_name,
@@ -367,113 +349,12 @@ namespace services::disk {
                                                        components::catalog::oid_t table_oid,
                                                        std::string field_name);
 
-        // Sequences / views / macros land in pg_class with relkind 'S' / 'v' / 'm'.
-        // Drops reuse ddl_drop_table's pg_depend cascade machinery.
-        unique_future<ddl_result_t> ddl_create_sequence(execution_context_t ctx,
-                                                         components::catalog::oid_t namespace_oid,
-                                                         std::string name,
-                                                         std::int64_t start = 1,
-                                                         std::int64_t increment = 1,
-                                                         std::int64_t min_value = 1,
-                                                         std::int64_t max_value = std::numeric_limits<std::int64_t>::max(),
-                                                         bool cycle = false);
-        unique_future<ddl_result_t> ddl_drop_sequence(execution_context_t ctx,
-                                                       components::catalog::oid_t sequence_oid,
-                                                       drop_behavior_t behavior = drop_behavior_t::restrict_);
-        unique_future<ddl_result_t> ddl_create_view(execution_context_t ctx,
-                                                     components::catalog::oid_t namespace_oid,
-                                                     std::string name,
-                                                     std::string body = {});
-        unique_future<ddl_result_t> ddl_drop_view(execution_context_t ctx,
-                                                   components::catalog::oid_t view_oid,
-                                                   drop_behavior_t behavior = drop_behavior_t::restrict_);
-        unique_future<ddl_result_t> ddl_create_macro(execution_context_t ctx,
-                                                      components::catalog::oid_t namespace_oid,
-                                                      std::string name,
-                                                      std::string body = {});
-        unique_future<ddl_result_t> ddl_drop_macro(execution_context_t ctx,
-                                                    components::catalog::oid_t macro_oid,
-                                                    drop_behavior_t behavior = drop_behavior_t::restrict_);
-
-        // Index DDL — pg_class (relkind='i') + pg_index + pg_depend (index→table 'a' auto).
-        // namespace_oid is the indexed table's namespace (indexes share their table's schema).
-        unique_future<ddl_result_t> ddl_create_index(execution_context_t ctx,
-                                                      components::catalog::oid_t namespace_oid,
-                                                      components::catalog::oid_t table_oid,
-                                                      std::string index_name,
-                                                      std::vector<std::string> column_names);
-        unique_future<ddl_result_t> ddl_drop_index(execution_context_t ctx,
-                                                    components::catalog::oid_t index_oid,
-                                                    drop_behavior_t behavior = drop_behavior_t::restrict_);
-        // Two-phase CREATE INDEX: ddl_create_index writes indisvalid=false; after
-        // backfill the executor flips it to true via ddl_index_set_valid. The optimizer must
-        // ignore indexes with indisvalid=false to avoid partial-read.
-        unique_future<ddl_result_t> ddl_index_set_valid(execution_context_t ctx,
-                                                         components::catalog::oid_t index_oid,
-                                                         bool valid);
-
         // Column lifecycle DDL — pg_attribute mutations under MVCC.
-        // attnum is never reused. ddl_drop_column writes a tombstone (attisdropped=true)
-        // rather than physically removing the row, so populate skips it but pg_attribute
-        // history remains for tooling. ddl_add_column allocates next_column_oid via the table's
-        // metadata counter. ddl_rename_column does delete-tombstone + insert-with-new-name.
+        // attnum is never reused. ddl_add_column allocates next_column_oid via the table's
+        // metadata counter.
         unique_future<ddl_result_t> ddl_add_column(execution_context_t ctx,
                                                     components::catalog::oid_t table_oid,
                                                     components::table::column_definition_t column);
-        unique_future<ddl_result_t> ddl_drop_column(execution_context_t ctx,
-                                                     components::catalog::oid_t table_oid,
-                                                     std::string column_name,
-                                                     drop_behavior_t behavior = drop_behavior_t::restrict_);
-        unique_future<ddl_result_t> ddl_rename_column(execution_context_t ctx,
-                                                       components::catalog::oid_t table_oid,
-                                                       std::string old_name,
-                                                       std::string new_name);
-
-        // Constraint DDL — pg_constraint row + pg_depend rows.
-        // contype: 'p' primary key, 'f' foreign key, 'u' unique, 'c' check, 'n' not null.
-        // confrelid: target relation for foreign keys (INVALID_OID for non-FK).
-        // fk_column_attoids: pg_attribute.attoids in conrelid that participate in this constraint.
-        // ref_column_attoids: pg_attribute.attoids in confrelid (FK only — empty for non-FK).
-        // pg_depend semantics: constraint→table 'i' internal (drop cascades automatically),
-        // for FK additional constraint→ref_table 'n' normal (drop ref_table blocked under RESTRICT).
-        unique_future<ddl_result_t> ddl_create_constraint(execution_context_t ctx,
-                                                            components::catalog::oid_t table_oid,
-                                                            std::string constraint_name,
-                                                            char contype,
-                                                            components::catalog::oid_t ref_table_oid,
-                                                            std::vector<components::catalog::oid_t> fk_column_attoids,
-                                                            std::vector<components::catalog::oid_t> ref_column_attoids,
-                                                            char fk_matchtype,
-                                                            char fk_del_action,
-                                                            char fk_upd_action,
-                                                            std::string check_expr = {});
-        unique_future<ddl_result_t> ddl_drop_constraint(execution_context_t ctx,
-                                                          components::catalog::oid_t constraint_oid,
-                                                          drop_behavior_t behavior = drop_behavior_t::restrict_);
-
-        // Type DDL — pg_type row + pg_depend (type→namespace 'n').
-        unique_future<ddl_result_t> ddl_create_type(execution_context_t ctx,
-                                                     components::catalog::oid_t namespace_oid,
-                                                     std::string type_name,
-                                                     std::string type_spec);
-        unique_future<ddl_result_t> ddl_drop_type(execution_context_t ctx,
-                                                   components::catalog::oid_t type_oid,
-                                                   drop_behavior_t behavior = drop_behavior_t::restrict_);
-
-        // Function DDL — pg_proc row + pg_depend (function→namespace 'n').
-        // pronargs/prouid are persisted so catalog_view_t can rebuild a placeholder
-        // kernel_signature_t (always_true matchers × pronargs) — sufficient for cross-call
-        // name+arity-based UDF validation.
-        unique_future<ddl_result_t> ddl_create_function(execution_context_t ctx,
-                                                         components::catalog::oid_t namespace_oid,
-                                                         std::string function_name,
-                                                         std::int32_t pronargs,
-                                                         std::int64_t prouid,
-                                                         std::string proargmatchers,
-                                                         std::string prorettype);
-        unique_future<ddl_result_t> ddl_drop_function(execution_context_t ctx,
-                                                       components::catalog::oid_t function_oid,
-                                                       drop_behavior_t behavior = drop_behavior_t::restrict_);
 
         // Synchronous direct replay methods for physical WAL (before schedulers start).
         // The txn overload takes an explicit transaction_data: pass {0, 0} for
@@ -564,7 +445,6 @@ namespace services::disk {
                                                        &manager_disk_t::checkpoint_all,
                                                        &manager_disk_t::vacuum_all,
                                                        &manager_disk_t::maybe_cleanup,
-                                                       // Catalog DDL
                                                        // Storage management
                                                        &manager_disk_t::create_storage,
                                                        &manager_disk_t::create_storage_with_columns,
@@ -586,35 +466,10 @@ namespace services::disk {
                                                        &manager_disk_t::storage_revert_append,
                                                        &manager_disk_t::storage_commit_delete,
                                                        // DDL pipeline
-                                                       &manager_disk_t::ddl_create_database,
-                                                       &manager_disk_t::ddl_drop_database,
-                                                       &manager_disk_t::ddl_create_namespace,
-                                                       &manager_disk_t::ddl_drop_namespace,
-                                                       &manager_disk_t::ddl_create_table,
-                                                       &manager_disk_t::ddl_drop_table,
                                                        &manager_disk_t::ddl_adopt_computing_schema,
-                                                       &manager_disk_t::ddl_create_computing_table,
                                                        &manager_disk_t::ddl_computed_append,
                                                        &manager_disk_t::ddl_computed_drop,
-                                                       // sequences / views / macros via pg_class
-                                                       &manager_disk_t::ddl_create_sequence,
-                                                       &manager_disk_t::ddl_drop_sequence,
-                                                       &manager_disk_t::ddl_create_view,
-                                                       &manager_disk_t::ddl_drop_view,
-                                                       &manager_disk_t::ddl_create_macro,
-                                                       &manager_disk_t::ddl_drop_macro,
-                                                       &manager_disk_t::ddl_create_index,
-                                                       &manager_disk_t::ddl_drop_index,
-                                                       &manager_disk_t::ddl_create_type,
-                                                       &manager_disk_t::ddl_drop_type,
-                                                       &manager_disk_t::ddl_create_function,
-                                                       &manager_disk_t::ddl_drop_function,
-                                                       &manager_disk_t::ddl_index_set_valid,
                                                        &manager_disk_t::ddl_add_column,
-                                                       &manager_disk_t::ddl_drop_column,
-                                                       &manager_disk_t::ddl_rename_column,
-                                                       &manager_disk_t::ddl_create_constraint,
-                                                       &manager_disk_t::ddl_drop_constraint,
                                                        // resolve + invalidation pull
                                                        &manager_disk_t::resolve_namespace,
                                                        &manager_disk_t::resolve_table,
@@ -628,6 +483,7 @@ namespace services::disk {
                                                        &manager_disk_t::revert_pg_catalog_appends,
                                                        &manager_disk_t::allocate_oids_batch,
                                                        &manager_disk_t::append_pg_catalog_row,
+                                                       &manager_disk_t::delete_pg_catalog_rows,
                                                        &manager_disk_t::scan_by_key,
                                                        &manager_disk_t::point_lookup_by_index,
                                                        &manager_disk_t::read_rows_by_key,
@@ -654,18 +510,6 @@ namespace services::disk {
         // unchanged. Called from every ddl_* coroutine: `co_return finalize_ddl(result);`.
         ddl_result_t finalize_ddl(ddl_result_t r) noexcept;
 
-        unique_future<ddl_result_t> create_relation_impl(execution_context_t ctx,
-                                                          components::catalog::oid_t namespace_oid,
-                                                          std::string name,
-                                                          std::vector<components::table::column_definition_t> columns,
-                                                          char relkind);
-
-
-        // Scan pg_depend, return all rows with matching (refclassid, refobjid). The result
-        // is the set of objects that DEPEND ON the (refclassid, refobjid) tuple — i.e. the
-        // dependents that must be dropped first under CASCADE or block under RESTRICT.
-        std::vector<components::catalog::dependency_t> collect_dependents(components::catalog::oid_t refclassid,
-                                                                         components::catalog::oid_t refobjid);
         // MVCC-delete every row in `name` whose column at `oid_col_idx` equals `target_oid`.
         // Issued under txn so the delete tombstones are visible only to this transaction
         // until commit. Used for both pg_class/pg_namespace/pg_type/pg_proc/pg_index drops.
@@ -674,21 +518,11 @@ namespace services::disk {
                                               components::catalog::oid_t target_oid,
                                               const components::table::transaction_data& txn);
 
-        // Read pg_class.relkind for the given OID. Returns 'r' if not found.
-        char read_relkind(components::catalog::oid_t oid) const;
-
         // Return true if any row in `table_name` has oid_col == target_oid (committed rows only).
         bool pg_oid_exists(const collection_full_name_t& table_name,
                            std::uint64_t oid_col,
                            components::catalog::oid_t target_oid) const;
 
-        // Async variant of delete_system_rows_by_oid_match: emits WAL write_physical_delete
-        // before the MVCC tombstone so drops survive crash-before-checkpoint.
-        // Use this from all DDL coroutines in place of delete_system_rows_by_oid_match.
-        unique_future<void> delete_pg_catalog_rows(execution_context_t ctx,
-                                                    const collection_full_name_t& name,
-                                                    std::int64_t oid_col_idx,
-                                                    components::catalog::oid_t target_oid);
 
         // Storage entries per collection
         struct collection_storage_entry_t {
@@ -762,7 +596,7 @@ namespace services::disk {
         };
         using ns_table_key_t = std::pair<components::catalog::oid_t, std::string>;
         std::unordered_map<ns_table_key_t, table_index_entry_t, ns_table_key_hash_t> table_to_oid_;
-        // Reverse map: table OID → key, so ddl_drop_table can erase by OID.
+        // Reverse map: table OID → key.
         std::unordered_map<components::catalog::oid_t, ns_table_key_t> table_oid_to_key_;
 
         // Helper: rebuild ns and table indexes from pg_namespace/pg_class.

@@ -1,6 +1,6 @@
 #include "planner.hpp"
 
-#include "ddl_metadata_builder.hpp"
+#include <catalog/ddl_metadata_builder.hpp>
 #include <catalog/oid_batch.hpp>
 #include <logical_plan/node_check_constraint.hpp>
 #include <logical_plan/node_create_collection.hpp>
@@ -8,6 +8,7 @@
 #include <logical_plan/node_fk_cascade.hpp>
 #include <logical_plan/node_fk_check.hpp>
 #include <logical_plan/node_insert.hpp>
+#include <logical_plan/node_primitive_write.hpp>
 #include <logical_plan/node_sequence.hpp>
 #include <logical_plan/node_update.hpp>
 
@@ -30,11 +31,12 @@ namespace components::planner {
                 cur = fk_node;
             }
 
-            // Wrap with NOT NULL check (outer relative to original insert, inner to FK check).
-            if (!ins->not_null_cols().empty()) {
+            // Wrap with NOT NULL / CHECK constraint node.
+            if (!ins->not_null_cols().empty() || !ins->check_exprs().empty()) {
                 auto cc = boost::intrusive_ptr(new logical_plan::node_check_constraint_t(
                     r, ins->collection_full_name(),
-                    std::vector<std::string>(ins->not_null_cols())));
+                    std::vector<std::string>(ins->not_null_cols()),
+                    std::vector<std::pair<std::string, std::string>>(ins->check_exprs())));
                 cc->append_child(cur);
                 cur = cc;
             }
@@ -96,27 +98,38 @@ namespace components::planner {
             }
         }
 
-        // DDL rewrite: expand node_create_collection_t into a node_sequence_t that
-        // contains one node_primitive_write_t per pg_catalog row to insert.
+        // DDL rewrite: produces sequence_t(create_collection_t, primitive_write×N).
+        // The original node is kept as first child so execute_ddl can create physical
+        // storage; the primitive_write children carry the pg_catalog rows to insert.
+        // Column types must already be resolved (done by enrich_plan Phase 1.5-A).
         node_ptr rewrite_create_table(std::pmr::memory_resource* r,
                                        node_ptr node,
                                        catalog::oid_batch_t& oid_batch) {
             auto* cc = static_cast<logical_plan::node_create_collection_t*>(node.get());
             const catalog::oid_t ns_oid = cc->namespace_oid();
 
-            auto writes = catalog::build_create_table_writes(r, *cc, ns_oid, oid_batch);
+            // Schemaless collections (no declared columns) use relkind='g' (computed) so
+            // the first INSERT triggers ddl_adopt_computing_schema, which writes inferred
+            // pg_attribute rows and converts the table to relkind='r'. This restores the
+            // pre-migration behavior where get_schema returns inferred types.
+            const char rk = cc->column_definitions().empty()
+                                ? catalog::relkind::computed
+                                : catalog::relkind::regular;
+            auto writes = catalog::build_create_table_writes(
+                r, cc->collection_full_name(), cc->column_definitions(),
+                cc->is_disk_storage(), ns_oid, oid_batch, rk);
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
+            seq->append_child(node);  // child 0: physical storage creation
             for (auto& w : writes) {
-                seq->append_child(w);
+                seq->append_child(boost::intrusive_ptr(
+                    new logical_plan::node_primitive_write_t(
+                        r, std::move(w.table), std::move(w.row))));
             }
             return seq;
         }
 
         // DDL-aware walk: handles DDL nodes in addition to DML rewrites.
-        // CREATE TABLE rewrite is intentionally absent: storage creation is still
-        // coupled to ddl_create_table in execute_ddl_inline and must be decoupled
-        // before the planner can emit the full sequence autonomously.
         node_ptr walk_ddl(std::pmr::memory_resource* r,
                            node_ptr node,
                            catalog::oid_batch_t& oid_batch) {
@@ -128,6 +141,8 @@ namespace components::planner {
                 return rewrite_update(r, node);
             case node_type::delete_t:
                 return rewrite_delete(r, node);
+            case node_type::create_collection_t:
+                return rewrite_create_table(r, node, oid_batch);
             default:
                 for (auto& child : node->children()) {
                     child = walk_ddl(r, child, oid_batch);

@@ -10,6 +10,7 @@ set(SOURCE_${PROJECT_NAME}
         node_fk_cascade.cpp
         node_sequence.cpp
         node_primitive_write.cpp
+        node_primitive_delete.cpp
         node_checkpoint.cpp
         node_create_collection.cpp
         node_create_constraint.cpp

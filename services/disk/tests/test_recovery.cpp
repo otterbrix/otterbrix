@@ -9,6 +9,7 @@
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
+#include "disk_test_helpers.hpp"
 
 #include <filesystem>
 #include <unistd.h>
@@ -100,8 +101,7 @@ TEST_CASE("test_recovery_system_wal_before_user") {
     components::catalog::oid_t created_namespace_oid = components::catalog::INVALID_OID;
     {
         recovery_fixture fx(dir);
-        auto result = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("recoverable_ns"));
-        created_namespace_oid = result.created_oid;
+        created_namespace_oid = disk_test_helpers::test_create_namespace(fx, std::string("recoverable_ns"));
         REQUIRE(created_namespace_oid != components::catalog::INVALID_OID);
     }
 
@@ -149,9 +149,7 @@ TEST_CASE("test_recovery_ddl_then_dml") {
     {
         recovery_fixture fx(dir);
         // Phase 1: DDL — create a namespace.
-        auto r1 = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(),
-                             std::string("durable_ns"));
-        ns_oid = r1.created_oid;
+        ns_oid = disk_test_helpers::test_create_namespace(fx, std::string("durable_ns"));
         REQUIRE(ns_oid != components::catalog::INVALID_OID);
 
         // Phase 2: DDL acting like DML — create a table inside that namespace. Both
@@ -159,9 +157,9 @@ TEST_CASE("test_recovery_ddl_then_dml") {
         // records + on-disk storage.
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT}, /*not_null=*/ true);
-        auto r2 = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), ns_oid,
-                             std::string("durable_table"), std::move(cols), /*relkind=*/ 'r');
-        REQUIRE(r2.created_oid != components::catalog::INVALID_OID);
+        const auto table_oid = disk_test_helpers::test_create_table(fx, ns_oid,
+                                                                      std::string("durable_table"), cols, 'r');
+        REQUIRE(table_oid != components::catalog::INVALID_OID);
 
         // Force durability: checkpoint flushes pg_namespace/pg_class/pg_attribute rows from
         // the in-memory storage into the on-disk .otbx files (W-TORN: 2 fsyncs per table).
@@ -183,9 +181,8 @@ TEST_CASE("test_recovery_ddl_then_dml") {
         REQUIRE_NOTHROW(fx.disk->load_system_tables_sync());
         REQUIRE_NOTHROW(fx.disk->restore_oid_generator_sync());
 
-        auto r3 = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(),
-                             std::string("post_recovery_ns"));
-        REQUIRE(r3.created_oid > ns_oid);
+        const auto post_ns_oid = disk_test_helpers::test_create_namespace(fx, std::string("post_recovery_ns"));
+        REQUIRE(post_ns_oid > ns_oid);
     }
     cleanup_dir(dir);
 }
@@ -208,9 +205,13 @@ TEST_CASE("test_recovery_orphaned_uncommitted_ddl") {
             components::table::transaction_data{1, 0},
             {}
         };
-        auto r = fx.invoke(&manager_disk_t::ddl_create_namespace, uncommitted_ctx,
-                            std::string("orphaned_ns"));
-        REQUIRE(r.created_oid != components::catalog::INVALID_OID);
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        const components::catalog::oid_t ns_oid = oids[0];
+        REQUIRE(ns_oid != components::catalog::INVALID_OID);
+        auto writes = components::catalog::build_create_namespace_writes(&fx.resource,
+                                                                          std::string("orphaned_ns"), ns_oid);
+        for (auto& w : writes)
+            fx.invoke(&manager_disk_t::append_pg_catalog_row, uncommitted_ctx, w.table, std::move(w.row));
         // Intentionally omit commit_pg_catalog_appends — simulates crash before commit.
     }
 

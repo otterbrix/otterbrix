@@ -38,6 +38,8 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_fk_cascade.cpp
         operators/operator_sequence.cpp
         operators/operator_primitive_write.cpp
+        operators/operator_primitive_delete.cpp
+        operators/operator_create_collection.cpp
 
         operators/arithmetic_eval.cpp
 )

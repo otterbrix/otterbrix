@@ -231,6 +231,9 @@ namespace components::sql::transform {
 
     types::complex_logical_type get_type(TypeName* type) {
         types::complex_logical_type column;
+        if (!type || !type->names) {
+            return column;
+        }
         if (auto linint_name = strVal(linitial(type->names)); !std::strcmp(linint_name, "pg_catalog")) {
             auto type_name = strVal(lsecond(type->names));
             // DECIMAL(w,s) is the only type whose typmods carry semantics (precision, scale).

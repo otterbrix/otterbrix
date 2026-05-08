@@ -11,6 +11,8 @@
 #include <services/disk/manager_disk.hpp>
 #include <services/wal/base.hpp>
 
+#include "disk_test_helpers.hpp"
+
 #include <filesystem>
 #include <unistd.h>
 
@@ -24,6 +26,7 @@ using namespace services::disk;
 namespace catalog = components::catalog;
 using namespace components::catalog;
 using session_id_t = components::session::session_id_t;
+using namespace disk_test_helpers;
 
 namespace {
     std::string d4_dir() {
@@ -105,12 +108,11 @@ TEST_CASE("services::disk::d4::user_table_not_in_storages_at_start") {
 //    Doc test alias: test_append_user_table_to_pg_class.
 TEST_CASE("services::disk::d4::create_table_does_not_eager_load_storage") {
     fixture fx;
-    auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("ns_d4a"));
+    auto ns_oid = test_create_namespace(fx, "ns_d4a");
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
-    auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                         std::string("users"), std::move(cols), catalog::relkind::regular);
-    REQUIRE(rt.created_oid >= FIRST_USER_OID);
+    auto rt_oid = test_create_table(fx, ns_oid, "users", std::move(cols));
+    REQUIRE(rt_oid >= FIRST_USER_OID);
     // Storage is intentionally NOT in storages_: D4 = lazy. resolve_table is the
     // entry point that promotes a disk-resident .otbx into storages_.
     REQUIRE_FALSE(fx.manager->has_storage(collection_full_name_t{"ns_d4a", "main", "users"}));
@@ -120,15 +122,14 @@ TEST_CASE("services::disk::d4::create_table_does_not_eager_load_storage") {
 //    is not loaded. Doc test alias: test_show_tables_from_pg_class.
 TEST_CASE("services::disk::d4::resolve_table_finds_unloaded_user_table") {
     fixture fx;
-    auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("ns_d4b"));
+    auto ns_oid = test_create_namespace(fx, "ns_d4b");
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
-    auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                         std::string("orders"), std::move(cols), catalog::relkind::regular);
+    auto rt_oid = test_create_table(fx, ns_oid, "orders", std::move(cols));
     auto resolved = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(),
-                                rns.created_oid, std::string("orders"), std::uint64_t{0});
+                                ns_oid, std::string("orders"), std::uint64_t{0});
     REQUIRE(resolved.found);
-    REQUIRE(resolved.oid == rt.created_oid);
+    REQUIRE(resolved.oid == rt_oid);
     // resolve_table did not need storage to be present in storages_ to answer the lookup.
 }
 
@@ -136,17 +137,15 @@ TEST_CASE("services::disk::d4::resolve_table_finds_unloaded_user_table") {
 //    pg_depend; no storage entry required. Doc test alias: test_drop_unloaded_table.
 TEST_CASE("services::disk::d4::drop_unloaded_table") {
     fixture fx;
-    auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("ns_d4c"));
+    auto ns_oid = test_create_namespace(fx, "ns_d4c");
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("v", components::types::complex_logical_type{components::types::logical_type::BIGINT});
-    auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                         std::string("temp_t"), std::move(cols), catalog::relkind::regular);
+    auto rt_oid = test_create_table(fx, ns_oid, "temp_t", std::move(cols));
     REQUIRE_FALSE(fx.manager->has_storage(collection_full_name_t{"ns_d4c", "main", "temp_t"}));
-    fx.invoke(&manager_disk_t::ddl_drop_table, fx.ctx(), rt.created_oid,
-               drop_behavior_t::cascade_);
+    test_drop_table(fx, rt_oid);
     // After drop the table is no longer resolvable.
     auto resolved = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(),
-                                rns.created_oid, std::string("temp_t"), std::uint64_t{0});
+                                ns_oid, std::string("temp_t"), std::uint64_t{0});
     REQUIRE_FALSE(resolved.found);
 }
 
@@ -154,20 +153,19 @@ TEST_CASE("services::disk::d4::drop_unloaded_table") {
 //    test_alter_unloaded_table.
 TEST_CASE("services::disk::d4::alter_unloaded_table_add_column") {
     fixture fx;
-    auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("ns_d4d"));
+    auto ns_oid = test_create_namespace(fx, "ns_d4d");
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
-    auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                         std::string("alter_me"), std::move(cols), catalog::relkind::regular);
+    auto rt_oid = test_create_table(fx, ns_oid, "alter_me", std::move(cols));
     REQUIRE_FALSE(fx.manager->has_storage(collection_full_name_t{"ns_d4d", "main", "alter_me"}));
     components::table::column_definition_t new_col(
         "name", components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL});
-    fx.invoke(&manager_disk_t::ddl_add_column, fx.ctx(), rt.created_oid, std::move(new_col));
+    test_add_column(fx, rt_oid, std::move(new_col), 2);
     // No user-storage materialisation as a side-effect of ALTER.
     REQUIRE_FALSE(fx.manager->has_storage(collection_full_name_t{"ns_d4d", "main", "alter_me"}));
     // The new column shows up via resolve_table.
     auto resolved = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(),
-                                rns.created_oid, std::string("alter_me"), std::uint64_t{0});
+                                ns_oid, std::string("alter_me"), std::uint64_t{0});
     REQUIRE(resolved.found);
     REQUIRE(resolved.columns.size() == 2);
 }
@@ -177,14 +175,13 @@ TEST_CASE("services::disk::d4::alter_unloaded_table_add_column") {
 //    on disk). Doc test alias: test_second_select_uses_existing (negative form).
 TEST_CASE("services::disk::d4::repeated_resolve_does_not_create_storage") {
     fixture fx;
-    auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("ns_d4e"));
+    auto ns_oid = test_create_namespace(fx, "ns_d4e");
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
-    fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-               std::string("readme"), std::move(cols), catalog::relkind::regular);
+    test_create_table(fx, ns_oid, "readme", std::move(cols));
     for (int i = 0; i < 3; ++i) {
         auto r = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(),
-                           rns.created_oid, std::string("readme"), std::uint64_t{0});
+                           ns_oid, std::string("readme"), std::uint64_t{0});
         REQUIRE(r.found);
     }
     REQUIRE_FALSE(fx.manager->has_storage(collection_full_name_t{"ns_d4e", "main", "readme"}));
@@ -194,17 +191,16 @@ TEST_CASE("services::disk::d4::repeated_resolve_does_not_create_storage") {
 //    attnum order. Doc test alias: test_scan_pg_attribute_by_relid.
 TEST_CASE("services::disk::d4::resolve_table_collects_columns_by_attrelid") {
     fixture fx;
-    auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("ns_d4f"));
+    auto ns_oid = test_create_namespace(fx, "ns_d4f");
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("a", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     cols.emplace_back("b", components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL});
     cols.emplace_back("c", components::types::complex_logical_type{components::types::logical_type::DOUBLE});
-    auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                         std::string("multi"), std::move(cols), catalog::relkind::regular);
+    auto rt_oid = test_create_table(fx, ns_oid, "multi", std::move(cols));
     auto r = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(),
-                        rns.created_oid, std::string("multi"), std::uint64_t{0});
+                        ns_oid, std::string("multi"), std::uint64_t{0});
     REQUIRE(r.found);
-    REQUIRE(r.oid == rt.created_oid);
+    REQUIRE(r.oid == rt_oid);
     REQUIRE(r.columns.size() == 3);
     // Attoids are unique (each column gets its own oid_gen.allocate()).
     REQUIRE(r.columns[0].attoid != r.columns[1].attoid);
@@ -224,12 +220,11 @@ TEST_CASE("services::disk::d4::peek_checkpoint_wal_id_unknown_returns_zero") {
 // 10. load_storage_for_wal_replay_sync is a no-op for already-loaded storage (§1.11).
 TEST_CASE("services::disk::d4::load_storage_for_wal_replay_noop_when_loaded") {
     fixture fx;
-    auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("ns_d4g"));
+    auto ns_oid = test_create_namespace(fx, "ns_d4g");
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     // Create the table (writes pg_class/pg_attribute; does NOT load user storage).
-    fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-               std::string("lazy_t"), std::move(cols), catalog::relkind::regular);
+    test_create_table(fx, ns_oid, "lazy_t", std::move(cols));
 
     // Calling load_storage_for_wal_replay_sync on a table that has no .otbx must not crash.
     REQUIRE_NOTHROW(

@@ -723,6 +723,26 @@ namespace components::catalog {
         }
     }
 
+    oid_t builtin_type_to_oid(types::logical_type lt) noexcept {
+        using LT = types::logical_type;
+        namespace ns = well_known_oid;
+        switch (lt) {
+            case LT::BOOLEAN:       return ns::boolean_type;
+            case LT::TINYINT:       return ns::int8_type;
+            case LT::SMALLINT:      return ns::int16_type;
+            case LT::INTEGER:       return ns::int32_type;
+            case LT::BIGINT:        return ns::int64_type;
+            case LT::FLOAT:         return ns::float32_type;
+            case LT::DOUBLE:        return ns::float64_type;
+            case LT::STRING_LITERAL:return ns::string_type;
+            case LT::TIMESTAMP_NS:
+            case LT::TIMESTAMP_US:
+            case LT::TIMESTAMP_MS:
+            case LT::TIMESTAMP_SEC: return ns::timestamp_type;
+            default:                return INVALID_OID;
+        }
+    }
+
     types::logical_type pg_name_to_logical_type(std::string_view name) noexcept {
         return scalar_name_to_type(name);
     }

@@ -5,6 +5,7 @@
 #include "impl/create_plan_fk_check.hpp"
 #include "impl/create_plan_fk_cascade.hpp"
 #include "impl/create_plan_sequence.hpp"
+#include "impl/create_plan_primitive_delete.hpp"
 #include "impl/create_plan_primitive_write.hpp"
 #include "impl/create_plan_data.hpp"
 #include "impl/create_plan_delete.hpp"
@@ -55,6 +56,8 @@ namespace services::planner {
                 return impl::create_plan_sequence(context, function_registry, node, params);
             case node_type::primitive_write_t:
                 return impl::create_plan_primitive_write(context, node);
+            case node_type::primitive_delete_t:
+                return impl::create_plan_primitive_delete(context, node);
             default:
                 break;
         }

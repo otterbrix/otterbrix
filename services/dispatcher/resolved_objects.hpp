@@ -42,6 +42,7 @@ namespace services::dispatcher {
         bool attnotnull{false};
         bool atthasdefault{false};
         components::catalog::oid_t attoid{components::catalog::INVALID_OID};
+        std::string attdefspec; // serialized default value; empty if no default
 
         [[nodiscard]] std::size_t memory_bytes() const noexcept {
             // complex_logical_type's deep size isn't exposed; assume amortized 64 bytes per

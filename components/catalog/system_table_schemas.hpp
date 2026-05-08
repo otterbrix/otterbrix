@@ -1,5 +1,22 @@
 #pragma once
 
+// Intentional architecture note — Stage 2 catalog modules not implemented:
+//
+//   fk_rules.{hpp,cpp} (should_skip_validation, classify_action)
+//     → FK null semantics and action dispatch are inline in operator_fk_check /
+//       operator_fk_cascade via fk_info_t.matchtype / del_action.  A separate
+//       module would add indirection with no reuse benefit at current scale.
+//
+//   constraint_evaluator.{hpp,cpp} (enforce_not_null, evaluate_check)
+//     → NOT NULL and CHECK enforcement are inline in operator_check_constraint.
+//       Expressions are compiled once to predicate_ptr in the constructor;
+//       a separate evaluator would duplicate the predicate infrastructure.
+//
+//   pg_catalog_decoders.{hpp,cpp} (typed views of pg_* rows)
+//     → Typed decoding is inline in disk resolver methods (manager_disk_ddl,
+//       manager_disk_resolve).  A shared decoder layer is deferred until there
+//       are three or more call sites with identical row layouts.
+
 #include "catalog_oids.hpp"
 #include <components/compute/kernel_signature.hpp>
 #include <components/table/column_definition.hpp>
@@ -117,6 +134,11 @@ namespace components::catalog {
     // logical_type::UNKNOWN for non-builtin OIDs — caller resolves complex types from
     // pg_type by name + typdefspec.
     types::logical_type oid_to_builtin_type(oid_t oid) noexcept;
+    oid_t builtin_type_to_oid(types::logical_type lt) noexcept;
+
+    // Resolve a type name (including legacy aliases like "string", "boolean", "integer")
+    // to its canonical logical_type. Returns logical_type::UNKNOWN for user-defined types.
+    types::logical_type pg_name_to_logical_type(std::string_view name) noexcept;
 
     // Encode/decode a column default value (logical_value_t) to flat text for storage in
     // pg_attribute.attdefspec. Format: "type_name:value" for scalars, "NULL" for null.

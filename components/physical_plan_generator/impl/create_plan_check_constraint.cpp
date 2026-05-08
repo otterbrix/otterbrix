@@ -16,7 +16,8 @@ namespace services::planner::impl {
             new components::operators::operator_check_constraint_t(
                 context.resource,
                 context.log.clone(),
-                n->not_null_columns()));
+                n->not_null_columns(),
+                n->check_exprs()));
         if (!node->children().empty()) {
             plan->set_children(create_plan(context, function_registry, node->children().front(), {}, params));
         }

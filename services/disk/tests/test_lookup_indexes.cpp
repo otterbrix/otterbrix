@@ -3,6 +3,8 @@
 #include <actor-zeta/spawn.hpp>
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/ddl_metadata_builder.hpp>
+#include <components/catalog/oid_batch.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>
@@ -11,12 +13,15 @@
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <services/disk/manager_disk.hpp>
 
+#include "disk_test_helpers.hpp"
+
 #include <filesystem>
 #include <unistd.h>
 
 using namespace services::disk;
 namespace catalog = components::catalog;
 using namespace components::catalog;
+using namespace disk_test_helpers;
 using session_id_t = components::session::session_id_t;
 
 namespace {
@@ -61,6 +66,11 @@ namespace {
             return std::move(future).get();
         }
 
+        template<typename Fn, typename... Args>
+        auto invoke(Fn fn, Args&&... args) {
+            return invoke_async(fn, std::forward<Args>(args)...);
+        }
+
         components::execution_context_t ctx() {
             return components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}};
         }
@@ -99,6 +109,11 @@ namespace {
             return std::move(future).get();
         }
 
+        template<typename Fn, typename... Args>
+        auto invoke(Fn fn, Args&&... args) {
+            return invoke_async(fn, std::forward<Args>(args)...);
+        }
+
         components::execution_context_t ctx() {
             return components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}};
         }
@@ -114,55 +129,50 @@ TEST_CASE("services::disk::lookup::bootstrap_populates_ns_index") {
     REQUIRE(r.oid == well_known_oid::public_namespace);
 }
 
-// 2. After ddl_create_namespace, the new namespace is findable via O(1) index.
+// 2. After test_create_namespace, the new namespace is findable via O(1) index.
 TEST_CASE("services::disk::lookup::create_ns_updates_index") {
     fixture fx;
-    auto cr = fx.invoke_async(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("myns"));
-    REQUIRE(cr.created_oid >= FIRST_USER_OID);
+    auto ns_oid = test_create_namespace(fx, "myns");
+    REQUIRE(ns_oid >= FIRST_USER_OID);
 
     auto r = fx.invoke_async(&manager_disk_t::resolve_namespace, fx.ctx(),
                               std::string("myns"), std::uint64_t{0});
     REQUIRE(r.found);
-    REQUIRE(r.oid == cr.created_oid);
+    REQUIRE(r.oid == ns_oid);
 }
 
-// 3. After ddl_drop_namespace, it's no longer in the index.
+// 3. After test_drop_namespace, it's no longer in the index.
 TEST_CASE("services::disk::lookup::drop_ns_removes_from_index") {
     fixture fx;
-    auto cr = fx.invoke_async(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("dropme"));
-    fx.invoke_async(&manager_disk_t::ddl_drop_namespace, fx.ctx(), cr.created_oid,
-                    drop_behavior_t::restrict_);
+    auto ns_oid = test_create_namespace(fx, "dropme");
+    test_drop_namespace(fx, ns_oid);
 
     auto r = fx.invoke_async(&manager_disk_t::resolve_namespace, fx.ctx(),
                               std::string("dropme"), std::uint64_t{0});
     REQUIRE_FALSE(r.found);
 }
 
-// 4. After ddl_create_table, the table is findable via O(1) index.
+// 4. After test_create_table, the table is findable via O(1) index.
 TEST_CASE("services::disk::lookup::create_table_updates_index") {
     fixture fx;
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
 
-    auto cr = fx.invoke_async(&manager_disk_t::ddl_create_table, fx.ctx(),
-                               well_known_oid::public_namespace, std::string("items"),
-                               std::move(cols), catalog::relkind::regular);
-    REQUIRE(cr.created_oid >= FIRST_USER_OID);
+    auto tbl_oid = test_create_table(fx, well_known_oid::public_namespace, "items", cols);
+    REQUIRE(tbl_oid >= FIRST_USER_OID);
 
     auto r = fx.invoke_async(&manager_disk_t::resolve_table, fx.ctx(),
                               well_known_oid::public_namespace, std::string("items"), std::uint64_t{0});
     REQUIRE(r.found);
-    REQUIRE(r.oid == cr.created_oid);
+    REQUIRE(r.oid == tbl_oid);
 }
 
-// 5. After ddl_drop_table, the table is no longer in the index.
+// 5. After test_drop_table, the table is no longer in the index.
 TEST_CASE("services::disk::lookup::drop_table_removes_from_index") {
     fixture fx;
-    auto cr = fx.invoke_async(&manager_disk_t::ddl_create_table, fx.ctx(),
-                               well_known_oid::public_namespace, std::string("droptbl"),
-                               std::vector<components::table::column_definition_t>{}, catalog::relkind::regular);
-    fx.invoke_async(&manager_disk_t::ddl_drop_table, fx.ctx(), cr.created_oid,
-                    drop_behavior_t::restrict_);
+    auto tbl_oid = test_create_table(fx, well_known_oid::public_namespace, "droptbl",
+                                     std::vector<components::table::column_definition_t>{});
+    test_drop_table(fx, tbl_oid);
 
     auto r = fx.invoke_async(&manager_disk_t::resolve_table, fx.ctx(),
                               well_known_oid::public_namespace, std::string("droptbl"), std::uint64_t{0});
@@ -194,12 +204,30 @@ TEST_CASE("services::disk::lookup::rebuild_indexes_after_reload") {
             sched->run(10000);
             return std::move(fut).get();
         };
-        auto ectx = components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}};
-        auto ns_r = send_and_run(&manager_disk_t::ddl_create_namespace, ectx, std::string("reload_ns"));
-        ns_oid = ns_r.created_oid;
-        auto tbl_r = send_and_run(&manager_disk_t::ddl_create_table, ectx, ns_oid, std::string("reload_tbl"),
-                                   std::vector<components::table::column_definition_t>{}, catalog::relkind::regular);
-        tbl_oid = tbl_r.created_oid;
+        // Create namespace via catalog API
+        {
+            auto oids_ns = send_and_run(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+            ns_oid = oids_ns[0];
+            auto ns_writes = catalog::build_create_namespace_writes(&resource, std::string("reload_ns"), ns_oid);
+            for (auto& w : ns_writes)
+                send_and_run(&manager_disk_t::append_pg_catalog_row, disk_test_helpers::auto_ctx(), w.table, std::move(w.row));
+            send_and_run(&manager_disk_t::commit_pg_catalog_appends, disk_test_helpers::rebuild_ctx(), std::uint64_t{1000});
+        }
+
+        // Create table via catalog API
+        {
+            auto oids_tbl = send_and_run(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+            tbl_oid = oids_tbl[0];
+            catalog::oid_batch_t tbl_batch;
+            tbl_batch.oids = std::move(oids_tbl);
+            collection_full_name_t tbl_coll{"public", "main", "reload_tbl"};
+            auto tbl_writes = catalog::build_create_table_writes(&resource, tbl_coll, {}, false, ns_oid, tbl_batch,
+                                                                  catalog::relkind::regular);
+            for (auto& w : tbl_writes)
+                send_and_run(&manager_disk_t::append_pg_catalog_row, disk_test_helpers::auto_ctx(), w.table, std::move(w.row));
+            send_and_run(&manager_disk_t::commit_pg_catalog_appends, disk_test_helpers::rebuild_ctx(), std::uint64_t{1000});
+        }
+
         send_and_run(&manager_disk_t::checkpoint_all, session_id_t{}, services::wal::id_t{0});
 
         sched->stop();

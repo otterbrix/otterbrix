@@ -1479,8 +1479,9 @@ namespace services::dispatcher {
                             table_schema.emplace_back(type_from_t{node->collection_name(), column.type});
                         }
                     }
-                    if (table_schema.empty() && is_computed) {
-                        // Computing table — accept any INSERT
+                    if (table_schema.empty()) {
+                        // Schemaless table (no columns defined) or computing table with no
+                        // columns yet — accept any INSERT without column count validation.
                     } else if (incoming_schema.value().size() > table_schema.size()) {
                         return schema_result<named_schema>{
                             resource,
@@ -1515,7 +1516,9 @@ namespace services::dispatcher {
                                                    : insert_node->key_translation()[i].path().front();
                                 const auto& corresponding_table_type = table_schema[index].type;
                                 unchecked_columns.erase(index);
-                                if (!incoming_schema.value()[i].type.is_convertable_to(corresponding_table_type)) {
+                                if (incoming_schema.value()[i].type.type() != components::types::logical_type::NA &&
+                                    incoming_schema.value()[i].type.type() != components::types::logical_type::UNKNOWN &&
+                                    !incoming_schema.value()[i].type.is_convertable_to(corresponding_table_type)) {
                                     return schema_result<named_schema>{
                                         resource,
                                         components::cursor::error_t{error_code_t::schema_error,

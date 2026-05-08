@@ -176,6 +176,11 @@ namespace services::disk {
                            return a.attnum < b.attnum;
                        });
             out.columns = std::move(rows);
+            trace(log_, "resolve_table: oid={} found {} columns", out.oid, out.columns.size());
+            for (const auto& c : out.columns) {
+                trace(log_, "  col={} atttypid={} atttypspec='{}'",
+                      c.attname, static_cast<unsigned>(c.atttypid), c.atttypspec);
+            }
         }
         co_return out;
     }
@@ -561,35 +566,18 @@ namespace services::disk {
     manager_disk_t::point_lookup_by_index(execution_context_t ctx,
                                            components::catalog::oid_t index_oid,
                                            std::vector<components::types::logical_value_t> key_values) {
-        // 1. Scan pg_index for the row with indexrelid == index_oid.
-        //    pg_index cols: 0=indexrelid, 1=indrelid, 2=indkey(csv), 3=indisvalid
-        auto idx_it = storages_.find(pg_index_name);
-        if (idx_it == storages_.end()) co_return std::nullopt;
-
-        catalog::oid_t indrelid{0};
-        std::string indkey_csv;
-        bool found_index = false;
-        {
-            std::pmr::synchronized_pool_resource sr;
-            inline_scan(idx_it->second->table_storage.table(), {0, 1, 2, 3}, &sr,
-                        [&](components::vector::data_chunk_t& chunk, uint64_t i) {
-                            auto oid_v = chunk.value(0, i);
-                            if (oid_v.is_null()) return true;
-                            if (static_cast<catalog::oid_t>(oid_v.value<std::uint32_t>()) != index_oid)
-                                return true;
-                            auto valid_v = chunk.value(3, i);
-                            if (!valid_v.is_null() && !valid_v.value<bool>()) return false; // indisvalid=false
-                            auto rel_v = chunk.value(1, i);
-                            if (!rel_v.is_null())
-                                indrelid = static_cast<catalog::oid_t>(rel_v.value<std::uint32_t>());
-                            auto key_v = chunk.value(2, i);
-                            if (!key_v.is_null())
-                                indkey_csv = std::string(key_v.value<std::string_view>());
-                            found_index = true;
-                            return false;
-                        });
-        }
-        if (!found_index) co_return std::nullopt;
+        // 1. Find pg_index row for this index_oid.
+        components::types::logical_value_t idx_lv(resource(), index_oid);
+        auto idx_rows = co_await read_rows_by_key(ctx, pg_index_name,
+                                                   {"indexrelid"},
+                                                   {std::move(idx_lv)});
+        if (idx_rows.empty()) co_return std::nullopt;
+        const auto& idx_row = idx_rows[0];
+        if (idx_row.size() < 4) co_return std::nullopt;
+        if (!idx_row[3].is_null() && !idx_row[3].value<bool>()) co_return std::nullopt; // indisvalid=false
+        if (idx_row[1].is_null() || idx_row[2].is_null()) co_return std::nullopt;
+        const auto indrelid     = static_cast<catalog::oid_t>(idx_row[1].value<std::uint32_t>());
+        const auto indkey_csv   = std::string(idx_row[2].value<std::string_view>());
 
         // 2. Parse indkey CSV to get ordered attoid list.
         const auto attoids = catalog::parse_oid_csv(indkey_csv);
@@ -601,29 +589,20 @@ namespace services::disk {
         const auto& [ns_oid, tbl_name] = key_it->second;
         auto ns_name_it = ns_oid_to_name_.find(ns_oid);
         if (ns_name_it == ns_oid_to_name_.end()) co_return std::nullopt;
-        collection_full_name_t tbl_full{ns_name_it->second, "main", tbl_name};
+        collection_full_name_t tbl_full{ns_name_it->second, "", tbl_name};
+        if (storages_.find(tbl_full) == storages_.end())
+            tbl_full = {"", ns_name_it->second, tbl_name};
 
-        // 4. Scan pg_attribute to map each attoid → column name (for indrelid).
-        //    pg_attribute cols: 0=attoid, 1=attrelid, 2=attname, ...
+        // 4. pg_attribute rows for indrelid → attoid→name map.
+        components::types::logical_value_t rel_lv(resource(), indrelid);
+        auto att_rows = co_await read_rows_by_key(ctx, pg_attribute_name,
+                                                   {"attrelid"},
+                                                   {std::move(rel_lv)});
         std::unordered_map<catalog::oid_t, std::string> attoid_to_name;
-        auto pa_it = storages_.find(pg_attribute_name);
-        if (pa_it == storages_.end()) co_return std::nullopt;
-        {
-            std::pmr::synchronized_pool_resource sr;
-            inline_scan(pa_it->second->table_storage.table(), {0, 1, 2}, &sr,
-                        [&](components::vector::data_chunk_t& chunk, uint64_t i) {
-                            auto rel_v = chunk.value(1, i);
-                            if (rel_v.is_null()) return true;
-                            if (static_cast<catalog::oid_t>(rel_v.value<std::uint32_t>()) != indrelid)
-                                return true;
-                            auto att_v = chunk.value(0, i);
-                            auto nm_v  = chunk.value(2, i);
-                            if (!att_v.is_null() && !nm_v.is_null()) {
-                                attoid_to_name[static_cast<catalog::oid_t>(att_v.value<std::uint32_t>())] =
-                                    std::string(nm_v.value<std::string_view>());
-                            }
-                            return true;
-                        });
+        for (const auto& row : att_rows) {
+            if (row.size() < 3 || row[0].is_null() || row[2].is_null()) continue;
+            attoid_to_name[static_cast<catalog::oid_t>(row[0].value<std::uint32_t>())] =
+                std::string(row[2].value<std::string_view>());
         }
 
         // 5. Map attoids → column names in indkey order.
@@ -708,7 +687,9 @@ namespace services::disk {
         auto ns_it = ns_oid_to_name_.find(ns_oid);
         if (ns_it == ns_oid_to_name_.end()) co_return out;
 
-        collection_full_name_t full{ns_it->second, "main", tbl_name};
+        collection_full_name_t full{ns_it->second, "", tbl_name};
+        if (storages_.find(full) == storages_.end())
+            full = {"", ns_it->second, tbl_name};
         out = co_await scan_by_key(ctx, std::move(full), std::move(key_col_names), std::move(key_values));
         co_return out;
     }

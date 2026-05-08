@@ -65,6 +65,39 @@ namespace components::sql::transform {
                         break;
                     }
                     auto* constr = pg_ptr_cast<Constraint>(cmd->def);
+                    if (constr->contype == CONSTR_FOREIGN && constr->pktable) {
+                        std::string con_name = constr->conname ? constr->conname : "";
+                        // Resolve parent table reference.
+                        collection_full_name_t ref_coll;
+                        if (constr->pktable->catalogname) {
+                            ref_coll.database = constr->pktable->catalogname;
+                        } else if (constr->pktable->schemaname) {
+                            ref_coll.database = constr->pktable->schemaname;
+                        } else {
+                            ref_coll.database = coll.database;
+                        }
+                        ref_coll.collection = constr->pktable->relname ? constr->pktable->relname : "";
+                        auto fk_node = logical_plan::make_node_create_constraint(
+                            resource_, coll, std::move(con_name),
+                            logical_plan::constraint_kind::foreign_key, std::move(ref_coll));
+                        if (constr->fk_attrs) {
+                            for (auto& col : constr->fk_attrs->lst) {
+                                fk_node->columns().emplace_back(strVal(col.data));
+                            }
+                        }
+                        if (constr->pk_attrs) {
+                            for (auto& col : constr->pk_attrs->lst) {
+                                fk_node->ref_columns().emplace_back(strVal(col.data));
+                            }
+                        }
+                        const char mt = constr->fk_matchtype;
+                        fk_node->set_match_type((mt == 'f' || mt == 'p' || mt == 's') ? mt : 's');
+                        const char da = constr->fk_del_action;
+                        fk_node->set_del_action((da == 'a' || da == 'r' || da == 'c' || da == 'n' || da == 'd') ? da : 'a');
+                        const char ua = constr->fk_upd_action;
+                        fk_node->set_upd_action((ua == 'a' || ua == 'r' || ua == 'c' || ua == 'n' || ua == 'd') ? ua : 'a');
+                        return fk_node;
+                    }
                     if (constr->contype == CONSTR_CHECK && constr->raw_expr) {
                         std::string expr_text = deparse_check_expr(constr->raw_expr);
                         if (!expr_text.empty()) {

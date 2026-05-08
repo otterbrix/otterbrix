@@ -14,6 +14,8 @@
 #include <services/wal/wal_reader.hpp>
 #include <services/wal/record.hpp>
 
+#include "disk_test_helpers.hpp"
+
 #include <filesystem>
 #include <limits>
 #include <unistd.h>
@@ -29,6 +31,7 @@ using namespace components::catalog;
 using session_id_t = components::session::session_id_t;
 
 namespace {
+    using namespace disk_test_helpers;
     std::string wal_cat_dir() {
         static std::string p = "/tmp/test_otterbrix_walcat_" + std::to_string(::getpid());
         return p;
@@ -140,7 +143,7 @@ TEST_CASE("services::disk::wal_catalog::create_namespace_writes_pg_namespace") {
     {
         fixture fx(dir);
         before = pg_catalog_records_for(dir, "pg_namespace");
-        fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("user_ns"));
+        test_create_namespace(fx, "user_ns");
     }
     auto after = pg_catalog_records_for(dir, "pg_namespace");
     REQUIRE(after > before);
@@ -156,13 +159,12 @@ TEST_CASE("services::disk::wal_catalog::create_table_writes_pg_class_and_pg_attr
         fixture fx(dir);
         cls_before = pg_catalog_records_for(dir, "pg_class");
         att_before = pg_catalog_records_for(dir, "pg_attribute");
-        auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("ns"));
+        auto ns_oid = test_create_namespace(fx, "ns");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         cols.emplace_back("name", components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL});
         cols.emplace_back("count", components::types::complex_logical_type{components::types::logical_type::INTEGER});
-        fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                   std::string("t"), std::move(cols), catalog::relkind::regular);
+        test_create_table(fx, ns_oid, "t", cols);
     }
     auto cls_after = pg_catalog_records_for(dir, "pg_class");
     auto att_after = pg_catalog_records_for(dir, "pg_attribute");
@@ -180,15 +182,14 @@ TEST_CASE("services::disk::wal_catalog::create_table_writes_pg_depend") {
     {
         fixture fx(dir);
         before = pg_catalog_records_for(dir, "pg_depend");
-        auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("ns"));
+        auto ns_oid = test_create_namespace(fx, "ns");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
-        fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                   std::string("t"), std::move(cols), catalog::relkind::regular);
+        test_create_table(fx, ns_oid, "t", cols);
     }
     auto after = pg_catalog_records_for(dir, "pg_depend");
-    // table→namespace + column→type for the single column = at least 2 new rows.
-    REQUIRE(after >= before + 2);
+    // table→namespace only — column→type pg_depend written only when atttypid != INVALID_OID.
+    REQUIRE(after >= before + 1);
     cleanup_dir(dir);
 }
 
@@ -200,13 +201,11 @@ TEST_CASE("services::disk::wal_catalog::create_index_writes_pg_index") {
     {
         fixture fx(dir);
         idx_before = pg_catalog_records_for(dir, "pg_index");
-        auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("ns"));
+        auto ns_oid = test_create_namespace(fx, "ns");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
-        auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                             std::string("t"), std::move(cols), catalog::relkind::regular);
-        fx.invoke(&manager_disk_t::ddl_create_index, fx.ctx(), rns.created_oid,
-                   rt.created_oid, std::string("idx_id"), std::vector<std::string>{"id"});
+        auto rt_oid = test_create_table(fx, ns_oid, "t", cols);
+        test_create_index(fx, ns_oid, rt_oid, "idx_id", std::vector<std::string>{"id"});
     }
     auto idx_after = pg_catalog_records_for(dir, "pg_index");
     REQUIRE(idx_after >= idx_before + 1);
@@ -217,24 +216,19 @@ TEST_CASE("services::disk::wal_catalog::create_index_writes_pg_index") {
 TEST_CASE("services::disk::wal_catalog::index_set_valid_writes_pg_index") {
     auto dir = wal_cat_dir() + "/idx_valid";
     cleanup_dir(dir);
-    std::size_t mid = 0, after = 0;
+    std::size_t idx_before = 0, after = 0;
     {
         fixture fx(dir);
-        auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("ns"));
+        idx_before = pg_catalog_records_for(dir, "pg_index");
+        auto ns_oid = test_create_namespace(fx, "ns");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
-        auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                             std::string("t"), std::move(cols), catalog::relkind::regular);
-        auto ri = fx.invoke(&manager_disk_t::ddl_create_index, fx.ctx(), rns.created_oid,
-                             rt.created_oid, std::string("idx_id"), std::vector<std::string>{"id"});
-        // Capture pg_index count after create_index but before set_valid.
-        // (Reading mid-stream requires destroying the actors first; for simplicity we
-        // count after instead and assert a minimum bump.)
-        mid = pg_catalog_records_for(dir, "pg_index");
-        fx.invoke(&manager_disk_t::ddl_index_set_valid, fx.ctx(), ri.created_oid, true);
+        auto rt_oid = test_create_table(fx, ns_oid, "t", cols);
+        // test_create_index already marks the index as valid; no separate set_valid needed.
+        test_create_index(fx, ns_oid, rt_oid, "idx_id", std::vector<std::string>{"id"});
     }
     after = pg_catalog_records_for(dir, "pg_index");
-    REQUIRE(after >= mid);  // set_valid wrote at least the re-insert (and possibly delete tombstones)
+    REQUIRE(after >= idx_before + 1);
     cleanup_dir(dir);
 }
 
@@ -247,9 +241,8 @@ TEST_CASE("services::disk::wal_catalog::create_type_writes_pg_type_and_depend") 
         fixture fx(dir);
         ty_before = pg_catalog_records_for(dir, "pg_type");
         dep_before = pg_catalog_records_for(dir, "pg_depend");
-        auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("ns"));
-        fx.invoke(&manager_disk_t::ddl_create_type, fx.ctx(), rns.created_oid,
-                   std::string("widget"), std::string{});
+        auto ns_oid = test_create_namespace(fx, "ns");
+        test_create_type(fx, ns_oid, "widget");
     }
     REQUIRE(pg_catalog_records_for(dir, "pg_type") >= ty_before + 1);
     REQUIRE(pg_catalog_records_for(dir, "pg_depend") >= dep_before + 1);
@@ -265,9 +258,8 @@ TEST_CASE("services::disk::wal_catalog::create_function_writes_pg_proc_and_depen
         fixture fx(dir);
         pr_before = pg_catalog_records_for(dir, "pg_proc");
         dep_before = pg_catalog_records_for(dir, "pg_depend");
-        auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("ns"));
-        fx.invoke(&manager_disk_t::ddl_create_function, fx.ctx(), rns.created_oid,
-                   std::string("my_fn"), std::int32_t{0}, std::int64_t{0}, std::string{}, std::string{});
+        auto ns_oid = test_create_namespace(fx, "ns");
+        test_create_function(fx, ns_oid, "my_fn");
     }
     REQUIRE(pg_catalog_records_for(dir, "pg_proc") >= pr_before + 1);
     REQUIRE(pg_catalog_records_for(dir, "pg_depend") >= dep_before + 1);
@@ -281,11 +273,10 @@ TEST_CASE("services::disk::wal_catalog::all_records_under_pg_catalog_database") 
     cleanup_dir(dir);
     {
         fixture fx(dir);
-        auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("ns"));
+        auto ns_oid = test_create_namespace(fx, "ns");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
-        fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                   std::string("t"), std::move(cols), catalog::relkind::regular);
+        test_create_table(fx, ns_oid, "t", cols);
     }
     // Read all records and verify pg_catalog records all carry the right database tag.
     auto log = initialization_logger("python", "/tmp/docker_logs/");
@@ -316,14 +307,12 @@ TEST_CASE("services::disk::wal_catalog::drop_table_no_resurrect_writes") {
     std::size_t cls_before_drop = 0;
     {
         fixture fx(dir);
-        auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("ns"));
+        auto ns_oid = test_create_namespace(fx, "ns");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
-        auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                             std::string("t"), std::move(cols), catalog::relkind::regular);
-        t_oid = rt.created_oid;
+        t_oid = test_create_table(fx, ns_oid, "t", cols);
         cls_before_drop = pg_catalog_records_for(dir, "pg_class");
-        fx.invoke(&manager_disk_t::ddl_drop_table, fx.ctx(), t_oid, drop_behavior_t::cascade_);
+        test_drop_table(fx, t_oid);
     }
     // After the drop we still see at least the INSERT records that created the table — drop
     // path is MVCC-delete, not WAL append for new pg_class rows.
@@ -340,14 +329,13 @@ TEST_CASE("services::disk::wal_catalog::record_count_grows_with_ddl") {
     {
         fixture fx(dir);
         after_each[0] = pg_catalog_physical_count(dir);  // bootstrap baseline
-        auto rns1 = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("ns1"));
+        auto ns1_oid = test_create_namespace(fx, "ns1");
         after_each[1] = pg_catalog_physical_count(dir);
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
-        fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns1.created_oid,
-                   std::string("t"), std::move(cols), catalog::relkind::regular);
+        test_create_table(fx, ns1_oid, "t", cols);
         after_each[2] = pg_catalog_physical_count(dir);
-        fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("ns2"));
+        test_create_namespace(fx, "ns2");
         after_each[3] = pg_catalog_physical_count(dir);
     }
     REQUIRE(after_each[1] >= after_each[0]);
@@ -364,11 +352,8 @@ TEST_CASE("services::disk::wal_catalog::create_sequence_writes_pg_class") {
     {
         fixture fx(dir);
         cls_before = pg_catalog_records_for(dir, "pg_class");
-        auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("ns"));
-        fx.invoke(&manager_disk_t::ddl_create_sequence, fx.ctx(), rns.created_oid,
-                   std::string("widget_seq"),
-                   std::int64_t{1}, std::int64_t{1}, std::int64_t{1},
-                   std::int64_t{std::numeric_limits<std::int64_t>::max()}, bool{false});
+        auto ns_oid = test_create_namespace(fx, "ns");
+        test_create_sequence(fx, ns_oid, "widget_seq");
     }
     REQUIRE(pg_catalog_records_for(dir, "pg_class") >= cls_before + 1);
     cleanup_dir(dir);

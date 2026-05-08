@@ -1,7 +1,6 @@
 project(planner CXX)
 
 set(SOURCE_${PROJECT_NAME}
-        ddl_metadata_builder.cpp
         planner.cpp
         optimizer.cpp
         optimizer/rules/constant_folding.cpp

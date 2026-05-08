@@ -3,6 +3,7 @@
 #include "validate_logical_plan.hpp"
 
 #include <components/catalog/catalog_codes.hpp>
+#include <components/catalog/ddl_metadata_builder.hpp>
 #include <components/catalog/oid_batch.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/catalog/table_id.hpp>
@@ -51,6 +52,8 @@ using namespace components::catalog;
 using namespace components::types;
 
 namespace services::dispatcher {
+
+    namespace catalog = components::catalog;
 
     namespace {
 
@@ -227,8 +230,11 @@ namespace services::dispatcher {
 
         // Rebuild collections_ from on-disk pg_catalog so post-restart queries find user
         // collections that were re-loaded via WAL replay. Direct list_* calls bypass the
-        // per-name V4 cache (cache cannot serve enumeration semantics).
+        // per-name V4 cache (cache cannot serve enumeration semantics). Clear first so that
+        // dropped tables (whose pg_class rows are committed-deleted) are not left as stale
+        // entries — the disk scan is authoritative when disk is enabled.
         if (disk_address_ != actor_zeta::address_t::empty_address()) {
+            collections_.clear();
             auto [_ln, lnf] = actor_zeta::send(disk_address_,
                                                 &disk::manager_disk_t::list_namespaces, ctx);
             auto namespaces = co_await std::move(lnf);
@@ -329,6 +335,11 @@ namespace services::dispatcher {
                 break;
             }
             case node_type::drop_collection_t: {
+                if (!collections_.count(logic_plan->collection_full_name())) {
+                    error = make_cursor(resource(), error_code_t::collection_not_exists,
+                                        "collection does not exist");
+                    break;
+                }
                 if (!id.get_namespace().empty()) {
                     auto* ns_e = view.try_get_namespace(std::string_view(id.get_namespace().front()));
                     if (ns_e) {
@@ -439,27 +450,51 @@ namespace services::dispatcher {
                                     field_cols.emplace_back(fname, field);
                                 }
                             }
-                            auto [_ct, ctf] = actor_zeta::send(disk_address_,
-                                                                &disk::manager_disk_t::ddl_create_table,
-                                                                ddl_ctx,
-                                                                target_ns,
-                                                                std::string(n->type().type_name()),
-                                                                std::move(field_cols),
-                                                                relkind::composite_type);
-                            if (auto r = co_await std::move(ctf); r.failed())
-                                co_return make_ddl_error_cursor(resource(), r);
+                            auto [_oa2, oaf2] = actor_zeta::send(disk_address_,
+                                                                  &disk::manager_disk_t::allocate_oids_batch,
+                                                                  std::size_t{1 + field_cols.size()});
+                            catalog::oid_batch_t ct_batch;
+                            ct_batch.oids = co_await std::move(oaf2);
+                            collection_full_name_t ct_collection{
+                                logic_plan->database_name().empty()
+                                    ? std::string("public")
+                                    : std::string(logic_plan->database_name()),
+                                std::string("main"),
+                                std::string(n->type().type_name())};
+                            auto ct_writes = catalog::build_create_table_writes(
+                                resource(),
+                                ct_collection,
+                                field_cols,
+                                /*is_disk_storage=*/false,
+                                target_ns,
+                                ct_batch,
+                                relkind::composite_type);
+                            for (auto& w : ct_writes) {
+                                auto [_w2, wf2] = actor_zeta::send(disk_address_,
+                                                                    &disk::manager_disk_t::append_pg_catalog_row,
+                                                                    ddl_ctx, std::move(w.table), std::move(w.row));
+                                co_await std::move(wf2);
+                            }
                         } else {
-                            // ENUM and other extension types — keep using pg_type with
-                            // typdefspec. ENUM serialization is flat (no nested types) and
-                            // round-trips correctly.
-                            auto [_dt, dtf] = actor_zeta::send(disk_address_,
-                                                                &disk::manager_disk_t::ddl_create_type,
-                                                                ddl_ctx,
-                                                                target_ns,
-                                                                std::string(n->type().type_name()),
-                                                                components::catalog::encode_type_spec(n->type()));
-                            if (auto r = co_await std::move(dtf); r.failed())
-                                co_return make_ddl_error_cursor(resource(), r);
+                            // ENUM and other extension types — persist via pg_type.
+                            auto [_oa, oaf] = actor_zeta::send(disk_address_,
+                                                                &disk::manager_disk_t::allocate_oids_batch,
+                                                                std::size_t{1});
+                            catalog::oid_batch_t type_batch;
+                            type_batch.oids = co_await std::move(oaf);
+                            const catalog::oid_t type_oid = type_batch.allocate();
+                            auto type_writes = catalog::build_create_type_writes(
+                                resource(),
+                                std::string(n->type().type_name()),
+                                target_ns,
+                                type_oid,
+                                components::catalog::encode_type_spec(n->type()));
+                            for (auto& w : type_writes) {
+                                auto [_w, wf] = actor_zeta::send(disk_address_,
+                                                                  &disk::manager_disk_t::append_pg_catalog_row,
+                                                                  ddl_ctx, std::move(w.table), std::move(w.row));
+                                co_await std::move(wf);
+                            }
                         }
                     }
                     co_return make_cursor(resource(), operation_status_t::success);
@@ -504,13 +539,20 @@ namespace services::dispatcher {
                                                             std::uint64_t{0});
                         auto rt = co_await std::move(rtf);
                         if (rt.found) {
-                            auto [_dt, dtf] = actor_zeta::send(disk_address_,
-                                                                &disk::manager_disk_t::ddl_drop_type,
-                                                                ddl_ctx,
-                                                                rt.oid,
-                                                                disk::drop_behavior_t::cascade_);
-                            if (auto r = co_await std::move(dtf); r.failed())
-                                co_return make_ddl_error_cursor(resource(), r);
+                            const collection_full_name_t pg_type_coll{"pg_catalog", "main", "pg_type"};
+                            const collection_full_name_t pg_depend_coll{"pg_catalog", "main", "pg_depend"};
+                            auto [_d1, d1f] = actor_zeta::send(disk_address_,
+                                                                &disk::manager_disk_t::delete_pg_catalog_rows,
+                                                                ddl_ctx, pg_type_coll, std::int64_t{0}, rt.oid);
+                            co_await std::move(d1f);
+                            auto [_d2, d2f] = actor_zeta::send(disk_address_,
+                                                                &disk::manager_disk_t::delete_pg_catalog_rows,
+                                                                ddl_ctx, pg_depend_coll, std::int64_t{1}, rt.oid);
+                            co_await std::move(d2f);
+                            auto [_d3, d3f] = actor_zeta::send(disk_address_,
+                                                                &disk::manager_disk_t::delete_pg_catalog_rows,
+                                                                ddl_ctx, pg_depend_coll, std::int64_t{3}, rt.oid);
+                            co_await std::move(d3f);
                         }
                     }
                     co_return make_cursor(resource(), operation_status_t::success);
@@ -564,13 +606,34 @@ namespace services::dispatcher {
             logic_plan = planner.create_plan(resource(), std::move(logic_plan));
         }
 
+        // For create_collection_t: allocate OIDs then call DDL planner to produce
+        // sequence_t(create_collection_t, primitive_write×N). The physical plan
+        // generator maps this to operator_create_collection_t (storage + catalog writes).
+        if (original_type == node_type::create_collection_t &&
+            disk_address_ != actor_zeta::address_t::empty_address()) {
+            auto* cc = static_cast<node_create_collection_t*>(logic_plan.get());
+            const std::size_t need = 1 + cc->column_definitions().size();
+            auto [_oa, oaf] = actor_zeta::send(disk_address_,
+                                               &disk::manager_disk_t::allocate_oids_batch,
+                                               need);
+            catalog::oid_batch_t oid_batch;
+            oid_batch.oids = co_await std::move(oaf);
+            components::planner::planner_t ddl_planner;
+            logic_plan = ddl_planner.create_plan(resource(), std::move(logic_plan), std::move(oid_batch));
+        }
+
         // DDL needs a real (non-zero) txn so that mid-DDL crash → WAL replay rolls back
         // partially-written pg_catalog.* records.
         components::table::transaction_data txn_data{0, 0};
         {
             const auto t = logic_plan->type();
-            const bool needs_ddl_txn = t == node_type::create_database_t || t == node_type::drop_database_t ||
-                                        t == node_type::create_collection_t || t == node_type::drop_collection_t ||
+            // create_collection_t is checked via original_type: after the DDL planner
+            // rewrite it becomes sequence_t, but still needs a DDL txn so that
+            // append_pg_catalog_row tracks rows in pending_pg_catalog_appends_ and
+            // commit_pg_catalog_appends rebuilds table_to_oid_ on success.
+            const bool needs_ddl_txn = original_type == node_type::create_collection_t ||
+                                        t == node_type::create_database_t || t == node_type::drop_database_t ||
+                                        t == node_type::drop_collection_t ||
                                         t == node_type::create_sequence_t || t == node_type::drop_sequence_t ||
                                         t == node_type::create_view_t || t == node_type::drop_view_t ||
                                         t == node_type::create_macro_t || t == node_type::drop_macro_t ||
@@ -589,9 +652,6 @@ namespace services::dispatcher {
                 break;
             case node_type::drop_database_t:
                 exec_result = drop_database_(logic_plan);
-                break;
-            case node_type::create_collection_t:
-                exec_result = create_collection_(logic_plan);
                 break;
             case node_type::drop_collection_t:
                 exec_result = drop_collection_(logic_plan);
@@ -694,7 +754,7 @@ namespace services::dispatcher {
             // changing logic_plan->type() to a constraint wrapper type.
             const auto t = original_type;
             const bool is_ddl = t == node_type::create_database_t || t == node_type::drop_database_t ||
-                                 t == node_type::create_collection_t || t == node_type::drop_collection_t ||
+                                 t == node_type::drop_collection_t ||
                                  t == node_type::create_sequence_t || t == node_type::drop_sequence_t ||
                                  t == node_type::create_view_t || t == node_type::drop_view_t ||
                                  t == node_type::create_macro_t || t == node_type::drop_macro_t ||
@@ -771,6 +831,46 @@ namespace services::dispatcher {
                             trace(log_, "ddl_adopt_computing_schema failed: status={}, blocker={}", static_cast<int>(r.status), r.blocking_oid);
                         break;
                     }
+                }
+                co_return result;
+            }
+            if (t == node_type::create_collection_t) {
+                // Flush + WAL commit + commit_pg_catalog_appends (flips MVCC tags and
+                // rebuilds table_to_oid_ so the next resolve_table call finds the table).
+                // Mirrors the execute_ddl commit sequence used by DROP TABLE, ALTER TABLE, etc.
+                if (disk_address_ != actor_zeta::address_t::empty_address()) {
+                    auto [_f, ff] = actor_zeta::send(disk_address_,
+                                                      &disk::manager_disk_t::flush,
+                                                      session, wal::id_t{0});
+                    co_await std::move(ff);
+                }
+                if (wal_address_ != actor_zeta::address_t::empty_address()) {
+                    std::string db;
+                    if (!logic_plan->children().empty())
+                        db = std::string(logic_plan->children().front()->database_name());
+                    if (db.empty()) db = "default";
+                    auto [_c, cf] = actor_zeta::send(wal_address_,
+                                                      &wal::manager_wal_replicate_t::commit_txn,
+                                                      session,
+                                                      txn_data.transaction_id,
+                                                      wal::wal_sync_mode::FULL,
+                                                      std::move(db));
+                    co_await std::move(cf);
+                }
+                if (txn_data.transaction_id != 0 &&
+                    disk_address_ != actor_zeta::address_t::empty_address()) {
+                    const uint64_t commit_id = txn_manager_.commit(session);
+                    if (commit_id > 0) {
+                        components::execution_context_t cpa_ctx{session, txn_data, {}};
+                        auto [_cpa, cpaf] = actor_zeta::send(disk_address_,
+                                                              &disk::manager_disk_t::commit_pg_catalog_appends,
+                                                              cpa_ctx, commit_id);
+                        co_await std::move(cpaf);
+                    }
+                }
+                // Update routing map: logic_plan is sequence_t, first child is create_collection_t.
+                if (!logic_plan->children().empty()) {
+                    collections_.insert(logic_plan->children().front()->collection_full_name());
                 }
                 co_return result;
             }
@@ -893,17 +993,27 @@ namespace services::dispatcher {
                         }
                         prorettype = components::catalog::encode_prorettype(outs);
                     }
-                    auto [_df, dff] = actor_zeta::send(disk_address_,
-                                                        &disk::manager_disk_t::ddl_create_function,
-                                                        ddl_ctx,
-                                                        target_ns,
-                                                        std::string(func_name),
-                                                        pronargs,
-                                                        prouid,
-                                                        std::move(proargmatchers),
-                                                        std::move(prorettype));
-                    if (auto r = co_await std::move(dff); r.failed())
-                        trace(log_, "ddl_create_function failed: status={}, blocker={}", static_cast<int>(r.status), r.blocking_oid);
+                    auto [_oa, oaf] = actor_zeta::send(disk_address_,
+                                                        &disk::manager_disk_t::allocate_oids_batch,
+                                                        std::size_t{1});
+                    catalog::oid_batch_t fn_batch;
+                    fn_batch.oids = co_await std::move(oaf);
+                    const catalog::oid_t fn_oid = fn_batch.allocate();
+                    auto fn_writes = catalog::build_create_function_writes(
+                        resource(),
+                        std::string(func_name),
+                        target_ns,
+                        fn_oid,
+                        pronargs,
+                        prouid,
+                        std::move(proargmatchers),
+                        std::move(prorettype));
+                    for (auto& w : fn_writes) {
+                        auto [_w, wf] = actor_zeta::send(disk_address_,
+                                                          &disk::manager_disk_t::append_pg_catalog_row,
+                                                          ddl_ctx, std::move(w.table), std::move(w.row));
+                        co_await std::move(wf);
+                    }
                 }
                 co_return true;
             } else {
@@ -955,14 +1065,21 @@ namespace services::dispatcher {
                                                          std::string(function_name),
                                                          std::uint64_t{0});
                 auto matches = co_await std::move(rfbnf);
+                const collection_full_name_t pg_proc_coll{"pg_catalog", "main", "pg_proc"};
+                const collection_full_name_t pg_depend_coll2{"pg_catalog", "main", "pg_depend"};
                 for (auto& m : matches) {
-                    auto [_df, dff] = actor_zeta::send(disk_address_,
-                                                        &disk::manager_disk_t::ddl_drop_function,
-                                                        ddl_ctx,
-                                                        m.oid,
-                                                        disk::drop_behavior_t::cascade_);
-                    if (auto r = co_await std::move(dff); r.failed())
-                        trace(log_, "ddl_drop_function failed: status={}, blocker={}", static_cast<int>(r.status), r.blocking_oid);
+                    auto [_d1, d1f] = actor_zeta::send(disk_address_,
+                                                        &disk::manager_disk_t::delete_pg_catalog_rows,
+                                                        ddl_ctx, pg_proc_coll, std::int64_t{0}, m.oid);
+                    co_await std::move(d1f);
+                    auto [_d2, d2f] = actor_zeta::send(disk_address_,
+                                                        &disk::manager_disk_t::delete_pg_catalog_rows,
+                                                        ddl_ctx, pg_depend_coll2, std::int64_t{1}, m.oid);
+                    co_await std::move(d2f);
+                    auto [_d3, d3f] = actor_zeta::send(disk_address_,
+                                                        &disk::manager_disk_t::delete_pg_catalog_rows,
+                                                        ddl_ctx, pg_depend_coll2, std::int64_t{3}, m.oid);
+                    co_await std::move(d3f);
                 }
             }
             co_return true;

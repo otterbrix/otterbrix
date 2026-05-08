@@ -1,0 +1,35 @@
+#include "operator_primitive_delete.hpp"
+
+#include <components/context/context.hpp>
+#include <services/disk/manager_disk.hpp>
+
+namespace components::operators {
+
+    operator_primitive_delete_t::operator_primitive_delete_t(std::pmr::memory_resource* resource,
+                                                              log_t                      log,
+                                                              collection_full_name_t     catalog_table,
+                                                              std::int64_t               oid_col_idx,
+                                                              components::catalog::oid_t target_oid)
+        : read_write_operator_t(resource, std::move(log), operator_type::primitive_delete)
+        , catalog_table_(std::move(catalog_table))
+        , oid_col_idx_(oid_col_idx)
+        , target_oid_(target_oid) {}
+
+    void operator_primitive_delete_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
+        async_wait();
+    }
+
+    actor_zeta::unique_future<void>
+    operator_primitive_delete_t::await_async_and_resume(pipeline::context_t* ctx) {
+        components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
+        auto [_, fut] = actor_zeta::send(ctx->disk_address,
+                                         &services::disk::manager_disk_t::delete_pg_catalog_rows,
+                                         exec_ctx,
+                                         catalog_table_,
+                                         oid_col_idx_,
+                                         target_oid_);
+        co_await std::move(fut);
+        mark_executed();
+    }
+
+} // namespace components::operators

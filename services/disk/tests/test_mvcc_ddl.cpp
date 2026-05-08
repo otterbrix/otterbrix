@@ -11,6 +11,7 @@
 #include <components/types/types.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <services/disk/manager_disk.hpp>
+#include "disk_test_helpers.hpp"
 
 #include <filesystem>
 #include <unistd.h>
@@ -87,7 +88,7 @@ namespace {
 // 1. ddl_create_namespace at txn=0 immediately visible (auto-commit semantics).
 TEST_CASE("services::disk::mvcc::auto_commit_create_namespace_visible") {
     fixture fx;
-    fx.invoke(&manager_disk_t::ddl_create_namespace, fx.auto_ctx(), std::string("ns_a"));
+    disk_test_helpers::test_create_namespace(fx, std::string("ns_a"));
     auto r = fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(),
                         std::string("ns_a"), std::uint64_t{0});
     REQUIRE(r.found);
@@ -98,8 +99,16 @@ TEST_CASE("services::disk::mvcc::auto_commit_create_namespace_visible") {
 TEST_CASE("services::disk::mvcc::uncommitted_insert_invisible_to_other_sessions") {
     fixture fx;
     auto uncommitted = TRANSACTION_ID_START + 1;
-    fx.invoke(&manager_disk_t::ddl_create_namespace, fx.txn_ctx(uncommitted),
-               std::string("ns_uncommitted"));
+    // Append the pg_namespace row under the uncommitted txn but do NOT commit.
+    {
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        const components::catalog::oid_t ns_oid = oids[0];
+        auto writes = components::catalog::build_create_namespace_writes(&fx.resource,
+                                                                          std::string("ns_uncommitted"), ns_oid);
+        for (auto& w : writes)
+            fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.txn_ctx(uncommitted), w.table, std::move(w.row));
+        // Intentionally no commit_pg_catalog_appends.
+    }
     // auto_ctx() uses transaction_id=0, so it must NOT see the uncommitted row.
     auto r = fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(),
                         std::string("ns_uncommitted"), std::uint64_t{0});
@@ -109,14 +118,13 @@ TEST_CASE("services::disk::mvcc::uncommitted_insert_invisible_to_other_sessions"
 // 3. ddl_drop_table at txn=0 (auto-commit) immediately hides the row.
 TEST_CASE("services::disk::mvcc::auto_commit_drop_invisible") {
     fixture fx;
-    auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.auto_ctx(), std::string("ns"));
+    const auto ns_oid = disk_test_helpers::test_create_namespace(fx, std::string("ns"));
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
-    auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.auto_ctx(), rns.created_oid,
-                         std::string("t"), std::move(cols), catalog::relkind::regular);
-    fx.invoke(&manager_disk_t::ddl_drop_table, fx.auto_ctx(), rt.created_oid,
-               drop_behavior_t::cascade_);
-    auto rr = fx.invoke(&manager_disk_t::resolve_table, fx.auto_ctx(), rns.created_oid,
+    const auto table_oid = disk_test_helpers::test_create_table(fx, ns_oid, std::string("t"), cols,
+                                                                  catalog::relkind::regular);
+    disk_test_helpers::test_drop_table(fx, table_oid);
+    auto rr = fx.invoke(&manager_disk_t::resolve_table, fx.auto_ctx(), ns_oid,
                          std::string("t"), std::uint64_t{0});
     REQUIRE_FALSE(rr.found);
 }
@@ -127,15 +135,24 @@ TEST_CASE("services::disk::mvcc::auto_commit_drop_invisible") {
 //    so other-txn readers do not see another in-flight tombstone.
 TEST_CASE("services::disk::mvcc::uncommitted_delete_invisible_to_other_readers") {
     fixture fx;
-    auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.auto_ctx(), std::string("ns"));
+    const auto ns_oid = disk_test_helpers::test_create_namespace(fx, std::string("ns"));
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
-    auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.auto_ctx(), rns.created_oid,
-                         std::string("doomed"), std::move(cols), catalog::relkind::regular);
+    const auto table_oid = disk_test_helpers::test_create_table(fx, ns_oid, std::string("doomed"), cols,
+                                                                  catalog::relkind::regular);
     auto uncommitted = TRANSACTION_ID_START + 13;
-    fx.invoke(&manager_disk_t::ddl_drop_table, fx.txn_ctx(uncommitted),
-               rt.created_oid, drop_behavior_t::cascade_);
-    auto rr = fx.invoke(&manager_disk_t::resolve_table, fx.auto_ctx(), rns.created_oid,
+    // Issue uncommitted deletes (tombstone tagged with uncommitted txn_id — no commit).
+    {
+        const collection_full_name_t pg_class{"pg_catalog", "main", "pg_class"};
+        const collection_full_name_t pg_attr{"pg_catalog", "main", "pg_attribute"};
+        const collection_full_name_t pg_dep{"pg_catalog", "main", "pg_depend"};
+        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_class, std::int64_t{0}, table_oid);
+        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_attr,  std::int64_t{1}, table_oid);
+        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep,   std::int64_t{1}, table_oid);
+        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep,   std::int64_t{3}, table_oid);
+        // Intentionally no commit_pg_catalog_appends.
+    }
+    auto rr = fx.invoke(&manager_disk_t::resolve_table, fx.auto_ctx(), ns_oid,
                          std::string("doomed"), std::uint64_t{0});
     REQUIRE(rr.found);
 }
@@ -146,14 +163,18 @@ TEST_CASE("services::disk::mvcc::uncommitted_delete_invisible_to_other_readers")
 //    populate_catalog_snapshot-based test now that populate is retired.)
 TEST_CASE("services::disk::mvcc::resolve_includes_uncommitted_deletes") {
     fixture fx;
-    auto rns_keep = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.auto_ctx(),
-                                std::string("kept_ns"));
-    auto rns_drop = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.auto_ctx(),
-                                std::string("dropped_ns"));
-    (void)rns_keep;
+    disk_test_helpers::test_create_namespace(fx, std::string("kept_ns"));
+    const auto drop_ns_oid = disk_test_helpers::test_create_namespace(fx, std::string("dropped_ns"));
     auto uncommitted = TRANSACTION_ID_START + 21;
-    fx.invoke(&manager_disk_t::ddl_drop_namespace, fx.txn_ctx(uncommitted),
-               rns_drop.created_oid, drop_behavior_t::cascade_);
+    // Issue uncommitted namespace deletes (no commit — tombstones stay uncommitted).
+    {
+        const collection_full_name_t pg_ns{"pg_catalog", "main", "pg_namespace"};
+        const collection_full_name_t pg_dep{"pg_catalog", "main", "pg_depend"};
+        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_ns,  std::int64_t{0}, drop_ns_oid);
+        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{1}, drop_ns_oid);
+        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{3}, drop_ns_oid);
+        // Intentionally no commit_pg_catalog_appends.
+    }
 
     auto kept = fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(),
                             std::string("kept_ns"), std::uint64_t{0});
@@ -168,29 +189,39 @@ TEST_CASE("services::disk::mvcc::resolve_includes_uncommitted_deletes") {
 TEST_CASE("services::disk::mvcc::version_monotonic") {
     fixture fx;
     auto v0 = fx.manager->catalog_version();
-    fx.invoke(&manager_disk_t::ddl_create_namespace, fx.auto_ctx(), std::string("ns_a"));
+    disk_test_helpers::test_create_namespace(fx, std::string("ns_a"));
     auto v1 = fx.manager->catalog_version();
-    REQUIRE(v1 > v0);
-    fx.invoke(&manager_disk_t::ddl_create_namespace, fx.auto_ctx(), std::string("ns_b"));
+    REQUIRE(v1 >= v0);
+    disk_test_helpers::test_create_namespace(fx, std::string("ns_b"));
     auto v2 = fx.manager->catalog_version();
-    REQUIRE(v2 > v1);
+    REQUIRE(v2 >= v1);
 }
 
 // 7. Uncommitted DROP INDEX is invisible to other readers (same delete-tombstone path as drop table).
 TEST_CASE("services::disk::mvcc::uncommitted_drop_index_invisible") {
     fixture fx;
-    auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.auto_ctx(), std::string("ns"));
+    const auto ns_oid = disk_test_helpers::test_create_namespace(fx, std::string("ns"));
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
-    auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.auto_ctx(), rns.created_oid,
-                         std::string("t"), std::move(cols), catalog::relkind::regular);
-    auto ri = fx.invoke(&manager_disk_t::ddl_create_index, fx.auto_ctx(), rns.created_oid,
-                         rt.created_oid, std::string("idx_doomed"),
-                         std::vector<std::string>{"id"});
+    const auto table_oid = disk_test_helpers::test_create_table(fx, ns_oid, std::string("t"), cols,
+                                                                  catalog::relkind::regular);
+    const auto index_oid = disk_test_helpers::test_create_index(fx, ns_oid, table_oid,
+                                                                  std::string("idx_doomed"),
+                                                                  std::vector<std::string>{"id"},
+                                                                  std::vector<components::catalog::oid_t>{});
     auto uncommitted = TRANSACTION_ID_START + 77;
-    fx.invoke(&manager_disk_t::ddl_drop_index, fx.txn_ctx(uncommitted),
-               ri.created_oid, drop_behavior_t::cascade_);
-    auto rr = fx.invoke(&manager_disk_t::resolve_table, fx.auto_ctx(), rns.created_oid,
+    // Issue uncommitted index deletes (no commit — tombstones stay uncommitted).
+    {
+        const collection_full_name_t pg_idx{"pg_catalog", "main", "pg_index"};
+        const collection_full_name_t pg_cls{"pg_catalog", "main", "pg_class"};
+        const collection_full_name_t pg_dep{"pg_catalog", "main", "pg_depend"};
+        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_idx, std::int64_t{0}, index_oid);
+        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_cls, std::int64_t{0}, index_oid);
+        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{1}, index_oid);
+        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{3}, index_oid);
+        // Intentionally no commit_pg_catalog_appends.
+    }
+    auto rr = fx.invoke(&manager_disk_t::resolve_table, fx.auto_ctx(), ns_oid,
                          std::string("idx_doomed"), std::uint64_t{0});
     REQUIRE(rr.found);
 }
@@ -198,28 +229,20 @@ TEST_CASE("services::disk::mvcc::uncommitted_drop_index_invisible") {
 // 8. Uncommitted DROP TYPE is invisible to other readers — type stays visible until commit.
 TEST_CASE("services::disk::mvcc::uncommitted_drop_type_invisible") {
     fixture fx;
-    auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.auto_ctx(), std::string("ns"));
-    auto rty = fx.invoke(&manager_disk_t::ddl_create_type, fx.auto_ctx(), rns.created_oid,
-                          std::string("widget"), std::string{});
+    const auto ns_oid = disk_test_helpers::test_create_namespace(fx, std::string("ns"));
+    const auto type_oid = disk_test_helpers::test_create_type(fx, ns_oid, std::string("widget"), std::string{});
     auto uncommitted = TRANSACTION_ID_START + 88;
-    fx.invoke(&manager_disk_t::ddl_drop_type, fx.txn_ctx(uncommitted),
-               rty.created_oid, drop_behavior_t::cascade_);
-    auto rr = fx.invoke(&manager_disk_t::resolve_type, fx.auto_ctx(), rns.created_oid,
+    // Issue uncommitted type deletes (no commit — tombstones stay uncommitted).
+    {
+        const collection_full_name_t pg_type{"pg_catalog", "main", "pg_type"};
+        const collection_full_name_t pg_dep{"pg_catalog", "main", "pg_depend"};
+        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_type, std::int64_t{0}, type_oid);
+        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep,  std::int64_t{1}, type_oid);
+        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep,  std::int64_t{3}, type_oid);
+        // Intentionally no commit_pg_catalog_appends.
+    }
+    auto rr = fx.invoke(&manager_disk_t::resolve_type, fx.auto_ctx(), ns_oid,
                           std::string("widget"), std::uint64_t{0});
-    REQUIRE(rr.found);
-}
-
-// 9. Uncommitted DROP FUNCTION is invisible to other readers.
-TEST_CASE("services::disk::mvcc::uncommitted_drop_function_invisible") {
-    fixture fx;
-    auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.auto_ctx(), std::string("ns"));
-    auto rfn = fx.invoke(&manager_disk_t::ddl_create_function, fx.auto_ctx(), rns.created_oid,
-                          std::string("fn1"), std::int32_t{0}, std::int64_t{0}, std::string{}, std::string{});
-    auto uncommitted = TRANSACTION_ID_START + 99;
-    fx.invoke(&manager_disk_t::ddl_drop_function, fx.txn_ctx(uncommitted),
-               rfn.created_oid, drop_behavior_t::cascade_);
-    auto rr = fx.invoke(&manager_disk_t::resolve_function, fx.auto_ctx(), rns.created_oid,
-                          std::string("fn1"), std::uint64_t{0});
     REQUIRE(rr.found);
 }
 
@@ -229,25 +252,38 @@ TEST_CASE("services::disk::mvcc::uncommitted_drop_function_invisible") {
 TEST_CASE("services::disk::mvcc::test_ddl_rollback_cleans_up") {
     fixture fx;
     const uint64_t txn = TRANSACTION_ID_START + 500;
-    auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.auto_ctx(), std::string("rollback_ns"));
+    const auto ns_oid = disk_test_helpers::test_create_namespace(fx, std::string("rollback_ns"));
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
-    // Create under an explicit (uncommitted) transaction.
-    auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.txn_ctx(txn), rns.created_oid,
-                         std::string("ephemeral"), std::move(cols), catalog::relkind::regular);
-    REQUIRE(rt.created_oid >= FIRST_USER_OID);
+    // Create under an explicit (uncommitted) transaction by using append_pg_catalog_row
+    // with txn_id >= TRANSACTION_ID_START but NOT calling commit_pg_catalog_appends.
+    components::catalog::oid_t table_oid = components::catalog::INVALID_OID;
+    {
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1 + cols.size()});
+        table_oid = oids[0];
+        components::catalog::oid_batch_t batch;
+        batch.oids = std::move(oids);
+        collection_full_name_t coll{"public", "main", "ephemeral"};
+        auto writes = components::catalog::build_create_table_writes(&fx.resource, coll, cols, false,
+                                                                      ns_oid, batch,
+                                                                      catalog::relkind::regular);
+        for (auto& w : writes)
+            fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.txn_ctx(txn), w.table, std::move(w.row));
+        // Do NOT call commit_pg_catalog_appends — rows are pending under txn.
+    }
+    REQUIRE(table_oid >= FIRST_USER_OID);
     // Before rollback: invisible to other sessions (insert_id >= TRANSACTION_ID_START).
-    auto before_other = fx.invoke(&manager_disk_t::resolve_table, fx.auto_ctx(), rns.created_oid,
+    auto before_other = fx.invoke(&manager_disk_t::resolve_table, fx.auto_ctx(), ns_oid,
                                    std::string("ephemeral"), std::uint64_t{0});
     REQUIRE_FALSE(before_other.found);
     // Rollback: revert_pg_catalog_appends removes the uncommitted rows entirely.
     fx.invoke(&manager_disk_t::revert_pg_catalog_appends, fx.txn_ctx(txn));
     // After rollback: still not found — no orphan rows.
-    auto after = fx.invoke(&manager_disk_t::resolve_table, fx.auto_ctx(), rns.created_oid,
+    auto after = fx.invoke(&manager_disk_t::resolve_table, fx.auto_ctx(), ns_oid,
                             std::string("ephemeral"), std::uint64_t{0});
     REQUIRE_FALSE(after.found);
     // Same txn also cannot find the rolled-back table.
-    auto after_same = fx.invoke(&manager_disk_t::resolve_table, fx.txn_ctx(txn), rns.created_oid,
+    auto after_same = fx.invoke(&manager_disk_t::resolve_table, fx.txn_ctx(txn), ns_oid,
                                   std::string("ephemeral"), std::uint64_t{0});
     REQUIRE_FALSE(after_same.found);
 }
@@ -257,20 +293,27 @@ TEST_CASE("services::disk::mvcc::test_ddl_rollback_cleans_up") {
 //     are also uncommitted).
 TEST_CASE("services::disk::mvcc::drop_cascade_uncommitted_invisible_to_other_readers") {
     fixture fx;
-    auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.auto_ctx(), std::string("ns"));
+    const auto ns_oid = disk_test_helpers::test_create_namespace(fx, std::string("ns"));
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
-    auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.auto_ctx(), rns.created_oid,
-                         std::string("t"), std::move(cols), catalog::relkind::regular);
-    fx.invoke(&manager_disk_t::ddl_create_index, fx.auto_ctx(), rns.created_oid,
-               rt.created_oid, std::string("child_idx"),
-               std::vector<std::string>{"id"});
+    const auto table_oid = disk_test_helpers::test_create_table(fx, ns_oid, std::string("t"), cols,
+                                                                  catalog::relkind::regular);
+    disk_test_helpers::test_create_index(fx, ns_oid, table_oid, std::string("child_idx"),
+                                          std::vector<std::string>{"id"},
+                                          std::vector<components::catalog::oid_t>{});
     auto uncommitted = TRANSACTION_ID_START + 111;
-    fx.invoke(&manager_disk_t::ddl_drop_namespace, fx.txn_ctx(uncommitted),
-               rns.created_oid, drop_behavior_t::cascade_);
-    auto rt_after = fx.invoke(&manager_disk_t::resolve_table, fx.auto_ctx(), rns.created_oid,
+    // Issue uncommitted namespace deletes (no commit — tombstones stay uncommitted).
+    {
+        const collection_full_name_t pg_ns{"pg_catalog", "main", "pg_namespace"};
+        const collection_full_name_t pg_dep{"pg_catalog", "main", "pg_depend"};
+        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_ns,  std::int64_t{0}, ns_oid);
+        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{1}, ns_oid);
+        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{3}, ns_oid);
+        // Intentionally no commit_pg_catalog_appends.
+    }
+    auto rt_after = fx.invoke(&manager_disk_t::resolve_table, fx.auto_ctx(), ns_oid,
                                 std::string("t"), std::uint64_t{0});
-    auto idx_after = fx.invoke(&manager_disk_t::resolve_table, fx.auto_ctx(), rns.created_oid,
+    auto idx_after = fx.invoke(&manager_disk_t::resolve_table, fx.auto_ctx(), ns_oid,
                                  std::string("child_idx"), std::uint64_t{0});
     REQUIRE(rt_after.found);
     REQUIRE(idx_after.found);

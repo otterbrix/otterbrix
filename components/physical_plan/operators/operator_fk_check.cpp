@@ -4,6 +4,8 @@
 #include <components/types/logical_value.hpp>
 #include <services/disk/manager_disk.hpp>
 
+#include <limits>
+
 namespace components::operators {
 
     operator_fk_check_t::operator_fk_check_t(std::pmr::memory_resource* resource,
@@ -13,11 +15,17 @@ namespace components::operators {
         , fk_(std::move(fk)) {}
 
     void operator_fk_check_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
-        if (left_ && left_->output()) {
-            output_ = left_->output();
-            if (output_ && output_->size() > 0) {
-                async_wait();
+        if (!left_) return;
+        // After intercept_dml_io_, the DML operator's output is replaced with a
+        // zero-column result chunk. Fall back to the DML op's data source.
+        output_ = left_->output();
+        if (!output_ || output_->data_chunk().column_count() == 0) {
+            if (left_->left() && left_->left()->output()) {
+                output_ = left_->left()->output();
             }
+        }
+        if (output_ && output_->size() > 0) {
+            async_wait();
         }
     }
 
@@ -30,37 +38,40 @@ namespace components::operators {
         const auto& chunk = output_->data_chunk();
         execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
-        // Find column indices in the chunk for each FK child col.
-        std::vector<uint64_t> child_col_indices;
-        for (const auto& col_name : fk_.child_col_names) {
-            auto idx = chunk.column_index(col_name);
-            if (idx == static_cast<std::size_t>(-1)) {
-                // Column not in chunk — skip FK check for this constraint.
-                mark_executed();
-                co_return;
-            }
-            child_col_indices.push_back(static_cast<uint64_t>(idx));
-        }
+        const auto& indices = fk_.child_col_indices;
+        const std::size_t absent = std::numeric_limits<std::size_t>::max();
 
         for (uint64_t row = 0; row < chunk.size(); ++row) {
-            // SIMPLE match: skip row if any FK col is NULL.
             bool any_null = false;
-            if (fk_.matchtype == 's') {
-                for (auto cidx : child_col_indices) {
-                    if (!chunk.data[cidx].validity().row_is_valid(row)) {
-                        any_null = true;
-                        break;
-                    }
-                }
+            bool all_null = true;
+            for (std::size_t i = 0; i < indices.size(); ++i) {
+                const auto idx = indices[i];
+                const bool is_null = (idx == absent || !chunk.data[idx].validity().row_is_valid(row));
+                if (is_null)  any_null = true;
+                else          all_null = false;
             }
-            if (any_null) continue;
 
-            // Build key_values from the FK child columns.
-            std::vector<types::logical_value_t> key_values;
-            key_values.reserve(child_col_indices.size());
-            for (auto cidx : child_col_indices) {
-                key_values.push_back(chunk.value(cidx, row));
+            if (fk_.matchtype == 'f') {
+                // MATCH FULL: all-NULL → skip; partial-NULL → error; no-NULL → check.
+                if (all_null) continue;
+                if (any_null) {
+                    set_error("FK MATCH FULL: partial null in foreign key columns");
+                    co_return;
+                }
+            } else {
+                // MATCH SIMPLE (default): any-NULL → skip.
+                if (any_null) continue;
             }
+
+            // Build key_values from pre-resolved column positions.
+            std::vector<types::logical_value_t> key_values;
+            key_values.reserve(indices.size());
+            bool has_absent = false;
+            for (auto idx : indices) {
+                if (idx == absent) { has_absent = true; break; }
+                key_values.push_back(chunk.value(idx, row));
+            }
+            if (has_absent || key_values.empty()) continue;
 
             auto [_, fut] = actor_zeta::send(ctx->disk_address,
                                               &services::disk::manager_disk_t::scan_by_table_oid,

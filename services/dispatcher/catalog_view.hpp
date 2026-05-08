@@ -117,6 +117,13 @@ namespace services::dispatcher {
         const std::vector<resolved_fk_t>*
         try_get_fks_referencing(components::catalog::oid_t table_oid) const noexcept;
 
+        // CHECK constraint snapshot getter.
+        // Returns vector of (constraint_name, expression_string) for all CHECK constraints
+        // on table_oid (contype='c', non-null conexpr).
+        unique_future<std::vector<std::pair<std::string, std::string>>>
+        get_check_exprs(components::execution_context_t ctx,
+                         components::catalog::oid_t table_oid);
+
         // Inspectors.
         std::uint64_t pinned_version() const noexcept { return pinned_version_; }
         actor_zeta::address_t disk_address() const noexcept { return disk_address_; }

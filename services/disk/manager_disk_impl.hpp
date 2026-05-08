@@ -14,7 +14,7 @@
 #include <components/catalog/system_table_schemas.hpp>
 #include <fstream>
 #include <limits>
-#include <components/catalog/dependency_walker.hpp>
+#include <components/catalog/dependency_walker.hpp> // deptype namespace
 #include <services/wal/manager_wal_replicate.hpp>
 #include <unordered_set>
 
@@ -28,11 +28,7 @@ namespace detail {
     namespace types   = components::types;
     namespace catalog = components::catalog;
 
-    // Bring dependency_walker types into services::disk scope (via "using namespace detail").
-    using components::catalog::dependency_t;
-    using components::catalog::cycle_detected_error;
-    using components::catalog::topological_drop_order;
-    using components::catalog::fetch_deps_fn;
+    // deptype helpers used by ddl_drop_type/constraint/function RESTRICT checks.
     namespace deptype = components::catalog::deptype;
 
     // ---------------------------------------------------------------------------

@@ -1,9 +1,12 @@
 #include "operator_fk_cascade.hpp"
 
 #include <components/base/collection_full_name.hpp>
+#include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
 #include <components/types/logical_value.hpp>
 #include <services/disk/manager_disk.hpp>
+
+#include <limits>
 
 namespace components::operators {
 
@@ -14,8 +17,19 @@ namespace components::operators {
         , fk_(std::move(fk)) {}
 
     void operator_fk_cascade_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
-        if (left_ && left_->output()) {
+        if (!left_) return;
+        // The delete operator's output is schema-typed but has no actual values
+        // (intercept_dml_io_ clears the data while keeping the column types).
+        // Prefer the scan operator's output (left_->left()) which holds the
+        // pre-delete row values needed to look up referencing child rows.
+        output_ = nullptr;
+        if (left_->left() && left_->left()->output() && left_->left()->output()->size() > 0) {
+            output_ = left_->left()->output();
+        }
+        if (!output_) {
             output_ = left_->output();
+        }
+        if (output_ && output_->size() > 0) {
             async_wait();
         }
     }
@@ -29,21 +43,18 @@ namespace components::operators {
         const auto& chunk = output_->data_chunk();
         execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
-        // Find parent col indices in the deleted chunk (parent_col_names are referenced cols).
-        std::vector<uint64_t> parent_col_indices;
-        for (const auto& col_name : fk_.parent_col_names) {
-            auto idx = chunk.column_index(col_name);
-            if (idx == static_cast<std::size_t>(-1)) {
-                mark_executed();
-                co_return;
-            }
-            parent_col_indices.push_back(static_cast<uint64_t>(idx));
+        const auto& par_indices = fk_.parent_col_indices;
+        const std::size_t absent = std::numeric_limits<std::size_t>::max();
+        // If indices weren't resolved at plan time, skip cascade.
+        for (auto idx : par_indices) {
+            if (idx == absent) { mark_executed(); co_return; }
         }
+        if (par_indices.empty()) { mark_executed(); co_return; }
 
         for (uint64_t row = 0; row < chunk.size(); ++row) {
             std::vector<types::logical_value_t> key_values;
-            key_values.reserve(parent_col_indices.size());
-            for (auto pidx : parent_col_indices) {
+            key_values.reserve(par_indices.size());
+            for (auto pidx : par_indices) {
                 key_values.push_back(chunk.value(pidx, row));
             }
 
@@ -63,9 +74,15 @@ namespace components::operators {
                 co_return;
 
             case 'c': { // CASCADE — delete child rows via storage_delete_rows
+                // SQL-created tables use database-style keys (rangevar maps schemaname →
+                // database field). fk_.child_schema holds the namespace name; use it as
+                // the database to match the storage key produced by rangevar_to_collection.
                 const collection_full_name_t child_coll{
-                    fk_.child_database, fk_.child_schema, fk_.child_collection_name};
-                execution_context_t del_ctx{ctx->session, ctx->txn, child_coll};
+                    fk_.child_schema, "", fk_.child_collection_name};
+                // Use txn_id=0 so the delete is committed immediately. The parent
+                // DELETE tracks its own commit; cascade child ops are not tracked by
+                // execute_plan_'s storage_commit_delete, which only covers the parent.
+                execution_context_t del_ctx{ctx->session, {}, child_coll};
 
                 components::vector::vector_t row_ids_vec(resource_,
                                                          types::logical_type::BIGINT,
@@ -81,7 +98,67 @@ namespace components::operators {
                 co_await std::move(dfut);
                 break;
             }
-            // 'n' SET NULL, 'd' SET DEFAULT — complex; silently pass for now.
+            case 'n': // SET NULL
+            case 'd': { // SET DEFAULT
+                // Database-style key (see CASCADE case for rationale).
+                const collection_full_name_t child_coll{
+                    fk_.child_schema, "", fk_.child_collection_name};
+                components::vector::vector_t fetch_ids(resource_,
+                                                        types::logical_type::BIGINT,
+                                                        child_ids.size());
+                for (std::size_t i = 0; i < child_ids.size(); ++i) {
+                    fetch_ids.data<int64_t>()[i] = child_ids[i];
+                }
+                auto [_f, ffut] = actor_zeta::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::storage_fetch,
+                                                    ctx->session,
+                                                    child_coll,
+                                                    fetch_ids,
+                                                    static_cast<uint64_t>(child_ids.size()));
+                auto fetched = co_await std::move(ffut);
+                if (!fetched || fetched->size() == 0) break;
+
+                const bool is_set_null = (fk_.del_action == 'n');
+                for (std::size_t ci = 0; ci < fk_.child_col_schema_indices.size(); ++ci) {
+                    const auto schema_idx = fk_.child_col_schema_indices[ci];
+                    if (schema_idx == absent || schema_idx >= fetched->column_count()) continue;
+                    if (is_set_null) {
+                        for (uint64_t r = 0; r < fetched->size(); ++r) {
+                            fetched->data[schema_idx].validity().set_invalid(r);
+                        }
+                    } else {
+                        // SET DEFAULT: decode attdefspec; NULL default → same as SET NULL.
+                        const auto& spec = ci < fk_.child_col_default_specs.size()
+                                               ? fk_.child_col_default_specs[ci]
+                                               : std::string{};
+                        auto default_val = spec.empty()
+                            ? std::nullopt
+                            : components::catalog::decode_default_spec(resource_, spec);
+                        for (uint64_t r = 0; r < fetched->size(); ++r) {
+                            if (default_val.has_value()) {
+                                fetched->set_value(schema_idx, r, *default_val);
+                            } else {
+                                fetched->data[schema_idx].validity().set_invalid(r);
+                            }
+                        }
+                    }
+                }
+
+                components::vector::vector_t upd_ids(resource_,
+                                                      types::logical_type::BIGINT,
+                                                      child_ids.size());
+                for (std::size_t i = 0; i < child_ids.size(); ++i) {
+                    upd_ids.data<int64_t>()[i] = child_ids[i];
+                }
+                execution_context_t upd_ctx{ctx->session, {}, child_coll};
+                auto [_u, ufut] = actor_zeta::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::storage_update,
+                                                    upd_ctx,
+                                                    std::move(upd_ids),
+                                                    std::move(fetched));
+                co_await std::move(ufut);
+                break;
+            }
             default:
                 break;
             }

@@ -1292,10 +1292,11 @@ namespace components::types {
         if (t1 == logical_type::INTERVAL && is_numeric(t2)) {
             const double f = as_double(value2);
             const auto iv = value1.value<interval_t>();
-            return logical_value_t{r,
-                                   interval_t{microseconds{std::llround(iv.time.count() * f)},
-                                              days{static_cast<int32_t>(std::llround(iv.day.count() * f))},
-                                              months{static_cast<int32_t>(std::llround(iv.month.count() * f))}}};
+            return logical_value_t{
+                r,
+                interval_t{microseconds{std::llround(static_cast<double>(iv.time.count()) * f)},
+                           days{static_cast<int32_t>(std::llround(static_cast<double>(iv.day.count()) * f))},
+                           months{static_cast<int32_t>(std::llround(static_cast<double>(iv.month.count()) * f))}}};
         }
         // numeric * INTERVAL → INTERVAL (commutative)
         if (is_numeric(t1) && t2 == logical_type::INTERVAL) {
@@ -1391,10 +1392,11 @@ namespace components::types {
             }();
             using namespace core::date;
             const auto iv = value1.value<interval_t>();
-            return logical_value_t{r,
-                                   interval_t{microseconds{std::llround(iv.time.count() / f)},
-                                              days{static_cast<int32_t>(std::llround(iv.day.count() / f))},
-                                              months{static_cast<int32_t>(std::llround(iv.month.count() / f))}}};
+            return logical_value_t{
+                r,
+                interval_t{microseconds{std::llround(static_cast<double>(iv.time.count()) / f)},
+                           days{static_cast<int32_t>(std::llround(static_cast<double>(iv.day.count()) / f))},
+                           months{static_cast<int32_t>(std::llround(static_cast<double>(iv.month.count()) / f))}}};
         }
         throw std::runtime_error("logical_value_t::divide unable to process given types");
     }

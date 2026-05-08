@@ -451,18 +451,20 @@ namespace components::vector {
         }
 
         inline core::date::interval_t scale_interval(core::date::interval_t iv, double f) noexcept {
-            return {core::date::microseconds{std::llround(iv.time.count() * f)},
-                    core::date::days{static_cast<int32_t>(std::llround(iv.day.count() * f))},
-                    core::date::months{static_cast<int32_t>(std::llround(iv.month.count() * f))}};
+            return {core::date::microseconds{std::llround(static_cast<double>(iv.time.count()) * f)},
+                    core::date::days{static_cast<int32_t>(std::llround(static_cast<double>(iv.day.count()) * f))},
+                    core::date::months{static_cast<int32_t>(std::llround(static_cast<double>(iv.month.count()) * f))}};
         }
 
         template<typename T>
         void scale_ivl_vec(const ivl_ro& ivl, ivl_rw& out, const T* factors, bool divide, uint64_t count) noexcept {
             for (uint64_t i = 0; i < count; i++) {
                 const double f = divide ? (1.0 / static_cast<double>(factors[i])) : static_cast<double>(factors[i]);
-                out.time[i] = core::date::microseconds{std::llround(ivl.time[i].count() * f)};
-                out.days[i] = core::date::days{static_cast<int32_t>(std::llround(ivl.days[i].count() * f))};
-                out.months[i] = core::date::months{static_cast<int32_t>(std::llround(ivl.months[i].count() * f))};
+                out.time[i] = core::date::microseconds{std::llround(static_cast<double>(ivl.time[i].count()) * f)};
+                out.days[i] =
+                    core::date::days{static_cast<int32_t>(std::llround(static_cast<double>(ivl.days[i].count()) * f))};
+                out.months[i] = core::date::months{
+                    static_cast<int32_t>(std::llround(static_cast<double>(ivl.months[i].count()) * f))};
             }
         }
 
@@ -772,9 +774,11 @@ namespace components::vector {
                 const auto livl = ivl_ro::from(vec);
                 auto out = ivl_rw::from(output);
                 for (uint64_t i = 0; i < count; i++) {
-                    out.time[i] = core::date::microseconds{std::llround(livl.time[i].count() * f)};
-                    out.days[i] = core::date::days{static_cast<int32_t>(std::llround(livl.days[i].count() * f))};
-                    out.months[i] = core::date::months{static_cast<int32_t>(std::llround(livl.months[i].count() * f))};
+                    out.time[i] = core::date::microseconds{std::llround(static_cast<double>(livl.time[i].count()) * f)};
+                    out.days[i] = core::date::days{
+                        static_cast<int32_t>(std::llround(static_cast<double>(livl.days[i].count()) * f))};
+                    out.months[i] = core::date::months{
+                        static_cast<int32_t>(std::llround(static_cast<double>(livl.months[i].count()) * f))};
                 }
                 return output;
             }
@@ -784,9 +788,11 @@ namespace components::vector {
                 const auto livl = ivl_ro::from(vec);
                 auto out = ivl_rw::from(output);
                 for (uint64_t i = 0; i < count; i++) {
-                    out.time[i] = core::date::microseconds{std::llround(livl.time[i].count() / f)};
-                    out.days[i] = core::date::days{static_cast<int32_t>(std::llround(livl.days[i].count() / f))};
-                    out.months[i] = core::date::months{static_cast<int32_t>(std::llround(livl.months[i].count() / f))};
+                    out.time[i] = core::date::microseconds{std::llround(static_cast<double>(livl.time[i].count()) / f)};
+                    out.days[i] = core::date::days{
+                        static_cast<int32_t>(std::llround(static_cast<double>(livl.days[i].count()) / f))};
+                    out.months[i] = core::date::months{
+                        static_cast<int32_t>(std::llround(static_cast<double>(livl.months[i].count()) / f))};
                 }
                 return output;
             }
@@ -797,9 +803,11 @@ namespace components::vector {
                 auto do_scale = [&](auto* factors) {
                     for (uint64_t i = 0; i < count; i++) {
                         const double f = static_cast<double>(factors[i]);
-                        out.time[i] = core::date::microseconds{std::llround(ivl.time.count() * f)};
-                        out.days[i] = core::date::days{static_cast<int32_t>(std::llround(ivl.day.count() * f))};
-                        out.months[i] = core::date::months{static_cast<int32_t>(std::llround(ivl.month.count() * f))};
+                        out.time[i] = core::date::microseconds{std::llround(static_cast<double>(ivl.time.count()) * f)};
+                        out.days[i] = core::date::days{
+                            static_cast<int32_t>(std::llround(static_cast<double>(ivl.day.count()) * f))};
+                        out.months[i] = core::date::months{
+                            static_cast<int32_t>(std::llround(static_cast<double>(ivl.month.count()) * f))};
                     }
                 };
                 switch (lhs) {
@@ -1008,9 +1016,11 @@ namespace components::vector {
                 auto do_scale = [&](auto* factors) {
                     for (uint64_t i = 0; i < count; i++) {
                         const double f = static_cast<double>(factors[i]);
-                        out.time[i] = core::date::microseconds{std::llround(ivl.time.count() * f)};
-                        out.days[i] = core::date::days{static_cast<int32_t>(std::llround(ivl.day.count() * f))};
-                        out.months[i] = core::date::months{static_cast<int32_t>(std::llround(ivl.month.count() * f))};
+                        out.time[i] = core::date::microseconds{std::llround(static_cast<double>(ivl.time.count()) * f)};
+                        out.days[i] = core::date::days{
+                            static_cast<int32_t>(std::llround(static_cast<double>(ivl.day.count()) * f))};
+                        out.months[i] = core::date::months{
+                            static_cast<int32_t>(std::llround(static_cast<double>(ivl.month.count()) * f))};
                     }
                 };
                 switch (rhs) {
@@ -1055,9 +1065,11 @@ namespace components::vector {
                 const auto rivl = ivl_ro::from(vec);
                 auto out = ivl_rw::from(output);
                 for (uint64_t i = 0; i < count; i++) {
-                    out.time[i] = core::date::microseconds{std::llround(rivl.time[i].count() * f)};
-                    out.days[i] = core::date::days{static_cast<int32_t>(std::llround(rivl.days[i].count() * f))};
-                    out.months[i] = core::date::months{static_cast<int32_t>(std::llround(rivl.months[i].count() * f))};
+                    out.time[i] = core::date::microseconds{std::llround(static_cast<double>(rivl.time[i].count()) * f)};
+                    out.days[i] = core::date::days{
+                        static_cast<int32_t>(std::llround(static_cast<double>(rivl.days[i].count()) * f))};
+                    out.months[i] = core::date::months{
+                        static_cast<int32_t>(std::llround(static_cast<double>(rivl.months[i].count()) * f))};
                 }
                 return output;
             }

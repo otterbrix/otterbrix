@@ -12,7 +12,6 @@ set(${PROJECT_NAME}_SOURCES
 
     # disk
         disk/agent_disk.cpp
-        disk/invalidation_ring_buffer.cpp
         disk/manager_disk.cpp
         disk/manager_disk_io.cpp
         disk/manager_disk_bootstrap.cpp
@@ -22,12 +21,10 @@ set(${PROJECT_NAME}_SOURCES
 
     # dispatcher
        dispatcher/catalog_view.cpp
-       dispatcher/ddl.cpp
        dispatcher/dispatcher.cpp
        dispatcher/enrich_logical_plan.cpp
        dispatcher/resolve_type.cpp
        dispatcher/validate_logical_plan.cpp
-       dispatcher/versioned_plan_cache.cpp
 
     # index
         index/index_disk.cpp

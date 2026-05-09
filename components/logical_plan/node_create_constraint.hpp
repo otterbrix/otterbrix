@@ -2,6 +2,8 @@
 
 #include "node.hpp"
 
+#include <components/catalog/catalog_oids.hpp>
+
 #include <string>
 
 namespace components::logical_plan {
@@ -48,6 +50,29 @@ namespace components::logical_plan {
         const std::string& check_expr() const noexcept { return check_expr_; }
         void set_check_expr(std::string expr) { check_expr_ = std::move(expr); }
 
+        // Resolved metadata — populated by enrich_logical_plan before planner runs.
+        // Allows the DDL planner (which has no catalog_view access) to drive
+        // build_create_constraint_writes purely from the node.
+        components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
+        void set_table_oid(components::catalog::oid_t oid) noexcept { table_oid_ = oid; }
+
+        components::catalog::oid_t ref_table_oid() const noexcept { return ref_table_oid_; }
+        void set_ref_table_oid(components::catalog::oid_t oid) noexcept { ref_table_oid_ = oid; }
+
+        const std::vector<components::catalog::oid_t>& fk_col_attoids() const noexcept {
+            return fk_col_attoids_;
+        }
+        void set_fk_col_attoids(std::vector<components::catalog::oid_t> v) noexcept {
+            fk_col_attoids_ = std::move(v);
+        }
+
+        const std::vector<components::catalog::oid_t>& ref_col_attoids() const noexcept {
+            return ref_col_attoids_;
+        }
+        void set_ref_col_attoids(std::vector<components::catalog::oid_t> v) noexcept {
+            ref_col_attoids_ = std::move(v);
+        }
+
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
@@ -61,6 +86,10 @@ namespace components::logical_plan {
         char del_action_{'a'};                 // 'a' NO ACTION / 'r' RESTRICT / 'c' CASCADE / 'n' SET NULL / 'd' SET DEFAULT
         char upd_action_{'a'};                 // same alphabet
         std::string check_expr_;               // CHECK constraint SQL text (empty for non-CHECK)
+        components::catalog::oid_t table_oid_{components::catalog::INVALID_OID};
+        components::catalog::oid_t ref_table_oid_{components::catalog::INVALID_OID};
+        std::vector<components::catalog::oid_t> fk_col_attoids_;
+        std::vector<components::catalog::oid_t> ref_col_attoids_;
     };
 
     using node_create_constraint_ptr = boost::intrusive_ptr<node_create_constraint_t>;

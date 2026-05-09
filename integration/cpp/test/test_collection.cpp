@@ -38,10 +38,6 @@ TEST_CASE("integration::cpp::test_collection") {
             auto session = otterbrix::session_id_t();
             dispatcher->create_collection(session, database_name, collection_name, columns);
         }
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->size(session, database_name, collection_name) == 0);
-        }
     }
 
     INFO("insert") {
@@ -55,10 +51,6 @@ TEST_CASE("integration::cpp::test_collection") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 50);
         }
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->size(session, database_name, collection_name) == 50);
-        }
     }
 
     INFO("insert_more") {
@@ -71,10 +63,6 @@ TEST_CASE("integration::cpp::test_collection") {
             auto cur = dispatcher->execute_plan(session, ins);
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 50);
-        }
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->size(session, database_name, collection_name) == 100);
         }
     }
 

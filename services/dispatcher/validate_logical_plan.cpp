@@ -1596,6 +1596,48 @@ namespace services::dispatcher {
                                         column.type});
                     }
                 } else if (tbl_upd && tbl_upd->relkind == 'g') {
+                    // Phase 7 / task #106: on dynamic-schema (relkind='g') tables, UPDATE may
+                    // only target columns that have already been registered in
+                    // pg_computed_column. tbl_upd->columns reflects the set of LIVE columns
+                    // for 'g' tables (resolve_table fills it from pg_computed_column). If the
+                    // SET clause references a column not in that set, reject explicitly with
+                    // a clear, actionable message.
+                    //
+                    // TODO(task #106 / Phase 7+): consider Mongo-style auto-registration of
+                    // unknown SET targets on UPDATE (option (a) in the policy decision). That
+                    // requires extending the UPDATE coroutine to allocate a new attnum and
+                    // append a pg_computed_column row before the row-level update is applied.
+                    if (node->type() == node_type::update_t) {
+                        std::set<std::string> live_columns;
+                        for (const auto& column : tbl_upd->columns) {
+                            live_columns.insert(column.attname);
+                        }
+                        auto* node_update = reinterpret_cast<node_update_t*>(node);
+                        for (const auto& expr : node_update->updates()) {
+                            if (!expr || expr->type() != update_expr_type::set) {
+                                continue;
+                            }
+                            auto* set_expr = reinterpret_cast<update_expr_set_t*>(expr.get());
+                            if (set_expr->key().is_null()) {
+                                continue;
+                            }
+                            const auto& storage = set_expr->key().storage();
+                            // Top-level field is the column name; nested paths (a.b.c) still
+                            // require the head 'a' to be a registered column.
+                            const std::string column_name(storage.at(0).data(), storage.at(0).size());
+                            if (live_columns.find(column_name) == live_columns.end()) {
+                                return schema_result<named_schema>{
+                                    resource,
+                                    components::cursor::error_t{
+                                        error_code_t::schema_error,
+                                        "UPDATE on dynamic-schema (relkind='g') table '" +
+                                            std::string(node->collection_name()) +
+                                            "' references column '" + column_name +
+                                            "' that is not registered. Insert with this field first to register it. "
+                                            "(Auto-registration on UPDATE may be added in a future Phase, see task #106.)"}};
+                            }
+                        }
+                    }
                     for (const auto& column : tbl_upd->columns) {
                         table_schema.emplace_back(
                             type_from_t{node->result_alias().empty() ? node->collection_name() : node->result_alias(),
@@ -1672,9 +1714,15 @@ namespace services::dispatcher {
                 auto* tbl_idx = view.try_get_table(impl::ns_oid_for(view, id),
                                                     std::string_view(id.table_name()));
                 if (tbl_idx && tbl_idx->relkind == 'g') {
-                    for (const auto& column : tbl_idx->columns) {
-                        table_schema.emplace_back(type_from_t{node->collection_name(), column.type});
-                    }
+                    return schema_result<named_schema>{
+                        resource,
+                        components::cursor::error_t{
+                            error_code_t::index_create_fail,
+                            "CREATE INDEX is not supported on dynamic-schema (relkind='g') tables. "
+                            "Indexes require stable column attoids; dynamic-schema columns may evolve "
+                            "their attoid via type evolution. Convert the table to static schema first "
+                            "(reserved for future ALTER TABLE SET STATIC, see docs/phase7-deferred-items.md "
+                            "section 7.6)."}};
                 } else if (tbl_idx) {
                     for (const auto& column : tbl_idx->columns) {
                         table_schema.emplace_back(type_from_t{node->collection_name(), column.type});

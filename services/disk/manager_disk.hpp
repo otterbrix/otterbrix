@@ -31,11 +31,12 @@
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <components/vector/data_chunk.hpp>
 #include "ddl_result.hpp"
-#include "invalidation_ring_buffer.hpp"
 #include "resolve_result.hpp"
 #include <components/catalog/catalog_oids.hpp>
 #include <components/context/execution_context.hpp>
+#include <components/context/pg_catalog_swap.hpp>
 #include <core/executor.hpp>
+#include <set>
 #include <mutex>
 #include <services/wal/base.hpp>
 #include <thread>
@@ -89,9 +90,24 @@ namespace services::disk {
         wal::id_t prev_checkpoint_wal_id() const noexcept { return prev_checkpoint_wal_id_; }
 
         /// Add a new column to the live in-memory table. Replaces table_ with a new data_table_t
-        /// constructed from the current one + col. Used by ddl_add_column to keep loaded storages
-        /// in sync with pg_attribute when ALTER TABLE ADD COLUMN runs on an already-loaded table.
+        /// constructed from the current one + col. Retained as a primitive for tests and
+        /// future in-memory-sync paths; the SQL ALTER TABLE ADD COLUMN flow no longer calls
+        /// it (resolve_table reads columns from pg_attribute on every lookup).
         void add_column(components::table::column_definition_t& col);
+
+        /// Phase 7.5b physical column compaction. Drops the column whose name matches
+        /// `attname` from the IN_MEMORY data_table_t, reclaiming its physical storage.
+        /// Implemented via the data_table_t(parent, removed_column) rebuild constructor —
+        /// row_groups are rebuilt without the dropped column (collection_t::remove_column
+        /// per-segment). Used by VACUUM after pg_computed_column GC: columns that no
+        /// longer have any live attrefcount>0 row are physically dead and can be reclaimed.
+        ///
+        /// No-op for DISK-backed storages (out of scope for Phase 7.5b — would require
+        /// segment rewrites + checkpoint coordination). No-op if the column is missing.
+        ///
+        /// Returns true if the column was found and removed; false otherwise (column
+        /// missing OR storage is DISK-mode).
+        bool drop_column(const std::string& attname);
 
     private:
         storage_mode_t mode_;
@@ -148,14 +164,13 @@ namespace services::disk {
         // Read the .otbx.wal_id sidecar directly from disk without loading the storage.
         // Falls back to the in-memory value if the storage is already loaded.
         // Returns 0 when the table has never been checkpointed or for in-memory-only tables.
-        // Used by the D4-lazy WAL replay path to skip already-checkpointed records without
-        // requiring restore_user_storages_sync() to pre-populate storages_.
+        // Used by the D4-lazy WAL replay path to skip already-checkpointed records.
         wal::id_t peek_checkpoint_wal_id_from_disk(const collection_full_name_t& name) const noexcept;
 
-        // Load a user-table storage from its .otbx file on demand, without requiring a prior
-        // restore_user_storages_sync(). Called by WAL replay when it encounters a record for a
-        // disk-backed table that hasn't been loaded yet. No-op if storage already loaded or if
-        // no .otbx exists (in-memory table, handled by WAL replay's create_storage path).
+        // Load a user-table storage from its .otbx file on demand. Called by WAL replay
+        // when it encounters a record for a disk-backed table that hasn't been loaded yet.
+        // No-op if storage already loaded or if no .otbx exists (in-memory table, handled
+        // by WAL replay's create_storage path).
         void load_storage_for_wal_replay_sync(const collection_full_name_t& name);
 
         // Synchronous storage creation for initialization (before schedulers start).
@@ -180,41 +195,13 @@ namespace services::disk {
         // never collides with on-disk OIDs.
         void restore_oid_generator_sync();
 
-        // Restart helper: scan pg_class for user relations (relkind='r'/'g'/'c') and load each
-        // collection's storage from disk so DML calls (storage_append / WAL replay) find
-        // the entry in storages_ without going through resolve_table first. Idempotent.
-        void restore_user_storages_sync();
-
         // Public accessor — ddl_* methods take their OIDs from this generator.
         components::catalog::oid_generator& oid_gen() noexcept { return oid_gen_; }
 
-        // Catalog version monotonic counter: bumped on every successful DDL.
-        // Public read accessor (single producer = the disk actor; readers see eventual values).
-        std::uint64_t catalog_version() const noexcept { return catalog_version_; }
-
-        // V4 resolve invocation counters — used by integration tests to verify cache hit/miss
-        // behavior (e.g. "warm cache → 0 roundtrips"). Bumped at the start of each resolve_*
-        // handler. Atomic so a test thread can read while the actor thread writes.
-        struct resolve_counters_t {
-            std::atomic<std::uint64_t> resolve_namespace{0};
-            std::atomic<std::uint64_t> resolve_table{0};
-            std::atomic<std::uint64_t> resolve_type{0};
-            std::atomic<std::uint64_t> resolve_function{0};
-            std::atomic<std::uint64_t> resolve_function_by_name{0};
-        };
-        const resolve_counters_t& resolve_counters() const noexcept { return resolve_counters_; }
-        void reset_resolve_counters() noexcept {
-            resolve_counters_.resolve_namespace.store(0);
-            resolve_counters_.resolve_table.store(0);
-            resolve_counters_.resolve_type.store(0);
-            resolve_counters_.resolve_function.store(0);
-            resolve_counters_.resolve_function_by_name.store(0);
-        }
-
-        // Per-item resolve methods (V4: lazy resolve from pg_catalog).
-        // Each method scans the relevant pg_* tables on the disk actor thread, returns the
-        // resolved object plus the invalidation tail since ctx-supplied since_version (so
-        // the plan cache (M5) gets cache-key + delta in one roundtrip).
+        // Per-item resolve methods. Каждый метод сканирует соответствующую pg_*-таблицу
+        // на disk actor thread и возвращает найденный объект (или {found=false}).
+        // Параметр since_version сохранён для совместимости с message dispatch (всегда
+        // игнорируется — версионирование удалено вместе с catalog_view-кэшем).
         unique_future<resolve_namespace_result_t> resolve_namespace(execution_context_t ctx,
                                                                      std::string name,
                                                                      std::uint64_t since_version);
@@ -257,22 +244,6 @@ namespace services::disk {
         unique_future<std::pmr::vector<std::pair<components::catalog::oid_t, std::string>>>
         list_tables_in_namespace(execution_context_t ctx, components::catalog::oid_t namespace_oid);
 
-        // Pull-based invalidation tail. The plan cache calls this to keep
-        // its (plan_hash, catalog_version) keyspace consistent with on-disk truth.
-        unique_future<invalidation_ring_buffer_t::snapshot_t>
-        recent_invalidations_since(session_id_t session, std::uint64_t since_version);
-
-        // Flip MVCC tags from txn_id → commit_id for every pg_catalog.* row appended
-        // under ctx.txn.transaction_id. Called by dispatcher after WAL commit_txn +
-        // txn_manager.commit. No-op when txn_id == 0 (no tracking happens for bootstrap).
-        unique_future<void>
-        commit_pg_catalog_appends(execution_context_t ctx, std::uint64_t commit_id);
-
-        // Revert pg_catalog.* appends made under ctx.txn.transaction_id (used on DDL
-        // failure path before WAL commit_txn). No-op when txn_id == 0.
-        unique_future<void>
-        revert_pg_catalog_appends(execution_context_t ctx);
-
         // Allocate a batch of fresh OIDs from the disk-local oid_gen_. Called by the
         // dispatcher before invoking planner_t::create_plan for DDL statements, so that
         // the planner can build pg_class / pg_attribute rows without needing async access
@@ -284,9 +255,10 @@ namespace services::disk {
         // WAL-safe append of a single pre-built row into a pg_catalog table.
         // Called by operator_primitive_write when executing planner-emitted DDL plans.
         // Semantics: WAL physical_insert + direct_append_sync (same as internal DDL methods).
-        unique_future<void> append_pg_catalog_row(execution_context_t ctx,
-                                                   collection_full_name_t name,
-                                                   components::vector::data_chunk_t row);
+        unique_future<components::pg_catalog_append_range_t>
+        append_pg_catalog_row(execution_context_t ctx,
+                              collection_full_name_t name,
+                              components::vector::data_chunk_t row);
 
         // WAL-safe delete of all rows where column[oid_col_idx] == target_oid.
         // Emits WAL write_physical_delete before the MVCC tombstone so drops survive
@@ -305,13 +277,6 @@ namespace services::disk {
                     std::vector<std::string> key_col_names,
                     std::vector<components::types::logical_value_t> key_values);
 
-        // Index lookup: first txn-visible row_id in the table indexed by index_oid
-        // where indexed columns == key_values (indkey order). nullopt on no match.
-        unique_future<std::optional<std::int64_t>>
-        point_lookup_by_index(execution_context_t ctx,
-                              components::catalog::oid_t index_oid,
-                              std::vector<components::types::logical_value_t> key_values);
-
         // Full row-data scan: returns all column values for every txn-visible row
         // where key_col_names[i] == key_values[i]. Same filter as scan_by_key but
         // returns complete row data instead of row_ids.
@@ -329,32 +294,20 @@ namespace services::disk {
                            std::vector<std::string> key_col_names,
                            std::vector<components::types::logical_value_t> key_values);
 
-        unique_future<ddl_result_t> ddl_adopt_computing_schema(execution_context_t ctx,
-                                                                components::catalog::oid_t table_oid,
-                                                                std::vector<components::table::column_definition_t> columns);
+        // Phase 7.5b physical column compaction. For an IN_MEMORY relkind='g' storage,
+        // drop every physical column whose name is NOT in `live_attnames`. Called by
+        // operator_vacuum_t step 5b after pg_computed_column GC: columns whose
+        // attrefcount<=0 rows have been deleted are physically dead and can be
+        // reclaimed. Returns the number of columns physically dropped (0 if storage
+        // is DISK-mode, missing, or already compact). Out of scope: DISK-backed
+        // storages — that would need segment rewrites + checkpoint coordination.
+        unique_future<std::uint64_t>
+        compact_relkind_g_storage(execution_context_t ctx,
+                                   collection_full_name_t name,
+                                   std::set<std::string> live_attnames);
 
-        // Computing tables (relkind='g') hold versioned, ref-counted fields in
-        // pg_computed_column rather than fixed pg_attribute rows. Lifecycle:
-    //   ddl_computed_append        → INSERT new (attversion=max+1, attrefcount=1)
-        //                                 OR bump attrefcount when an identical (name, type)
-        //                                 row is already live
-        //   ddl_computed_drop          → decrement attrefcount; delete row when refcount==0
-        // ddl_adopt_computing_schema turns a computing table back into a regular one
-        // (relkind 'g' → 'r') by promoting the latest types into pg_attribute.
-        unique_future<ddl_result_t> ddl_computed_append(execution_context_t ctx,
-                                                         components::catalog::oid_t table_oid,
-                                                         std::string field_name,
-                                                         components::catalog::oid_t type_oid);
-        unique_future<ddl_result_t> ddl_computed_drop(execution_context_t ctx,
-                                                       components::catalog::oid_t table_oid,
-                                                       std::string field_name);
-
-        // Column lifecycle DDL — pg_attribute mutations under MVCC.
-        // attnum is never reused. ddl_add_column allocates next_column_oid via the table's
-        // metadata counter.
-        unique_future<ddl_result_t> ddl_add_column(execution_context_t ctx,
-                                                    components::catalog::oid_t table_oid,
-                                                    components::table::column_definition_t column);
+        // ALTER TABLE ADD COLUMN owned by operator_alter_column_add_t; computed
+        // tables maintained via operator_computed_field_register_t.
 
         // Synchronous direct replay methods for physical WAL (before schedulers start).
         // The txn overload takes an explicit transaction_data: pass {0, 0} for
@@ -409,7 +362,6 @@ namespace services::disk {
         unique_future<std::pmr::vector<components::types::complex_logical_type>>
         storage_types(session_id_t session, collection_full_name_t name);
         unique_future<uint64_t> storage_total_rows(session_id_t session, collection_full_name_t name);
-        unique_future<uint64_t> storage_calculate_size(session_id_t session, collection_full_name_t name);
 
         // Storage data operations
         unique_future<std::unique_ptr<components::vector::data_chunk_t>>
@@ -440,6 +392,23 @@ namespace services::disk {
         unique_future<void> storage_revert_append(execution_context_t ctx, int64_t row_start, uint64_t count);
         unique_future<void> storage_commit_delete(execution_context_t ctx, uint64_t commit_id);
 
+        // Phase 5b: batched MVCC swap. Each call dispatches one actor message;
+        // disk processes the entire batch sequentially inside its mailbox handler.
+        // ctx.session/txn used; ctx.name unused (each range carries its own name).
+        unique_future<void>
+        storage_commit_appends(execution_context_t ctx,
+                               uint64_t commit_id,
+                               std::vector<components::pg_catalog_append_range_t> ranges);
+
+        unique_future<void>
+        storage_commit_deletes(execution_context_t ctx,
+                               uint64_t commit_id,
+                               std::set<collection_full_name_t> tables);
+
+        unique_future<void>
+        storage_revert_appends(execution_context_t ctx,
+                               std::vector<components::pg_catalog_append_range_t> ranges);
+
         using dispatch_traits = actor_zeta::implements<disk_contract,
                                                        &manager_disk_t::flush,
                                                        &manager_disk_t::checkpoint_all,
@@ -453,7 +422,6 @@ namespace services::disk {
                                                        // Storage queries
                                                        &manager_disk_t::storage_types,
                                                        &manager_disk_t::storage_total_rows,
-                                                       &manager_disk_t::storage_calculate_size,
                                                        // Storage data operations
                                                        &manager_disk_t::storage_scan,
                                                        &manager_disk_t::storage_fetch,
@@ -465,11 +433,9 @@ namespace services::disk {
                                                        &manager_disk_t::storage_commit_append,
                                                        &manager_disk_t::storage_revert_append,
                                                        &manager_disk_t::storage_commit_delete,
-                                                       // DDL pipeline
-                                                       &manager_disk_t::ddl_adopt_computing_schema,
-                                                       &manager_disk_t::ddl_computed_append,
-                                                       &manager_disk_t::ddl_computed_drop,
-                                                       &manager_disk_t::ddl_add_column,
+                                                       &manager_disk_t::storage_commit_appends,
+                                                       &manager_disk_t::storage_commit_deletes,
+                                                       &manager_disk_t::storage_revert_appends,
                                                        // resolve + invalidation pull
                                                        &manager_disk_t::resolve_namespace,
                                                        &manager_disk_t::resolve_table,
@@ -478,16 +444,13 @@ namespace services::disk {
                                                        &manager_disk_t::resolve_function_by_name,
                                                        &manager_disk_t::list_namespaces,
                                                        &manager_disk_t::list_tables_in_namespace,
-                                                       &manager_disk_t::recent_invalidations_since,
-                                                       &manager_disk_t::commit_pg_catalog_appends,
-                                                       &manager_disk_t::revert_pg_catalog_appends,
                                                        &manager_disk_t::allocate_oids_batch,
                                                        &manager_disk_t::append_pg_catalog_row,
                                                        &manager_disk_t::delete_pg_catalog_rows,
                                                        &manager_disk_t::scan_by_key,
-                                                       &manager_disk_t::point_lookup_by_index,
                                                        &manager_disk_t::read_rows_by_key,
-                                                       &manager_disk_t::scan_by_table_oid>;
+                                                       &manager_disk_t::scan_by_table_oid,
+                                                       &manager_disk_t::compact_relkind_g_storage>;
 
     private:
         std::pmr::memory_resource* resource_;
@@ -501,28 +464,6 @@ namespace services::disk {
         configuration::config_disk config_;
         std::vector<agent_disk_ptr> agents_;
         components::catalog::oid_generator oid_gen_;
-        std::uint64_t catalog_version_{0};
-        invalidation_ring_buffer_t invalidations_;
-        mutable resolve_counters_t resolve_counters_;
-
-        // Internal helper — pushes the result's first invalidation event into the
-        // ring buffer (so M5's plan cache sees it on its next pull) and returns the result
-        // unchanged. Called from every ddl_* coroutine: `co_return finalize_ddl(result);`.
-        ddl_result_t finalize_ddl(ddl_result_t r) noexcept;
-
-        // MVCC-delete every row in `name` whose column at `oid_col_idx` equals `target_oid`.
-        // Issued under txn so the delete tombstones are visible only to this transaction
-        // until commit. Used for both pg_class/pg_namespace/pg_type/pg_proc/pg_index drops.
-        void delete_system_rows_by_oid_match(const collection_full_name_t& name,
-                                              std::int64_t oid_col_idx,
-                                              components::catalog::oid_t target_oid,
-                                              const components::table::transaction_data& txn);
-
-        // Return true if any row in `table_name` has oid_col == target_oid (committed rows only).
-        bool pg_oid_exists(const collection_full_name_t& table_name,
-                           std::uint64_t oid_col,
-                           components::catalog::oid_t target_oid) const;
-
 
         // Storage entries per collection
         struct collection_storage_entry_t {
@@ -561,47 +502,20 @@ namespace services::disk {
                 table_storage.add_column(col);
                 storage = std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), res);
             }
+
+            /// Phase 7.5b physical column compaction: drop column from in-memory table_ and
+            /// recreate the storage adapter (the adapter holds a data_table_t& that becomes
+            /// dangling after the rebuild). Returns true if the column was found and removed.
+            bool drop_column(const std::string& attname, std::pmr::memory_resource* res) {
+                if (!table_storage.drop_column(attname)) {
+                    return false;
+                }
+                storage = std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), res);
+                return true;
+            }
         };
         std::unordered_map<collection_full_name_t, std::unique_ptr<collection_storage_entry_t>, collection_name_hash>
             storages_;
-
-        // Track pg_catalog.* appends made under a real (non-zero) txn so that after
-        // WAL commit_txn + txn_manager.commit, we can flip MVCC tags from txn_id → commit_id
-        // by calling storage_t::commit_append on each tracked range. Cleared per-txn after
-        // commit_pg_catalog_appends runs.
-        struct pending_pg_catalog_append_t {
-            collection_full_name_t name;
-            int64_t start_row{0};
-            uint64_t count{0};
-        };
-        std::unordered_map<std::uint64_t, std::vector<pending_pg_catalog_append_t>> pending_pg_catalog_appends_;
-
-        // O(1) namespace name ↔ OID indexes. Populated by load_system_tables_sync and every
-        // ddl_create/drop_namespace call. Used by resolve_namespace and the lazy-load path
-        // in resolve_table to avoid per-resolve pg_namespace scans.
-        std::unordered_map<std::string, components::catalog::oid_t> ns_name_to_oid_;
-        std::unordered_map<components::catalog::oid_t, std::string> ns_oid_to_name_;
-
-        // O(1) (namespace_oid, table_name) → {oid, relkind} index.
-        struct table_index_entry_t {
-            components::catalog::oid_t oid{components::catalog::INVALID_OID};
-            char relkind{'r'};
-        };
-        struct ns_table_key_hash_t {
-            std::size_t operator()(const std::pair<components::catalog::oid_t, std::string>& k) const noexcept {
-                std::size_t h = std::hash<std::uint32_t>{}(k.first);
-                h ^= std::hash<std::string>{}(k.second) + 0x9e3779b9u + (h << 6u) + (h >> 2u);
-                return h;
-            }
-        };
-        using ns_table_key_t = std::pair<components::catalog::oid_t, std::string>;
-        std::unordered_map<ns_table_key_t, table_index_entry_t, ns_table_key_hash_t> table_to_oid_;
-        // Reverse map: table OID → key.
-        std::unordered_map<components::catalog::oid_t, ns_table_key_t> table_oid_to_key_;
-
-        // Helper: rebuild ns and table indexes from pg_namespace/pg_class.
-        // Called by load_system_tables_sync after loading .otbx files, and after WAL replay.
-        void rebuild_lookup_indexes();
 
         components::storage::storage_t* get_storage(const collection_full_name_t& name);
 

@@ -15,7 +15,6 @@ set(${PROJECT_NAME}_SOURCES
     test_recovery.cpp
     test_d4_lazy_load.cpp
     test_persistence.cpp
-    test_lookup_indexes.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

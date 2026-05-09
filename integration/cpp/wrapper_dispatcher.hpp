@@ -80,8 +80,6 @@ namespace otterbrix {
                          components::logical_plan::parameter_node_ptr params,
                          const std::pmr::vector<components::expressions::update_expr_ptr>& updates,
                          bool upsert) -> components::cursor::cursor_t_ptr;
-        auto size(const session_id_t& session, const database_name_t& database, const collection_name_t& collection)
-            -> size_t;
         auto register_udf(const session_id_t& session, components::compute::function_ptr function) -> bool;
         auto unregister_udf(const session_id_t& session,
                             const std::string& function_name,

@@ -90,7 +90,7 @@ TEST_CASE("services::disk::resolve::namespace_misses_unknown") {
     REQUIRE_FALSE(r.found);
 }
 
-// 3. After ddl_create_table, resolve_table finds the new relation + lists its column attoids.
+// 3. After CREATE TABLE, resolve_table finds the new relation + lists its column attoids.
 TEST_CASE("services::disk::resolve::table_finds_after_create") {
     fixture fx;
     std::vector<components::table::column_definition_t> cols;
@@ -141,16 +141,3 @@ TEST_CASE("services::disk::resolve::function_finds_bootstrap_count") {
     REQUIRE(r.oid == well_known_oid::fn_count);
 }
 
-// 7. recent_invalidations_since — after a DDL, the catalog state is updated.
-//    NOTE: catalog_version_ is bumped only by the legacy finalize_ddl path.
-//    The helper (append_pg_catalog_row + commit_pg_catalog_appends) does not bump
-//    catalog_version_, so the ring buffer remains unchanged. This test verifies
-//    that no spurious overflow occurs and the version is non-negative.
-TEST_CASE("services::disk::resolve::recent_invalidations_after_ddl") {
-    fixture fx;
-    auto v0 = fx.manager->catalog_version();
-    disk_test_helpers::test_create_namespace(fx, std::string("test_ns"));
-    auto snap = fx.invoke_async(&manager_disk_t::recent_invalidations_since, session_id_t{}, v0);
-    REQUIRE_FALSE(snap.overflow);
-    REQUIRE(snap.latest_version >= v0);
-}

@@ -26,9 +26,10 @@ namespace components::catalog {
         [[nodiscard]] std::pmr::string to_pmr_string() const;
         [[nodiscard]] std::string to_string() const;
 
-        // pg_class.oid for this table. INVALID_OID until assigned by
-        // ddl_create_table (M3) — pre-existing in-memory table_id values stay INVALID_OID, which
-        // is fine: hashing/equality is by name, the OID is purely an identity tag for catalog
+        // pg_class.oid for this table. INVALID_OID until assigned by the CREATE TABLE
+        // pipeline (build_create_table_writes / operator_create_collection) —
+        // pre-existing in-memory table_id values stay INVALID_OID, which is fine:
+        // hashing/equality is by name, the OID is purely an identity tag for catalog
         // joins (pg_attribute.attrelid, pg_depend.refobjid, etc).
         [[nodiscard]] oid_t oid() const noexcept { return oid_; }
         // Immutable after first non-INVALID assignment: re-stamping the same value is a no-op,

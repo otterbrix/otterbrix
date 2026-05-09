@@ -82,6 +82,28 @@ namespace components::logical_plan {
                 return "primitive_write_t";
             case node_type::primitive_delete_t:
                 return "primitive_delete_t";
+            case node_type::alter_column_add_t:
+                return "alter_column_add_t";
+            case node_type::alter_column_rename_t:
+                return "alter_column_rename_t";
+            case node_type::alter_column_drop_t:
+                return "alter_column_drop_t";
+            case node_type::dynamic_cascade_delete_t:
+                return "dynamic_cascade_delete_t";
+            case node_type::get_schema_t:
+                return "get_schema_t";
+            case node_type::register_udf_t:
+                return "register_udf_t";
+            case node_type::unregister_udf_t:
+                return "unregister_udf_t";
+            case node_type::commit_transaction_t:
+                return "commit_transaction_t";
+            case node_type::abort_transaction_t:
+                return "abort_transaction_t";
+            case node_type::computed_field_register_t:
+                return "computed_field_register_t";
+            case node_type::computed_field_unregister_t:
+                return "computed_field_unregister_t";
             default:
                 return "unused";
         }

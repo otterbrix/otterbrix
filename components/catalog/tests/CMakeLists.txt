@@ -7,7 +7,6 @@ set(${PROJECT_NAME}_SOURCES
         # Read-side coverage lives in services/disk/tests (resolve / DDL) and
         # services/dispatcher/tests (catalog_view_t / validate). Per-component tests here
         # cover only the structural primitives.
-        test_invalidation_ring.cpp
         test_oids.cpp
         test_set_membership_filter.cpp
         test_system_schemas.cpp

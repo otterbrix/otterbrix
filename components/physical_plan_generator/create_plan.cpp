@@ -1,12 +1,24 @@
 #include "create_plan.hpp"
 
 #include "impl/create_plan_aggregate.hpp"
+#include "impl/create_plan_alter_column_add.hpp"
+#include "impl/create_plan_alter_column_drop.hpp"
+#include "impl/create_plan_alter_column_rename.hpp"
 #include "impl/create_plan_check_constraint.hpp"
+#include "impl/create_plan_checkpoint.hpp"
+#include "impl/create_plan_vacuum.hpp"
+#include "impl/create_plan_get_schema.hpp"
+#include "impl/create_plan_unregister_udf.hpp"
+#include "impl/create_plan_commit_transaction.hpp"
+#include "impl/create_plan_abort_transaction.hpp"
+#include "impl/create_plan_computed_field_register.hpp"
+#include "impl/create_plan_computed_field_unregister.hpp"
 #include "impl/create_plan_fk_check.hpp"
 #include "impl/create_plan_fk_cascade.hpp"
 #include "impl/create_plan_sequence.hpp"
 #include "impl/create_plan_primitive_delete.hpp"
 #include "impl/create_plan_primitive_write.hpp"
+#include "impl/create_plan_dynamic_cascade_delete.hpp"
 #include "impl/create_plan_data.hpp"
 #include "impl/create_plan_delete.hpp"
 #include "impl/create_plan_group.hpp"
@@ -58,6 +70,30 @@ namespace services::planner {
                 return impl::create_plan_primitive_write(context, node);
             case node_type::primitive_delete_t:
                 return impl::create_plan_primitive_delete(context, node);
+            case node_type::alter_column_add_t:
+                return impl::create_plan_alter_column_add(context, node);
+            case node_type::alter_column_rename_t:
+                return impl::create_plan_alter_column_rename(context, node);
+            case node_type::alter_column_drop_t:
+                return impl::create_plan_alter_column_drop(context, node);
+            case node_type::dynamic_cascade_delete_t:
+                return impl::create_plan_dynamic_cascade_delete(context, node);
+            case node_type::checkpoint_t:
+                return impl::create_plan_checkpoint(context, node);
+            case node_type::vacuum_t:
+                return impl::create_plan_vacuum(context, node);
+            case node_type::get_schema_t:
+                return impl::create_plan_get_schema(context, node);
+            case node_type::unregister_udf_t:
+                return impl::create_plan_unregister_udf(context, node);
+            case node_type::commit_transaction_t:
+                return impl::create_plan_commit_transaction(context, node);
+            case node_type::abort_transaction_t:
+                return impl::create_plan_abort_transaction(context, node);
+            case node_type::computed_field_register_t:
+                return impl::create_plan_computed_field_register(context, node);
+            case node_type::computed_field_unregister_t:
+                return impl::create_plan_computed_field_unregister(context, node);
             default:
                 break;
         }

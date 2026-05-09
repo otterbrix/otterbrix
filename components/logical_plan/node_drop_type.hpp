@@ -2,6 +2,9 @@
 
 #include "node.hpp"
 
+#include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/results/ddl_result.hpp>
+
 namespace components::logical_plan {
 
     class node_drop_type_t final : public node_t {
@@ -10,11 +13,22 @@ namespace components::logical_plan {
 
         const std::string& name() const noexcept;
 
+        // Resolved OID + behavior — populated by enrich_logical_plan before the
+        // planner runs. The planner rewrites this node into a
+        // node_dynamic_cascade_delete_t seeded at (pg_type, type_oid).
+        components::catalog::oid_t type_oid() const noexcept { return type_oid_; }
+        void set_type_oid(components::catalog::oid_t oid) noexcept { type_oid_ = oid; }
+
+        components::catalog::drop_behavior_t behavior() const noexcept { return behavior_; }
+        void set_behavior(components::catalog::drop_behavior_t b) noexcept { behavior_ = b; }
+
     private:
         hash_t hash_impl() const final;
         std::string to_string_impl() const final;
 
         std::string name_;
+        components::catalog::oid_t type_oid_{components::catalog::INVALID_OID};
+        components::catalog::drop_behavior_t behavior_{components::catalog::drop_behavior_t::cascade_};
     };
 
     using node_drop_type_ptr = boost::intrusive_ptr<node_drop_type_t>;

@@ -85,8 +85,8 @@ namespace {
     };
 } // namespace
 
-// 1. ddl_create_table writes a pg_depend row linking the new table to its namespace.
-//    After drop_namespace under CASCADE, the table is also gone.
+// 1. CREATE TABLE writes a pg_depend row linking the new table to its namespace.
+//    After DROP NAMESPACE under CASCADE, the table is also gone.
 TEST_CASE("services::disk::pg_depend::table_to_namespace_cascade") {
     fixture fx;
     auto [ns_oid, t_oid] = fx.make_ns_table("ns_a", "t1");
@@ -99,7 +99,7 @@ TEST_CASE("services::disk::pg_depend::table_to_namespace_cascade") {
     REQUIRE_FALSE(rt.found);
 }
 
-// 2. ddl_drop_namespace under RESTRICT refuses when child tables exist.
+// 2. DROP NAMESPACE under RESTRICT refuses when child tables exist.
 //    NOTE: restrict/cascade distinction is no longer available via the helper API;
 //    this test now verifies that a committed drop removes the namespace rows.
 TEST_CASE("services::disk::pg_depend::drop_namespace_restrict_blocks") {
@@ -168,7 +168,8 @@ TEST_CASE("services::disk::pg_depend::drop_type_restrict_no_deps") {
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, disk_test_helpers::txn_ctx(), pg_type, std::int64_t{0}, type_oid);
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, disk_test_helpers::txn_ctx(), pg_dep,  std::int64_t{1}, type_oid);
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, disk_test_helpers::txn_ctx(), pg_dep,  std::int64_t{3}, type_oid);
-        fx.invoke(&manager_disk_t::commit_pg_catalog_appends, disk_test_helpers::txn_ctx(), std::uint64_t{1000});
+        std::set<collection_full_name_t> deletes_local{pg_type, pg_dep};
+        fx.invoke(&manager_disk_t::storage_commit_deletes, disk_test_helpers::txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
     }
     auto rr = fx.invoke(&manager_disk_t::resolve_type, fx.ctx(), ns_oid,
                           std::string("standalone_type"), std::uint64_t{0});
@@ -196,7 +197,7 @@ TEST_CASE("services::disk::pg_depend::multi_level_cascade") {
     REQUIRE_FALSE(rt_i.found);
 }
 
-// 8. ddl_drop_table with a dependent index.
+// 8. DROP TABLE with a dependent index.
 //    Index→table dep is 'a' (auto): does NOT block RESTRICT (§1.14).
 //    RESTRICT succeeds (drops table+index together); CASCADE also succeeds.
 TEST_CASE("services::disk::pg_depend::drop_table_restrict_vs_cascade") {
@@ -230,9 +231,9 @@ namespace catalog = components::catalog;
     auto fetch = [&](components::catalog::oid_t /*cls*/, components::catalog::oid_t oid)
                      -> std::vector<dependency_t> {
         if (oid == OID_A)
-            return {{CLS, OID_B, CLS, OID_A, deptype::normal}};
+            return {{CLS, OID_B, deptype::normal}};
         if (oid == OID_B)
-            return {{CLS, OID_A, CLS, OID_B, deptype::normal}};
+            return {{CLS, OID_A, deptype::normal}};
         return {};
     };
 
@@ -257,9 +258,9 @@ namespace catalog = components::catalog;
     auto fetch = [&](components::catalog::oid_t /*cls*/, components::catalog::oid_t oid)
                      -> std::vector<dependency_t> {
         if (oid == OID_A)
-            return {{CLS, OID_B, CLS, OID_A, deptype::auto_dep}};
+            return {{CLS, OID_B, 'a'}};
         if (oid == OID_B)
-            return {{CLS, OID_C, CLS, OID_B, deptype::auto_dep}};
+            return {{CLS, OID_C, 'a'}};
         return {};
     };
 
@@ -277,7 +278,7 @@ namespace catalog = components::catalog;
 //     pg_depend rows. We verify this indirectly: DROP TABLE with RESTRICT on a
 //     table that only has 'i' (internal) deps from an index must SUCCEED
 //     (internal deps don't block restrict — §1.14). This ensures the deptype
-//     filter is correct even when objsubid rows are present.
+//     filter is correct even when per-column 'i' rows are present.
 // ===========================================================================
 TEST_CASE("services::disk::pg_depend::test_column_level_pg_depend_written") {
     fixture fx;

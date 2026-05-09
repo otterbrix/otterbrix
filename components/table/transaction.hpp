@@ -1,8 +1,11 @@
 #pragma once
 
+#include <components/base/collection_full_name.hpp>
+#include <components/context/pg_catalog_swap.hpp>
 #include <components/session/session.hpp>
 #include <components/table/row_version_manager.hpp>
 #include <cstdint>
+#include <set>
 #include <vector>
 
 namespace components::table {
@@ -31,6 +34,13 @@ namespace components::table {
         };
         void add_append(int64_t row_start, uint64_t count);
         const std::vector<append_info>& appends() const { return appends_; }
+
+        // Phase 5b: aggregated across all execute_plan_impl calls within this txn.
+        // Snapshotted by operator_commit_transaction_t / operator_abort_transaction_t
+        // before txn_manager_.commit()/abort() to drive storage_commit_appends /
+        // storage_revert_appends after the swap point.
+        std::vector<components::pg_catalog_append_range_t>  pg_catalog_appends;
+        std::set<collection_full_name_t>                    pg_catalog_delete_tables;
 
     private:
         session::session_id_t session_;

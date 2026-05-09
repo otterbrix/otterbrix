@@ -102,7 +102,7 @@ TEST_CASE("services::disk::d4::user_table_not_in_storages_at_start") {
     REQUIRE_FALSE(fx.manager->has_storage(collection_full_name_t{"any_ns", "main", "any_table"}));
 }
 
-// 3. ddl_create_table only writes pg_class / pg_attribute rows. The user storage is
+// 3. CREATE TABLE only writes pg_class / pg_attribute rows. The user storage is
 //    NOT auto-instantiated — D4 leaves storage creation to the executor (or to the
 //    next resolve_table when an .otbx is present on disk).
 //    Doc test alias: test_append_user_table_to_pg_class.
@@ -133,7 +133,7 @@ TEST_CASE("services::disk::d4::resolve_table_finds_unloaded_user_table") {
     // resolve_table did not need storage to be present in storages_ to answer the lookup.
 }
 
-// 5. ddl_drop_table on an unloaded user table mutates only pg_class / pg_attribute /
+// 5. DROP TABLE on an unloaded user table mutates only pg_class / pg_attribute /
 //    pg_depend; no storage entry required. Doc test alias: test_drop_unloaded_table.
 TEST_CASE("services::disk::d4::drop_unloaded_table") {
     fixture fx;
@@ -149,7 +149,8 @@ TEST_CASE("services::disk::d4::drop_unloaded_table") {
     REQUIRE_FALSE(resolved.found);
 }
 
-// 6. ddl_add_column on an unloaded user table only updates pg_attribute. Doc test alias:
+// 6. test_add_column (post-Phase 5: pure pg_attribute write, no in-memory sync) on
+//    an unloaded user table leaves the storage map untouched. Doc test alias:
 //    test_alter_unloaded_table.
 TEST_CASE("services::disk::d4::alter_unloaded_table_add_column") {
     fixture fx;

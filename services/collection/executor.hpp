@@ -2,10 +2,12 @@
 
 #include <components/base/collection_full_name.hpp>
 #include <components/compute/function.hpp>
+#include <components/context/pg_catalog_swap.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <set>
 
 #include <actor-zeta/actor/actor_mixin.hpp>
 #include <actor-zeta/actor/dispatch.hpp>
@@ -27,6 +29,10 @@ namespace services::collection::executor {
     struct execute_result_t {
         components::cursor::cursor_t_ptr cursor;
         components::operators::operator_write_data_t::updated_types_map_t updates;
+        // Phase 5b: pg_catalog ranges/tables collected during this execute_plan call.
+        // Dispatcher merges these into transaction_t when txn_id != 0.
+        std::vector<components::pg_catalog_append_range_t>      pg_catalog_appends;
+        std::set<collection_full_name_t>                        pg_catalog_delete_tables;
     };
 
     using function_result_t = components::compute::function_uid;
@@ -44,20 +50,28 @@ namespace services::collection::executor {
     };
     using plan_storage_t = core::pmr::btree::btree_t<components::session::session_id_t, plan_t>;
 
-    // Internal result with MVCC tracking (not exposed to dispatcher)
+    // Internal result with MVCC tracking (not exposed to dispatcher).
+    // Phase 5: per-DML swap-info (append_row_*, delete_txn_id, wal_*) used to
+    // live on this struct as `append_row_start`, `append_row_count`,
+    // `delete_txn_id`, `wal_collection` — populated by the now-deleted
+    // intercept_dml_io_. After Phase 5 unification the DML operators
+    // self-contain WAL/storage/index I/O and record swap-info on
+    // pipeline::context_t::dml_*. execute_sub_plan_ drains those onto the
+    // dml_* fields below so execute_plan can drive storage_commit_append /
+    // storage_commit_delete uniformly.
     struct sub_plan_result_t {
         components::cursor::cursor_t_ptr cursor;
         components::operators::operator_write_data_t::updated_types_map_t updates;
-        int64_t append_row_start{0};
-        uint64_t append_row_count{0};
-        size_t delete_count{0};
-        uint64_t delete_txn_id{0};
+        int64_t                dml_append_row_start{0};
+        uint64_t               dml_append_row_count{0};
+        uint64_t               dml_delete_txn_id{0};
+        collection_full_name_t dml_collection;
 
-        // Physical WAL data (captured in intercept_dml_io_ for physical WAL writes)
-        std::unique_ptr<components::vector::data_chunk_t> wal_insert_data;
-        std::pmr::vector<int64_t> wal_row_ids{std::pmr::get_default_resource()};
-        std::unique_ptr<components::vector::data_chunk_t> wal_update_data;
-        collection_full_name_t wal_collection;
+        // Phase 5b: pg_catalog swap-info drained from each pipeline::context_t
+        // inside execute_sub_plan_. execute_plan moves these into the outer
+        // execute_result_t so the dispatcher can push them onto transaction_t.
+        std::vector<components::pg_catalog_append_range_t> pg_catalog_appends;
+        std::set<collection_full_name_t>                   pg_catalog_delete_tables;
     };
 
     class executor_t final : public actor_zeta::basic_actor<executor_t> {
@@ -97,9 +111,6 @@ namespace services::collection::executor {
         unique_future<sub_plan_result_t> execute_sub_plan_(components::session::session_id_t session,
                                                            plan_t plan_data,
                                                            components::table::transaction_data txn);
-
-        unique_future<sub_plan_result_t> intercept_dml_io_(components::operators::operator_t::ptr waiting_op,
-                                                           components::pipeline::context_t* ctx);
 
     private:
         actor_zeta::address_t parent_address_ = actor_zeta::address_t::empty_address();

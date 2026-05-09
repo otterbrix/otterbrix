@@ -159,18 +159,6 @@ namespace otterbrix {
         return send_plan(session, std::move(plan), std::move(params));
     }
 
-    auto wrapper_dispatcher_t::size(const session_id_t& session,
-                                    const database_name_t& database,
-                                    const collection_name_t& collection) -> size_t {
-        trace(log_, "wrapper_dispatcher_t::size session: {}, collection name : {} ", session.data(), collection);
-        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
-                                                       &services::dispatcher::manager_dispatcher_t::size,
-                                                       session,
-                                                       database,
-                                                       collection);
-        return wait_future(future);
-    }
-
     auto wrapper_dispatcher_t::register_udf(const session_id_t& session, components::compute::function_ptr function)
         -> bool {
         trace(log_,

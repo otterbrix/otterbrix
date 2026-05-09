@@ -1,7 +1,12 @@
 #pragma once
 
+// KEEP per task #75 — see docs/phase7-design-decisions.md.
+// catalog_view_t is retained as a thin per-execute_plan facade over the
+// disk actor. It is constructed fresh on each execute_plan (no longer-lived
+// caching), so it has no stale-data problem; rewriting validate_logical_plan
+// (~1865 LOC) to use raw read_rows_by_key would be high-churn / low-gain.
+
 #include "resolved_objects.hpp"
-#include "versioned_plan_cache.hpp"
 
 #include <actor-zeta.hpp>
 #include <actor-zeta/detail/future.hpp>
@@ -9,7 +14,6 @@
 #include <components/context/execution_context.hpp>
 
 #include <cstdint>
-#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -17,30 +21,18 @@
 
 namespace services::dispatcher {
 
-    // V4 catalog access facade. Wraps the dispatcher's plan cache + the disk actor's
-    // address + the transaction's pinned catalog version. Exposes async getters that
-    // probe the cache first and co_await the disk on miss (filling the cache before
-    // returning).
-    //
-    // Pointer lifetime: the cache holds entries by value at (key, version). Pinned
-    // versions are protected from eviction, so as long as the caller's transaction is
-    // pinned at `pinned_version`, returned pointers remain valid for the duration of
-    // execute_plan. Do not store across pin boundaries (commit/abort_transaction).
-    //
-    // Spec ref: catalog-migration-to-postgresql-style.md §181-198 (V4), §1083-1106
-    // (cache flow).
+    // Thin wrapper over disk_address_. Каждый get_* делает actor send к manager_disk,
+    // try_get_* — синхронный пробник по локальному unordered_map per-instance кэшу
+    // (заполняется в рамках одного execute_plan, чтобы не делать дублирующих round-trip'ов
+    // в течение одной валидации). Между вызовами execute_plan кэш не сохраняется.
     class catalog_view_t {
     public:
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
 
-        catalog_view_t(versioned_plan_cache_t& cache,
-                        actor_zeta::address_t disk_address,
-                        std::uint64_t pinned_version,
+        catalog_view_t(actor_zeta::address_t disk_address,
                         std::pmr::memory_resource* resource) noexcept
-            : cache_(cache)
-            , disk_address_(std::move(disk_address))
-            , pinned_version_(pinned_version)
+            : disk_address_(std::move(disk_address))
             , resource_(resource) {}
 
         // actor_zeta's coroutine allocator looks up `this->resource()` to allocate the
@@ -67,23 +59,6 @@ namespace services::dispatcher {
                   components::catalog::oid_t namespace_oid,
                   std::string name);
 
-        unique_future<const resolved_function_t*>
-        get_function(components::execution_context_t ctx,
-                      components::catalog::oid_t namespace_oid,
-                      std::string name,
-                      std::vector<components::catalog::oid_t> arg_type_oids);
-
-        // Cross-namespace function lookup by name only — wraps disk's
-        // resolve_function_by_name (#45). Used by validate's overload resolution
-        // (function_name_exists / function_exists / get_function migration in #57)
-        // where the caller knows the function name but not the exact arg-type signature
-        // and must iterate to find a matching overload.
-        //
-        // Each returned pointer is stored in cache keyed by (name, arg_type_oids per
-        // signature). Subsequent same-args lookups via probe_function hit those entries.
-        unique_future<std::vector<const resolved_function_t*>>
-        get_functions_by_name(components::execution_context_t ctx, std::string name);
-
         // Synchronous probes — return nullptr on miss, no disk roundtrip. Useful for
         // code paths that have already pre-loaded the cache (e.g. inside
         // validate_schema_sync after validate_schema (coroutine) pre-walked the AST).
@@ -92,9 +67,6 @@ namespace services::dispatcher {
                                                 std::string_view name) const noexcept;
         const resolved_type_t* try_get_type(components::catalog::oid_t namespace_oid,
                                               std::string_view name) const noexcept;
-        const resolved_function_t*
-        try_get_function(std::string_view name,
-                          std::span<const components::catalog::oid_t> arg_type_oids) const noexcept;
 
         // FK snapshot getters.  Both async variants call disk.read_rows_by_key on
         // pg_constraint + pg_attribute to build fully-resolved resolved_fk_t entries
@@ -111,12 +83,6 @@ namespace services::dispatcher {
         get_fks_referencing(components::execution_context_t ctx,
                              components::catalog::oid_t table_oid);
 
-        const std::vector<resolved_fk_t>*
-        try_get_fks_outgoing(components::catalog::oid_t table_oid) const noexcept;
-
-        const std::vector<resolved_fk_t>*
-        try_get_fks_referencing(components::catalog::oid_t table_oid) const noexcept;
-
         // CHECK constraint snapshot getter.
         // Returns vector of (constraint_name, expression_string) for all CHECK constraints
         // on table_oid (contype='c', non-null conexpr).
@@ -124,18 +90,17 @@ namespace services::dispatcher {
         get_check_exprs(components::execution_context_t ctx,
                          components::catalog::oid_t table_oid);
 
-        // Inspectors.
-        std::uint64_t pinned_version() const noexcept { return pinned_version_; }
-        actor_zeta::address_t disk_address() const noexcept { return disk_address_; }
-        versioned_plan_cache_t& cache() noexcept { return cache_; }
-
     private:
-        versioned_plan_cache_t& cache_;
         actor_zeta::address_t disk_address_;
-        std::uint64_t pinned_version_;
         std::pmr::memory_resource* resource_;
 
-        // Per-txn FK snapshots (not in versioned_plan_cache — keyed by table_oid).
+        // Per-instance кэш на время одного execute_plan / size / get_schema. Заполняется
+        // get_*() и читается try_get_*(), чтобы избежать дублирующих round-trip'ов внутри
+        // одной валидации. После выхода из метода объект уничтожается. Ключи tbl/type/fn —
+        // составная строка (oid|name) — чтобы не вводить кастомных hash-functor'ов.
+        std::unordered_map<std::string, resolved_namespace_t> ns_cache_;
+        std::unordered_map<std::string, resolved_table_t> tbl_cache_;
+        std::unordered_map<std::string, resolved_type_t> type_cache_;
         std::unordered_map<components::catalog::oid_t, std::vector<resolved_fk_t>> fk_outgoing_;
         std::unordered_map<components::catalog::oid_t, std::vector<resolved_fk_t>> fk_referencing_;
     };

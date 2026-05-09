@@ -10,7 +10,7 @@ namespace components::operators {
     // then applies the configured ON DELETE action:
     //   'a'/'r' NO ACTION / RESTRICT  — error if any child rows reference deleted rows
     //   'c'     CASCADE               — delete the referencing child rows
-    //   'n'/'d' SET NULL / SET DEFAULT — not yet implemented (passes silently)
+    //   'n'/'d' SET NULL / SET DEFAULT — update referencing rows in-place
     class operator_fk_cascade_t final : public read_write_operator_t {
     public:
         operator_fk_cascade_t(std::pmr::memory_resource* resource,

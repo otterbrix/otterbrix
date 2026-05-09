@@ -25,7 +25,8 @@ namespace components::operators {
                                          exec_ctx,
                                          catalog_table_,
                                          std::move(row_));
-        co_await std::move(fut);
+        auto rng = co_await std::move(fut);
+        if (rng.count > 0) ctx->pg_catalog_appends.push_back(std::move(rng));
         mark_executed();
     }
 

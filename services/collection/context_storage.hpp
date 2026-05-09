@@ -12,6 +12,7 @@ namespace services {
     struct context_storage_t {
         std::pmr::memory_resource* resource;
         log_t log;
+        // kept until #76 collections_ retention decision
         std::unordered_set<collection_full_name_t, collection_name_hash> known_collections;
         std::pmr::vector<components::index::keys_base_storage_t> indexed_keys;
         const components::logical_plan::storage_parameters* parameters = nullptr;

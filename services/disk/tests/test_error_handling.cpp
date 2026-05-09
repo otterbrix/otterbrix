@@ -100,9 +100,10 @@ TEST_CASE("services::disk::error::resolve_table_invalid_namespace") {
     REQUIRE_FALSE(rt.found);
 }
 
-// 8. ddl_create_namespace allows duplicate names — name is not enforced unique at the
-//    ddl_* layer (dispatcher checks via catalog_ before calling). Here we just verify it
-//    produces distinct OIDs and pg_namespace ends up with two rows of the same name.
+// 8. CREATE NAMESPACE allows duplicate names — name is not enforced unique at the
+//    primitive-write layer (dispatcher checks via catalog_ before calling). Here we
+//    just verify it produces distinct OIDs and pg_namespace ends up with two rows of
+//    the same name.
 TEST_CASE("services::disk::error::duplicate_namespace_name_two_rows") {
     fixture fx;
     auto a = test_create_namespace(fx, "dup");
@@ -128,7 +129,7 @@ TEST_CASE("services::disk::error::topological_drop_empty") {
     REQUIRE(order.empty());
 }
 
-// 13. ddl_create_namespace with a long name (PostgreSQL's typical 63-byte limit isn't
+// 13. CREATE NAMESPACE with a long name (PostgreSQL's typical 63-byte limit isn't
 //     enforced here — accept arbitrary length).
 TEST_CASE("services::disk::error::long_namespace_name_accepted") {
     fixture fx;
@@ -140,7 +141,7 @@ TEST_CASE("services::disk::error::long_namespace_name_accepted") {
     REQUIRE(rs.found);
 }
 
-// 14. ddl_create_namespace with empty name accepted (no validation at ddl_* layer).
+// 14. CREATE NAMESPACE with empty name accepted (no validation at primitive-write layer).
 TEST_CASE("services::disk::error::empty_name_accepted") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "");

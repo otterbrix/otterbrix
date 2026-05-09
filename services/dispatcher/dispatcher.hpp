@@ -26,7 +26,6 @@
 #include <services/collection/context_storage.hpp>
 #include <services/collection/executor.hpp>
 #include <services/disk/disk_contract.hpp>
-#include <services/dispatcher/versioned_plan_cache.hpp>
 #include <services/wal/base.hpp>
 #include <services/wal/record.hpp>
 #include <services/wal/wal_contract.hpp>
@@ -70,8 +69,6 @@ namespace services::dispatcher {
         execute_plan(components::session::session_id_t session,
                      components::logical_plan::node_ptr plan,
                      components::logical_plan::parameter_node_ptr params);
-        unique_future<size_t>
-        size(components::session::session_id_t session, std::string database_name, std::string collection);
         unique_future<components::cursor::cursor_t_ptr>
         get_schema(components::session::session_id_t session,
                    std::pmr::vector<std::pair<database_name_t, collection_name_t>> ids);
@@ -80,7 +77,6 @@ namespace services::dispatcher {
         unique_future<bool> unregister_udf(components::session::session_id_t session,
                                            std::string function_name,
                                            std::pmr::vector<components::types::complex_logical_type> inputs);
-        unique_future<void> close_cursor(components::session::session_id_t session);
 
         // Transaction lifecycle (actor-callable by executor)
         unique_future<components::table::transaction_data> begin_transaction(components::session::session_id_t session);
@@ -88,11 +84,9 @@ namespace services::dispatcher {
         unique_future<void> abort_transaction(components::session::session_id_t session);
 
         using dispatch_traits = actor_zeta::dispatch_traits<&manager_dispatcher_t::execute_plan,
-                                                            &manager_dispatcher_t::size,
                                                             &manager_dispatcher_t::get_schema,
                                                             &manager_dispatcher_t::register_udf,
                                                             &manager_dispatcher_t::unregister_udf,
-                                                            &manager_dispatcher_t::close_cursor,
                                                             &manager_dispatcher_t::begin_transaction,
                                                             &manager_dispatcher_t::commit_transaction,
                                                             &manager_dispatcher_t::abort_transaction>;
@@ -105,6 +99,11 @@ namespace services::dispatcher {
 
         static constexpr std::size_t executor_pool_size_ = 4;
 
+        // KEEP per task #76 — see docs/phase7-design-decisions.md.
+        // Fast-path membership cache for collections. Read by physical_plan_generator
+        // in 8 sites (join, match, aggregate, sort, group) to drive optimizer
+        // decisions. Removing would require touching all 8 + replacing with
+        // on-demand pg_class scans. Cache rebuild on init_from_state is cheap.
         collection_storage_t collections_;
         std::pmr::vector<services::collection::executor::executor_ptr> executors_;
         std::pmr::vector<actor_zeta::address_t> executor_addresses_;
@@ -117,27 +116,8 @@ namespace services::dispatcher {
 
         components::table::transaction_manager_t txn_manager_;
 
-        // M5 plan cache: snapshot-isolated resolution keyed by (plan_hash, catalog_version).
-        // pin_version() in begin_transaction → unpin_version() in commit/abort. Probe/store
-        // wrap validate_* in execute_plan; on a miss, the freshly resolved data is cached at
-        // the current catalog_version_. last_seen_version_ tracks the most-recent disk-side
-        // catalog_version_ — refreshed at the start of every execute_plan via
-        // refresh_invalidations_(), which also reseeds the cache on overflow.
-        versioned_plan_cache_t plan_cache_;
-        std::uint64_t last_seen_version_{0};
-
-        unique_future<void> refresh_invalidations_(components::session::session_id_t session);
-
         components::logical_plan::node_ptr create_logic_plan(components::logical_plan::node_ptr plan);
 
-        services::collection::executor::execute_result_t
-        create_database_(components::logical_plan::node_ptr logical_plan);
-        services::collection::executor::execute_result_t
-        drop_database_(components::logical_plan::node_ptr logical_plan);
-        services::collection::executor::execute_result_t
-        create_collection_(components::logical_plan::node_ptr logical_plan);
-        services::collection::executor::execute_result_t
-        drop_collection_(components::logical_plan::node_ptr logical_plan);
 
         unique_future<services::collection::executor::execute_result_t>
         execute_plan_impl(components::session::session_id_t session,
@@ -147,42 +127,5 @@ namespace services::dispatcher {
 
         actor_zeta::behavior_t current_behavior_;
     };
-
-    // -------------------------------------------------------------------------
-    // DDL execution helpers (implemented in ddl.cpp)
-    // -------------------------------------------------------------------------
-
-    struct ddl_context_t {
-        actor_zeta::address_t disk_address;
-        actor_zeta::address_t index_address;
-        actor_zeta::address_t wal_address;
-        components::table::transaction_manager_t& txn_manager;
-        const std::pmr::set<collection_full_name_t>& collections;
-        std::pmr::memory_resource* resource;
-    };
-
-    inline components::cursor::cursor_t_ptr
-    make_ddl_error_cursor(std::pmr::memory_resource* res, const disk::ddl_result_t& r) {
-        std::string msg;
-        if (r.status == disk::ddl_status::restrict_blocked) {
-            msg = "cannot drop: other objects depend on it (blocking oid " +
-                  std::to_string(static_cast<unsigned>(r.blocking_oid)) + ")";
-        } else if (r.status == disk::ddl_status::cycle_detected) {
-            msg = "cannot drop: dependency cycle detected (at oid " +
-                  std::to_string(static_cast<unsigned>(r.blocking_oid)) + ")";
-        } else if (r.status == disk::ddl_status::not_found) {
-            msg = "object does not exist";
-        } else {
-            msg = "DDL operation failed";
-        }
-        return components::cursor::make_cursor(res, components::cursor::error_code_t::other_error, msg);
-    }
-
-    actor_zeta::unique_future<components::cursor::cursor_t_ptr>
-    execute_ddl(components::session::session_id_t session,
-                components::logical_plan::node_ptr logical_plan,
-                components::table::transaction_data txn_data,
-                catalog_view_t& view,
-                ddl_context_t dctx);
 
 } // namespace services::dispatcher

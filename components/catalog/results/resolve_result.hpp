@@ -15,8 +15,6 @@ namespace services::disk {
         bool found{false};
         components::catalog::oid_t oid{components::catalog::INVALID_OID};
         std::string name;
-        std::vector<invalidation_event_t> events;
-        std::uint64_t catalog_version{0};
 
         resolve_namespace_result_t() = default;
         explicit resolve_namespace_result_t(std::pmr::memory_resource* /*resource*/) {}
@@ -43,11 +41,7 @@ namespace services::disk {
         components::catalog::oid_t namespace_oid{components::catalog::INVALID_OID};
         char relkind{'r'};
         std::string name;
-        // V4: full per-column info (replaces the old `column_oids` field). Sorted by attnum.
-        // Dropped columns (attisdropped=true) are NOT included by default.
         std::vector<column_info_t> columns;
-        std::vector<invalidation_event_t> events;
-        std::uint64_t catalog_version{0};
 
         resolve_table_result_t() = default;
         explicit resolve_table_result_t(std::pmr::memory_resource* /*resource*/) {}
@@ -58,12 +52,7 @@ namespace services::disk {
         components::catalog::oid_t oid{components::catalog::INVALID_OID};
         components::catalog::oid_t namespace_oid{components::catalog::INVALID_OID};
         std::string name;
-        // V4: pg_type.typdefspec — encoded complex_logical_type tree. Empty for built-in
-        // scalar types (caller maps via oid_to_builtin_type). Non-empty for STRUCT, ENUM,
-        // DECIMAL, ARRAY, MAP, etc. Decode via components::catalog::decode_type_spec.
         std::string typdefspec;
-        std::vector<invalidation_event_t> events;
-        std::uint64_t catalog_version{0};
 
         resolve_type_result_t() = default;
         explicit resolve_type_result_t(std::pmr::memory_resource* /*resource*/) {}
@@ -74,16 +63,10 @@ namespace services::disk {
         components::catalog::oid_t oid{components::catalog::INVALID_OID};
         components::catalog::oid_t namespace_oid{components::catalog::INVALID_OID};
         std::string name;
-        // V4: pg_proc fields needed to reconstruct kernel_signature_t in catalog_view_t.
-        // prouid is the bridge to the in-memory function_registry_t (compute::function_uid).
-        // proargmatchers / prorettype are encoded strings — caller decodes via
-        // components::catalog::decode_proargmatchers / decode_prorettype.
         std::int32_t pronargs{0};
         std::uint64_t prouid{0};
         std::string proargmatchers;
         std::string prorettype;
-        std::vector<invalidation_event_t> events;
-        std::uint64_t catalog_version{0};
 
         resolve_function_result_t() = default;
         explicit resolve_function_result_t(std::pmr::memory_resource* /*resource*/) {}

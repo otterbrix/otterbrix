@@ -1,6 +1,8 @@
 #pragma once
 
 #include "node.hpp"
+#include <components/catalog/catalog_codes.hpp>
+#include <components/catalog/catalog_oids.hpp>
 #include <components/table/column_definition.hpp>
 
 #include <string>
@@ -58,11 +60,26 @@ namespace components::logical_plan {
 
         const std::vector<alter_table_subcommand_t>& subcommands() const noexcept { return subcommands_; }
 
+        // Stamped by enrich_plan once the catalog_view has cached the target table.
+        // The planner (rewrite_alter_table) consumes this to build per-clause primitives.
+        components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
+        void set_table_oid(components::catalog::oid_t oid) noexcept { table_oid_ = oid; }
+
+        // Stamped by enrich_plan from pg_class.relkind. The planner uses this on
+        // drop_column subcommands to choose between the static-schema path
+        // (alter_column_drop → pg_attribute tombstone) and the dynamic-schema
+        // path (computed_field_unregister → pg_computed_column refcount-decrement).
+        // Defaults to 'r' (regular table) so untouched static paths behave as before.
+        char relkind() const noexcept { return relkind_; }
+        void set_relkind(char rk) noexcept { relkind_ = rk; }
+
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
         std::vector<alter_table_subcommand_t> subcommands_;
+        components::catalog::oid_t            table_oid_{components::catalog::INVALID_OID};
+        char                                  relkind_{components::catalog::relkind::regular};
     };
 
     using node_alter_table_ptr = boost::intrusive_ptr<node_alter_table_t>;

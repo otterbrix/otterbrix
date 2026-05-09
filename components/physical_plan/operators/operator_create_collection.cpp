@@ -57,7 +57,8 @@ namespace components::operators {
             auto [_, f] = actor_zeta::send(ctx->disk_address,
                                            &services::disk::manager_disk_t::append_pg_catalog_row,
                                            exec_ctx, tbl, std::move(row));
-            co_await std::move(f);
+            auto rng = co_await std::move(f);
+            if (rng.count > 0) ctx->pg_catalog_appends.push_back(std::move(rng));
         }
 
         mark_executed();

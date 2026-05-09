@@ -49,10 +49,6 @@ TEST_CASE("integration::cpp::test_otterbrix_multithread") {
         std::vector<std::thread> threads;
         threads.reserve(num_threads);
 
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->size(session, database_name, collection_name) == 0);
-        }
         for (size_t i = 0; i < num_threads; i++) {
             threads.emplace_back(append_func, i);
         }
@@ -61,10 +57,6 @@ TEST_CASE("integration::cpp::test_otterbrix_multithread") {
         }
         for (bool res : results) {
             REQUIRE(res);
-        }
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->size(session, database_name, collection_name) == doc_num);
         }
     }
 
@@ -131,10 +123,6 @@ TEST_CASE("integration::cpp::test_connectors") {
         std::vector<std::thread> threads;
         threads.reserve(num_threads);
 
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(otterbrix->dispatcher()->size(session, database_name, collection_name) == 0);
-        }
         for (size_t i = 0; i < num_threads; i++) {
             threads.emplace_back(append_func, i);
         }
@@ -143,10 +131,6 @@ TEST_CASE("integration::cpp::test_connectors") {
         }
         for (bool res : results) {
             REQUIRE(res);
-        }
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(otterbrix->dispatcher()->size(session, database_name, collection_name) == doc_num);
         }
     }
 

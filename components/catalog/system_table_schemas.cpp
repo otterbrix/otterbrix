@@ -38,9 +38,6 @@
 //   pg_index      — no `indisprimary/indisunique/indtype` : PK/uniqueness is enforced via
 //                                              pg_constraint, not pg_index. Index implementation
 //                                              picker not exposed via SQL DDL yet.
-//   pg_depend     — adds `objsubid/refobjsubid` : column-level deps written by
-//                                              ddl_create_index and ddl_create_constraint;
-//                                              consumed by ddl_drop_column RESTRICT/CASCADE.
 //   pg_database   — added                     : full hierarchy database → namespace → relation.
 //                                              10th system table beyond the doc's 9.
 //
@@ -153,8 +150,6 @@ namespace components::catalog {
             c.emplace_back("refclassid", oid_col(), true);   // catalog of referenced
             c.emplace_back("refobjid", oid_col(), true);
             c.emplace_back("deptype", str_col(), true);      // 'n','a','i','p' — see PG docs
-            c.emplace_back("objsubid", i32_col(), false);    // column ordinal (attnum) in objid, or 0/NULL for whole-object
-            c.emplace_back("refobjsubid", i32_col(), false); // column ordinal in refobjid
             return c;
         }
 
@@ -630,74 +625,6 @@ namespace components::catalog {
                     out += "s:0";
                     break;
             }
-        }
-        return out;
-    }
-
-    std::vector<components::compute::output_type> decode_prorettype(const std::string& spec) {
-        std::vector<components::compute::output_type> out;
-        if (spec.empty()) return out;
-        size_t pos = 0;
-        while (pos < spec.size()) {
-            size_t end = spec.find(',', pos);
-            if (end == std::string::npos) end = spec.size();
-            std::string tok = spec.substr(pos, end - pos);
-            pos = end + 1;
-            if (tok.size() < 3 || tok[1] != ':') return {};
-            int v = std::atoi(tok.c_str() + 2);
-            if (tok[0] == 'f') {
-                out.push_back(components::compute::output_type::fixed(
-                    types::complex_logical_type{static_cast<types::logical_type>(v)}));
-            } else if (tok[0] == 's') {
-                out.push_back(components::compute::output_type::same_at(static_cast<size_t>(v)));
-            } else {
-                return {};
-            }
-        }
-        return out;
-    }
-
-    std::vector<components::compute::input_type> decode_proargmatchers(const std::string& spec) {
-        using K = components::compute::type_matcher_kind;
-        std::vector<components::compute::input_type> out;
-        if (spec.empty()) return out;
-        size_t pos = 0;
-        while (pos < spec.size()) {
-            size_t end = spec.find('|', pos);
-            if (end == std::string::npos) end = spec.size();
-            std::string tok = spec.substr(pos, end - pos);
-            pos = end + 1;
-            if (tok.empty()) continue;
-            components::compute::input_type m;
-            char tag = tok[0];
-            switch (tag) {
-                case 'e': {
-                    if (tok.size() < 3 || tok[1] != ':') { return {}; }
-                    int v = std::atoi(tok.c_str() + 2);
-                    m.kind = K::exact;
-                    m.exact_type = static_cast<types::logical_type>(v);
-                    break;
-                }
-                case 'n': m.kind = K::numeric;     break;
-                case 'i': m.kind = K::integer;     break;
-                case 'f': m.kind = K::floating;    break;
-                case 'a': {
-                    if (tok.size() < 3 || tok[1] != ':') { return {}; }
-                    m.kind = K::any_of;
-                    size_t p2 = 2;
-                    while (p2 < tok.size()) {
-                        size_t comma = tok.find(',', p2);
-                        if (comma == std::string::npos) comma = tok.size();
-                        int v = std::atoi(tok.c_str() + p2);
-                        m.any_of_list.push_back(static_cast<types::logical_type>(v));
-                        p2 = comma + 1;
-                    }
-                    break;
-                }
-                case 't': m.kind = K::always_true; break;
-                default: return {};
-            }
-            out.push_back(std::move(m));
         }
         return out;
     }

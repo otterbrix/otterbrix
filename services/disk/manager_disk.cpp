@@ -47,7 +47,6 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::drop_storage>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_types>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_total_rows>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_calculate_size>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_scan>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_fetch>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_scan_segment>,
@@ -57,10 +56,9 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_commit_append>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_revert_append>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_commit_delete>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_adopt_computing_schema>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_computed_append>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_computed_drop>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_add_column>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_commit_appends>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_commit_deletes>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_revert_appends>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_namespace>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_table>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_type>,
@@ -68,16 +66,13 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_function_by_name>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::list_namespaces>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::list_tables_in_namespace>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::recent_invalidations_since>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::commit_pg_catalog_appends>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::revert_pg_catalog_appends>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::allocate_oids_batch>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::append_pg_catalog_row>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::delete_pg_catalog_rows>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::scan_by_key>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::point_lookup_by_index>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::read_rows_by_key>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::scan_by_table_oid>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::compact_relkind_g_storage>,
         };
 
         constexpr bool behavior_covers_all_implements() noexcept {
@@ -195,6 +190,38 @@ namespace services::disk {
         table_ = std::move(new_table);
     }
 
+    bool table_storage_t::drop_column(const std::string& attname) {
+        // Phase 7.5b: physical column compaction. DISK is out of scope (would
+        // need segment rewrites + checkpoint coordination); IN_MEMORY only.
+        if (mode_ != storage_mode_t::IN_MEMORY) {
+            return false;
+        }
+        if (!table_) {
+            return false;
+        }
+        const auto& cols = table_->columns();
+        std::uint64_t idx = 0;
+        bool found = false;
+        for (std::uint64_t i = 0; i < cols.size(); ++i) {
+            if (cols[i].name() == attname) {
+                idx = i;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            return false;
+        }
+        // The data_table_t(parent, removed_column) constructor performs the
+        // rebuild: column_definitions_ minus idx, row_groups_ rebuilt via
+        // collection_t::remove_column (per-segment column drop). All physical
+        // storage for the dropped column is released when the previous
+        // table_ unique_ptr goes away.
+        auto new_table = std::make_unique<components::table::data_table_t>(*table_, idx);
+        table_ = std::move(new_table);
+        return true;
+    }
+
     manager_disk_t::manager_disk_t(std::pmr::memory_resource* resource,
                                    actor_zeta::scheduler_raw scheduler,
                                    actor_zeta::scheduler_raw scheduler_disk,
@@ -281,10 +308,6 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_total_rows, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_calculate_size>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_calculate_size, msg);
-                break;
-            }
             // Storage data operations
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_scan>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_scan, msg);
@@ -323,21 +346,16 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_commit_delete, msg);
                 break;
             }
-            // DDL pipeline
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_adopt_computing_schema>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_adopt_computing_schema, msg);
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_commit_appends>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_commit_appends, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_computed_append>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_computed_append, msg);
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_commit_deletes>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_commit_deletes, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_computed_drop>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_computed_drop, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_add_column>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::ddl_add_column, msg);
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_revert_appends>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_revert_appends, msg);
                 break;
             }
             // resolve + invalidation pull
@@ -369,18 +387,6 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::list_tables_in_namespace, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::recent_invalidations_since>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::recent_invalidations_since, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::commit_pg_catalog_appends>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::commit_pg_catalog_appends, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::revert_pg_catalog_appends>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::revert_pg_catalog_appends, msg);
-                break;
-            }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::allocate_oids_batch>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::allocate_oids_batch, msg);
                 break;
@@ -393,10 +399,6 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::scan_by_key, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::point_lookup_by_index>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::point_lookup_by_index, msg);
-                break;
-            }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::read_rows_by_key>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::read_rows_by_key, msg);
                 break;
@@ -407,6 +409,10 @@ namespace services::disk {
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::scan_by_table_oid>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::scan_by_table_oid, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::compact_relkind_g_storage>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::compact_relkind_g_storage, msg);
                 break;
             }
             default:

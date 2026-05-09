@@ -69,8 +69,9 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         REQUIRE(pending_future_->valid());
         auto result = std::move(*pending_future_).get();
         pending_future_.reset();
-        // Drain again to ensure executor's post-result DDL inline pipeline (ddl_create_namespace
-        // + flush + commit_txn + commit_pg_catalog_appends) completes before returning.
+        // Drain again to ensure executor's post-result DDL inline pipeline
+        // (catalog writes + flush + commit_txn + storage_commit_appends) completes
+        // before returning.
         step();
         return result;
     }
@@ -221,7 +222,8 @@ TEST_CASE("services::dispatcher::computed_operations") {
     }
 
     test.execute_sql(query.str());
-    // INSERT triggers ddl_adopt_computing_schema — columns visible on next resolve.
+    // INSERT into a relkind='g' table — columns visible on next resolve via
+    // pg_computed_column (operator_computed_field_register_t, wired in P7.2).
     {
         auto cur = test.take_result();
         REQUIRE(cur->is_success());

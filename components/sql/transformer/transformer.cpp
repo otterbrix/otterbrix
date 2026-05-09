@@ -65,6 +65,9 @@ namespace components::sql::transform {
             case T_RenameStmt:
                 log_node = transform_rename(pg_cast<RenameStmt>(node));
                 break;
+            case T_TransactionStmt:
+                log_node = transform_transaction(pg_cast<TransactionStmt>(node));
+                break;
             default:
                 throw std::runtime_error("Unsupported node type: " + node_tag_to_string(node.type));
         }

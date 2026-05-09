@@ -102,10 +102,6 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
         }
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->size(session, table_database_name, table_collection_name) == kNumInserts);
-        }
     }
 
     INFO("find") {
@@ -225,10 +221,6 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
         }
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->size(session, table_database_name, table_collection_name) == kNumInserts);
-        }
     }
 
     INFO("delete") {
@@ -306,10 +298,6 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto cur = dispatcher->execute_plan(session, del);
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 90);
-        }
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->size(session, table_database_name, table_other_collection_name) == 10);
         }
     }
 
@@ -522,10 +510,6 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
         }
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->size(session, table_database_name, table_collection_name) == 89);
-        }
     }
 
     INFO("delete with limit") {
@@ -552,10 +536,6 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto cur = dispatcher->execute_plan(session, del, params);
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 5);
-        }
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->size(session, table_database_name, table_collection_name) == 84);
         }
     }
 

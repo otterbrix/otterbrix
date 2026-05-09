@@ -17,7 +17,6 @@ namespace components::catalog {
 
         bool  empty()    const noexcept { return next >= oids.size(); }
         oid_t allocate()       noexcept { assert(!empty()); return oids[next++]; }
-        std::size_t remaining() const noexcept { return oids.size() - next; }
     };
 
 } // namespace components::catalog

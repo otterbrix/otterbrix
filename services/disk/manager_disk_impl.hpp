@@ -145,25 +145,6 @@ namespace detail {
     }
 
     // ---------------------------------------------------------------------------
-    // make_ddl_result: build a ddl_result_t from a single invalidation event.
-    // ---------------------------------------------------------------------------
-
-    inline ddl_result_t make_ddl_result(std::pmr::memory_resource* resource,
-                                         components::catalog::oid_t oid,
-                                         invalidation_kind kind,
-                                         components::catalog::oid_t parent_oid,
-                                         std::uint64_t version)
-    {
-        ddl_result_t r(resource);
-        r.result = components::cursor::make_cursor(resource,
-                                                    components::cursor::operation_status_t::success);
-        r.created_oid = oid;
-        r.new_catalog_version = version;
-        r.events.push_back(invalidation_event_t{version, kind, oid, parent_oid});
-        return r;
-    }
-
-    // ---------------------------------------------------------------------------
     // rebuild_chunk: copy a data_chunk_t into a new one backed by `resource`.
     // Ensures WAL-replay chunks created with a foreign allocator are safe to
     // pass to table.append() which requires a consistent memory resource.

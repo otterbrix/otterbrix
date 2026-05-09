@@ -364,11 +364,13 @@ TEST_CASE("services::disk::persistence::test_pg_class_lists_all_objects") {
     std::filesystem::remove_all(dir);
 }
 
-// 7. test_computing_table_persists_restart: ddl_create_computing_table +
-// ddl_computed_append survive checkpoint and restart. relkind stays 'g',
+// 7. test_computing_table_persists_restart: a computing table plus its
+// pg_computed_column rows survive checkpoint and restart. relkind stays 'g',
 // pg_computed_column rows are reloaded, the table_computes() property holds
 // across the restart boundary. Validates Phase-1 C1 (pg_computed_column)
-// persistence (catalog-migration-to-postgresql-style.md §14).
+// persistence (catalog-migration-to-postgresql-style.md §14). Phase 5: migrated
+// from the deleted ddl_computed_append helper to primitive
+// build_pg_computed_column_row + append_pg_catalog_row writes.
 TEST_CASE("services::disk::persistence::test_computing_table_persists_restart") {
     auto dir = persist_dir() + "/computing_persist";
     std::filesystem::remove_all(dir);
@@ -382,12 +384,10 @@ TEST_CASE("services::disk::persistence::test_computing_table_persists_restart") 
         comp_oid = test_create_computing_table(fd, ns_oid, "agg");
         // Append two distinct fields so the restart has something pg_computed_column
         // must reload — the empty-table path is already covered by test_pg_class_lists_all_objects.
-        fd.invoke(&manager_disk_t::ddl_computed_append, fd.ctx(),
-                   comp_oid, std::string("count"),
-                   components::catalog::well_known_oid::int64_type);
-        fd.invoke(&manager_disk_t::ddl_computed_append, fd.ctx(),
-                   comp_oid, std::string("total"),
-                   components::catalog::well_known_oid::float64_type);
+        test_computed_append_simple(fd, comp_oid, "count",
+                                     components::catalog::well_known_oid::int64_type);
+        test_computed_append_simple(fd, comp_oid, "total",
+                                     components::catalog::well_known_oid::float64_type);
         fd.checkpoint();
     }
     {

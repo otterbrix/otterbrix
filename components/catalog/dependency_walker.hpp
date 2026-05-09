@@ -18,7 +18,6 @@ namespace components::catalog {
     //   'p' — pin:    built-in pinned object; cannot be dropped.
     namespace deptype {
         inline constexpr char normal   = 'n';
-        inline constexpr char auto_dep = 'a';
         inline constexpr char internal = 'i';
         inline constexpr char pin      = 'p';
 
@@ -42,8 +41,6 @@ namespace components::catalog {
     struct dependency_t {
         oid_t classid{0};   // catalog hosting dependent (e.g. pg_class.oid)
         oid_t objid{0};     // dependent's own oid
-        oid_t refclassid{0}; // catalog hosting referenced (e.g. pg_namespace.oid)
-        oid_t refobjid{0};   // referenced object's oid
         char deptype{'n'};   // 'n' normal, 'a' auto, 'i' internal, 'p' pin
     };
 

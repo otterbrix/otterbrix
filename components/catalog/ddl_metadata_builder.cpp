@@ -368,8 +368,6 @@ namespace components::catalog {
 
         // pg_depend rows
         if (const auto* dep_def = find_system_table("pg_depend")) {
-            const std::size_t dep_cols = dep_def->columns.size();
-
             // index→table 'a' auto-cascade dependency
             {
                 auto chunk = make_pg_row(resource, dep_def->columns,
@@ -383,11 +381,8 @@ namespace components::catalog {
                 result.push_back(make_write(pg_depend_full, std::move(chunk)));
             }
 
-            // Per-column 'i' deps: index→each indexed column (objsubid = 1-based position)
-            for (std::int32_t col_pos = 1;
-                 col_pos <= static_cast<std::int32_t>(column_attoids.size());
-                 ++col_pos) {
-                const oid_t col_attoid = column_attoids[static_cast<std::size_t>(col_pos - 1)];
+            // Per-column 'i' deps: index→each indexed column.
+            for (const oid_t col_attoid : column_attoids) {
                 if (col_attoid == INVALID_OID) continue;
                 auto chunk = make_pg_row(resource, dep_def->columns,
                                          [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
@@ -396,9 +391,6 @@ namespace components::catalog {
                                              c.set_value(2, 0, lv_oid(r, well_known_oid::pg_attribute_table));
                                              c.set_value(3, 0, lv_oid(r, col_attoid));
                                              c.set_value(4, 0, lv_str(r, std::string{"i"}));
-                                             if (dep_cols >= 6) {
-                                                 c.set_value(5, 0, lv_i32(r, col_pos));
-                                             }
                                          });
                 result.push_back(make_write(pg_depend_full, std::move(chunk)));
             }
@@ -542,8 +534,6 @@ namespace components::catalog {
 
         // pg_depend rows
         if (const auto* dep_def = find_system_table("pg_depend")) {
-            const std::size_t dep_cols = dep_def->columns.size();
-
             // constraint→table 'i' internal
             {
                 auto chunk = make_pg_row(resource, dep_def->columns,
@@ -557,11 +547,8 @@ namespace components::catalog {
                 result.push_back(make_write(pg_depend_full, std::move(chunk)));
             }
 
-            // Per-column 'i' deps: constraint→each constrained column (objsubid = 1-based)
-            for (std::int32_t col_pos = 1;
-                 col_pos <= static_cast<std::int32_t>(fk_column_attoids.size());
-                 ++col_pos) {
-                const oid_t col_attoid = fk_column_attoids[static_cast<std::size_t>(col_pos - 1)];
+            // Per-column 'i' deps: constraint→each constrained column.
+            for (const oid_t col_attoid : fk_column_attoids) {
                 if (col_attoid == INVALID_OID) continue;
                 auto chunk = make_pg_row(resource, dep_def->columns,
                                          [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
@@ -570,9 +557,6 @@ namespace components::catalog {
                                              c.set_value(2, 0, lv_oid(r, well_known_oid::pg_attribute_table));
                                              c.set_value(3, 0, lv_oid(r, col_attoid));
                                              c.set_value(4, 0, lv_str(r, std::string{"i"}));
-                                             if (dep_cols >= 6) {
-                                                 c.set_value(5, 0, lv_i32(r, col_pos));
-                                             }
                                          });
                 result.push_back(make_write(pg_depend_full, std::move(chunk)));
             }
@@ -648,6 +632,57 @@ namespace components::catalog {
                                c.set_value(1, 0, lv_oid(r, indrelid));
                                c.set_value(2, 0, lv_str(r, indkey));
                                c.set_value(3, 0, lv_bool(r, indisvalid));
+                           });
+    }
+
+    vector::data_chunk_t
+    build_pg_computed_column_row(
+        std::pmr::memory_resource* resource,
+        oid_t                       table_oid,
+        oid_t                       attoid,
+        const std::string&          attname,
+        oid_t                       atttypid,
+        std::int64_t                attversion,
+        std::int64_t                attrefcount)
+    {
+        const auto* def = find_system_table("pg_computed_column");
+        if (!def) {
+            std::pmr::vector<types::complex_logical_type> empty_types(resource);
+            return vector::data_chunk_t(resource, empty_types, 1);
+        }
+        return make_pg_row(resource, def->columns,
+                           [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                               c.set_value(0, 0, lv_oid(r, table_oid));
+                               c.set_value(1, 0, lv_oid(r, attoid));
+                               c.set_value(2, 0, lv_str(r, attname));
+                               c.set_value(3, 0, lv_oid(r, atttypid));
+                               c.set_value(4, 0, lv_i64(r, attversion));
+                               c.set_value(5, 0, lv_i64(r, attrefcount));
+                           });
+    }
+
+    vector::data_chunk_t
+    build_pg_depend_row(
+        std::pmr::memory_resource* resource,
+        oid_t                       classid,
+        oid_t                       objid,
+        oid_t                       refclassid,
+        oid_t                       refobjid,
+        char                        deptype)
+    {
+        const auto* def = find_system_table("pg_depend");
+        if (!def) {
+            std::pmr::vector<types::complex_logical_type> empty_types(resource);
+            return vector::data_chunk_t(resource, empty_types, 1);
+        }
+        const std::string deptype_str(1, deptype);
+        return make_pg_row(resource, def->columns,
+                           [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                               c.set_value(0, 0, lv_oid(r, classid));
+                               c.set_value(1, 0, lv_oid(r, objid));
+                               c.set_value(2, 0, lv_oid(r, refclassid));
+                               c.set_value(3, 0, lv_oid(r, refobjid));
+                               c.set_value(4, 0, lv_str(r, deptype_str));
                            });
     }
 

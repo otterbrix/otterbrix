@@ -14,6 +14,11 @@ namespace components::operators {
 
         const collection_full_name_t& collection_name() const noexcept { return name_; }
 
+        // Phase 5: self-contained DML side-effects. Performs
+        // storage_delete_rows + WAL physical_delete + index::delete_rows,
+        // populates ctx->dml_* swap-info, then mark_executed.
+        actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
+
     private:
         void on_execute_impl(pipeline::context_t* pipeline_context) override;
 

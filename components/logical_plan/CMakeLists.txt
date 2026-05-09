@@ -4,6 +4,9 @@ set(SOURCE_${PROJECT_NAME}
         forward.cpp
         node.cpp
         node_aggregate.cpp
+        node_alter_column_add.cpp
+        node_alter_column_drop.cpp
+        node_alter_column_rename.cpp
         node_alter_table.cpp
         node_check_constraint.cpp
         node_fk_check.cpp
@@ -11,6 +14,14 @@ set(SOURCE_${PROJECT_NAME}
         node_sequence.cpp
         node_primitive_write.cpp
         node_primitive_delete.cpp
+        node_dynamic_cascade_delete.cpp
+        node_get_schema.cpp
+        node_register_udf.cpp
+        node_unregister_udf.cpp
+        node_commit_transaction.cpp
+        node_abort_transaction.cpp
+        node_computed_field_register.cpp
+        node_computed_field_unregister.cpp
         node_checkpoint.cpp
         node_create_collection.cpp
         node_create_constraint.cpp

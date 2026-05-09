@@ -115,8 +115,6 @@ namespace services::disk {
                 }
             }
         }
-        // Populate O(1) lookup indexes from the freshly seeded pg_namespace/pg_class rows.
-        rebuild_lookup_indexes();
     }
 
     // Load existing system catalog tables from disk on subsequent starts.
@@ -143,7 +141,6 @@ namespace services::disk {
             // load_storage_disk_sync provides W-TORN .prev fallback transparently.
             load_storage_disk_sync(name, otbx);
         }
-        rebuild_lookup_indexes();
     }
 
     // Scan pg_class/pg_attribute/pg_type/pg_proc/pg_constraint
@@ -206,64 +203,7 @@ namespace services::disk {
 
         oid_gen_.seed(high_water);
         trace(log_, "manager_disk_t::restore_oid_generator_sync : seeded high_water={}", high_water);
-        // Rebuild O(1) lookup indexes after WAL replay may have added new pg_namespace/pg_class rows.
-        rebuild_lookup_indexes();
     }
-
-    void manager_disk_t::rebuild_lookup_indexes() {
-        ns_name_to_oid_.clear();
-        ns_oid_to_name_.clear();
-        table_to_oid_.clear();
-        table_oid_to_key_.clear();
-
-        std::pmr::synchronized_pool_resource scan_resource;
-
-        // Scan pg_namespace: col 0 = oid (uint32), col 1 = nspname (string).
-        if (auto it = storages_.find(pg_namespace_name); it != storages_.end()) {
-            inline_scan(it->second->table_storage.table(), {0, 1}, &scan_resource,
-                        [&](components::vector::data_chunk_t& chunk, uint64_t i) {
-                            auto oid_v = chunk.value(0, i);
-                            auto name_v = chunk.value(1, i);
-                            if (oid_v.is_null() || name_v.is_null())
-                                return true;
-                            auto oid = static_cast<components::catalog::oid_t>(oid_v.value<std::uint32_t>());
-                            std::string name{name_v.value<std::string_view>()};
-                            ns_name_to_oid_.emplace(name, oid);
-                            ns_oid_to_name_.emplace(oid, std::move(name));
-                            return true;
-                        });
-        }
-
-        // Scan pg_class: col 0 = oid, col 1 = relname, col 2 = relnamespace, col 3 = relkind.
-        if (auto it = storages_.find(pg_class_name); it != storages_.end()) {
-            inline_scan(it->second->table_storage.table(), {0, 1, 2, 3}, &scan_resource,
-                        [&](components::vector::data_chunk_t& chunk, uint64_t i) {
-                            auto oid_v = chunk.value(0, i);
-                            auto name_v = chunk.value(1, i);
-                            auto ns_v = chunk.value(2, i);
-                            if (oid_v.is_null() || name_v.is_null() || ns_v.is_null())
-                                return true;
-                            auto toid = static_cast<components::catalog::oid_t>(oid_v.value<std::uint32_t>());
-                            auto ns_oid = static_cast<components::catalog::oid_t>(ns_v.value<std::uint32_t>());
-                            std::string tname{name_v.value<std::string_view>()};
-                            char relkind = catalog::relkind::regular;
-                            auto kind_v = chunk.value(3, i);
-                            if (!kind_v.is_null()) {
-                                auto ks = kind_v.value<std::string_view>();
-                                if (!ks.empty())
-                                    relkind = ks.front();
-                            }
-                            ns_table_key_t key{ns_oid, tname};
-                            table_to_oid_.emplace(key, table_index_entry_t{toid, relkind});
-                            table_oid_to_key_.emplace(toid, std::move(key));
-                            return true;
-                        });
-        }
-        trace(log_, "rebuild_lookup_indexes: {} namespaces, {} tables",
-              ns_name_to_oid_.size(), table_to_oid_.size());
-    }
-
-    // restore_user_storages_sync is defined after the inline_scan helper namespace.
 
     // ========================================================================
     // Catalog DDL (async coroutines, public API).
@@ -278,183 +218,5 @@ namespace services::disk {
     // a WAL actor is wired, so a DDL appears as a sequence of physical_inserts on
     // pg_catalog.* in WAL.
     // ========================================================================
-
-
-    // MVCC visibility on bootstrap: restore_user_storages_sync (and rebuild_lookup_indexes)
-    // use inline_scan, which calls scan_committed(COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED).
-    // Only rows with insert_id==0 (direct bootstrap appends) or rows whose txn_id has been
-    // flipped to a commit_id by commit_pg_catalog_appends are visible. Rows written under a
-    // non-zero transaction_id that was never committed — e.g. because the process crashed
-    // before commit_pg_catalog_appends ran — are permanently invisible after restart; the
-    // txn_manager_ is not consulted here and provides no additional visibility.
-
-    // Restart helper: scan pg_class for user relations and reattach each collection's
-    // storage. Disk-backed tables are loaded from .otbx; in-memory tables are
-    // reconstructed from pg_attribute rows so WAL replay can populate them.
-    void manager_disk_t::restore_user_storages_sync() {
-        if (config_.path.empty()) {
-            return;
-        }
-        auto pg_class_it = storages_.find(pg_class_name);
-        auto pg_namespace_it = storages_.find(pg_namespace_name);
-        if (pg_class_it == storages_.end() || pg_namespace_it == storages_.end()) {
-            return;
-        }
-
-        std::pmr::synchronized_pool_resource scan_resource;
-
-        std::unordered_map<components::catalog::oid_t, std::string> ns_oid_to_name;
-        inline_scan(pg_namespace_it->second->table_storage.table(), {0, 1}, &scan_resource,
-                    [&](components::vector::data_chunk_t& chunk, uint64_t i) {
-                        auto oid_v = chunk.value(0, i);
-                        auto name_v = chunk.value(1, i);
-                        if (oid_v.is_null() || name_v.is_null())
-                            return true;
-                        const auto oid = static_cast<components::catalog::oid_t>(oid_v.value<std::uint32_t>());
-                        ns_oid_to_name.emplace(oid, std::string(name_v.value<std::string_view>()));
-                        return true;
-                    });
-
-        struct rel_t {
-            components::catalog::oid_t oid{0};
-            std::string ns_name;
-            std::string name;
-        };
-        std::vector<rel_t> rels;
-        inline_scan(pg_class_it->second->table_storage.table(), {0, 1, 2, 3}, &scan_resource,
-                    [&](components::vector::data_chunk_t& chunk, uint64_t i) {
-                        auto oid_v = chunk.value(0, i);
-                        auto name_v = chunk.value(1, i);
-                        auto ns_v = chunk.value(2, i);
-                        auto kind_v = chunk.value(3, i);
-                        if (oid_v.is_null() || name_v.is_null() || ns_v.is_null())
-                            return true;
-                        char relkind = catalog::relkind::regular;
-                        if (!kind_v.is_null()) {
-                            auto ks = kind_v.value<std::string_view>();
-                            if (!ks.empty()) {
-                                relkind = ks.front();
-                            }
-                        }
-                        if (relkind != catalog::relkind::regular) {
-                            return true;
-                        }
-                        const auto ns_oid = static_cast<components::catalog::oid_t>(ns_v.value<std::uint32_t>());
-                        auto ns_it = ns_oid_to_name.find(ns_oid);
-                        if (ns_it == ns_oid_to_name.end() || ns_it->second == "pg_catalog") {
-                            return true;
-                        }
-                        rel_t r;
-                        r.oid = static_cast<components::catalog::oid_t>(oid_v.value<std::uint32_t>());
-                        r.ns_name = ns_it->second;
-                        r.name = std::string(name_v.value<std::string_view>());
-                        rels.push_back(std::move(r));
-                        return true;
-                    });
-
-        if (rels.empty()) {
-            return;
-        }
-
-        auto pg_attribute_it = storages_.find(pg_attribute_name);
-        for (const auto& r : rels) {
-            collection_full_name_t key{r.ns_name, r.name};
-            if (storages_.find(key) != storages_.end()) {
-                continue;
-            }
-            auto otbx = config_.path / r.ns_name / "main" / r.name / "table.otbx";
-            if (std::filesystem::exists(otbx)) {
-                try {
-                    load_storage_disk_sync(key, otbx);
-                } catch (const std::exception& e) {
-                    warn(log_, "restore_user_storages_sync: failed to load {}: {}",
-                         otbx.string(), e.what());
-                }
-                continue;
-            }
-            // (b) IN-MEMORY storage rehydration. With atttypspec round-tripping the full
-            // complex_logical_type, we can rebuild the column list from pg_attribute alone
-            // — including DECIMAL precision/scale and ARRAY element types.
-            if (pg_attribute_it == storages_.end()) {
-                continue;
-            }
-            struct rebuild_attr_t {
-                std::string name;
-                components::catalog::oid_t typid{0};
-                std::int32_t attnum{0};
-                bool not_null{false};
-                std::string typspec;
-                std::string defspec;
-            };
-            std::vector<rebuild_attr_t> attrs;
-            inline_scan(pg_attribute_it->second->table_storage.table(),
-                         {1, 2, 3, 4, 5, 7, 8, 9}, &scan_resource,
-                         [&](components::vector::data_chunk_t& chunk, uint64_t i) {
-                             auto attrelid_v = chunk.value(0, i);
-                             auto attname_v = chunk.value(1, i);
-                             auto atttypid_v = chunk.value(2, i);
-                             auto attnum_v = chunk.value(3, i);
-                             auto notnull_v = chunk.value(4, i);
-                             auto dropped_v = chunk.value(5, i);
-                             auto typspec_v = chunk.value(6, i);
-                             auto defspec_v = chunk.value(7, i);
-                             if (attrelid_v.is_null() || attname_v.is_null())
-                                 return true;
-                             if (static_cast<components::catalog::oid_t>(
-                                     attrelid_v.value<std::uint32_t>()) != r.oid)
-                                 return true;
-                             if (!dropped_v.is_null() && dropped_v.value<bool>())
-                                 return true;
-                             rebuild_attr_t a;
-                             a.name = std::string(attname_v.value<std::string_view>());
-                             a.typid = atttypid_v.is_null()
-                                           ? components::catalog::INVALID_OID
-                                           : static_cast<components::catalog::oid_t>(
-                                                 atttypid_v.value<std::uint32_t>());
-                             a.attnum = attnum_v.is_null() ? 0 : attnum_v.value<std::int32_t>();
-                             a.not_null = notnull_v.is_null() ? false : notnull_v.value<bool>();
-                             if (!typspec_v.is_null())
-                                 a.typspec = std::string(typspec_v.value<std::string_view>());
-                             if (!defspec_v.is_null())
-                                 a.defspec = std::string(defspec_v.value<std::string_view>());
-                             attrs.push_back(std::move(a));
-                             return true;
-                         });
-            std::sort(attrs.begin(), attrs.end(),
-                      [](const rebuild_attr_t& a, const rebuild_attr_t& b) { return a.attnum < b.attnum; });
-            std::vector<components::table::column_definition_t> columns;
-            columns.reserve(attrs.size());
-            for (const auto& a : attrs) {
-                components::types::complex_logical_type ct = a.typspec.empty()
-                    ? components::types::complex_logical_type{oid_to_builtin_type(a.typid)}
-                    : decode_type_spec(resource(), a.typspec);
-                ct.set_alias(a.name);
-                components::table::column_definition_t cd(a.name, ct, a.not_null);
-                if (!a.defspec.empty()) {
-                    if (auto dv = components::catalog::decode_default_spec(resource(), a.defspec)) {
-                        cd.set_default_value(std::move(*dv));
-                    }
-                }
-                columns.push_back(std::move(cd));
-            }
-            if (columns.empty()) {
-                storages_.emplace(key, std::make_unique<collection_storage_entry_t>(resource()));
-            } else {
-                storages_.emplace(key,
-                                   std::make_unique<collection_storage_entry_t>(resource(),
-                                                                                  std::move(columns)));
-            }
-        }
-    }
-
-    // Push the result's first invalidation event into the ring buffer so M5's plan
-    // cache catches it on its next recent_invalidations_since pull, then return the result
-    // unchanged. Idempotent w.r.t. the ring (no duplicate push if events is empty).
-    ddl_result_t manager_disk_t::finalize_ddl(ddl_result_t r) noexcept {
-        if (!r.events.empty()) {
-            invalidations_.push(r.events.front());
-        }
-        return r;
-    }
 
 } // namespace services::disk

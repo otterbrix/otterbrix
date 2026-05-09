@@ -135,7 +135,7 @@ TEST_CASE("services::disk::wal_catalog::bootstrap_alone_no_wal") {
     cleanup_dir(dir);
 }
 
-// 2. ddl_create_namespace adds at least one pg_namespace record.
+// 2. CREATE NAMESPACE adds at least one pg_namespace record.
 TEST_CASE("services::disk::wal_catalog::create_namespace_writes_pg_namespace") {
     auto dir = wal_cat_dir() + "/create_ns";
     cleanup_dir(dir);
@@ -150,7 +150,7 @@ TEST_CASE("services::disk::wal_catalog::create_namespace_writes_pg_namespace") {
     cleanup_dir(dir);
 }
 
-// 3. ddl_create_table writes pg_class + per-column pg_attribute rows.
+// 3. CREATE TABLE writes pg_class + per-column pg_attribute rows.
 TEST_CASE("services::disk::wal_catalog::create_table_writes_pg_class_and_pg_attribute") {
     auto dir = wal_cat_dir() + "/create_table";
     cleanup_dir(dir);
@@ -174,7 +174,7 @@ TEST_CASE("services::disk::wal_catalog::create_table_writes_pg_class_and_pg_attr
     cleanup_dir(dir);
 }
 
-// 4. ddl_create_table writes pg_depend rows (table→namespace + column→type per column).
+// 4. CREATE TABLE writes pg_depend rows (table→namespace + column→type per column).
 TEST_CASE("services::disk::wal_catalog::create_table_writes_pg_depend") {
     auto dir = wal_cat_dir() + "/create_dep";
     cleanup_dir(dir);
@@ -297,7 +297,7 @@ TEST_CASE("services::disk::wal_catalog::all_records_under_pg_catalog_database") 
     cleanup_dir(dir);
 }
 
-// 10. ddl_drop_table emits delete-style WAL records (the cascade walks pg_class/pg_attribute/pg_depend).
+// 10. DROP TABLE emits delete-style WAL records (the cascade walks pg_class/pg_attribute/pg_depend).
 //     We can't easily count deletes, but the operation should produce no INSERT records targeting
 //     the collection of the dropped relation (i.e., we don't see resurrection writes).
 TEST_CASE("services::disk::wal_catalog::drop_table_no_resurrect_writes") {

@@ -134,6 +134,7 @@ namespace components::catalog {
 
     // Row-builder helpers for update-operations (rename_column, drop_column tombstone,
     // index_set_valid). Return a single data_chunk_t, not a catalog_write_t vector.
+
     vector::data_chunk_t
     build_pg_attribute_row(
         std::pmr::memory_resource* resource,
@@ -155,5 +156,31 @@ namespace components::catalog {
         oid_t                       indrelid,
         const std::string&          indkey,
         bool                        indisvalid);
+
+    // pg_computed_column row builder for tests / primitive-write callers.
+    // Schema: [relid, attoid, attname, atttypid, attversion, attrefcount].
+    vector::data_chunk_t
+    build_pg_computed_column_row(
+        std::pmr::memory_resource* resource,
+        oid_t                       table_oid,
+        oid_t                       attoid,
+        const std::string&          attname,
+        oid_t                       atttypid,
+        std::int64_t                attversion,
+        std::int64_t                attrefcount);
+
+    // pg_depend single-row builder for primitive-write callers (e.g. dynamic
+    // computed-column register, or any operator that needs to emit one
+    // dependency row outside build_create_table_writes / build_create_*_writes).
+    // Schema: [classid, objid, refclassid, refobjid, deptype].
+    // deptype is a single character ('n', 'a', 'i', 'p').
+    vector::data_chunk_t
+    build_pg_depend_row(
+        std::pmr::memory_resource* resource,
+        oid_t                       classid,
+        oid_t                       objid,
+        oid_t                       refclassid,
+        oid_t                       refobjid,
+        char                        deptype);
 
 } // namespace components::catalog

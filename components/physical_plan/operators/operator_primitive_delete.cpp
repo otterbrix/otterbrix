@@ -29,6 +29,7 @@ namespace components::operators {
                                          oid_col_idx_,
                                          target_oid_);
         co_await std::move(fut);
+        if (ctx->txn.transaction_id != 0) ctx->pg_catalog_delete_tables.insert(catalog_table_);
         mark_executed();
     }
 

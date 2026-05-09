@@ -21,9 +21,6 @@ namespace components::catalog {
     namespace contype {
         inline constexpr char check      = 'c';
         inline constexpr char foreign_key = 'f';
-        inline constexpr char primary_key = 'p';
-        inline constexpr char unique      = 'u';
-        inline constexpr char not_null    = 'n';
     } // namespace contype
 
     // pg_class.relstoragemode (otterbrix-specific: physical storage backing)
@@ -35,17 +32,11 @@ namespace components::catalog {
     // pg_constraint.confmatchtype (FK match strategy)
     namespace fk_match {
         inline constexpr char simple  = 's';
-        inline constexpr char full    = 'f';
-        inline constexpr char partial = 'p';
     } // namespace fk_match
 
     // pg_constraint.confdeltype / confupdtype (FK referential action)
     namespace fk_action {
         inline constexpr char no_action   = 'a';
-        inline constexpr char restrict_   = 'r'; // trailing _ avoids clash with restrict keyword
-        inline constexpr char cascade     = 'c';
-        inline constexpr char set_null    = 'n';
-        inline constexpr char set_default = 'd';
     } // namespace fk_action
 
 } // namespace components::catalog

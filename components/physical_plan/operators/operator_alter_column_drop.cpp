@@ -1,0 +1,196 @@
+#include "operator_alter_column_drop.hpp"
+
+#include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/ddl_metadata_builder.hpp>
+#include <components/catalog/system_table_schemas.hpp>
+#include <components/context/context.hpp>
+#include <services/disk/manager_disk.hpp>
+
+#include <cstdint>
+#include <set>
+#include <utility>
+#include <vector>
+
+namespace components::operators {
+
+    namespace catalog = components::catalog;
+
+    operator_alter_column_drop_t::operator_alter_column_drop_t(
+        std::pmr::memory_resource*           resource,
+        log_t                                 log,
+        catalog::oid_t                       table_oid,
+        catalog::oid_t                       namespace_oid,
+        std::string                          column_name,
+        catalog::oid_t                       attoid,
+        catalog::drop_behavior_t             behavior)
+        // Tagged as alter_column_drop (catch-all read_write_operator_t — same
+        // convention as the sibling alter_column_add / alter_column_rename
+        // operators).
+        : read_write_operator_t(resource, std::move(log), operator_type::alter_column_drop)
+        , table_oid_(table_oid)
+        , namespace_oid_(namespace_oid)
+        , column_name_(std::move(column_name))
+        , attoid_(attoid)
+        , behavior_(behavior) {}
+
+    void operator_alter_column_drop_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
+        async_wait();
+    }
+
+    actor_zeta::unique_future<void>
+    operator_alter_column_drop_t::await_async_and_resume(pipeline::context_t* ctx) {
+        components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
+
+        const collection_full_name_t pg_attr_c {"pg_catalog", "main", "pg_attribute"};
+        const collection_full_name_t pg_dep_c  {"pg_catalog", "main", "pg_depend"};
+        const collection_full_name_t pg_idx_c  {"pg_catalog", "main", "pg_index"};
+        const collection_full_name_t pg_class_c{"pg_catalog", "main", "pg_class"};
+        const collection_full_name_t pg_con_c  {"pg_catalog", "main", "pg_constraint"};
+
+        // Step 1 — locate the live pg_attribute row for (table_oid, column_name).
+        // We always re-scan here even if attoid_ was pre-stamped by enrich, because
+        // we also need atttypid / attnum / flags / typspec / defspec to rebuild the
+        // tombstone row in step 4.
+        components::types::logical_value_t toid_lv(resource_, table_oid_);
+        auto [_pa, paf] = actor_zeta::send(
+            ctx->disk_address,
+            &services::disk::manager_disk_t::read_rows_by_key,
+            exec_ctx, pg_attr_c,
+            std::vector<std::string>{"attrelid"},
+            std::vector<components::types::logical_value_t>{toid_lv});
+        auto attr_rows = co_await std::move(paf);
+
+        catalog::oid_t attoid = catalog::INVALID_OID;
+        std::int32_t   attnum = 0;
+        catalog::oid_t atttypid = catalog::INVALID_OID;
+        bool att_not_null = false, att_has_default = false;
+        std::string att_typspec, att_defspec;
+        for (const auto& row : attr_rows) {
+            if (row.size() < 10 || row[2].is_null()) continue;
+            if (row[2].value<std::string_view>() != column_name_) continue;
+            if (!row[7].is_null() && row[7].value<bool>()) continue; // already dropped
+            attoid          = static_cast<catalog::oid_t>(row[0].value<std::uint32_t>());
+            atttypid        = row[3].is_null() ? catalog::INVALID_OID
+                                               : static_cast<catalog::oid_t>(row[3].value<std::uint32_t>());
+            attnum          = row[4].is_null() ? 0 : row[4].value<std::int32_t>();
+            att_not_null    = !row[5].is_null() && row[5].value<bool>();
+            att_has_default = !row[6].is_null() && row[6].value<bool>();
+            if (!row[8].is_null()) att_typspec = std::string(row[8].value<std::string_view>());
+            if (!row[9].is_null()) att_defspec = std::string(row[9].value<std::string_view>());
+            break;
+        }
+        if (attoid == catalog::INVALID_OID) {
+            // Column not found (or already dropped). No-op, no error — matches the
+            // legacy ddl.cpp behavior which simply `break`-ed out of the switch.
+            mark_executed();
+            co_return;
+        }
+
+        // Step 2 — read pg_depend for refclassid=pg_attribute, refobjid=attoid.
+        components::types::logical_value_t att_cls_lv(
+            resource_, catalog::well_known_oid::pg_attribute_table);
+        components::types::logical_value_t att_oid_lv(resource_, attoid);
+        auto [_pd, pdf] = actor_zeta::send(
+            ctx->disk_address,
+            &services::disk::manager_disk_t::read_rows_by_key,
+            exec_ctx, pg_dep_c,
+            std::vector<std::string>{"refclassid", "refobjid"},
+            std::vector<components::types::logical_value_t>{att_cls_lv, att_oid_lv});
+        auto dep_rows = co_await std::move(pdf);
+
+        // Step 3 — for RESTRICT, abort if any non-internal dep exists. For CASCADE,
+        // drop each dependent object.
+        if (behavior_ == catalog::drop_behavior_t::restrict_) {
+            for (const auto& dep_row : dep_rows) {
+                if (dep_row.size() < 2 || dep_row[0].is_null() || dep_row[1].is_null()) continue;
+                set_error("DROP COLUMN RESTRICT: column has dependent objects");
+                mark_executed();
+                co_return;
+            }
+        }
+
+        for (const auto& dep_row : dep_rows) {
+            if (dep_row.size() < 2 || dep_row[0].is_null() || dep_row[1].is_null()) continue;
+            const auto dep_cls = static_cast<catalog::oid_t>(dep_row[0].value<std::uint32_t>());
+            const auto dep_oid = static_cast<catalog::oid_t>(dep_row[1].value<std::uint32_t>());
+            if (dep_cls == catalog::well_known_oid::pg_class_table) {
+                // Dependent index: scrub pg_index (by indexrelid=oid_col_idx 0),
+                // pg_depend.objid (idx 1), pg_depend.refobjid (idx 3), pg_class.oid.
+                auto [_i1, i1f] = actor_zeta::send(
+                    ctx->disk_address,
+                    &services::disk::manager_disk_t::delete_pg_catalog_rows,
+                    exec_ctx, pg_idx_c, std::int64_t{0}, dep_oid);
+                co_await std::move(i1f);
+                if (ctx->txn.transaction_id != 0) ctx->pg_catalog_delete_tables.insert(pg_idx_c);
+                auto [_i2, i2f] = actor_zeta::send(
+                    ctx->disk_address,
+                    &services::disk::manager_disk_t::delete_pg_catalog_rows,
+                    exec_ctx, pg_dep_c, std::int64_t{1}, dep_oid);
+                co_await std::move(i2f);
+                if (ctx->txn.transaction_id != 0) ctx->pg_catalog_delete_tables.insert(pg_dep_c);
+                auto [_i3, i3f] = actor_zeta::send(
+                    ctx->disk_address,
+                    &services::disk::manager_disk_t::delete_pg_catalog_rows,
+                    exec_ctx, pg_dep_c, std::int64_t{3}, dep_oid);
+                co_await std::move(i3f);
+                if (ctx->txn.transaction_id != 0) ctx->pg_catalog_delete_tables.insert(pg_dep_c);
+                auto [_i4, i4f] = actor_zeta::send(
+                    ctx->disk_address,
+                    &services::disk::manager_disk_t::delete_pg_catalog_rows,
+                    exec_ctx, pg_class_c, std::int64_t{0}, dep_oid);
+                co_await std::move(i4f);
+                if (ctx->txn.transaction_id != 0) ctx->pg_catalog_delete_tables.insert(pg_class_c);
+            } else if (dep_cls == catalog::well_known_oid::pg_constraint_table) {
+                // Dependent constraint: scrub pg_constraint + pg_depend rows.
+                auto [_c1, c1f] = actor_zeta::send(
+                    ctx->disk_address,
+                    &services::disk::manager_disk_t::delete_pg_catalog_rows,
+                    exec_ctx, pg_con_c, std::int64_t{0}, dep_oid);
+                co_await std::move(c1f);
+                if (ctx->txn.transaction_id != 0) ctx->pg_catalog_delete_tables.insert(pg_con_c);
+                auto [_c2, c2f] = actor_zeta::send(
+                    ctx->disk_address,
+                    &services::disk::manager_disk_t::delete_pg_catalog_rows,
+                    exec_ctx, pg_dep_c, std::int64_t{1}, dep_oid);
+                co_await std::move(c2f);
+                if (ctx->txn.transaction_id != 0) ctx->pg_catalog_delete_tables.insert(pg_dep_c);
+                auto [_c3, c3f] = actor_zeta::send(
+                    ctx->disk_address,
+                    &services::disk::manager_disk_t::delete_pg_catalog_rows,
+                    exec_ctx, pg_dep_c, std::int64_t{3}, dep_oid);
+                co_await std::move(c3f);
+                if (ctx->txn.transaction_id != 0) ctx->pg_catalog_delete_tables.insert(pg_dep_c);
+            }
+        }
+
+        // Step 4 — soft-delete the column: drop original pg_attribute row,
+        // then append a tombstone with attisdropped=true. The tombstone keeps
+        // attnum so existing rows on disk that reference this slot remain
+        // self-describing for MVCC visibility.
+        auto [_d, df] = actor_zeta::send(
+            ctx->disk_address,
+            &services::disk::manager_disk_t::delete_pg_catalog_rows,
+            exec_ctx, pg_attr_c, std::int64_t{0}, attoid);
+        co_await std::move(df);
+        if (ctx->txn.transaction_id != 0) ctx->pg_catalog_delete_tables.insert(pg_attr_c);
+
+        auto tombstone = catalog::build_pg_attribute_row(
+            resource_, attoid, table_oid_, column_name_,
+            atttypid, attnum, att_not_null, att_has_default,
+            /*is_dropped=*/true, att_typspec, att_defspec);
+        auto [_w, wf] = actor_zeta::send(
+            ctx->disk_address,
+            &services::disk::manager_disk_t::append_pg_catalog_row,
+            exec_ctx, pg_attr_c, std::move(tombstone));
+        auto rng = co_await std::move(wf);
+        if (rng.count > 0) ctx->pg_catalog_appends.push_back(std::move(rng));
+
+        // Note: drop_column on a relkind='g' (computing) table is routed to
+        // operator_computed_field_unregister_t in planner.cpp::rewrite_alter_table,
+        // which clears matching pg_computed_column rows. This branch handles
+        // regular (relkind='r') tables only.
+
+        mark_executed();
+    }
+
+} // namespace components::operators

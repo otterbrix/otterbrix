@@ -2,6 +2,12 @@
 #include "predicates/predicate.hpp"
 #include <components/vector/vector_operations.hpp>
 
+#include <components/context/context.hpp>
+#include <components/context/execution_context.hpp>
+#include <services/disk/manager_disk.hpp>
+#include <services/index/manager_index.hpp>
+#include <services/wal/manager_wal_replicate.hpp>
+
 namespace components::operators {
 
     operator_update::operator_update(std::pmr::memory_resource* resource,
@@ -121,6 +127,98 @@ namespace components::operators {
         if (output_ && modified_ && modified_->size() > 0 && !name_.empty()) {
             async_wait();
         }
+    }
+
+    actor_zeta::unique_future<void>
+    operator_update::await_async_and_resume(pipeline::context_t* ctx) {
+        // Phase 5: side-effects previously implemented in
+        // executor_t::intercept_dml_io_(::update) are now self-contained here.
+        using components::vector::data_chunk_t;
+        using components::vector::vector_t;
+
+        if (!output_) {
+            mark_executed();
+            co_return;
+        }
+        auto& out_chunk = output_->data_chunk();
+        components::execution_context_t exec_ctx{ctx->session, ctx->txn, name_};
+
+        // 1. Capture WAL data: row_ids + updated chunk.
+        std::pmr::vector<int64_t> wal_row_ids(resource_);
+        wal_row_ids.reserve(out_chunk.size());
+        for (uint64_t i = 0; i < out_chunk.size(); i++) {
+            wal_row_ids.push_back(out_chunk.row_ids.data<int64_t>()[i]);
+        }
+        auto wal_update_data = std::make_unique<data_chunk_t>(resource_, out_chunk.types(), out_chunk.size());
+        out_chunk.copy(*wal_update_data, 0);
+
+        // 2. storage_update (MVCC: delete old + insert new).
+        vector_t row_ids(resource_, types::logical_type::BIGINT, out_chunk.size());
+        for (uint64_t i = 0; i < out_chunk.size(); i++) {
+            row_ids.data<int64_t>()[i] = out_chunk.row_ids.data<int64_t>()[i];
+        }
+        auto data_copy = std::make_unique<data_chunk_t>(resource_, out_chunk.types(), out_chunk.size());
+        out_chunk.copy(*data_copy, 0);
+        auto [_u, uf] = actor_zeta::send(ctx->disk_address,
+                                          &services::disk::manager_disk_t::storage_update,
+                                          exec_ctx,
+                                          std::move(row_ids),
+                                          std::move(data_copy));
+        auto [upd_row_start, upd_row_count] = co_await std::move(uf);
+
+        // 3. WAL physical_update.
+        if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
+            auto upd_count = static_cast<uint64_t>(wal_row_ids.size());
+            auto [_w, wf] = actor_zeta::send(ctx->wal_address,
+                                              &services::wal::manager_wal_replicate_t::write_physical_update,
+                                              ctx->session,
+                                              std::string(name_.database),
+                                              std::string(name_.collection),
+                                              std::move(wal_row_ids),
+                                              std::move(wal_update_data),
+                                              upd_count,
+                                              ctx->txn.transaction_id);
+            auto wal_id = co_await std::move(wf);
+            auto [_df, dff] = actor_zeta::send(ctx->disk_address,
+                                                 &services::disk::manager_disk_t::flush,
+                                                 ctx->session,
+                                                 wal_id);
+            ctx->add_pending_disk_future(std::move(dff));
+        }
+
+        // 4. Mirror to index (old + new data).
+        if (ctx->index_address != actor_zeta::address_t::empty_address()) {
+            if (auto scan_out = left_ ? left_->output() : nullptr) {
+                auto& sc = scan_out->data_chunk();
+                auto old_data = std::make_unique<data_chunk_t>(resource_, sc.types(), sc.size());
+                sc.copy(*old_data, 0);
+                auto new_data = std::make_unique<data_chunk_t>(resource_, out_chunk.types(), out_chunk.size());
+                out_chunk.copy(*new_data, 0);
+                auto idx_ids = std::pmr::vector<int64_t>(resource_);
+                idx_ids.reserve(out_chunk.size());
+                for (size_t i = 0; i < out_chunk.size(); i++) {
+                    idx_ids.push_back(out_chunk.row_ids.data<int64_t>()[i]);
+                }
+                auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
+                                                    &services::index::manager_index_t::update_rows,
+                                                    exec_ctx,
+                                                    std::move(old_data),
+                                                    std::move(new_data),
+                                                    std::move(idx_ids),
+                                                    static_cast<int64_t>(upd_row_start));
+                co_await std::move(ixf);
+            }
+        }
+
+        // 5. Record swap-info on context. UPDATE = delete-old + append-new,
+        // so both append_row_* and delete_txn_id must be populated.
+        ctx->dml_append_row_start = upd_row_start;
+        ctx->dml_append_row_count = upd_row_count;
+        ctx->dml_delete_txn_id    = ctx->txn.transaction_id;
+        ctx->dml_collection       = name_;
+
+        // output_ already set by on_execute_impl (contains updated rows).
+        mark_executed();
     }
 
 } // namespace components::operators

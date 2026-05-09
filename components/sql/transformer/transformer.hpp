@@ -55,6 +55,10 @@ namespace components::sql::transform {
         // RENAME COLUMN comes through T_RenameStmt with renameType=OBJECT_COLUMN.
         // Routes here from the top-level transform() switch.
         logical_plan::node_ptr transform_rename(RenameStmt& node);
+        // BEGIN / COMMIT / ROLLBACK. Lowers to node_commit_transaction_t /
+        // node_abort_transaction_t respectively; BEGIN returns nullptr (see
+        // impl for rationale).
+        logical_plan::node_ptr transform_transaction(TransactionStmt& node);
 
     private:
         using insert_location_t = std::pair<size_t, std::string>; // position in vector + string key

@@ -3,6 +3,9 @@ project(physical_plan_generator)
 set(${PROJECT_NAME}_SOURCES
         create_plan.cpp
         impl/create_plan_aggregate.cpp
+        impl/create_plan_alter_column_add.cpp
+        impl/create_plan_alter_column_drop.cpp
+        impl/create_plan_alter_column_rename.cpp
         impl/create_plan_data.cpp
         impl/create_plan_delete.cpp
         impl/create_plan_group.cpp
@@ -17,6 +20,16 @@ set(${PROJECT_NAME}_SOURCES
         impl/create_plan_sequence.cpp
         impl/create_plan_primitive_write.cpp
         impl/create_plan_primitive_delete.cpp
+        impl/create_plan_dynamic_cascade_delete.cpp
+        impl/create_plan_checkpoint.cpp
+        impl/create_plan_vacuum.cpp
+        impl/create_plan_get_schema.cpp
+        impl/create_plan_register_udf.cpp
+        impl/create_plan_unregister_udf.cpp
+        impl/create_plan_commit_transaction.cpp
+        impl/create_plan_abort_transaction.cpp
+        impl/create_plan_computed_field_register.cpp
+        impl/create_plan_computed_field_unregister.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}

@@ -40,7 +40,51 @@ namespace components::operators {
         // DDL primitive delete (planner-built pg_catalog row delete)
         primitive_delete,
         // DDL create collection (storage + index registration + catalog writes)
-        create_collection
+        create_collection,
+        // ALTER TABLE per-clause primitives
+        alter_column_add,
+        alter_column_rename,
+        alter_column_drop,
+        // Universal cascade-delete driver: walks pg_depend at runtime and
+        // deletes the dependency closure inline. Replaces the dispatcher BFS
+        // duplicated across drop_database/drop_collection/drop_sequence/etc.
+        dynamic_cascade_delete,
+        // CHECKPOINT — flush indexes, snapshot wal-id, checkpoint_all on disk,
+        // truncate WAL segments older than the recovery boundary.
+        checkpoint,
+        // VACUUM — cleanup_versions + compact across user tables (relkind 'r'/'g'),
+        // cleanup index versions, rebuild and re-populate indexes per table.
+        // Iterates pg_class to discover user tables (no dispatcher state).
+        vacuum,
+        // GET_SCHEMA (Phase 4 #54) — self-resolving leaf operator that returns
+        // one complex_logical_type per (database, collection) id by reading
+        // pg_namespace+pg_class+pg_attribute. Replaces inline catalog_view_t
+        // reads in manager_dispatcher_t::get_schema.
+        get_schema,
+        // REGISTER_UDF / UNREGISTER_UDF (Phase 4 #55) — operator-pipeline
+        // replacements for inline manager_dispatcher_t::{register,unregister}_udf.
+        // operator_register_udf_t fans out to per-executor registries, mirrors
+        // into function_registry_t::get_default(), and persists pg_proc rows.
+        // operator_unregister_udf_t reverses the registry+pg_proc effects.
+        register_udf,
+        unregister_udf,
+        // COMMIT / ROLLBACK (Phase 4 #56) — operator-pipeline replacement for
+        // inline manager_dispatcher_t::{commit,abort}_transaction. The
+        // operator drives txn_manager->{commit,abort}() and (for commit) the
+        // pg_catalog MVCC state swap on disk via storage_commit_appends /
+        // storage_revert_appends. Invoked directly by the dispatcher
+        // (mirrors operator_get_schema_t) since the manager-level state
+        // (txn_manager_) lives outside the per-collection executor.
+        commit_transaction,
+        abort_transaction,
+        // COMPUTED_FIELD_REGISTER / COMPUTED_FIELD_UNREGISTER (Phase 7.1) —
+        // maintain pg_computed_column rows for relkind='g' dynamic-schema
+        // tables. register: per-column NEW / SAME-TYPE / TYPE-EVOLUTION
+        // classification → append fresh row with attrefcount=1 on NEW or
+        // TYPE-EVOLUTION (no-op on SAME-TYPE). unregister: append a
+        // refcount=0 tombstone so the resolver hides the column.
+        computed_field_register,
+        computed_field_unregister
     };
 
     inline bool is_scan(operator_type t) {
@@ -53,8 +97,7 @@ namespace components::operators {
         created,
         running,
         waiting,
-        executed,
-        cleared
+        executed
     };
 
     class operator_t : public boost::intrusive_ref_counter<operator_t> {

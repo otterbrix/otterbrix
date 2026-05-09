@@ -49,10 +49,6 @@ TEST_CASE("integration::cpp::test_arithmetic") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
         }
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->size(session, database_name, collection_name) == kNumInserts);
-        }
     }
 
     // ================================================================

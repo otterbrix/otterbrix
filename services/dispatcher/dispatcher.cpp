@@ -9,7 +9,7 @@
 #include <components/catalog/table_id.hpp>
 
 #include <components/logical_plan/node_alter_table.hpp>
-#include <components/logical_plan/node_checkpoint.hpp>
+#include <components/logical_plan/node_computed_field_register.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
 #include <components/logical_plan/node_create_constraint.hpp>
 #include <components/logical_plan/node_create_macro.hpp>
@@ -17,12 +17,26 @@
 #include <components/logical_plan/node_create_type.hpp>
 #include <components/logical_plan/node_create_view.hpp>
 #include <components/logical_plan/node_data.hpp>
+#include <components/logical_plan/node_drop_collection.hpp>
 #include <components/logical_plan/node_drop_database.hpp>
 #include <components/logical_plan/node_drop_macro.hpp>
 #include <components/logical_plan/node_drop_sequence.hpp>
+#include <components/logical_plan/node_drop_type.hpp>
 #include <components/logical_plan/node_drop_view.hpp>
+#include <components/logical_plan/node_abort_transaction.hpp>
+#include <components/logical_plan/node_commit_transaction.hpp>
+#include <components/logical_plan/node_get_schema.hpp>
 #include <components/logical_plan/node_primitive_write.hpp>
+#include <components/logical_plan/node_register_udf.hpp>
 #include <components/logical_plan/node_sequence.hpp>
+#include <components/logical_plan/node_unregister_udf.hpp>
+#include <components/physical_plan/operators/operator_abort_transaction.hpp>
+#include <components/physical_plan/operators/operator_commit_transaction.hpp>
+#include <components/physical_plan/operators/operator_get_schema.hpp>
+#include <components/physical_plan/operators/operator_register_udf.hpp>
+#include <components/physical_plan/operators/operator_unregister_udf.hpp>
+#include <components/physical_plan_generator/impl/create_plan_register_udf.hpp>
+#include <components/context/context.hpp>
 
 #include <core/executor.hpp>
 #include <core/tracy/tracy.hpp>
@@ -98,8 +112,7 @@ namespace services::dispatcher {
         , run_fn_(std::move(run_fn))
         , collections_(resource_ptr)
         , executors_(resource_ptr)
-        , executor_addresses_(resource_ptr)
-        , plan_cache_(resource_ptr) {
+        , executor_addresses_(resource_ptr) {
         ZoneScoped;
         trace(log_, "manager_dispatcher_t::manager_dispatcher_t");
     }
@@ -136,10 +149,6 @@ namespace services::dispatcher {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::execute_plan, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::size>: {
-                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::size, msg);
-                break;
-            }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::get_schema>: {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::get_schema, msg);
                 break;
@@ -150,10 +159,6 @@ namespace services::dispatcher {
             }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::unregister_udf>: {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::unregister_udf, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::close_cursor>: {
-                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::close_cursor, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::begin_transaction>: {
@@ -215,17 +220,10 @@ namespace services::dispatcher {
         auto params_for_wal = make_parameter_node(resource());
         params_for_wal->set_parameters(params->parameters());
 
-        // M5: pull invalidation events first so plan_cache_ is consistent with the catalog
-        // snapshot we're about to populate. Overflow → clear cache; otherwise advance
-        // last_seen_version_ for subsequent pin_version calls.
-        co_await refresh_invalidations_(session);
-
-        // V4: build catalog_view_t over plan_cache + disk_address. View serves DDL
-        // existence checks and the validate path; collections_ rebuild uses disk's
-        // list_namespaces/list_tables_in_namespace (populate-path retired).
-        // Prefer the session's pinned version (snapshot isolation) over last_seen_version_.
-        const auto view_version = plan_cache_.pinned_version_for(session).value_or(last_seen_version_);
-        catalog_view_t view{plan_cache_, disk_address_, view_version, resource()};
+        // catalog_view_t — thin wrapper over disk_address_ for ad-hoc lookups during
+        // validate/enrich. No caching, no version pinning — каждое чтение pg_catalog идёт через
+        // обычный SELECT с MVCC visibility.
+        catalog_view_t view{disk_address_, resource()};
         components::execution_context_t ctx{session, components::table::transaction_data{0, 0}, {}};
 
         // Rebuild collections_ from on-disk pg_catalog so post-restart queries find user
@@ -254,6 +252,17 @@ namespace services::dispatcher {
 
         // Save original node type — used after planner rewrite to dispatch DDL/DML paths.
         const auto original_type = plan->type();
+        // Capture the drop target before the planner rewrites it into a
+        // node_dynamic_cascade_delete_t (which carries only OIDs, not names).
+        // Used after successful execution to clean up the in-memory collections_
+        // routing map so a subsequent execute_plan does not see a stale entry.
+        std::string drop_target_database;
+        collection_full_name_t drop_target_collection;
+        if (original_type == node_type::drop_database_t) {
+            drop_target_database = std::string(plan->database_name());
+        } else if (original_type == node_type::drop_collection_t) {
+            drop_target_collection = plan->collection_full_name();
+        }
         auto logic_plan = std::move(plan);
         // Optimizer: constant folding, etc.
         logic_plan = components::planner::optimize(resource(), logic_plan, nullptr, params.get());
@@ -352,8 +361,9 @@ namespace services::dispatcher {
             case node_type::create_type_t: {
                 auto& n = reinterpret_cast<node_create_type_ptr&>(logic_plan);
                 // Resolve the user-specified database (logic_plan->database_name()) to its
-                // namespace OID early — used both for the existence-check search path AND
-                // for ddl_create_type/ddl_create_table persistence below. INVALID_OID =
+                // namespace OID — used by the existence-check search path AND passed to
+                // the planner via node_create_type_t::set_namespace_oid so
+                // rewrite_create_type can build pg_class/pg_type rows. INVALID_OID =
                 // unqualified CREATE TYPE → public namespace.
                 components::catalog::oid_t target_ns = components::catalog::well_known_oid::public_namespace;
                 if (!logic_plan->database_name().empty() &&
@@ -380,131 +390,60 @@ namespace services::dispatcher {
                                         error_code_t::schema_error,
                                         "type: \'" + n->type().alias() + "\' already exists");
                     break;
-                } else {
-                    if (n->type().type() == logical_type::STRUCT) {
-                        // Pre-load every UDT referenced by nested fields (recursive walk —
-                        // covers STRUCT-in-STRUCT). Each name probed in the full search path.
-                        std::set<std::string> nested_names;
-                        for (const auto& field : n->type().child_types()) {
-                            walk_user_type_refs(field,
-                                                [&](std::string_view nm) { nested_names.emplace(nm); });
-                        }
-                        for (const auto& nm : nested_names) {
-                            for (auto ns_oid : type_search_path) {
-                                co_await view.get_type(ctx, ns_oid, nm);
-                            }
-                        }
-                        for (auto& field : n->type().child_types()) {
-                            if (field.type() == logical_type::UNKNOWN) {
-                                error = check_type_exists(resource(), view, field.type_name(),
-                                                           std::span<const components::catalog::oid_t>(type_search_path));
-                                if (error) {
-                                    break;
-                                } else {
-                                    const auto* rt = probe_type_in_path(view,
-                                                                         std::string_view(field.type_name()),
-                                                                         std::span<const components::catalog::oid_t>(type_search_path));
-                                    if (rt) {
-                                        std::string alias = field.has_alias() ? field.alias() : std::string{};
-                                        field = rt->type;
-                                        if (!alias.empty()) {
-                                            field.set_alias(alias);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        if (error) {
-                            break;
-                        }
-                    }
-                    // pg_class+pg_attribute (relkind='c' for composite STRUCT) or pg_type
-                    // (typdefspec for non-struct) is the source of truth — disk's
-                    // ddl_create_type/ddl_create_table handle persistence below.
-                    // Persist user types — composite (STRUCT) goes through pg_class+pg_attribute
-                    // (PostgreSQL-canonical, relkind='c' = composite type) to avoid msgpack
-                    // roundtrip through typdefspec. ENUM and other types still use pg_type
-                    // because they don't have field columns.
-                    // target_ns was resolved upfront above (defaults to public for unqualified).
-                    if (disk_address_ != actor_zeta::address_t::empty_address()) {
-                        components::execution_context_t ddl_ctx{session,
-                                                                  components::table::transaction_data{0, 0}, {}};
-                        if (n->type().type() == logical_type::STRUCT) {
-                            // Composite: persist as pg_class entry with relkind='d' + pg_attribute
-                            // rows for each field. Mirrors PostgreSQL's storage of composite types.
-                            // For fields that reference other user types, persist as UNKNOWN-by-
-                            // name (using type_name as alias). populate resolves these references
-                            // against pg_class entries with relkind='d' on read. This
-                            // sidesteps msgpack's nested-struct roundtrip bug.
-                            std::vector<components::table::column_definition_t> field_cols;
-                            field_cols.reserve(n->type().child_types().size());
-                            for (const auto& field : n->type().child_types()) {
-                                std::string fname = field.has_alias() ? field.alias()
-                                                                       : field.type_name();
-                                if (field.type() == logical_type::STRUCT) {
-                                    // Reduce nested STRUCT to UNKNOWN-by-name reference.
-                                    auto unk = components::types::complex_logical_type::create_unknown(
-                                        field.type_name(), fname);
-                                    field_cols.emplace_back(fname, std::move(unk));
-                                } else {
-                                    field_cols.emplace_back(fname, field);
-                                }
-                            }
-                            auto [_oa2, oaf2] = actor_zeta::send(disk_address_,
-                                                                  &disk::manager_disk_t::allocate_oids_batch,
-                                                                  std::size_t{1 + field_cols.size()});
-                            catalog::oid_batch_t ct_batch;
-                            ct_batch.oids = co_await std::move(oaf2);
-                            collection_full_name_t ct_collection{
-                                logic_plan->database_name().empty()
-                                    ? std::string("public")
-                                    : std::string(logic_plan->database_name()),
-                                std::string("main"),
-                                std::string(n->type().type_name())};
-                            auto ct_writes = catalog::build_create_table_writes(
-                                resource(),
-                                ct_collection,
-                                field_cols,
-                                /*is_disk_storage=*/false,
-                                target_ns,
-                                ct_batch,
-                                relkind::composite_type);
-                            for (auto& w : ct_writes) {
-                                auto [_w2, wf2] = actor_zeta::send(disk_address_,
-                                                                    &disk::manager_disk_t::append_pg_catalog_row,
-                                                                    ddl_ctx, std::move(w.table), std::move(w.row));
-                                co_await std::move(wf2);
-                            }
-                        } else {
-                            // ENUM and other extension types — persist via pg_type.
-                            auto [_oa, oaf] = actor_zeta::send(disk_address_,
-                                                                &disk::manager_disk_t::allocate_oids_batch,
-                                                                std::size_t{1});
-                            catalog::oid_batch_t type_batch;
-                            type_batch.oids = co_await std::move(oaf);
-                            const catalog::oid_t type_oid = type_batch.allocate();
-                            auto type_writes = catalog::build_create_type_writes(
-                                resource(),
-                                std::string(n->type().type_name()),
-                                target_ns,
-                                type_oid,
-                                components::catalog::encode_type_spec(n->type()));
-                            for (auto& w : type_writes) {
-                                auto [_w, wf] = actor_zeta::send(disk_address_,
-                                                                  &disk::manager_disk_t::append_pg_catalog_row,
-                                                                  ddl_ctx, std::move(w.table), std::move(w.row));
-                                co_await std::move(wf);
-                            }
-                        }
-                    }
-                    co_return make_cursor(resource(), operation_status_t::success);
                 }
+                if (n->type().type() == logical_type::STRUCT) {
+                    // Pre-load every UDT referenced by nested fields (recursive walk —
+                    // covers STRUCT-in-STRUCT). Each name probed in the full search path.
+                    std::set<std::string> nested_names;
+                    for (const auto& field : n->type().child_types()) {
+                        walk_user_type_refs(field,
+                                            [&](std::string_view nm) { nested_names.emplace(nm); });
+                    }
+                    for (const auto& nm : nested_names) {
+                        for (auto ns_oid : type_search_path) {
+                            co_await view.get_type(ctx, ns_oid, nm);
+                        }
+                    }
+                    // Resolve UNKNOWN field references in place — rewrite_create_type
+                    // expects child_types() to already carry concrete definitions where
+                    // available (nested STRUCT children are reduced to UNKNOWN-by-name
+                    // by the planner; everything else inlines the resolved type).
+                    for (auto& field : n->type().child_types()) {
+                        if (field.type() == logical_type::UNKNOWN) {
+                            error = check_type_exists(resource(), view, field.type_name(),
+                                                       std::span<const components::catalog::oid_t>(type_search_path));
+                            if (error) {
+                                break;
+                            }
+                            const auto* rt = probe_type_in_path(view,
+                                                                 std::string_view(field.type_name()),
+                                                                 std::span<const components::catalog::oid_t>(type_search_path));
+                            if (rt) {
+                                std::string alias = field.has_alias() ? field.alias() : std::string{};
+                                field = rt->type;
+                                if (!alias.empty()) {
+                                    field.set_alias(alias);
+                                }
+                            }
+                        }
+                    }
+                    if (error) {
+                        break;
+                    }
+                }
+                // Hand the resolved namespace_oid to the planner — rewrite_create_type
+                // uses it to build pg_class+pg_attribute (STRUCT) or pg_type (ENUM) rows.
+                // The allocate_oids_batch + ddl_planner.create_plan call follows this
+                // switch, mirroring the create_collection_t / create_database_t pattern.
+                n->set_namespace_oid(target_ns);
+                break;
             }
             case node_type::drop_type_t: {
-                const auto& n = boost::polymorphic_pointer_downcast<node_create_type_t>(logic_plan);
-                // Resolve the user-specified database to its namespace OID. Same pattern as
-                // create_type — DROP TYPE mydb.foo finds foo in mydb; unqualified falls
-                // back to public.
+                // Existence check + pre-load the type cache so enrich_logical_plan can
+                // resolve the type_oid synchronously (Phase 2 #49). The actual catalog
+                // row deletes + pg_depend cascade are emitted by the planner as a
+                // node_dynamic_cascade_delete_t and run by the executor.
+                auto* n = static_cast<node_drop_type_t*>(logic_plan.get());
                 components::catalog::oid_t target_ns = components::catalog::well_known_oid::public_namespace;
                 if (!logic_plan->database_name().empty() &&
                     disk_address_ != actor_zeta::address_t::empty_address()) {
@@ -520,43 +459,11 @@ namespace services::dispatcher {
                 }
                 auto type_search_path = build_type_search_path(target_ns);
                 for (auto ns_oid : type_search_path) {
-                    co_await view.get_type(ctx, ns_oid, std::string(n->type().alias()));
+                    co_await view.get_type(ctx, ns_oid, n->name());
                 }
-                error = check_type_exists(resource(), view, n->type().alias(),
+                error = check_type_exists(resource(), view, n->name(),
                                             std::span<const components::catalog::oid_t>(type_search_path));
-                if (error) {
-                    break;
-                } else {
-                    // Mirrors create_type: pg_type is the cross-call source of truth.
-                    if (disk_address_ != actor_zeta::address_t::empty_address()) {
-                        components::execution_context_t ddl_ctx{session,
-                                                                  components::table::transaction_data{0, 0}, {}};
-                        auto [_rt, rtf] = actor_zeta::send(disk_address_,
-                                                            &disk::manager_disk_t::resolve_type,
-                                                            ddl_ctx,
-                                                            target_ns,
-                                                            std::string(n->type().type_name()),
-                                                            std::uint64_t{0});
-                        auto rt = co_await std::move(rtf);
-                        if (rt.found) {
-                            const collection_full_name_t pg_type_coll{"pg_catalog", "main", "pg_type"};
-                            const collection_full_name_t pg_depend_coll{"pg_catalog", "main", "pg_depend"};
-                            auto [_d1, d1f] = actor_zeta::send(disk_address_,
-                                                                &disk::manager_disk_t::delete_pg_catalog_rows,
-                                                                ddl_ctx, pg_type_coll, std::int64_t{0}, rt.oid);
-                            co_await std::move(d1f);
-                            auto [_d2, d2f] = actor_zeta::send(disk_address_,
-                                                                &disk::manager_disk_t::delete_pg_catalog_rows,
-                                                                ddl_ctx, pg_depend_coll, std::int64_t{1}, rt.oid);
-                            co_await std::move(d2f);
-                            auto [_d3, d3f] = actor_zeta::send(disk_address_,
-                                                                &disk::manager_disk_t::delete_pg_catalog_rows,
-                                                                ddl_ctx, pg_depend_coll, std::int64_t{3}, rt.oid);
-                            co_await std::move(d3f);
-                        }
-                    }
-                    co_return make_cursor(resource(), operation_status_t::success);
-                }
+                break;
             }
             case node_type::checkpoint_t:
             case node_type::vacuum_t:
@@ -567,8 +474,69 @@ namespace services::dispatcher {
             case node_type::create_macro_t:
             case node_type::drop_macro_t:
             case node_type::alter_table_t:
-            case node_type::create_constraint_t:
                 break;
+            case node_type::create_constraint_t: {
+                // Pre-load the target table so enrich_plan can resolve attoids from
+                // catalog_view cache. Same pattern as drop_collection_t above.
+                if (!id.get_namespace().empty()) {
+                    auto* ns_e = view.try_get_namespace(std::string_view(id.get_namespace().front()));
+                    if (!ns_e) ns_e = co_await view.get_namespace(ctx, std::string(id.get_namespace().front()));
+                    if (ns_e) {
+                        co_await view.get_table(ctx, ns_e->oid, std::string(id.table_name()));
+                        // Also pre-load the FK reference table (lives in same namespace).
+                        auto* cstr = static_cast<node_create_constraint_t*>(logic_plan.get());
+                        if (cstr->kind() == constraint_kind::foreign_key &&
+                            !cstr->ref_collection().empty()) {
+                            co_await view.get_table(ctx, ns_e->oid,
+                                                     std::string(cstr->ref_collection().collection));
+                        }
+                    }
+                }
+                error = check_collection_exists(resource(), view, id);
+                // Phase 7: reject FK / CHECK on dynamic-schema (relkind='g') tables.
+                // FK / CHECK enforcement requires stable column attoids; relkind='g'
+                // attoids may evolve (pg_computed_column type evolution). Full support
+                // deferred — see docs/phase7-deferred-items.md §7.6. We enforce here so
+                // the user gets a clear diagnostic instead of silent corruption.
+                if (!error && !id.get_namespace().empty()) {
+                    auto* ns_e = view.try_get_namespace(std::string_view(id.get_namespace().front()));
+                    auto* cstr = static_cast<node_create_constraint_t*>(logic_plan.get());
+                    if (ns_e && (cstr->kind() == constraint_kind::foreign_key ||
+                                 cstr->kind() == constraint_kind::check)) {
+                        const auto* tbl_local =
+                            view.try_get_table(ns_e->oid, std::string_view(id.table_name()));
+                        const bool local_is_g = tbl_local && tbl_local->relkind == 'g';
+                        bool ref_is_g = false;
+                        if (cstr->kind() == constraint_kind::foreign_key &&
+                            !cstr->ref_collection().empty()) {
+                            const auto* tbl_ref = view.try_get_table(
+                                ns_e->oid,
+                                std::string_view(cstr->ref_collection().collection));
+                            ref_is_g = tbl_ref && tbl_ref->relkind == 'g';
+                        }
+                        if (cstr->kind() == constraint_kind::foreign_key &&
+                            (local_is_g || ref_is_g)) {
+                            error = make_cursor(
+                                resource(),
+                                error_code_t::schema_error,
+                                "Foreign key constraints are not supported when the referencing or "
+                                "referenced table is dynamic-schema (relkind='g'). FK enforcement "
+                                "requires stable column attoids; dynamic-schema columns may evolve. "
+                                "Convert involved tables to static schema first (see "
+                                "docs/phase7-deferred-items.md section 7.6).");
+                        } else if (cstr->kind() == constraint_kind::check && local_is_g) {
+                            error = make_cursor(
+                                resource(),
+                                error_code_t::schema_error,
+                                "CHECK constraints are not supported on dynamic-schema (relkind='g') "
+                                "tables. CHECK enforcement requires stable column attoids; "
+                                "dynamic-schema columns may evolve. Convert the table to static "
+                                "schema first (see docs/phase7-deferred-items.md section 7.6).");
+                        }
+                    }
+                }
+                break;
+            }
             default: {
                 // Validate: pre-walks the AST collecting referenced tables — co_await
                 // per-cache-miss only. view + ctx already constructed at the top of
@@ -606,6 +574,80 @@ namespace services::dispatcher {
             logic_plan = planner.create_plan(resource(), std::move(logic_plan));
         }
 
+        // Phase 7.4: deleted the adopt-based wrapper that promoted relkind
+        // 'g'->'r' on first INSERT (broke the Mongo-style dynamic-schema
+        // model where relkind='g' is the table's permanent state, with
+        // pg_computed_column tracking columns dynamically). P7.2 will
+        // reintroduce a relkind='g' branch here that wraps the INSERT into
+        // sequence_t(insert, computed_field_register) so pg_computed_column
+        // rows are appended inside the executor's DML txn. Until P7.2 lands,
+        // relkind='g' INSERT falls through to the unmodified executor
+        // pipeline.
+        // Pre-resolve namespace_oid + table_oid + relkind for INSERT.
+        if (original_type == node_type::insert_t &&
+            disk_address_ != actor_zeta::address_t::empty_address()) {
+            components::catalog::oid_t resolved_ns_oid = components::catalog::INVALID_OID;
+            components::catalog::oid_t resolved_tbl_oid = components::catalog::INVALID_OID;
+            bool is_computing = false;
+            if (!id.get_namespace().empty()) {
+                auto* ns_e = view.try_get_namespace(std::string_view(id.get_namespace().front()));
+                if (!ns_e) {
+                    ns_e = co_await view.get_namespace(ctx, std::string(id.get_namespace().front()));
+                }
+                if (ns_e) {
+                    resolved_ns_oid = ns_e->oid;
+                    auto* tbl = view.try_get_table(ns_e->oid, std::string_view(id.table_name()));
+                    if (!tbl) {
+                        tbl = co_await view.get_table(ctx, ns_e->oid, std::string(id.table_name()));
+                    }
+                    if (tbl && tbl->relkind == relkind::computed) {
+                        is_computing = true;
+                        resolved_tbl_oid = tbl->oid;
+                    }
+                }
+            }
+            (void) resolved_ns_oid;
+
+            // P7.2: relkind='g' INSERT — wrap the user's INSERT plan in
+            // sequence_t(insert, computed_field_register) so pg_computed_column
+            // rows are appended inside the executor's DML txn (commit applies
+            // the MVCC swap atomically with the data write). The table stays as
+            // relkind='g' permanently — no promotion to 'r'. Column definitions
+            // come from the embedded node_data_t chunk produced by the parser
+            // (each vector_t::type() carries the field name as alias).
+            if (is_computing) {
+                std::vector<components::table::column_definition_t> registered_cols;
+                for (const auto& child : logic_plan->children()) {
+                    if (child->type() != components::logical_plan::node_type::data_t) {
+                        continue;
+                    }
+                    auto* data_node =
+                        static_cast<const components::logical_plan::node_data_t*>(child.get());
+                    const auto& chunk = data_node->data_chunk();
+                    registered_cols.reserve(chunk.column_count());
+                    for (size_t i = 0; i < chunk.column_count(); ++i) {
+                        const auto& type = chunk.data[i].type();
+                        assert(type.has_alias());
+                        registered_cols.emplace_back(type.alias(), type);
+                    }
+                    break;
+                }
+
+                auto register_node = boost::intrusive_ptr(
+                    new components::logical_plan::node_computed_field_register_t(
+                        resource(),
+                        logic_plan->collection_full_name(),
+                        resolved_tbl_oid,
+                        std::move(registered_cols)));
+
+                auto seq = boost::intrusive_ptr(
+                    new components::logical_plan::node_sequence_t(resource()));
+                seq->append_child(logic_plan);
+                seq->append_child(register_node);
+                logic_plan = seq;
+            }
+        }
+
         // For create_collection_t: allocate OIDs then call DDL planner to produce
         // sequence_t(create_collection_t, primitive_write×N). The physical plan
         // generator maps this to operator_create_collection_t (storage + catalog writes).
@@ -622,22 +664,160 @@ namespace services::dispatcher {
             logic_plan = ddl_planner.create_plan(resource(), std::move(logic_plan), std::move(oid_batch));
         }
 
+        // CREATE DATABASE → planner rewrite в sequence_t(primitive_write на pg_namespace).
+        if (original_type == node_type::create_database_t &&
+            disk_address_ != actor_zeta::address_t::empty_address()) {
+            auto [_oa, oaf] = actor_zeta::send(disk_address_,
+                                               &disk::manager_disk_t::allocate_oids_batch,
+                                               std::size_t{1});
+            catalog::oid_batch_t oid_batch;
+            oid_batch.oids = co_await std::move(oaf);
+            components::planner::planner_t ddl_planner;
+            logic_plan = ddl_planner.create_plan(resource(), std::move(logic_plan), std::move(oid_batch));
+        }
+
+        // CREATE TYPE → planner rewrite to sequence_t(primitive_write × N).
+        //   STRUCT     → (1 + N) OIDs: pg_class.oid + N×pg_attribute.attoid (composite type).
+        //   ENUM/other → 1 OID: pg_type.oid.
+        // Existence checks + UNKNOWN-field resolution already happened in the validation
+        // switch above; namespace_oid is stored on the node for the planner to read.
+        if (original_type == node_type::create_type_t &&
+            disk_address_ != actor_zeta::address_t::empty_address()) {
+            auto* ct = static_cast<node_create_type_t*>(logic_plan.get());
+            const std::size_t need =
+                (ct->type().type() == logical_type::STRUCT)
+                    ? std::size_t{1} + ct->type().child_types().size()
+                    : std::size_t{1};
+            auto [_oa, oaf] = actor_zeta::send(disk_address_,
+                                               &disk::manager_disk_t::allocate_oids_batch,
+                                               need);
+            catalog::oid_batch_t oid_batch;
+            oid_batch.oids = co_await std::move(oaf);
+            components::planner::planner_t ddl_planner;
+            logic_plan = ddl_planner.create_plan(resource(), std::move(logic_plan), std::move(oid_batch));
+        }
+
+        // CREATE SEQUENCE/VIEW/MACRO → planner rewrite to sequence_t(primitive_write × N).
+        //   CREATE SEQUENCE → 1 OID  (seq_oid)
+        //   CREATE VIEW     → 2 OIDs (view_oid  + rule_oid)
+        //   CREATE MACRO    → 2 OIDs (macro_oid + rule_oid)
+        // The enrich phase has already stamped namespace_oid on the node so the
+        // planner's rewrite is a pure sync transformation. After rewrite, logic_plan
+        // is a sequence_t and flows through execute_plan_impl like CREATE DATABASE.
+        if ((original_type == node_type::create_sequence_t ||
+             original_type == node_type::create_view_t ||
+             original_type == node_type::create_macro_t) &&
+            disk_address_ != actor_zeta::address_t::empty_address()) {
+            const std::size_t need =
+                (original_type == node_type::create_sequence_t) ? std::size_t{1} : std::size_t{2};
+            auto [_oa, oaf] = actor_zeta::send(disk_address_,
+                                               &disk::manager_disk_t::allocate_oids_batch,
+                                               need);
+            catalog::oid_batch_t oid_batch;
+            oid_batch.oids = co_await std::move(oaf);
+            components::planner::planner_t ddl_planner;
+            logic_plan = ddl_planner.create_plan(resource(), std::move(logic_plan), std::move(oid_batch));
+        }
+
+        // CREATE INDEX → planner rewrite to sequence_t(primitive_write × N, create_index_t).
+        // The trailing create_index_t carries name/keys/type plus the resolved
+        // namespace_oid/table_oid/index_oid so create_plan_sequence can lower it
+        // to operator_create_index_metadata_t + operator_create_index_backfill_t.
+        if (original_type == node_type::create_index_t &&
+            disk_address_ != actor_zeta::address_t::empty_address()) {
+            auto [_oa, oaf] = actor_zeta::send(disk_address_,
+                                               &disk::manager_disk_t::allocate_oids_batch,
+                                               std::size_t{1});
+            catalog::oid_batch_t oid_batch;
+            oid_batch.oids = co_await std::move(oaf);
+            components::planner::planner_t ddl_planner;
+            logic_plan = ddl_planner.create_plan(resource(), std::move(logic_plan), std::move(oid_batch));
+        }
+
+        // DROP INDEX → planner rewrite to sequence_t(primitive_delete × N, drop_index_t).
+        // No OIDs needed; the index_oid is resolved by enrich_logical_plan.
+        if (original_type == node_type::drop_index_t) {
+            catalog::oid_batch_t oid_batch;
+            components::planner::planner_t ddl_planner;
+            logic_plan = ddl_planner.create_plan(resource(), std::move(logic_plan), std::move(oid_batch));
+        }
+
+        // ALTER TABLE → planner rewrite to sequence_t(alter_column_{add,rename,drop}_t × N).
+        // No OID batch: alter_column_add_t allocates its own attoid at execution time
+        // (one per ADD COLUMN clause). table_oid is resolved by enrich_logical_plan.
+        if (original_type == node_type::alter_table_t &&
+            disk_address_ != actor_zeta::address_t::empty_address()) {
+            catalog::oid_batch_t oid_batch; // intentionally empty
+            components::planner::planner_t ddl_planner;
+            logic_plan = ddl_planner.create_plan(resource(), std::move(logic_plan), std::move(oid_batch));
+        }
+
+        // DROP DATABASE / TABLE / TYPE / SEQUENCE / VIEW / MACRO → planner rewrite to
+        // node_dynamic_cascade_delete_t. The cascade operator self-walks pg_depend at
+        // runtime and performs catalog row deletes + storage drops. No OID batch is
+        // needed (drops don't allocate). Resolved seed OIDs were stamped on the
+        // logical drop_X node by enrich_logical_plan above. Phase 2 #49.
+        if ((original_type == node_type::drop_database_t ||
+             original_type == node_type::drop_collection_t ||
+             original_type == node_type::drop_type_t ||
+             original_type == node_type::drop_sequence_t ||
+             original_type == node_type::drop_view_t ||
+             original_type == node_type::drop_macro_t) &&
+            disk_address_ != actor_zeta::address_t::empty_address()) {
+            catalog::oid_batch_t oid_batch; // intentionally empty
+            components::planner::planner_t ddl_planner;
+            logic_plan = ddl_planner.create_plan(resource(), std::move(logic_plan), std::move(oid_batch));
+        }
+
+        // CREATE CONSTRAINT → planner rewrite в sequence_t(primitive_write на pg_constraint+pg_depend).
+        // Resolved attoids/table_oid/ref_table_oid populated by enrich_plan above.
+        if (original_type == node_type::create_constraint_t &&
+            disk_address_ != actor_zeta::address_t::empty_address()) {
+            // Validate CHECK expression non-empty before allocating OIDs.
+            auto* cstr = static_cast<node_create_constraint_t*>(logic_plan.get());
+            if (cstr->kind() == constraint_kind::check && cstr->check_expr().empty()) {
+                co_return make_cursor(resource(),
+                    error_code_t::other_error,
+                    "CHECK constraint expression is empty or contains unsupported "
+                    "constructs (functions, subqueries, and CASE expressions are not "
+                    "allowed; valid: comparisons, AND/OR/NOT, IS NULL/IS NOT NULL, "
+                    "column references, and constants)");
+            }
+            auto [_oa, oaf] = actor_zeta::send(disk_address_,
+                                               &disk::manager_disk_t::allocate_oids_batch,
+                                               std::size_t{1});
+            catalog::oid_batch_t oid_batch;
+            oid_batch.oids = co_await std::move(oaf);
+            components::planner::planner_t ddl_planner;
+            logic_plan = ddl_planner.create_plan(resource(), std::move(logic_plan), std::move(oid_batch));
+        }
+
         // DDL needs a real (non-zero) txn so that mid-DDL crash → WAL replay rolls back
         // partially-written pg_catalog.* records.
         components::table::transaction_data txn_data{0, 0};
         {
             const auto t = logic_plan->type();
-            // create_collection_t is checked via original_type: after the DDL planner
-            // rewrite it becomes sequence_t, but still needs a DDL txn so that
-            // append_pg_catalog_row tracks rows in pending_pg_catalog_appends_ and
-            // commit_pg_catalog_appends rebuilds table_to_oid_ on success.
+            // create_collection_t/create_constraint_t are checked via original_type:
+            // after the DDL planner rewrite they become sequence_t, but still need a
+            // DDL txn so that append_pg_catalog_row records ranges on
+            // txn_t->pg_catalog_appends and storage_commit_appends rebuilds
+            // table_to_oid_ on success.
             const bool needs_ddl_txn = original_type == node_type::create_collection_t ||
-                                        t == node_type::create_database_t || t == node_type::drop_database_t ||
-                                        t == node_type::drop_collection_t ||
-                                        t == node_type::create_sequence_t || t == node_type::drop_sequence_t ||
-                                        t == node_type::create_view_t || t == node_type::drop_view_t ||
-                                        t == node_type::create_macro_t || t == node_type::drop_macro_t ||
-                                        t == node_type::alter_table_t || t == node_type::create_constraint_t;
+                                        original_type == node_type::create_constraint_t ||
+                                        original_type == node_type::create_sequence_t ||
+                                        original_type == node_type::create_view_t ||
+                                        original_type == node_type::create_macro_t ||
+                                        original_type == node_type::create_type_t ||
+                                        original_type == node_type::create_index_t ||
+                                        original_type == node_type::drop_index_t ||
+                                        original_type == node_type::drop_database_t ||
+                                        original_type == node_type::drop_collection_t ||
+                                        original_type == node_type::drop_type_t ||
+                                        original_type == node_type::drop_sequence_t ||
+                                        original_type == node_type::drop_view_t ||
+                                        original_type == node_type::drop_macro_t ||
+                                        original_type == node_type::create_database_t ||
+                                        original_type == node_type::alter_table_t;
             if (needs_ddl_txn) {
                 txn_data = txn_manager_.begin_transaction(session).data();
                 trace(log_, "manager_dispatcher_t::execute_plan: DDL began txn {}",
@@ -647,103 +827,46 @@ namespace services::dispatcher {
 
         collection::executor::execute_result_t exec_result;
         switch (logic_plan->type()) {
-            case node_type::create_database_t:
-                exec_result = create_database_(logic_plan);
-                break;
-            case node_type::drop_database_t:
-                exec_result = drop_database_(logic_plan);
-                break;
-            case node_type::drop_collection_t:
-                exec_result = drop_collection_(logic_plan);
-                break;
-            case node_type::checkpoint_t: {
-                trace(log_, "manager_dispatcher_t::execute_plan: {}", to_string(logic_plan->type()));
-                // Flush all dirty index btrees before table checkpoint
-                if (index_address_ != actor_zeta::address_t::empty_address()) {
-                    auto [_fi, fif] =
-                        actor_zeta::send(index_address_, &index::manager_index_t::flush_all_indexes, session);
-                    co_await std::move(fif);
-                }
-                // Query WAL for current max ID before checkpoint
-                services::wal::id_t wal_max_id{0};
-                if (wal_address_ != actor_zeta::address_t::empty_address()) {
-                    auto [_wi, wif] =
-                        actor_zeta::send(wal_address_, &wal::manager_wal_replicate_t::current_wal_id, session);
-                    wal_max_id = co_await std::move(wif);
-                }
-                auto [_cp, cpf] =
-                    actor_zeta::send(disk_address_, &disk::manager_disk_t::checkpoint_all, session, wal_max_id);
-                auto checkpoint_wal_id = co_await std::move(cpf);
-                // After checkpoint, trim old WAL segments (id=0 means no-op: IN_MEMORY tables need WAL)
-                if (checkpoint_wal_id > 0 && wal_address_ != actor_zeta::address_t::empty_address()) {
-                    auto [_wt, wtf] = actor_zeta::send(wal_address_,
-                                                       &wal::manager_wal_replicate_t::truncate_before,
-                                                       session,
-                                                       checkpoint_wal_id);
-                    co_await std::move(wtf);
-                }
-                co_return make_cursor(resource(), operation_status_t::success);
-            }
-            case node_type::vacuum_t: {
-                trace(log_, "manager_dispatcher_t::execute_plan: {}", to_string(logic_plan->type()));
-                auto lowest = txn_manager_.lowest_active_start_time();
-                auto [_v, vf] = actor_zeta::send(disk_address_, &disk::manager_disk_t::vacuum_all, session, lowest);
-                co_await std::move(vf);
-                // Cleanup old index versions + rebuild (compact changes row positions)
-                if (index_address_ != actor_zeta::address_t::empty_address()) {
-                    auto [_cv, cvf] = actor_zeta::send(index_address_,
-                                                       &index::manager_index_t::cleanup_all_versions,
-                                                       session,
-                                                       lowest);
-                    co_await std::move(cvf);
-                    // Rebuild indexes for each collection (compact invalidates row positions)
-                    for (const auto& coll : collections_) {
-                        auto [_rb, rbf] =
-                            actor_zeta::send(index_address_, &index::manager_index_t::rebuild_indexes, session, coll);
-                        co_await std::move(rbf);
-                        // Re-populate indexes from storage
-                        auto [_tr, trf] =
-                            actor_zeta::send(disk_address_, &disk::manager_disk_t::storage_total_rows, session, coll);
-                        auto total = co_await std::move(trf);
-                        if (total > 0) {
-                            auto [_ss, ssf] = actor_zeta::send(disk_address_,
-                                                               &disk::manager_disk_t::storage_scan_segment,
-                                                               session,
-                                                               coll,
-                                                               int64_t{0},
-                                                               total);
-                            auto scan_data = co_await std::move(ssf);
-                            if (scan_data) {
-                                auto count = scan_data->size();
-                                auto [_ir, irf] = actor_zeta::send(index_address_,
-                                                                   &index::manager_index_t::insert_rows,
-                                                                   index::execution_context_t{session, txn_data, coll},
-                                                                   std::move(scan_data),
-                                                                   uint64_t{0},
-                                                                   count);
-                                co_await std::move(irf);
-                            }
-                        }
-                    }
-                }
-                co_return make_cursor(resource(), operation_status_t::success);
-            }
-            case node_type::create_sequence_t:
-            case node_type::drop_sequence_t:
-            case node_type::create_view_t:
-            case node_type::drop_view_t:
-            case node_type::create_macro_t:
-            case node_type::drop_macro_t:
-            case node_type::alter_table_t:
-            case node_type::create_constraint_t: {
-                // DDL for sequences/views/macros/alter_table/constraints — no physical plan.
-                // The real work runs in execute_ddl() after this switch.
+            // Phase 3 #51: CHECKPOINT now runs through the executor pipeline as
+            // operator_checkpoint_t (planner falls through, create_plan_checkpoint
+            // builds the operator). Inline send to disk::checkpoint_all + wal trim
+            // moved into operator_checkpoint_t::await_async_and_resume — the WAL
+            // recovery boundary semantics (snapshot wal_max_id BEFORE checkpoint,
+            // truncate_before only when min_prev > 0) are preserved verbatim.
+            //
+            // Phase 3 #52: VACUUM now runs through the executor pipeline as
+            // operator_vacuum_t. The operator iterates pg_class (relkind 'r'/'g')
+            // to discover user tables for the per-table index rebuild loop —
+            // this replaces the legacy walk over `collections_`, which is being
+            // removed in Phase 5. lowest_active_start_time is propagated via
+            // pipeline::context_t (set by the executor from txn_manager_t).
+            case node_type::alter_table_t: {
+                // ALTER TABLE is normally rewritten by the planner into
+                // sequence_t(alter_column_{add,rename,drop}_t × N). Reaching this
+                // case means rewrite_alter_table bailed out because table_oid was
+                // not resolved by enrich (table not found); return no-op success
+                // and let the validate/enrich layer surface a hard error.
                 exec_result = {make_cursor(resource(), operation_status_t::success), {}};
                 break;
             }
             default:
                 exec_result = co_await execute_plan_impl(session, logic_plan, params->take_parameters(), txn_data);
                 break;
+        }
+
+        // Phase 5b: hand pg_catalog swap-info up to the transaction so commit/abort
+        // operators (or the inline DDL commit blocks below) can apply
+        // storage_commit_appends / storage_revert_appends after txn_manager_.commit()/abort().
+        // Skip txn=0 (auto-commit / bootstrap path).
+        if (txn_data.transaction_id != 0) {
+            if (auto* txn_t = txn_manager_.find_transaction(session)) {
+                for (auto& a : exec_result.pg_catalog_appends) {
+                    txn_t->pg_catalog_appends.push_back(std::move(a));
+                }
+                for (auto& d : exec_result.pg_catalog_delete_tables) {
+                    txn_t->pg_catalog_delete_tables.insert(std::move(d));
+                }
+            }
         }
 
         auto& result = exec_result.cursor;
@@ -753,91 +876,38 @@ namespace services::dispatcher {
             // Use original_type for dispatch: planner may have wrapped DML nodes,
             // changing logic_plan->type() to a constraint wrapper type.
             const auto t = original_type;
-            const bool is_ddl = t == node_type::create_database_t || t == node_type::drop_database_t ||
-                                 t == node_type::drop_collection_t ||
-                                 t == node_type::create_sequence_t || t == node_type::drop_sequence_t ||
-                                 t == node_type::create_view_t || t == node_type::drop_view_t ||
-                                 t == node_type::create_macro_t || t == node_type::drop_macro_t ||
-                                 t == node_type::alter_table_t || t == node_type::create_constraint_t;
-            if (is_ddl) {
-                trace(log_, "manager_dispatcher_t::execute_plan: DDL {} via execute_ddl",
-                      to_string(t));
-                auto ddl_cursor = co_await execute_ddl(session, logic_plan, txn_data, view,
-                    ddl_context_t{disk_address_, index_address_, wal_address_, txn_manager_, collections_, resource()});
-                if (!ddl_cursor->is_success())
-                    co_return ddl_cursor;
-                co_return result;
-            }
+            // ALTER TABLE flows through the executor pipeline as
+            // sequence_t(alter_column_{add,rename,drop}_t × N).
             if (t == node_type::insert_t) {
                 trace(log_,
                       "manager_dispatcher_t::execute_plan: DML {} completed by executor",
                       to_string(t));
-                // V4: relkind='g' (computing/generated) check via cached table. The view's
-                // try_get_table is sync — pre-load via co_await get_namespace + get_table so
-                // the lookup hits cache.
-                bool is_computing = false;
-                if (!id.get_namespace().empty()) {
-                    auto* ns_e = view.try_get_namespace(std::string_view(id.get_namespace().front()));
-                    if (!ns_e) {
-                        ns_e = co_await view.get_namespace(ctx, std::string(id.get_namespace().front()));
-                    }
-                    if (ns_e) {
-                        auto* tbl = view.try_get_table(ns_e->oid, std::string_view(id.table_name()));
-                        if (!tbl) {
-                            tbl = co_await view.get_table(ctx, ns_e->oid, std::string(id.table_name()));
-                        }
-                        if (tbl && tbl->relkind == relkind::computed) {
-                            is_computing = true;
-                        }
-                    }
-                }
-                if (is_computing) {
-                    for (const auto& child : logic_plan->children()) {
-                        if (child->type() != node_type::data_t)
-                            continue;
-                        auto* data_node = static_cast<const node_data_t*>(child.get());
-                        std::vector<components::table::column_definition_t> columns;
-                        columns.reserve(data_node->data_chunk().column_count());
-                        for (size_t i = 0; i < data_node->data_chunk().column_count(); i++) {
-                            const auto& type = data_node->data_chunk().data[i].type();
-                            assert(type.has_alias());
-                            columns.emplace_back(type.alias(), type);
-                        }
-                        components::execution_context_t ddl_ctx{session, txn_data,
-                                                                  logic_plan->collection_full_name()};
-                        auto [_rn, rnf] = actor_zeta::send(disk_address_,
-                                                            &disk::manager_disk_t::resolve_namespace,
-                                                            ddl_ctx,
-                                                            logic_plan->database_name(),
-                                                            std::uint64_t{0});
-                        auto rns = co_await std::move(rnf);
-                        if (!rns.found)
-                            break;
-                        auto [_rt, rtf] = actor_zeta::send(disk_address_,
-                                                            &disk::manager_disk_t::resolve_table,
-                                                            ddl_ctx,
-                                                            rns.oid,
-                                                            logic_plan->collection_name(),
-                                                            std::uint64_t{0});
-                        auto rt = co_await std::move(rtf);
-                        if (!rt.found)
-                            break;
-                        auto [_da, daf] = actor_zeta::send(disk_address_,
-                                                            &disk::manager_disk_t::ddl_adopt_computing_schema,
-                                                            ddl_ctx,
-                                                            rt.oid,
-                                                            std::move(columns));
-                        if (auto r = co_await std::move(daf); r.failed())
-                            trace(log_, "ddl_adopt_computing_schema failed: status={}, blocker={}", static_cast<int>(r.status), r.blocking_oid);
-                        break;
-                    }
-                }
+                // Phase 7.4: relkind='g' INSERT is unwrapped here — P7.2 will
+                // reintroduce a sequence_t(insert, computed_field_register)
+                // wrapper above, so pg_computed_column appends ride the same
+                // executor DML txn that commits user rows. The previous
+                // adopt-based wrapper (W4-D) was removed because promoting
+                // 'g'->'r' on first INSERT broke the Mongo-style dynamic
+                // schema model.
                 co_return result;
             }
-            if (t == node_type::create_collection_t) {
-                // Flush + WAL commit + commit_pg_catalog_appends (flips MVCC tags and
-                // rebuilds table_to_oid_ so the next resolve_table call finds the table).
-                // Mirrors the execute_ddl commit sequence used by DROP TABLE, ALTER TABLE, etc.
+            if (t == node_type::create_collection_t || t == node_type::create_database_t ||
+                t == node_type::create_constraint_t ||
+                t == node_type::create_sequence_t ||
+                t == node_type::create_view_t ||
+                t == node_type::create_macro_t ||
+                t == node_type::create_type_t ||
+                t == node_type::create_index_t ||
+                t == node_type::drop_index_t ||
+                t == node_type::drop_database_t ||
+                t == node_type::drop_collection_t ||
+                t == node_type::drop_type_t ||
+                t == node_type::drop_sequence_t ||
+                t == node_type::drop_view_t ||
+                t == node_type::drop_macro_t ||
+                t == node_type::alter_table_t) {
+                // Flush + WAL commit + storage_commit_appends (flips MVCC tags).
+                // Mirrors the legacy DDL commit sequence used by DROP TABLE, ALTER TABLE, etc.
                 if (disk_address_ != actor_zeta::address_t::empty_address()) {
                     auto [_f, ff] = actor_zeta::send(disk_address_,
                                                       &disk::manager_disk_t::flush,
@@ -859,23 +929,58 @@ namespace services::dispatcher {
                 }
                 if (txn_data.transaction_id != 0 &&
                     disk_address_ != actor_zeta::address_t::empty_address()) {
+                    // Phase 5b: snapshot accumulated pg_catalog swap-info from txn_t
+                    // BEFORE commit() purges the active map, then dispatch new batched
+                    // APIs after the swap point.
+                    std::vector<components::pg_catalog_append_range_t> swap_appends;
+                    std::set<collection_full_name_t>                   swap_deletes;
+                    if (auto* txn_t = txn_manager_.find_transaction(session)) {
+                        swap_appends = std::move(txn_t->pg_catalog_appends);
+                        swap_deletes = std::move(txn_t->pg_catalog_delete_tables);
+                    }
                     const uint64_t commit_id = txn_manager_.commit(session);
                     if (commit_id > 0) {
-                        components::execution_context_t cpa_ctx{session, txn_data, {}};
-                        auto [_cpa, cpaf] = actor_zeta::send(disk_address_,
-                                                              &disk::manager_disk_t::commit_pg_catalog_appends,
-                                                              cpa_ctx, commit_id);
-                        co_await std::move(cpaf);
+                        components::execution_context_t swap_ctx{session, txn_data, {}};
+                        if (!swap_appends.empty()) {
+                            auto [_a, af] = actor_zeta::send(disk_address_,
+                                                              &disk::manager_disk_t::storage_commit_appends,
+                                                              swap_ctx, commit_id, std::move(swap_appends));
+                            co_await std::move(af);
+                        }
+                        if (!swap_deletes.empty()) {
+                            auto [_d, df] = actor_zeta::send(disk_address_,
+                                                              &disk::manager_disk_t::storage_commit_deletes,
+                                                              swap_ctx, commit_id, std::move(swap_deletes));
+                            co_await std::move(df);
+                        }
                     }
                 }
-                // Update routing map: logic_plan is sequence_t, first child is create_collection_t.
-                if (!logic_plan->children().empty()) {
+                // Update routing map: for create_collection_t logic_plan is sequence_t whose
+                // first child is the create_collection_t carrying the new collection name.
+                // create_constraint_t and create_database_t have no collection to register.
+                if (t == node_type::create_collection_t && !logic_plan->children().empty()) {
                     collections_.insert(logic_plan->children().front()->collection_full_name());
+                }
+                // Drop side: the cascade operator removed pg_class/pg_namespace rows on
+                // disk, but the dispatcher's in-memory collections_ map is rebuilt from
+                // pg_catalog only on the *next* execute_plan. Clean up here so any
+                // immediate follow-up call (in the same handler chain) does not see a
+                // stale entry. Names captured before the planner rewrite. Phase 2 #49.
+                if (t == node_type::drop_database_t && !drop_target_database.empty()) {
+                    for (auto it = collections_.begin(); it != collections_.end();) {
+                        if (it->database == drop_target_database) {
+                            it = collections_.erase(it);
+                        } else {
+                            ++it;
+                        }
+                    }
+                }
+                if (t == node_type::drop_collection_t && !drop_target_collection.collection.empty()) {
+                    collections_.erase(drop_target_collection);
                 }
                 co_return result;
             }
-            if (t == node_type::update_t || t == node_type::delete_t ||
-                t == node_type::create_index_t || t == node_type::drop_index_t) {
+            if (t == node_type::update_t || t == node_type::delete_t) {
                 co_return result;
             }
             trace(log_, "manager_dispatcher_t::execute_plan: non processed type - {}",
@@ -892,134 +997,79 @@ namespace services::dispatcher {
     manager_dispatcher_t::register_udf(components::session::session_id_t session,
                                        components::compute::function_ptr function) {
         trace(log_, "dispatcher_t::register_udf session: {}, function name: {}", session.data(), function->name());
-        auto func_name = function->name();
-        auto func_signatures = function->get_signatures();
-        // Cross-namespace conflict detection (#41 Path 2): one resolve_function_by_name
-        // scan replaces the legacy populate-iterate-namespaces loop. Returns every pg_proc
-        // row matching `func_name` across all namespaces; any match (user or pg_catalog) is
-        // a conflict.
-        if (disk_address_ != actor_zeta::address_t::empty_address()) {
-            components::execution_context_t ddl_ctx{session,
-                                                      components::table::transaction_data{0, 0}, {}};
-            auto [_rfbn, rfbnf] = actor_zeta::send(disk_address_,
-                                                     &disk::manager_disk_t::resolve_function_by_name,
-                                                     ddl_ctx,
-                                                     std::string(func_name),
-                                                     std::uint64_t{0});
-            auto matches = co_await std::move(rfbnf);
-            if (!matches.empty()) {
-                co_return false;
+
+        // Phase 4 #55 — go through the operator pipeline. The logical leaf
+        // node_register_udf_t carries the function payload; create_plan lowers
+        // it to operator_register_udf_t which fans out to per-executor
+        // registries, mirrors into function_registry_t::get_default(), and
+        // persists pg_proc rows.
+        //
+        // We invoke the operator directly here (mirroring get_schema after
+        // #54) rather than routing through execute_plan_impl: register_udf has
+        // a custom return type (bool, not cursor) and needs the executor
+        // address list which only the dispatcher has.
+
+        // Wrap the unique_ptr function in a shared_ptr so the logical node can
+        // copy without consuming. The operator deep-copies via get_copy() when
+        // fanning out, leaving the shared_ptr's payload untouched for the
+        // pg_proc encode step.
+        std::shared_ptr<components::compute::function> shared_fn(function.release());
+        auto plan = boost::intrusive_ptr(
+            new components::logical_plan::node_register_udf_t(resource(), shared_fn));
+
+        services::context_storage_t cstor{resource(), log_.clone()};
+        // Build the executor fan-out callable. The dispatcher captures
+        // executor_addresses_, scheduler_, and executors_ so the operator can
+        // drive per-executor register_udf without needing direct scheduler
+        // access. needs_sched is honoured here (matching the legacy inline
+        // path) so the executor's mailbox is processed.
+        auto fanout = [this](components::session::session_id_t s,
+                              components::compute::function_ptr fcopy,
+                              std::size_t i) -> actor_zeta::unique_future<components::compute::function_uid> {
+            auto [needs_sched, future] =
+                actor_zeta::otterbrix::send(executor_addresses_[i],
+                                             &collection::executor::executor_t::register_udf,
+                                             s,
+                                             std::move(fcopy));
+            if (needs_sched && executors_[i]) {
+                scheduler_->enqueue(executors_[i].get());
+            }
+            return std::move(future);
+        };
+        auto op = services::planner::impl::create_plan_register_udf(
+            cstor, plan, executor_addresses_.size(), std::move(fanout));
+        if (!op) {
+            co_return false;
+        }
+        op->set_as_root();
+
+        components::logical_plan::storage_parameters params(resource());
+        components::compute::function_registry_t fn_registry;
+        components::pipeline::context_t pctx{session,
+                                              actor_zeta::address_t::empty_address(),
+                                              actor_zeta::address_t::empty_address(),
+                                              &fn_registry,
+                                              params};
+        pctx.disk_address = disk_address_;
+        pctx.txn = components::table::transaction_data{0, 0};
+
+        op->prepare();
+        op->on_execute(&pctx);
+        while (!op->is_executed()) {
+            auto waiting = op->find_waiting_operator();
+            if (!waiting) break;
+            co_await waiting->await_async_and_resume(&pctx);
+            op->on_execute(&pctx);
+        }
+        if (pctx.has_pending_disk_futures()) {
+            auto futures = pctx.take_pending_disk_futures();
+            for (auto& f : futures) {
+                co_await std::move(f);
             }
         }
-        {
-            // we have to send it to all executors and validate, that results are the same...
-            std::pmr::vector<collection::executor::function_result_t> results(resource_);
-            results.reserve(executor_pool_size_);
-            for (size_t i = 0; i < executor_pool_size_; i++) {
-                auto [needs_sched, future] =
-                    actor_zeta::otterbrix::send(executor_addresses_[i],
-                                                &collection::executor::executor_t::register_udf,
-                                                session,
-                                                function->get_copy());
-                if (needs_sched && executors_[i]) {
-                    scheduler_->enqueue(executors_[i].get());
-                }
-                results.emplace_back(co_await std::move(future));
-            }
-            // TODO: if executors return different uids once, they continue to disagree and any call to register_udf will fail
-            if (std::all_of(results.begin(),
-                            results.end(),
-                            [first_uid = results.front()](components::compute::function_uid uid) {
-                                return uid != components::compute::invalid_function_uid && uid == first_uid;
-                            })) {
-                // V4 lookup_function in validate_logical_plan probes
-                // function_registry_t::get_default() — UDFs must live there too, not only
-                // in executor-local registries. Mirror the executor add_function so the
-                // dispatcher-side validate sees the UDF (matches pre-V4 visibility).
-                if (auto* def_reg = components::compute::function_registry_t::get_default()) {
-                    (void)def_reg->add_function(function->get_copy());
-                }
-                // pg_proc is the persistent source of truth. Function visibility on
-                // subsequent execute_plan calls is served by catalog_view_t resolving
-                // against pg_proc.
-                // Persist in pg_proc — UDFs registered here are user-namespace functions.
-                // We attach them to the first existing user namespace; if none exists, the
-                // pg_proc row is namespaced to the well-known pg_catalog.
-                if (disk_address_ != actor_zeta::address_t::empty_address()) {
-                    components::execution_context_t ddl_ctx{session,
-                                                              components::table::transaction_data{0, 0}, {}};
-                    components::catalog::oid_t target_ns = components::catalog::well_known_oid::pg_catalog_namespace;
-                    // V4: enumerate user namespaces via disk's list_namespaces (admin-path
-                    // bypass of per-name cache). First non-pg_catalog namespace wins.
-                    auto [_ln, lnf] = actor_zeta::send(disk_address_,
-                                                        &disk::manager_disk_t::list_namespaces,
-                                                        ddl_ctx);
-                    auto ns_names = co_await std::move(lnf);
-                    for (auto& nname : ns_names) {
-                        if (!nname.empty() && nname != "pg_catalog") {
-                            auto [_rn, rnf] = actor_zeta::send(disk_address_,
-                                                                &disk::manager_disk_t::resolve_namespace,
-                                                                ddl_ctx,
-                                                                std::string(nname),
-                                                                std::uint64_t{0});
-                            auto rns = co_await std::move(rnf);
-                            if (rns.found) {
-                                target_ns = rns.oid;
-                                break;
-                            }
-                        }
-                    }
-                    std::int32_t pronargs = func_signatures.empty()
-                        ? 0
-                        : static_cast<std::int32_t>(func_signatures.front().input_types.size());
-                    std::int64_t prouid = static_cast<std::int64_t>(results.front());
-                    // Encode the first signature's per-arg matcher kinds + output types so
-                    // catalog_view_t can reconstruct real signatures across restart (#152).
-                    // Empty signatures → empty fields → reader falls back to always_true ×
-                    // pronargs / same_at(0) defaults.
-                    std::string proargmatchers;
-                    std::string prorettype;
-                    if (!func_signatures.empty()) {
-                        std::vector<components::compute::input_type> matchers;
-                        matchers.reserve(func_signatures.front().input_types.size());
-                        for (auto& it : func_signatures.front().input_types) {
-                            matchers.push_back(it);
-                        }
-                        proargmatchers = components::catalog::encode_proargmatchers(matchers);
-                        std::vector<components::compute::output_type> outs;
-                        outs.reserve(func_signatures.front().output_types.size());
-                        for (auto& ot : func_signatures.front().output_types) {
-                            outs.push_back(ot);
-                        }
-                        prorettype = components::catalog::encode_prorettype(outs);
-                    }
-                    auto [_oa, oaf] = actor_zeta::send(disk_address_,
-                                                        &disk::manager_disk_t::allocate_oids_batch,
-                                                        std::size_t{1});
-                    catalog::oid_batch_t fn_batch;
-                    fn_batch.oids = co_await std::move(oaf);
-                    const catalog::oid_t fn_oid = fn_batch.allocate();
-                    auto fn_writes = catalog::build_create_function_writes(
-                        resource(),
-                        std::string(func_name),
-                        target_ns,
-                        fn_oid,
-                        pronargs,
-                        prouid,
-                        std::move(proargmatchers),
-                        std::move(prorettype));
-                    for (auto& w : fn_writes) {
-                        auto [_w, wf] = actor_zeta::send(disk_address_,
-                                                          &disk::manager_disk_t::append_pg_catalog_row,
-                                                          ddl_ctx, std::move(w.table), std::move(w.row));
-                        co_await std::move(wf);
-                    }
-                }
-                co_return true;
-            } else {
-                co_return false;
-            }
-        }
+
+        auto* ru = static_cast<components::operators::operator_register_udf_t*>(op.get());
+        co_return ru->success();
     }
 
     manager_dispatcher_t::unique_future<bool>
@@ -1027,198 +1077,141 @@ namespace services::dispatcher {
                                          std::string function_name,
                                          std::pmr::vector<complex_logical_type> inputs) {
         trace(log_, "dispatcher_t::unregister_udf: session {}, {}", session.data(), function_name);
-        // V4: existence check via the in-process function_registry_t. Functions registered
-        // through register_udf land in the default registry; pg_proc is the cross-restart
-        // source of truth but at runtime the registry is authoritative for "exists?" checks.
-        auto* reg = components::compute::function_registry_t::get_default();
-        bool exists = false;
-        if (reg) {
-            for (auto& [n, uid] : reg->get_functions()) {
-                if (n != function_name) continue;
-                auto* fn = reg->get_function(uid);
-                if (!fn) continue;
-                for (auto& sig : fn->get_signatures()) {
-                    if (sig.matches_inputs(inputs)) { exists = true; break; }
-                }
-                if (exists) break;
-            }
-        }
-        if (exists) {
-            // V4: also drop from the in-memory default registry so subsequent validate
-            // lookups (which probe function_registry_t::get_default()) don't find the
-            // function any more. Mirrors register_udf's add to the default registry.
-            if (reg) {
-                (void)reg->remove_function_by_signature(function_name, inputs);
-            }
-            // pg_proc is the source of truth — catalog_view_t resolves against it on the
-            // next execute_plan, so no shadow write is needed.
-            // Persist drop in pg_proc by name lookup. Only purges rows matching proname; if
-            // the same function name lives in multiple namespaces, all are dropped.
-            if (disk_address_ != actor_zeta::address_t::empty_address()) {
-                components::execution_context_t ddl_ctx{session,
-                                                          components::table::transaction_data{0, 0}, {}};
-                // #41 Path 4: one resolve_function_by_name scan returns every pg_proc row
-                // matching `function_name` across all namespaces. Drop each match.
-                auto [_rfbn, rfbnf] = actor_zeta::send(disk_address_,
-                                                         &disk::manager_disk_t::resolve_function_by_name,
-                                                         ddl_ctx,
-                                                         std::string(function_name),
-                                                         std::uint64_t{0});
-                auto matches = co_await std::move(rfbnf);
-                const collection_full_name_t pg_proc_coll{"pg_catalog", "main", "pg_proc"};
-                const collection_full_name_t pg_depend_coll2{"pg_catalog", "main", "pg_depend"};
-                for (auto& m : matches) {
-                    auto [_d1, d1f] = actor_zeta::send(disk_address_,
-                                                        &disk::manager_disk_t::delete_pg_catalog_rows,
-                                                        ddl_ctx, pg_proc_coll, std::int64_t{0}, m.oid);
-                    co_await std::move(d1f);
-                    auto [_d2, d2f] = actor_zeta::send(disk_address_,
-                                                        &disk::manager_disk_t::delete_pg_catalog_rows,
-                                                        ddl_ctx, pg_depend_coll2, std::int64_t{1}, m.oid);
-                    co_await std::move(d2f);
-                    auto [_d3, d3f] = actor_zeta::send(disk_address_,
-                                                        &disk::manager_disk_t::delete_pg_catalog_rows,
-                                                        ddl_ctx, pg_depend_coll2, std::int64_t{3}, m.oid);
-                    co_await std::move(d3f);
-                }
-            }
-            co_return true;
-        }
-        co_return false;
-    }
 
-    manager_dispatcher_t::unique_future<size_t> manager_dispatcher_t::size(components::session::session_id_t session,
-                                                                           std::string database_name,
-                                                                           std::string collection) {
-        trace(log_,
-              "manager_dispatcher_t::size session:{}, database: {}, collection: {}",
-              session.data(),
-              database_name,
-              collection);
+        // Phase 4 #55 — operator-pipeline replacement. The logical leaf
+        // node_unregister_udf_t carries the (name, inputs) signature; the
+        // operator probes function_registry_t::get_default(), removes the
+        // matching overload, and purges pg_proc + pg_depend rows.
+        auto plan = boost::intrusive_ptr(
+            new components::logical_plan::node_unregister_udf_t(resource(),
+                                                                  std::move(function_name),
+                                                                  std::move(inputs)));
 
-        // V4: collection-existence check via catalog_view_t. Pre-load namespace + table so
-        // try_get_* in check_collection_exists hits the cache.
-        catalog_view_t view{plan_cache_, disk_address_,
-                            plan_cache_.pinned_version_for(session).value_or(last_seen_version_),
-                            resource()};
-        components::execution_context_t ctx{session, components::table::transaction_data{0, 0}, {}};
-        table_id id{resource(), {database_name, collection}};
-        if (!id.get_namespace().empty()) {
-            auto* ns_e = co_await view.get_namespace(ctx, std::string(id.get_namespace().front()));
-            if (ns_e) {
-                co_await view.get_table(ctx, ns_e->oid, std::string(id.table_name()));
-            }
+        services::context_storage_t cstor{resource(), log_.clone()};
+        components::compute::function_registry_t fn_registry;
+        auto op = services::planner::create_plan(
+            cstor, fn_registry, plan,
+            components::logical_plan::limit_t::unlimit(),
+            /*params=*/nullptr);
+        if (!op) {
+            co_return false;
         }
-        auto error = check_collection_exists(resource(), view, id);
-        if (error) {
-            co_return size_t(0);
+        op->set_as_root();
+
+        components::logical_plan::storage_parameters params(resource());
+        components::pipeline::context_t pctx{session,
+                                              actor_zeta::address_t::empty_address(),
+                                              actor_zeta::address_t::empty_address(),
+                                              &fn_registry,
+                                              params};
+        pctx.disk_address = disk_address_;
+        pctx.txn = components::table::transaction_data{0, 0};
+
+        op->prepare();
+        op->on_execute(&pctx);
+        while (!op->is_executed()) {
+            auto waiting = op->find_waiting_operator();
+            if (!waiting) break;
+            co_await waiting->await_async_and_resume(&pctx);
+            op->on_execute(&pctx);
+        }
+        if (pctx.has_pending_disk_futures()) {
+            auto futures = pctx.take_pending_disk_futures();
+            for (auto& f : futures) {
+                co_await std::move(f);
+            }
         }
 
-        collection_full_name_t name{database_name, collection};
-        if (collections_.find(name) == collections_.end()) {
-            co_return size_t(0);
-        }
-        // Get size from storage in manager_disk_t
-        auto [_s, sf] = actor_zeta::send(disk_address_,
-                                         &disk::manager_disk_t::storage_calculate_size,
-                                         components::session::session_id_t{},
-                                         name);
-        auto sz = co_await std::move(sf);
-        co_return static_cast<size_t>(sz);
+        auto* uu = static_cast<components::operators::operator_unregister_udf_t*>(op.get());
+        co_return uu->success();
     }
 
     manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr>
     manager_dispatcher_t::get_schema(components::session::session_id_t session,
                                      std::pmr::vector<std::pair<database_name_t, collection_name_t>> ids) {
         trace(log_, "manager_dispatcher_t::get_schema session: {}, ids count: {}", session.data(), ids.size());
-        // V4: serve schema lookups via catalog_view_t. Pre-load referenced namespaces+tables
-        // and read resolved_table_t::columns (attname/type per column) to build the struct
-        // shape that callers expect.
-        catalog_view_t view{plan_cache_, disk_address_,
-                            plan_cache_.pinned_version_for(session).value_or(last_seen_version_),
-                            resource()};
-        components::execution_context_t ctx{session, components::table::transaction_data{0, 0}, {}};
-        std::pmr::vector<complex_logical_type> schemas;
-        schemas.reserve(ids.size());
 
+        // No disk → no pg_catalog → every id is unresolved. Mirrors the legacy
+        // path where catalog_view_t reads short-circuit when disk_address_ is
+        // empty (purely IN_MEMORY deployments without a backing disk actor).
+        if (disk_address_ == actor_zeta::address_t::empty_address()) {
+            std::pmr::vector<complex_logical_type> schemas(resource());
+            schemas.reserve(ids.size());
+            for (std::size_t i = 0; i < ids.size(); ++i) {
+                schemas.push_back(complex_logical_type{logical_type::INVALID});
+            }
+            co_return make_cursor(resource(), std::move(schemas));
+        }
+
+        // Phase 4 #54 — go through the operator pipeline instead of inline
+        // catalog_view_t reads. The logical leaf node_get_schema_t carries the
+        // requested ids; create_plan lowers it to operator_get_schema_t which
+        // self-resolves namespace / table / columns via async pg_catalog reads
+        // and accumulates one complex_logical_type per id in input order.
+        //
+        // We invoke the operator directly here (mirroring executor's
+        // execute_sub_plan_ loop) rather than routing through execute_plan_impl
+        // because the get_schema cursor format is the typed-vector cursor
+        // (make_cursor(resource, vector<complex_logical_type>)) — distinct from
+        // the chunk-cursor format the executor produces for general plans.
+        std::pmr::vector<std::pair<std::string, std::string>> id_pairs(resource());
+        id_pairs.reserve(ids.size());
         for (const auto& [db, coll] : ids) {
-            table_id id(resource(), {db, coll});
-            const resolved_table_t* tbl = nullptr;
-            if (!id.get_namespace().empty()) {
-                auto* ns_e = view.try_get_namespace(std::string_view(id.get_namespace().front()));
-                if (!ns_e) {
-                    ns_e = co_await view.get_namespace(ctx, std::string(id.get_namespace().front()));
-                }
-                if (ns_e) {
-                    tbl = view.try_get_table(ns_e->oid, std::string_view(id.table_name()));
-                    if (!tbl) {
-                        tbl = co_await view.get_table(ctx, ns_e->oid, std::string(id.table_name()));
-                    }
-                }
+            id_pairs.emplace_back(std::string(db), std::string(coll));
+        }
+        auto plan = boost::intrusive_ptr(new components::logical_plan::node_get_schema_t(
+            resource(), std::move(id_pairs)));
+
+        services::context_storage_t cstor{resource(), log_.clone()};
+        components::compute::function_registry_t fn_registry;
+        auto op = services::planner::create_plan(
+            cstor, fn_registry, plan,
+            components::logical_plan::limit_t::unlimit(),
+            /*params=*/nullptr);
+        if (!op) {
+            // Should not happen — create_plan_get_schema is unconditional.
+            co_return make_cursor(resource(),
+                                   std::pmr::vector<complex_logical_type>(resource()));
+        }
+        op->set_as_root();
+
+        // Build a minimal pipeline context. operator_get_schema_t only reads
+        // disk_address (read_rows_by_key on pg_namespace/pg_class/pg_attribute);
+        // a zero-txn matches the catalog reads the legacy path issued through
+        // execution_context_t{session, {0,0}, {}}.
+        components::logical_plan::storage_parameters params(resource());
+        components::pipeline::context_t pctx{session,
+                                              actor_zeta::address_t::empty_address(),
+                                              actor_zeta::address_t::empty_address(),
+                                              &fn_registry,
+                                              params};
+        pctx.disk_address = disk_address_;
+        pctx.txn = components::table::transaction_data{0, 0};
+
+        op->prepare();
+        op->on_execute(&pctx);
+        // Drive the async resume loop (the operator's only waiting state is
+        // its own await_async_and_resume — there are no child operators).
+        while (!op->is_executed()) {
+            auto waiting = op->find_waiting_operator();
+            if (!waiting) {
+                break;
             }
-            if (tbl && tbl->relkind != relkind::computed) {
-                std::vector<complex_logical_type> col_types;
-                col_types.reserve(tbl->columns.size());
-                for (const auto& c : tbl->columns) {
-                    auto t = c.type;
-                    t.set_alias(c.attname);
-                    col_types.push_back(std::move(t));
-                }
-                schemas.push_back(complex_logical_type::create_struct("schema", col_types));
-                continue;
-            }
-            if (tbl && tbl->relkind == relkind::computed) {
-                // Computing/generated table — surface the latest column types as a "latest_types"
-                // struct to mirror computed_schema::latest_types_struct().
-                std::vector<complex_logical_type> col_types;
-                col_types.reserve(tbl->columns.size());
-                for (const auto& c : tbl->columns) {
-                    auto t = c.type;
-                    t.set_alias(c.attname);
-                    col_types.push_back(std::move(t));
-                }
-                schemas.push_back(complex_logical_type::create_struct("latest_types", col_types));
-                continue;
-            }
-            schemas.push_back(logical_type::INVALID);
+            co_await waiting->await_async_and_resume(&pctx);
+            op->on_execute(&pctx);
         }
 
-        co_return make_cursor(resource(), std::move(schemas));
-    }
-
-    manager_dispatcher_t::unique_future<void>
-    manager_dispatcher_t::close_cursor(components::session::session_id_t /*session*/) {
-        co_return;
-    }
-
-    collection::executor::execute_result_t manager_dispatcher_t::create_database_(node_ptr logical_plan) {
-        trace(log_, "manager_dispatcher_t:create_database {}", logical_plan->database_name());
-        return {make_cursor(resource(), operation_status_t::success), {}};
-    }
-
-    collection::executor::execute_result_t manager_dispatcher_t::drop_database_(node_ptr logical_plan) {
-        trace(log_, "manager_dispatcher_t:drop_database {}", logical_plan->database_name());
-        auto db_name = logical_plan->database_name();
-        for (auto it = collections_.begin(); it != collections_.end();) {
-            if (it->database == db_name) {
-                it = collections_.erase(it);
-            } else {
-                ++it;
+        // Drain pending side-channel disk futures (none expected for read-only
+        // get_schema, but mirrors the executor pattern for consistency).
+        if (pctx.has_pending_disk_futures()) {
+            auto futures = pctx.take_pending_disk_futures();
+            for (auto& f : futures) {
+                co_await std::move(f);
             }
         }
-        return {make_cursor(resource(), operation_status_t::success), {}};
-    }
 
-    collection::executor::execute_result_t manager_dispatcher_t::create_collection_(node_ptr logical_plan) {
-        trace(log_, "manager_dispatcher_t:create_collection {}", logical_plan->collection_full_name().to_string());
-        collections_.insert(logical_plan->collection_full_name());
-        return {make_cursor(resource(), operation_status_t::success), {}};
-    }
-
-    collection::executor::execute_result_t manager_dispatcher_t::drop_collection_(node_ptr logical_plan) {
-        trace(log_, "manager_dispatcher_t:drop_collection {}", logical_plan->collection_full_name().to_string());
-        collections_.erase(logical_plan->collection_full_name());
-        return {make_cursor(resource(), operation_status_t::success), {}};
+        auto* gs = static_cast<components::operators::operator_get_schema_t*>(op.get());
+        co_return make_cursor(resource(), gs->take_schemas());
     }
 
     manager_dispatcher_t::unique_future<collection::executor::execute_result_t>
@@ -1275,79 +1268,111 @@ namespace services::dispatcher {
     manager_dispatcher_t::begin_transaction(components::session::session_id_t session) {
         trace(log_, "manager_dispatcher_t::begin_transaction, session: {}", session.data());
         auto& txn = txn_manager_.begin_transaction(session);
-        // Pin the session's plan-cache view to the most recently observed catalog version.
-        // Subsequent execute_plan calls on this session will probe at the pinned version,
-        // so DDL committed by other sessions (which bumps catalog_version_) doesn't change
-        // the schema view of this in-flight txn.
-        plan_cache_.pin_version(session, last_seen_version_);
         co_return txn.data();
     }
 
     manager_dispatcher_t::unique_future<uint64_t>
     manager_dispatcher_t::commit_transaction(components::session::session_id_t session) {
         trace(log_, "manager_dispatcher_t::commit_transaction, session: {}", session.data());
-        // Capture txn_data before commit() removes the transaction from the active set.
-        components::table::transaction_data txn_data{0, 0};
-        if (auto* txn = txn_manager_.find_transaction(session)) {
-            txn_data = txn->data();
+
+        // Phase 4 #56 — go through the operator pipeline instead of inline
+        // txn_manager + disk sends. The leaf node carries no fields; the
+        // operator reads txn_manager / disk_address / session off the
+        // pipeline::context_t we build here. Mirrors the get_schema #54 and
+        // register_udf #55 migrations.
+        auto plan = boost::intrusive_ptr(
+            new components::logical_plan::node_commit_transaction_t(resource()));
+
+        services::context_storage_t cstor{resource(), log_.clone()};
+        components::compute::function_registry_t fn_registry;
+        auto op = services::planner::create_plan(
+            cstor, fn_registry, plan,
+            components::logical_plan::limit_t::unlimit(),
+            /*params=*/nullptr);
+        if (!op) {
+            // Should not happen — create_plan_commit_transaction is unconditional.
+            co_return 0;
         }
-        plan_cache_.unpin_version(session);
-        const uint64_t commit_id = txn_manager_.commit(session);
-        // Flip MVCC state on pg_catalog rows appended under this explicit transaction.
-        // Mirrors the auto-commit path in execute_ddl().
-        if (txn_data.transaction_id != 0 && commit_id > 0
-            && disk_address_ != actor_zeta::address_t::empty_address()) {
-            components::execution_context_t cpa_ctx{session, txn_data, {}};
-            auto [_cpa, cpaf] = actor_zeta::send(disk_address_,
-                                                  &disk::manager_disk_t::commit_pg_catalog_appends,
-                                                  cpa_ctx, commit_id);
-            co_await std::move(cpaf);
+        op->set_as_root();
+
+        components::logical_plan::storage_parameters params(resource());
+        components::pipeline::context_t pctx{session,
+                                              actor_zeta::address_t::empty_address(),
+                                              actor_zeta::address_t::empty_address(),
+                                              &fn_registry,
+                                              params};
+        pctx.disk_address = disk_address_;
+        pctx.txn_manager = &txn_manager_;
+        // txn snapshot is unused by the operator (it re-reads via find_transaction)
+        // but carry a sane default so any nested debug logs see a zero value.
+        pctx.txn = components::table::transaction_data{0, 0};
+
+        op->prepare();
+        op->on_execute(&pctx);
+        while (!op->is_executed()) {
+            auto waiting = op->find_waiting_operator();
+            if (!waiting) {
+                break;
+            }
+            co_await waiting->await_async_and_resume(&pctx);
+            op->on_execute(&pctx);
         }
-        co_return commit_id;
+        if (pctx.has_pending_disk_futures()) {
+            auto futures = pctx.take_pending_disk_futures();
+            for (auto& f : futures) {
+                co_await std::move(f);
+            }
+        }
+
+        auto* commit_op =
+            static_cast<components::operators::operator_commit_transaction_t*>(op.get());
+        co_return commit_op->commit_id();
     }
 
     manager_dispatcher_t::unique_future<void>
     manager_dispatcher_t::abort_transaction(components::session::session_id_t session) {
         trace(log_, "manager_dispatcher_t::abort_transaction, session: {}", session.data());
-        // Capture txn_data before abort() removes the transaction.
-        components::table::transaction_data txn_data{0, 0};
-        if (auto* txn = txn_manager_.find_transaction(session)) {
-            txn_data = txn->data();
-        }
-        plan_cache_.unpin_version(session);
-        txn_manager_.abort(session);
-        // Revert any pg_catalog rows appended under this transaction (DDL rollback).
-        if (txn_data.transaction_id != 0
-            && disk_address_ != actor_zeta::address_t::empty_address()) {
-            components::execution_context_t revert_ctx{session, txn_data, {}};
-            auto [_r, rf] = actor_zeta::send(disk_address_,
-                                              &disk::manager_disk_t::revert_pg_catalog_appends,
-                                              revert_ctx);
-            co_await std::move(rf);
-        }
-        co_return;
-    }
 
-    // M5: pull recent invalidation events from disk, advance last_seen_version_, and on
-    // overflow reset the entire plan cache. Called at the start of every execute_plan
-    // before validating + executing the plan. The disk-side ring buffer's snapshot_t carries
-    // both the latest version and overflow flag; we honor the latter wholesale.
-    manager_dispatcher_t::unique_future<void>
-    manager_dispatcher_t::refresh_invalidations_(components::session::session_id_t session) {
-        if (disk_address_ == actor_zeta::address_t::empty_address()) {
+        // Phase 4 #56 — operator-pipeline replacement (mirrors commit above).
+        auto plan = boost::intrusive_ptr(
+            new components::logical_plan::node_abort_transaction_t(resource()));
+
+        services::context_storage_t cstor{resource(), log_.clone()};
+        components::compute::function_registry_t fn_registry;
+        auto op = services::planner::create_plan(
+            cstor, fn_registry, plan,
+            components::logical_plan::limit_t::unlimit(),
+            /*params=*/nullptr);
+        if (!op) {
             co_return;
         }
-        auto [_inv, invf] = actor_zeta::send(disk_address_,
-                                              &disk::manager_disk_t::recent_invalidations_since,
-                                              session,
-                                              last_seen_version_);
-        auto snap = co_await std::move(invf);
-        if (snap.overflow) {
-            // Consumer fell more than CAPACITY events behind — reset cache wholesale.
-            plan_cache_.clear();
+        op->set_as_root();
+
+        components::logical_plan::storage_parameters params(resource());
+        components::pipeline::context_t pctx{session,
+                                              actor_zeta::address_t::empty_address(),
+                                              actor_zeta::address_t::empty_address(),
+                                              &fn_registry,
+                                              params};
+        pctx.disk_address = disk_address_;
+        pctx.txn_manager = &txn_manager_;
+        pctx.txn = components::table::transaction_data{0, 0};
+
+        op->prepare();
+        op->on_execute(&pctx);
+        while (!op->is_executed()) {
+            auto waiting = op->find_waiting_operator();
+            if (!waiting) {
+                break;
+            }
+            co_await waiting->await_async_and_resume(&pctx);
+            op->on_execute(&pctx);
         }
-        if (snap.latest_version > last_seen_version_) {
-            last_seen_version_ = snap.latest_version;
+        if (pctx.has_pending_disk_futures()) {
+            auto futures = pctx.take_pending_disk_futures();
+            for (auto& f : futures) {
+                co_await std::move(f);
+            }
         }
         co_return;
     }

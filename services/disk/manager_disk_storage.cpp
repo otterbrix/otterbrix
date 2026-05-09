@@ -228,15 +228,6 @@ namespace services::disk {
         co_return s->total_rows();
     }
 
-    manager_disk_t::unique_future<uint64_t> manager_disk_t::storage_calculate_size(session_id_t /*session*/,
-                                                                                   collection_full_name_t name) {
-        auto* s = get_storage(name);
-        if (!s) {
-            co_return 0;
-        }
-        co_return s->calculate_size();
-    }
-
     // --- Storage data operations ---
 
     manager_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
@@ -298,6 +289,68 @@ namespace services::disk {
         // 1. Schema adoption
         if (!s->has_schema() && data->column_count() > 0) {
             s->adopt_schema(data->types());
+        }
+
+        // 1b. Dynamic schema growth for IN_MEMORY storages (relkind='g' computing tables).
+        //
+        // Bug #96: data_table_t::adopt_schema is one-shot — it asserts the table is
+        // schema-less and seeds column_definitions_ from the first incoming chunk.
+        // Subsequent INSERTs that bring NEW columns (Phase 7 dynamic-schema growth via
+        // pg_computed_column) used to silently drop those columns at step 2 below
+        // (the matching loop only iterates current table_columns).
+        //
+        // Fix: detect incoming columns whose alias is NOT in the current schema and
+        // extend the storage with each one. table_storage_t::add_column rebuilds
+        // data_table_t via the (parent, new_column) constructor — collection_t::add_column
+        // (collection.cpp:394) constructs new row_groups with default-zeroed values for
+        // the new column on existing rows, which serves as NULL-equivalent semantics for
+        // pre-existing tuples (see collection.cpp:404-411 comment).
+        //
+        // Only IN_MEMORY (relkind='g'): for DISK-backed tables the schema is fixed at
+        // CREATE TABLE and pg_attribute owns the canonical layout — silently growing
+        // the on-disk schema here would desync from pg_attribute. relkind='r' user
+        // tables shouldn't see incoming-not-in-current in practice anyway, since the
+        // planner builds chunks from resolve_table.columns.
+        //
+        // Persistence note: add_column is memory-only. Computing tables (relkind='g')
+        // start schema-less on restart and re-adopt on the first INSERT.
+        // The catalog source-of-truth lives in pg_computed_column, maintained by
+        // operator_computed_field_register before storage_append runs.
+        if (s->has_schema() && data->column_count() > 0) {
+            auto it = storages_.find(name);
+            if (it != storages_.end() && it->second->table_storage.mode() == storage_mode_t::IN_MEMORY) {
+                std::vector<components::table::column_definition_t> new_columns;
+                for (uint64_t col = 0; col < data->column_count(); col++) {
+                    if (!data->data[col].type().has_alias()) {
+                        continue;
+                    }
+                    const auto alias = data->data[col].type().alias();
+                    bool present = false;
+                    for (const auto& tc : s->columns()) {
+                        if (tc.name() == alias) {
+                            present = true;
+                            break;
+                        }
+                    }
+                    if (!present) {
+                        auto ct = data->data[col].type();
+                        ct.set_alias(alias);
+                        new_columns.emplace_back(alias, ct);
+                    }
+                }
+                if (!new_columns.empty()) {
+                    for (auto& col : new_columns) {
+                        it->second->add_column(col, resource());
+                    }
+                    // The adapter was rebuilt by entry->add_column; refresh s so the
+                    // remaining steps observe the expanded schema. get_storage uses the
+                    // (now updated) entry->storage.
+                    s = get_storage(name);
+                    if (!s) {
+                        co_return std::make_pair(uint64_t{0}, uint64_t{0});
+                    }
+                }
+            }
         }
 
         // 2. Column expansion — reorder/expand incoming data to match storage columns
@@ -502,6 +555,44 @@ namespace services::disk {
         auto* s = get_storage(ctx.name);
         if (s) {
             s->commit_all_deletes(ctx.txn.transaction_id, commit_id);
+        }
+        co_return;
+    }
+
+    manager_disk_t::unique_future<void>
+    manager_disk_t::storage_commit_appends(execution_context_t /*ctx*/,
+                                            uint64_t commit_id,
+                                            std::vector<components::pg_catalog_append_range_t> ranges) {
+        for (const auto& r : ranges) {
+            if (r.count == 0) continue;
+            auto* s = get_storage(r.name);
+            if (s) s->commit_append(commit_id, r.start_row, r.count);
+        }
+        co_return;
+    }
+
+    manager_disk_t::unique_future<void>
+    manager_disk_t::storage_commit_deletes(execution_context_t ctx,
+                                            uint64_t commit_id,
+                                            std::set<collection_full_name_t> tables) {
+        const auto txn_id = ctx.txn.transaction_id;
+        if (txn_id == 0) co_return;
+        for (const auto& tbl : tables) {
+            auto* s = get_storage(tbl);
+            if (s) s->commit_all_deletes(txn_id, commit_id);
+        }
+        co_return;
+    }
+
+    manager_disk_t::unique_future<void>
+    manager_disk_t::storage_revert_appends(execution_context_t /*ctx*/,
+                                            std::vector<components::pg_catalog_append_range_t> ranges) {
+        // Reverse order: matches the legacy MVCC revert behaviour
+        // and keeps row-id reuse semantics consistent.
+        for (auto it = ranges.rbegin(); it != ranges.rend(); ++it) {
+            if (it->count == 0) continue;
+            auto* s = get_storage(it->name);
+            if (s) s->revert_append(it->start_row, it->count);
         }
         co_return;
     }

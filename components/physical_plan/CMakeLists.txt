@@ -40,6 +40,22 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_primitive_write.cpp
         operators/operator_primitive_delete.cpp
         operators/operator_create_collection.cpp
+        operators/operator_create_index_metadata.cpp
+        operators/operator_create_index_backfill.cpp
+        operators/operator_drop_index.cpp
+        operators/operator_dynamic_cascade_delete.cpp
+        operators/operator_alter_column_add.cpp
+        operators/operator_alter_column_drop.cpp
+        operators/operator_alter_column_rename.cpp
+        operators/operator_checkpoint.cpp
+        operators/operator_vacuum.cpp
+        operators/operator_get_schema.cpp
+        operators/operator_register_udf.cpp
+        operators/operator_unregister_udf.cpp
+        operators/operator_commit_transaction.cpp
+        operators/operator_abort_transaction.cpp
+        operators/operator_computed_field_register.cpp
+        operators/operator_computed_field_unregister.cpp
 
         operators/arithmetic_eval.cpp
 )

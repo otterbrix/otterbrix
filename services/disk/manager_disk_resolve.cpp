@@ -10,18 +10,25 @@ namespace services::disk {
     manager_disk_t::resolve_namespace(execution_context_t /*ctx*/,
                                        std::string name,
                                        std::uint64_t /*since_version*/) {
-        resolve_counters_.resolve_namespace.fetch_add(1, std::memory_order_relaxed);
         resolve_namespace_result_t out(resource());
-        out.catalog_version = catalog_version_;
 
-        if (auto it = ns_name_to_oid_.find(name); it != ns_name_to_oid_.end()) {
-            out.found = true;
-            out.oid = it->second;
-            out.name = std::move(name);
+        // Scan pg_namespace: col 0 = oid, col 1 = nspname.
+        if (auto it = storages_.find(pg_namespace_name); it != storages_.end()) {
+            std::pmr::synchronized_pool_resource scan_resource;
+            inline_scan(it->second->table_storage.table(), {0, 1}, &scan_resource,
+                        [&](components::vector::data_chunk_t& chunk, uint64_t i) {
+                            auto oid_v = chunk.value(0, i);
+                            auto name_v = chunk.value(1, i);
+                            if (oid_v.is_null() || name_v.is_null())
+                                return true;
+                            if (name_v.value<std::string_view>() != name)
+                                return true;
+                            out.found = true;
+                            out.oid = static_cast<components::catalog::oid_t>(oid_v.value<std::uint32_t>());
+                            out.name = name;
+                            return false;
+                        });
         }
-        // Note: events list is intentionally left empty for now; consumers pass in their
-        // last-seen version and call recent_invalidations_since separately. M5 may inline
-        // this once the plan-cache contract solidifies.
         co_return out;
     }
 
@@ -30,46 +37,37 @@ namespace services::disk {
                                    components::catalog::oid_t namespace_oid,
                                    std::string name,
                                    std::uint64_t /*since_version*/) {
-        resolve_counters_.resolve_table.fetch_add(1, std::memory_order_relaxed);
         resolve_table_result_t out(resource());
-        out.catalog_version = catalog_version_;
         out.namespace_oid = namespace_oid;
 
-        // O(1) lookup in table_to_oid_ index (populated by DDL and rebuild_lookup_indexes).
-        if (auto it = table_to_oid_.find(ns_table_key_t{namespace_oid, name}); it != table_to_oid_.end()) {
-            out.found = true;
-            out.oid = it->second.oid;
-            out.relkind = it->second.relkind;
-            out.name = name;
+        // Scan pg_class: col 0 = oid, col 1 = relname, col 2 = relnamespace, col 3 = relkind.
+        if (auto it = storages_.find(pg_class_name); it != storages_.end()) {
+            std::pmr::synchronized_pool_resource scan_resource;
+            inline_scan(it->second->table_storage.table(), {0, 1, 2, 3}, &scan_resource,
+                        [&](components::vector::data_chunk_t& chunk, uint64_t i) {
+                            auto ns_v = chunk.value(2, i);
+                            if (ns_v.is_null())
+                                return true;
+                            if (static_cast<components::catalog::oid_t>(ns_v.value<std::uint32_t>()) != namespace_oid)
+                                return true;
+                            auto name_v = chunk.value(1, i);
+                            if (name_v.is_null() || name_v.value<std::string_view>() != name)
+                                return true;
+                            out.found = true;
+                            out.oid = static_cast<components::catalog::oid_t>(
+                                chunk.value(0, i).value<std::uint32_t>());
+                            out.name = name;
+                            auto kind_v = chunk.value(3, i);
+                            if (!kind_v.is_null()) {
+                                auto ks = kind_v.value<std::string_view>();
+                                if (!ks.empty()) out.relkind = ks.front();
+                            }
+                            return false;
+                        });
         }
 
         if (!out.found) {
             co_return out;
-        }
-
-        // If this is a DISK-backed regular relation whose storage hasn't been instantiated
-        // yet, load it from disk now. Skips computing tables (relkind='g') and indexes
-        // (relkind='i') — they don't have a .otbx file.
-        if (out.relkind == catalog::relkind::regular && !config_.path.empty()) {
-            // O(1) reverse lookup: namespace OID → namespace name.
-            if (auto ns_it = ns_oid_to_name_.find(namespace_oid); ns_it != ns_oid_to_name_.end()) {
-                const auto& ns_name = ns_it->second;
-                collection_full_name_t coll_name{ns_name, name};
-                if (storages_.find(coll_name) == storages_.end()) {
-                    auto otbx_path = config_.path / ns_name / "main" / name / "table.otbx";
-                    if (std::filesystem::exists(otbx_path)) {
-                        try {
-                            load_storage_disk_sync(coll_name, otbx_path);
-                        } catch (const std::exception& e) {
-                            warn(log_,
-                                 "resolve_table lazy-load failed for {}/{}: {}",
-                                 ns_name,
-                                 name,
-                                 e.what());
-                        }
-                    }
-                }
-            }
         }
 
         // Computing tables (relkind='g') store columns in pg_computed_column
@@ -190,11 +188,21 @@ namespace services::disk {
     // against pg_class with relkind='c' / 'd'). Splitting this out as sync (no
     // unique_future) lets us self-recurse without cross-actor co_await, which doesn't
     // work from within an actor's own coroutine.
+    //
+    // KEPT (task #78, 2026-05-09): the §"Чистка manager_disk DELETE" plan listed this
+    // for removal, but inspection confirmed it is a strictly internal helper — no
+    // external callers exist outside manager_disk_resolve.cpp (verified by
+    //   grep -rn "resolve_type_sync" services/ components/ integration/
+    // — only sites are this definition, the recursion at the STRUCT-field branch, and
+    // the resolve_type wrapper). Deletion would require either inlining the body into
+    // resolve_type AND duplicating it for the recursion site, or introducing
+    // cross-actor co_await against ourselves (impossible). Keeping is correct: the
+    // plan's intent was deleting external bypass paths of the actor protocol, not
+    // private impl helpers.
     resolve_type_result_t
     manager_disk_t::resolve_type_sync(components::catalog::oid_t namespace_oid,
                                        const std::string& name) {
         resolve_type_result_t out(resource());
-        out.catalog_version = catalog_version_;
         out.namespace_oid = namespace_oid;
 
         auto it = storages_.find(pg_type_name);
@@ -329,7 +337,6 @@ namespace services::disk {
                                   components::catalog::oid_t namespace_oid,
                                   std::string name,
                                   std::uint64_t /*since_version*/) {
-        resolve_counters_.resolve_type.fetch_add(1, std::memory_order_relaxed);
         co_return resolve_type_sync(namespace_oid, name);
     }
 
@@ -338,9 +345,7 @@ namespace services::disk {
                                       components::catalog::oid_t namespace_oid,
                                       std::string name,
                                       std::uint64_t /*since_version*/) {
-        resolve_counters_.resolve_function.fetch_add(1, std::memory_order_relaxed);
         resolve_function_result_t out(resource());
-        out.catalog_version = catalog_version_;
         out.namespace_oid = namespace_oid;
 
         auto it = storages_.find(pg_proc_name);
@@ -384,7 +389,6 @@ namespace services::disk {
     manager_disk_t::resolve_function_by_name(execution_context_t /*ctx*/,
                                               std::string name,
                                               std::uint64_t /*since_version*/) {
-        resolve_counters_.resolve_function_by_name.fetch_add(1, std::memory_order_relaxed);
         std::pmr::vector<resolve_function_result_t> out(resource());
         auto it = storages_.find(pg_proc_name);
         if (it == storages_.end()) {
@@ -399,7 +403,6 @@ namespace services::disk {
                             return true;
                         resolve_function_result_t r(resource());
                         r.found = true;
-                        r.catalog_version = catalog_version_;
                         r.name = name;
                         r.oid = static_cast<components::catalog::oid_t>(
                             chunk.value(0, i).value<std::uint32_t>());
@@ -484,11 +487,6 @@ namespace services::disk {
         co_return out;
     }
 
-    manager_disk_t::unique_future<invalidation_ring_buffer_t::snapshot_t>
-    manager_disk_t::recent_invalidations_since(session_id_t /*session*/, std::uint64_t since_version) {
-        co_return invalidations_.since(since_version);
-    }
-
     // ========================================================================
     // populate_catalog_snapshot retired (V4): catalog_view_t serves all per-name lookups,
     // and dispatcher's collections_ rebuild uses list_namespaces +
@@ -558,69 +556,6 @@ namespace services::disk {
     }
 
     // ---------------------------------------------------------------------------
-    // point_lookup_by_index — look up first matching row via pg_index metadata.
-    // Falls back to a sequential scan (no real B-tree yet).
-    // ---------------------------------------------------------------------------
-
-    manager_disk_t::unique_future<std::optional<std::int64_t>>
-    manager_disk_t::point_lookup_by_index(execution_context_t ctx,
-                                           components::catalog::oid_t index_oid,
-                                           std::vector<components::types::logical_value_t> key_values) {
-        // 1. Find pg_index row for this index_oid.
-        components::types::logical_value_t idx_lv(resource(), index_oid);
-        auto idx_rows = co_await read_rows_by_key(ctx, pg_index_name,
-                                                   {"indexrelid"},
-                                                   {std::move(idx_lv)});
-        if (idx_rows.empty()) co_return std::nullopt;
-        const auto& idx_row = idx_rows[0];
-        if (idx_row.size() < 4) co_return std::nullopt;
-        if (!idx_row[3].is_null() && !idx_row[3].value<bool>()) co_return std::nullopt; // indisvalid=false
-        if (idx_row[1].is_null() || idx_row[2].is_null()) co_return std::nullopt;
-        const auto indrelid     = static_cast<catalog::oid_t>(idx_row[1].value<std::uint32_t>());
-        const auto indkey_csv   = std::string(idx_row[2].value<std::string_view>());
-
-        // 2. Parse indkey CSV to get ordered attoid list.
-        const auto attoids = catalog::parse_oid_csv(indkey_csv);
-        if (attoids.empty() || attoids.size() != key_values.size()) co_return std::nullopt;
-
-        // 3. Find collection name for indrelid via reverse lookup.
-        auto key_it = table_oid_to_key_.find(indrelid);
-        if (key_it == table_oid_to_key_.end()) co_return std::nullopt;
-        const auto& [ns_oid, tbl_name] = key_it->second;
-        auto ns_name_it = ns_oid_to_name_.find(ns_oid);
-        if (ns_name_it == ns_oid_to_name_.end()) co_return std::nullopt;
-        collection_full_name_t tbl_full{ns_name_it->second, "", tbl_name};
-        if (storages_.find(tbl_full) == storages_.end())
-            tbl_full = {"", ns_name_it->second, tbl_name};
-
-        // 4. pg_attribute rows for indrelid → attoid→name map.
-        components::types::logical_value_t rel_lv(resource(), indrelid);
-        auto att_rows = co_await read_rows_by_key(ctx, pg_attribute_name,
-                                                   {"attrelid"},
-                                                   {std::move(rel_lv)});
-        std::unordered_map<catalog::oid_t, std::string> attoid_to_name;
-        for (const auto& row : att_rows) {
-            if (row.size() < 3 || row[0].is_null() || row[2].is_null()) continue;
-            attoid_to_name[static_cast<catalog::oid_t>(row[0].value<std::uint32_t>())] =
-                std::string(row[2].value<std::string_view>());
-        }
-
-        // 5. Map attoids → column names in indkey order.
-        std::vector<std::string> col_names;
-        col_names.reserve(attoids.size());
-        for (auto ao : attoids) {
-            auto nm_it = attoid_to_name.find(ao);
-            if (nm_it == attoid_to_name.end()) co_return std::nullopt;
-            col_names.push_back(nm_it->second);
-        }
-
-        // 6. scan_by_key on the user table.
-        auto row_ids = co_await scan_by_key(ctx, tbl_full, std::move(col_names), std::move(key_values));
-        if (row_ids.empty()) co_return std::nullopt;
-        co_return row_ids[0];
-    }
-
-    // ---------------------------------------------------------------------------
     // read_rows_by_key — full row-data variant of scan_by_key.
     // ---------------------------------------------------------------------------
 
@@ -680,16 +615,47 @@ namespace services::disk {
                                         std::vector<std::string> key_col_names,
                                         std::vector<components::types::logical_value_t> key_values) {
         std::pmr::vector<std::int64_t> out(resource());
-        auto key_it = table_oid_to_key_.find(table_oid);
-        if (key_it == table_oid_to_key_.end()) co_return out;
 
-        const auto& [ns_oid, tbl_name] = key_it->second;
-        auto ns_it = ns_oid_to_name_.find(ns_oid);
-        if (ns_it == ns_oid_to_name_.end()) co_return out;
+        // Resolve table_oid → (ns_name, tbl_name) via pg_class + pg_namespace scan.
+        std::string tbl_name;
+        components::catalog::oid_t ns_oid = components::catalog::INVALID_OID;
+        if (auto cls_it = storages_.find(pg_class_name); cls_it != storages_.end()) {
+            std::pmr::synchronized_pool_resource scan_resource;
+            inline_scan(cls_it->second->table_storage.table(), {0, 1, 2}, &scan_resource,
+                        [&](components::vector::data_chunk_t& chunk, uint64_t i) {
+                            auto oid_v = chunk.value(0, i);
+                            if (oid_v.is_null()) return true;
+                            if (static_cast<components::catalog::oid_t>(oid_v.value<std::uint32_t>()) != table_oid)
+                                return true;
+                            auto name_v = chunk.value(1, i);
+                            auto ns_v = chunk.value(2, i);
+                            if (name_v.is_null() || ns_v.is_null()) return true;
+                            tbl_name = std::string(name_v.value<std::string_view>());
+                            ns_oid = static_cast<components::catalog::oid_t>(ns_v.value<std::uint32_t>());
+                            return false;
+                        });
+        }
+        if (tbl_name.empty()) co_return out;
 
-        collection_full_name_t full{ns_it->second, "", tbl_name};
+        std::string ns_name;
+        if (auto ns_st = storages_.find(pg_namespace_name); ns_st != storages_.end()) {
+            std::pmr::synchronized_pool_resource scan_resource;
+            inline_scan(ns_st->second->table_storage.table(), {0, 1}, &scan_resource,
+                        [&](components::vector::data_chunk_t& chunk, uint64_t i) {
+                            auto oid_v = chunk.value(0, i);
+                            if (oid_v.is_null()) return true;
+                            if (static_cast<components::catalog::oid_t>(oid_v.value<std::uint32_t>()) != ns_oid)
+                                return true;
+                            auto name_v = chunk.value(1, i);
+                            if (!name_v.is_null()) ns_name = std::string(name_v.value<std::string_view>());
+                            return false;
+                        });
+        }
+        if (ns_name.empty()) co_return out;
+
+        collection_full_name_t full{ns_name, "", tbl_name};
         if (storages_.find(full) == storages_.end())
-            full = {"", ns_it->second, tbl_name};
+            full = {"", ns_name, tbl_name};
         out = co_await scan_by_key(ctx, std::move(full), std::move(key_col_names), std::move(key_values));
         co_return out;
     }

@@ -563,8 +563,8 @@ namespace services::index {
             }
         }
 
-        // Rebuild will be triggered by executor sending scan data back
-        // (Phase 7G integration with dispatcher)
+        // Rebuild will be triggered by executor sending scan data to
+        // manager_index for index rebuild.
         trace(log_, "manager_index_t::rebuild_indexes: cleared indexes for {}", name.to_string());
 
         co_return;

@@ -58,8 +58,6 @@ namespace components::catalog {
     //                       `prorettype` is encoded as a list of output_type tags, not a single
     //                       OID, to support same_type_at_index resolution. `prouid` carries the
     //                       opaque function_uid the executor produced via register_udf.
-    //   pg_depend         — no `objsubid`/`refobjsubid` (column-level dependencies are not
-    //                       tracked by dependency_walker yet — whole-object only).
     //   pg_constraint     — no `conindid` (constraint→supporting-index linkage isn't consumed)
     //                       and no `conexpr` (CHECK-expression text — CHECK constraints are
     //                       not yet validated through pg_constraint). Carries FK semantics
@@ -109,21 +107,17 @@ namespace components::catalog {
     types::complex_logical_type decode_type_spec(std::pmr::memory_resource* resource,
                                                   const std::string& spec);
 
-    // Encode/decode the per-arg `input_type` tagged matcher to a flat text format suitable
+    // Encode the per-arg `input_type` tagged matcher to a flat text format suitable
     // for pg_proc.proargmatchers. Format per arg: "e:N" exact, "n" numeric, "i" integer,
     // "f" floating, "a:N1,N2,..." any_of, "t" always_true, where N is numeric value of
     // types::logical_type. Multiple args are pipe-separated. Empty input vector → "".
-    // decode_proargmatchers returns an empty vector on malformed/empty input — populate
-    // falls back to placeholder always_true matchers in that case.
     std::string encode_proargmatchers(const std::vector<components::compute::input_type>& matchers);
-    std::vector<components::compute::input_type> decode_proargmatchers(const std::string& spec);
 
-    // Encode/decode output_type list to a flat text format. Per output: "f:N" fixed type
+    // Encode output_type list to a flat text format. Per output: "f:N" fixed type
     // (N = logical_type id), "s:N" same_type_at_index N. Multiple outputs are comma-
     // separated. computed_fn outputs are encoded as "s:0" — lossy but the common case is
     // identity, and the resolver isn't reproducible across persistence anyway.
     std::string encode_prorettype(const std::vector<components::compute::output_type>& outputs);
-    std::vector<components::compute::output_type> decode_prorettype(const std::string& spec);
 
     // Return the canonical pg_type.typname for a built-in logical_type (e.g. INTEGER →
     // "int4", BIGINT → "int8"). Returns "" for DECIMAL, UNKNOWN, and complex types —

@@ -48,6 +48,42 @@ namespace components::logical_plan {
         // DDL primitive write/delete (planner-built pg_catalog rows)
         primitive_write_t,
         primitive_delete_t,
+        // ALTER TABLE per-clause primitives (planner-rewritten from alter_table_t)
+        alter_column_add_t,
+        alter_column_rename_t,
+        alter_column_drop_t,
+        // Universal cascade-delete driver (planner-emitted): walks pg_depend
+        // at runtime starting from a (classid, oid) seed and deletes the
+        // transitive closure. Subsumes the dispatcher BFS in execute_ddl.
+        dynamic_cascade_delete_t,
+        // GET_SCHEMA (Phase 4 #54): self-resolving leaf that returns one
+        // complex_logical_type per (database, collection) id by reading
+        // pg_namespace+pg_class+pg_attribute through the operator pipeline
+        // instead of via inline catalog_view_t reads.
+        get_schema_t,
+        // REGISTER_UDF / UNREGISTER_UDF (Phase 4 #55): operator-pipeline
+        // replacement for inline manager_dispatcher_t::{register,unregister}_udf.
+        // Carries the UDF function payload (or name + arg-type signature for
+        // unregister); the operator fans out to per-executor registries, the
+        // global default function_registry_t, and pg_proc.
+        register_udf_t,
+        unregister_udf_t,
+        // COMMIT / ROLLBACK (Phase 4 #56): operator-pipeline replacement for
+        // inline manager_dispatcher_t::{commit,abort}_transaction. The leaf
+        // node carries no fields (session is on pipeline::context_t); the
+        // operator drives txn_manager.commit/abort + pg_catalog MVCC swap on
+        // disk via storage_commit_appends / storage_revert_appends.
+        commit_transaction_t,
+        abort_transaction_t,
+        // COMPUTED_FIELD_REGISTER / COMPUTED_FIELD_UNREGISTER (Phase 7.1):
+        // pipeline operators that maintain pg_computed_column rows for
+        // relkind='g' (Mongo-style dynamic-schema) tables. The register
+        // variant runs after an INSERT and adds rows for any newly-seen
+        // columns (or bumps attversion on type evolution); the unregister
+        // variant appends a refcount=0 tombstone for one column. Wiring
+        // into the dispatcher happens in P7.2.
+        computed_field_register_t,
+        computed_field_unregister_t,
         unused
     };
 

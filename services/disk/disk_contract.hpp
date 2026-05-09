@@ -4,12 +4,14 @@
 #include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/detail/future.hpp>
 #include <optional>
+#include <set>
 #include <utility>
 #include <vector>
 
 #include <components/base/collection_full_name.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/context/execution_context.hpp>
+#include <components/context/pg_catalog_swap.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/physical_plan/operators/operator_write_data.hpp>
@@ -20,7 +22,6 @@
 #include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <services/disk/ddl_result.hpp>
-#include <services/disk/invalidation_ring_buffer.hpp>
 #include <services/disk/resolve_result.hpp>
 #include <services/wal/base.hpp>
 
@@ -40,23 +41,7 @@ namespace services::disk {
         actor_zeta::unique_future<void> vacuum_all(session_id_t session, uint64_t lowest_active_start_time);
         actor_zeta::unique_future<void> maybe_cleanup(execution_context_t ctx, uint64_t lowest_active_start_time);
 
-        // DDL pipeline — kept methods only
-        actor_zeta::unique_future<ddl_result_t>
-        ddl_adopt_computing_schema(execution_context_t ctx,
-                                    components::catalog::oid_t table_oid,
-                                    std::vector<components::table::column_definition_t> columns);
-        actor_zeta::unique_future<ddl_result_t>
-        ddl_computed_append(execution_context_t ctx,
-                            components::catalog::oid_t table_oid,
-                            std::string field_name,
-                            components::catalog::oid_t type_oid);
-        actor_zeta::unique_future<ddl_result_t>
-        ddl_computed_drop(execution_context_t ctx,
-                          components::catalog::oid_t table_oid,
-                          std::string field_name);
-        actor_zeta::unique_future<ddl_result_t>
-        ddl_add_column(execution_context_t ctx, components::catalog::oid_t table_oid,
-                       components::table::column_definition_t column);
+        // ddl_add_column / ddl_adopt_computing_schema replaced by pipeline operators.
 
         actor_zeta::unique_future<resolve_namespace_result_t>
         resolve_namespace(execution_context_t ctx, std::string name, std::uint64_t since_version);
@@ -73,19 +58,10 @@ namespace services::disk {
         actor_zeta::unique_future<std::pmr::vector<std::pair<components::catalog::oid_t, std::string>>>
         list_tables_in_namespace(execution_context_t ctx, components::catalog::oid_t namespace_oid);
 
-        actor_zeta::unique_future<invalidation_ring_buffer_t::snapshot_t>
-        recent_invalidations_since(session_id_t session, std::uint64_t since_version);
-
-        actor_zeta::unique_future<void>
-        commit_pg_catalog_appends(execution_context_t ctx, std::uint64_t commit_id);
-
-        actor_zeta::unique_future<void>
-        revert_pg_catalog_appends(execution_context_t ctx);
-
         actor_zeta::unique_future<std::vector<components::catalog::oid_t>>
         allocate_oids_batch(std::size_t count);
 
-        actor_zeta::unique_future<void>
+        actor_zeta::unique_future<components::pg_catalog_append_range_t>
         append_pg_catalog_row(execution_context_t ctx,
                               collection_full_name_t name,
                               components::vector::data_chunk_t row);
@@ -104,14 +80,6 @@ namespace services::disk {
                     collection_full_name_t name,
                     std::vector<std::string> key_col_names,
                     std::vector<components::types::logical_value_t> key_values);
-
-        // Index-based lookup: find first txn-visible row in the table indexed by
-        // `index_oid` where indexed columns == key_values (in indkey order).
-        // Returns nullopt when collection unknown, no match, or indisvalid=false.
-        actor_zeta::unique_future<std::optional<std::int64_t>>
-        point_lookup_by_index(execution_context_t ctx,
-                              components::catalog::oid_t index_oid,
-                              std::vector<components::types::logical_value_t> key_values);
 
         // Pure row-data scan: returns the full column values for every txn-visible row
         // in `name` where key_col_names[i] == key_values[i].  Same filter semantics as
@@ -132,6 +100,19 @@ namespace services::disk {
                           std::vector<std::string> key_col_names,
                           std::vector<components::types::logical_value_t> key_values);
 
+        // Phase 7.5b — physical column compaction for an IN_MEMORY relkind='g'
+        // table_storage_t. Drops every storage column whose name is NOT in
+        // `live_attnames` (the resolver-visible attname set after pg_computed_column
+        // GC). Returns the number of columns dropped (0 if storage is DISK-mode,
+        // unknown, or already compact). DISK-backed storages are silently skipped —
+        // segment rewrites + checkpoint coordination are out of scope for 7.5b.
+        // Called by operator_vacuum_t step 5b. Mirrors the existing compaction
+        // primitive's name-keyed addressing (operator_vacuum already maps oid→name).
+        actor_zeta::unique_future<std::uint64_t>
+        compact_relkind_g_storage(execution_context_t ctx,
+                                   collection_full_name_t name,
+                                   std::set<std::string> live_attnames);
+
         // Storage management
         actor_zeta::unique_future<void> create_storage(session_id_t session, collection_full_name_t name);
         actor_zeta::unique_future<void>
@@ -148,7 +129,6 @@ namespace services::disk {
         actor_zeta::unique_future<std::pmr::vector<components::types::complex_logical_type>>
         storage_types(session_id_t session, collection_full_name_t name);
         actor_zeta::unique_future<uint64_t> storage_total_rows(session_id_t session, collection_full_name_t name);
-        actor_zeta::unique_future<uint64_t> storage_calculate_size(session_id_t session, collection_full_name_t name);
         // Storage data operations
         actor_zeta::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
         storage_scan(session_id_t session,
@@ -181,6 +161,19 @@ namespace services::disk {
         storage_revert_append(execution_context_t ctx, int64_t row_start, uint64_t count);
         actor_zeta::unique_future<void> storage_commit_delete(execution_context_t ctx, uint64_t commit_id);
 
+        // Phase 5b: batched MVCC swap.
+        actor_zeta::unique_future<void>
+        storage_commit_appends(execution_context_t ctx,
+                               uint64_t commit_id,
+                               std::vector<components::pg_catalog_append_range_t> ranges);
+        actor_zeta::unique_future<void>
+        storage_commit_deletes(execution_context_t ctx,
+                               uint64_t commit_id,
+                               std::set<collection_full_name_t> tables);
+        actor_zeta::unique_future<void>
+        storage_revert_appends(execution_context_t ctx,
+                               std::vector<components::pg_catalog_append_range_t> ranges);
+
         using dispatch_traits = actor_zeta::dispatch_traits<&disk_contract::flush,
                                                             &disk_contract::checkpoint_all,
                                                             &disk_contract::vacuum_all,
@@ -193,7 +186,6 @@ namespace services::disk {
                                                             // Storage queries
                                                             &disk_contract::storage_types,
                                                             &disk_contract::storage_total_rows,
-                                                            &disk_contract::storage_calculate_size,
                                                             // Storage data operations
                                                             &disk_contract::storage_scan,
                                                             &disk_contract::storage_fetch,
@@ -205,11 +197,9 @@ namespace services::disk {
                                                             &disk_contract::storage_commit_append,
                                                             &disk_contract::storage_revert_append,
                                                             &disk_contract::storage_commit_delete,
-                                                            // DDL pipeline
-                                                            &disk_contract::ddl_adopt_computing_schema,
-                                                            &disk_contract::ddl_computed_append,
-                                                            &disk_contract::ddl_computed_drop,
-                                                            &disk_contract::ddl_add_column,
+                                                            &disk_contract::storage_commit_appends,
+                                                            &disk_contract::storage_commit_deletes,
+                                                            &disk_contract::storage_revert_appends,
                                                             // resolve + invalidation pull
                                                             &disk_contract::resolve_namespace,
                                                             &disk_contract::resolve_table,
@@ -218,16 +208,13 @@ namespace services::disk {
                                                             &disk_contract::resolve_function_by_name,
                                                             &disk_contract::list_namespaces,
                                                             &disk_contract::list_tables_in_namespace,
-                                                            &disk_contract::recent_invalidations_since,
-                                                            &disk_contract::commit_pg_catalog_appends,
-                                                            &disk_contract::revert_pg_catalog_appends,
                                                             &disk_contract::allocate_oids_batch,
                                                             &disk_contract::append_pg_catalog_row,
                                                             &disk_contract::delete_pg_catalog_rows,
                                                             &disk_contract::scan_by_key,
-                                                            &disk_contract::point_lookup_by_index,
                                                             &disk_contract::read_rows_by_key,
-                                                            &disk_contract::scan_by_table_oid>;
+                                                            &disk_contract::scan_by_table_oid,
+                                                            &disk_contract::compact_relkind_g_storage>;
 
         disk_contract() = delete;
     };

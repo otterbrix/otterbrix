@@ -64,7 +64,7 @@ namespace components::table {
         uint64_t storage_oid_ = storage::INVALID_INDEX;
         uint64_t oid_ = storage::INVALID_INDEX;
         std::uint32_t attoid_{0}; // catalog::INVALID_OID; not included via header to avoid cycle.
-        std::uint32_t atttypid_{0}; // catalog::INVALID_OID; resolved by ddl_create_table.
+        std::uint32_t atttypid_{0}; // catalog::INVALID_OID; resolved by the CREATE TABLE pipeline.
         bool not_null_{false};
         std::optional<types::logical_value_t> default_value_;
         std::unordered_map<std::string, std::string> tags_;

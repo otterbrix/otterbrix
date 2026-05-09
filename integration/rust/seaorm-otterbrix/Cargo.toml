@@ -7,6 +7,7 @@ license = "BSD-3-Clause"
 
 [dependencies]
 async-trait = "0.1.89"
+log = { version = "0.4", default-features = false }
 otterbrix = { version = "0.1.0", path = "../otterbrix" }
 sea-orm = { version = "1.1.20", default-features = false, features = ["proxy", "runtime-tokio-rustls"] }
 tokio = { version = "1", default-features = false, features = ["rt", "macros"] }

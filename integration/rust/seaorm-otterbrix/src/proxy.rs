@@ -34,6 +34,9 @@ fn map_join_error(err: tokio::task::JoinError) -> DbErr {
     )))
 }
 
+const TX_UNSUPPORTED_LOG: &str =
+    "User transactions are not supported on Otterbrix (proxy no-op).";
+
 #[async_trait]
 impl ProxyDatabaseTrait for OtterbrixProxy {
     async fn query(&self, statement: Statement) -> Result<Vec<ProxyRow>, DbErr> {
@@ -77,4 +80,18 @@ impl ProxyDatabaseTrait for OtterbrixProxy {
         .await
         .map_err(map_join_error)?
     }
+
+    async fn begin(&self) {
+        log::warn!(target: "seaorm_otterbrix", "{}", TX_UNSUPPORTED_LOG);
+    }
+
+    async fn commit(&self) {
+        log::warn!(target: "seaorm_otterbrix", "{}", TX_UNSUPPORTED_LOG);
+    }
+
+    async fn rollback(&self) {
+        log::warn!(target: "seaorm_otterbrix", "{}", TX_UNSUPPORTED_LOG);
+    }
+
+    fn start_rollback(&self) {}
 }

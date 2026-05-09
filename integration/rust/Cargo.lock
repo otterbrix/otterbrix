@@ -1517,6 +1517,7 @@ name = "seaorm-otterbrix"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "log",
  "otterbrix",
  "sea-orm",
  "tempfile",

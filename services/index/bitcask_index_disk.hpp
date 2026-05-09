@@ -1,5 +1,6 @@
 #pragma once
 
+#include "bitcask_task_executor.hpp"
 #include "index_disk.hpp"
 
 #include <components/types/logical_value.hpp>
@@ -8,7 +9,9 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
+#include <memory>
 #include <memory_resource>
 #include <shared_mutex>
 #include <vector>
@@ -42,6 +45,7 @@ namespace services::index {
         void drop() override;
         void force_flush() override;
         void load_entries(entries_t& entries) const;
+        void enqueue_task(std::function<void()> task);
 
     private:
         enum class record_kind_t : uint8_t
@@ -94,6 +98,7 @@ namespace services::index {
         uint64_t active_segment_records_{0};
         uint64_t segment_record_limit_{default_segment_record_limit_};
         mutable std::shared_mutex mutex_;
+        std::unique_ptr<bitcask_task_executor_t> task_executor_;
     };
 
 } // namespace services::index

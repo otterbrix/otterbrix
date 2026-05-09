@@ -5,6 +5,9 @@
 #include <charconv>
 #include <cstring>
 #include <mutex>
+#include <iomanip>
+#include <sstream>
+#include <string_view>
 #include <shared_mutex>
 #include <stdexcept>
 #include <string_view>
@@ -24,6 +27,7 @@ namespace services::index {
     namespace {
         constexpr const char* segment_prefix = "bitcask.";
         constexpr const char* segment_suffix = ".data";
+        constexpr unsigned SEGMENT_ID_WIDTH = 6;
 
         struct record_header_t {
             uint32_t crc;
@@ -184,7 +188,7 @@ namespace services::index {
 
         std::filesystem::path segment_file_path(const std::filesystem::path& directory, uint64_t segment_id) {
             std::ostringstream oss;
-            oss << segment_prefix << std::setw(6) << std::setfill('0') << segment_id << segment_suffix;
+            oss << segment_prefix << std::setw(SEGMENT_ID_WIDTH) << std::setfill('0') << segment_id << segment_suffix;
             return directory / oss.str();
         }
 
@@ -242,13 +246,26 @@ namespace services::index {
         , file_(nullptr)
         , index_()
         , keydir_()
-        , segment_record_limit_(segment_record_limit) {
+        , next_timestamp_(0)
+        , active_segment_id_(0)
+        , active_segment_records_(0)
+        , segment_record_limit_(segment_record_limit)
+        , task_executor_(std::make_unique<bitcask_task_executor_t>()) {
         initialize_storage();
         load_from_disk();
         open_active_segment();
     }
 
-    bitcask_index_disk_t::~bitcask_index_disk_t() { force_flush(); }
+    bitcask_index_disk_t::~bitcask_index_disk_t() {
+        if (task_executor_) {
+            task_executor_->stop();
+        }
+        force_flush();
+    }
+
+    void bitcask_index_disk_t::enqueue_task(std::function<void()> task) {
+        task_executor_->enqueue(std::move(task));
+    }
 
     void bitcask_index_disk_t::initialize_storage() {
         if (!std::filesystem::exists(path_)) {
@@ -372,7 +389,6 @@ namespace services::index {
         active_segment_records_ = 0;
         active_data_file_path_ = segment_file_path(path_, active_segment_id_);
         open_active_segment();
-        merge_immutable_segments();
     }
 
     void bitcask_index_disk_t::rotate_active_segment_if_needed() {
@@ -382,11 +398,17 @@ namespace services::index {
     }
 
     void bitcask_index_disk_t::merge_immutable_segments() {
+
+        std::unique_lock lock(mutex_);
+        uint64_t last_active_segment_id = active_segment_id_;
+        std::map<value_t, keydir_entry_t, std::less<>> last_keydir = keydir_;
+        lock.unlock();
+
         auto segments = collect_segments();
         std::vector<segment_info_t> immutable_segments;
         immutable_segments.reserve(segments.size());
         for (const auto& segment : segments) {
-            if (segment.id != active_segment_id_) {
+            if (segment.id != last_active_segment_id) {
                 immutable_segments.push_back(segment);
             }
         }
@@ -417,9 +439,10 @@ namespace services::index {
         }
 
         std::vector<std::pair<value_t, keydir_entry_t>> live_entries;
-        live_entries.reserve(keydir_.size());
-        for (const auto& [key, entry] : keydir_) {
-            if (entry.segment_id == active_segment_id_) {
+
+        live_entries.reserve(last_keydir.size());
+        for (const auto& [key, entry] : last_keydir) {
+            if (entry.segment_id == last_active_segment_id) {
                 continue;
             }
             if (!segment_files.contains(entry.segment_id)) {
@@ -453,6 +476,7 @@ namespace services::index {
         merged_file->sync();
         merged_file.reset();
 
+        lock.lock();
         for (const auto& segment : immutable_segments) {
             remove_file(fs_, segment.path);
         }
@@ -462,7 +486,7 @@ namespace services::index {
 
         for (auto& [key, entry] : updated_entries) {
             auto keydir_it = keydir_.find(key);
-            if (keydir_it != keydir_.end()) {
+            if (keydir_it != keydir_.end() && keydir_it->second.segment_id != active_segment_id_) {
                 keydir_it->second = entry;
             }
         }
@@ -598,6 +622,9 @@ namespace services::index {
     void bitcask_index_disk_t::force_flush_unlocked() {
         if (is_dirty() && file_) {
             file_->sync();
+            enqueue_task([this]() {
+                merge_immutable_segments();
+            });
             reset_flush_state();
         }
     }
@@ -661,8 +688,15 @@ namespace services::index {
     }
 
     void bitcask_index_disk_t::drop() {
+        if (task_executor_) {
+            task_executor_->stop();
+        }
+
         std::unique_lock lock(mutex_);
-        force_flush_unlocked();
+        if (is_dirty() && file_) {
+            file_->sync();
+            reset_flush_state();
+        }
         file_.reset();
         index_.clear();
         keydir_.clear();
@@ -673,5 +707,4 @@ namespace services::index {
         active_data_file_path_.clear();
         remove_directory(fs_, path_);
     }
-
 } // namespace services::index

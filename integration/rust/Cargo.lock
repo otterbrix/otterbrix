@@ -1796,6 +1796,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "sqlx-otterbrix"
+version = "0.1.0"
+dependencies = [
+ "either",
+ "futures-core",
+ "futures-util",
+ "log",
+ "otterbrix",
+ "sqlx",
+ "sqlx-core",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "sqlx-postgres"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"

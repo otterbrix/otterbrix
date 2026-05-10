@@ -1519,6 +1519,7 @@ dependencies = [
  "async-trait",
  "log",
  "otterbrix",
+ "parking_lot",
  "sea-orm",
  "tempfile",
  "tokio",

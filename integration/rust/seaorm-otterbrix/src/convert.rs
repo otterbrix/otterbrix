@@ -8,6 +8,8 @@ use otterbrix::{
 };
 use sea_orm::{sea_query::Value as SeaValue, DbErr, ProxyRow, RuntimeErr, Statement, Values};
 
+const POSITIONAL_KEY_WIDTH: usize = 8;
+
 pub fn map_otterbrix_error(err: ObError) -> DbErr {
     match err {
         ObError::Query { code, message } => DbErr::Exec(RuntimeErr::Internal(format!(
@@ -104,10 +106,9 @@ fn null_for_type(column_type: Option<LogicalType>) -> SeaValue {
     }
 }
 
-/// Stable map key for column `index` when [`cursor_to_proxy_rows`] uses positional labels (duplicate column names in one result).
 #[must_use]
 pub fn positional_proxy_column_key(index: usize) -> String {
-    format!("{index:08}")
+    format!("{index:0width$}", width = POSITIONAL_KEY_WIDTH)
 }
 
 pub fn cursor_to_proxy_rows(cursor: &Cursor) -> Vec<ProxyRow> {
@@ -124,7 +125,7 @@ pub fn cursor_to_proxy_rows(cursor: &Cursor) -> Vec<ProxyRow> {
     let columns: Vec<(String, Option<LogicalType>)> = (0..column_count)
         .map(|i| {
             let key = if positional_keys {
-                format!("{i:08}")
+                positional_proxy_column_key(i as usize)
             } else {
                 cursor.column_name(i).unwrap_or_else(|| format!("col_{i}"))
             };
@@ -217,5 +218,215 @@ mod placeholder_tests {
             rewrite_placeholders("SELECT * FROM t LIMIT $1 OFFSET $2"),
             "SELECT * FROM t LIMIT $1 OFFSET $2"
         );
+    }
+}
+
+#[cfg(test)]
+mod error_mapping_tests {
+    use super::map_otterbrix_error;
+    use otterbrix::Error as ObError;
+    use sea_orm::DbErr;
+
+    #[test]
+    fn query_error_becomes_exec_with_code_and_message() {
+        let mapped = map_otterbrix_error(ObError::Query {
+            code: 7,
+            message: "syntax".into(),
+        });
+        match mapped {
+            DbErr::Exec(inner) => {
+                let s = format!("{inner:?}");
+                assert!(s.contains('7'), "expected error code in {s:?}");
+                assert!(s.contains("syntax"), "expected message in {s:?}");
+            }
+            other => panic!("expected DbErr::Exec, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn null_pointer_becomes_conn_error() {
+        match map_otterbrix_error(ObError::NullPointer) {
+            DbErr::Conn(inner) => {
+                let s = format!("{inner:?}");
+                assert!(s.contains("null pointer"), "got {s:?}");
+            }
+            other => panic!("expected DbErr::Conn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn invalid_path_becomes_conn_error() {
+        match map_otterbrix_error(ObError::InvalidPath("/no/such/path".into())) {
+            DbErr::Conn(inner) => {
+                let s = format!("{inner:?}");
+                assert!(s.contains("invalid path"), "got {s:?}");
+                assert!(s.contains("/no/such/path"), "got {s:?}");
+            }
+            other => panic!("expected DbErr::Conn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn type_mismatch_becomes_type_error() {
+        match map_otterbrix_error(ObError::TypeMismatch {
+            expected: "i64",
+            got: "string",
+        }) {
+            DbErr::Type(s) => {
+                assert!(s.contains("i64"), "got {s:?}");
+                assert!(s.contains("string"), "got {s:?}");
+            }
+            other => panic!("expected DbErr::Type, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod null_for_type_tests {
+    use super::null_for_type;
+    use otterbrix::{
+        LOGICAL_TYPE_BIGINT, LOGICAL_TYPE_BOOLEAN, LOGICAL_TYPE_DOUBLE, LOGICAL_TYPE_FLOAT,
+        LOGICAL_TYPE_INTEGER, LOGICAL_TYPE_SMALLINT, LOGICAL_TYPE_STRING_LITERAL,
+        LOGICAL_TYPE_TINYINT, LOGICAL_TYPE_UBIGINT, LOGICAL_TYPE_UINTEGER,
+        LOGICAL_TYPE_USMALLINT, LOGICAL_TYPE_UTINYINT,
+    };
+    use sea_orm::sea_query::Value as SeaValue;
+
+    #[test]
+    fn maps_known_logical_types_to_matching_null_variants() {
+        let cases: &[(_, fn(&SeaValue) -> bool)] = &[
+            (LOGICAL_TYPE_BOOLEAN, |v| matches!(v, SeaValue::Bool(None))),
+            (LOGICAL_TYPE_TINYINT, |v| matches!(v, SeaValue::TinyInt(None))),
+            (LOGICAL_TYPE_SMALLINT, |v| matches!(v, SeaValue::SmallInt(None))),
+            (LOGICAL_TYPE_INTEGER, |v| matches!(v, SeaValue::Int(None))),
+            (LOGICAL_TYPE_BIGINT, |v| matches!(v, SeaValue::BigInt(None))),
+            (LOGICAL_TYPE_UTINYINT, |v| matches!(v, SeaValue::TinyUnsigned(None))),
+            (LOGICAL_TYPE_USMALLINT, |v| matches!(v, SeaValue::SmallUnsigned(None))),
+            (LOGICAL_TYPE_UINTEGER, |v| matches!(v, SeaValue::Unsigned(None))),
+            (LOGICAL_TYPE_UBIGINT, |v| matches!(v, SeaValue::BigUnsigned(None))),
+            (LOGICAL_TYPE_FLOAT, |v| matches!(v, SeaValue::Float(None))),
+            (LOGICAL_TYPE_DOUBLE, |v| matches!(v, SeaValue::Double(None))),
+            (LOGICAL_TYPE_STRING_LITERAL, |v| matches!(v, SeaValue::String(None))),
+        ];
+        for (lt, predicate) in cases {
+            let v = null_for_type(Some(*lt));
+            assert!(predicate(&v), "wrong NULL variant for {lt}: {v:?}");
+        }
+    }
+
+    #[test]
+    fn unknown_logical_type_falls_back_to_string_null() {
+        assert!(matches!(null_for_type(Some(9999)), SeaValue::String(None)));
+    }
+
+    #[test]
+    fn missing_logical_type_falls_back_to_string_null() {
+        assert!(matches!(null_for_type(None), SeaValue::String(None)));
+    }
+}
+
+#[cfg(test)]
+mod sea_value_to_param_tests {
+    use super::sea_value_to_param;
+    use otterbrix::SqlParamValue;
+    use sea_orm::{sea_query::Value as SeaValue, DbErr};
+
+    fn extract(value: SeaValue) -> SqlParamValue<'static> {
+        let owned: &'static SeaValue = Box::leak(Box::new(value));
+        sea_value_to_param(1, owned)
+            .expect("param conversion succeeds")
+            .value
+    }
+
+    #[test]
+    fn null_variants_collapse_to_sql_null() {
+        let nulls = [
+            SeaValue::Bool(None),
+            SeaValue::TinyInt(None),
+            SeaValue::SmallInt(None),
+            SeaValue::Int(None),
+            SeaValue::BigInt(None),
+            SeaValue::TinyUnsigned(None),
+            SeaValue::SmallUnsigned(None),
+            SeaValue::Unsigned(None),
+            SeaValue::BigUnsigned(None),
+            SeaValue::Float(None),
+            SeaValue::Double(None),
+            SeaValue::String(None),
+        ];
+        for v in nulls {
+            assert!(
+                matches!(extract(v.clone()), SqlParamValue::Null),
+                "expected SqlParamValue::Null for {v:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn signed_integers_widen_to_int64() {
+        assert!(matches!(
+            extract(SeaValue::TinyInt(Some(-5))),
+            SqlParamValue::Int64(-5)
+        ));
+        assert!(matches!(
+            extract(SeaValue::SmallInt(Some(-1234))),
+            SqlParamValue::Int64(-1234)
+        ));
+        assert!(matches!(
+            extract(SeaValue::Int(Some(-99))),
+            SqlParamValue::Int64(-99)
+        ));
+        assert!(matches!(
+            extract(SeaValue::BigInt(Some(i64::MIN))),
+            SqlParamValue::Int64(i64::MIN)
+        ));
+    }
+
+    #[test]
+    fn unsigned_integers_widen_to_uint64() {
+        assert!(matches!(
+            extract(SeaValue::TinyUnsigned(Some(7))),
+            SqlParamValue::UInt64(7)
+        ));
+        assert!(matches!(
+            extract(SeaValue::BigUnsigned(Some(u64::MAX))),
+            SqlParamValue::UInt64(u64::MAX)
+        ));
+    }
+
+    #[test]
+    fn float_widens_to_double() {
+        match extract(SeaValue::Float(Some(1.5))) {
+            SqlParamValue::Double(v) => assert!((v - 1.5).abs() < 1e-6),
+            other => panic!("expected Double, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unsupported_type_returns_type_error() {
+        let v = SeaValue::Bytes(Some(Box::new(vec![1, 2, 3])));
+        match sea_value_to_param(1, &v) {
+            Err(DbErr::Type(_)) => {}
+            other => panic!("expected DbErr::Type, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod positional_key_tests {
+    use super::{positional_proxy_column_key, POSITIONAL_KEY_WIDTH};
+
+    #[test]
+    fn key_width_matches_constant() {
+        assert_eq!(positional_proxy_column_key(0).len(), POSITIONAL_KEY_WIDTH);
+        assert_eq!(positional_proxy_column_key(42).len(), POSITIONAL_KEY_WIDTH);
+    }
+
+    #[test]
+    fn keys_sort_in_index_order() {
+        let mut keys: Vec<_> = (0..50).map(positional_proxy_column_key).collect();
+        let original = keys.clone();
+        keys.sort();
+        assert_eq!(keys, original, "lexicographic sort must match index order");
     }
 }

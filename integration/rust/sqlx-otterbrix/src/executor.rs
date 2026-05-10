@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use futures_core::future::BoxFuture;
 use futures_core::stream::BoxStream;
@@ -20,16 +20,19 @@ use crate::statement::OtterbrixStatement;
 use crate::OtterbrixConnection;
 
 fn run_sql(
-    db: &Arc<ObDatabase>,
+    db: &Arc<Mutex<ObDatabase>>,
     sql: &str,
     maybe_args: Option<OtterbrixArguments<'_>>,
 ) -> Result<(Vec<OtterbrixRow>, u64), Error> {
     let rewritten = rewrite_placeholders(sql);
+    let guard = db
+        .lock()
+        .map_err(|e| Error::protocol(format!("otterbrix database mutex poisoned: {e}")))?;
     let cursor = match maybe_args {
-        None => db.execute(&rewritten),
+        None => guard.execute(&rewritten),
         Some(ref args) => {
             let params = convert::arguments_to_params(&args.values)?;
-            db.execute_with_params(&rewritten, &params)
+            guard.execute_with_params(&rewritten, &params)
         }
     }
     .map_err(convert::map_otterbrix_error)?;

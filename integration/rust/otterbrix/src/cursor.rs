@@ -88,7 +88,6 @@ impl Drop for Cursor {
 }
 
 unsafe impl Send for Cursor {}
-unsafe impl Sync for Cursor {}
 
 pub struct Row<'a> {
     cursor: &'a Cursor,

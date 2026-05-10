@@ -1,5 +1,5 @@
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use futures_core::future::BoxFuture;
 use futures_util::future;
@@ -12,7 +12,10 @@ use crate::database::Otterbrix;
 use crate::options::OtterbrixConnectOptions;
 
 pub struct OtterbrixConnection {
-    pub(crate) inner: Arc<ObDatabase>,
+    /// Shared, serialized handle to the Otterbrix engine.
+    /// Otterbrix' wrapper does not advertise `Sync`, so we serialize FFI access
+    /// through a `Mutex` taken inside `spawn_blocking`.
+    pub(crate) inner: Arc<Mutex<ObDatabase>>,
     #[allow(dead_code)] // Reserved for statement logging parity with other drivers.
     pub(crate) log_settings: LogSettings,
 }

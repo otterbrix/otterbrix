@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use otterbrix::Database;
@@ -9,21 +9,26 @@ use crate::convert::{
     statement_params,
 };
 
+/// Otterbrix' wrapper does not advertise `Sync`, so we serialize FFI access
+/// through a `Mutex`. The lock is taken inside `spawn_blocking`, so it is held
+/// only on the dedicated blocking thread and never across an `.await` point.
 #[derive(Clone, Debug)]
 pub struct OtterbrixProxy {
-    db: Arc<Database>,
+    db: Arc<Mutex<Database>>,
 }
 
 impl OtterbrixProxy {
     pub fn new(db: Database) -> Self {
-        Self { db: Arc::new(db) }
+        Self {
+            db: Arc::new(Mutex::new(db)),
+        }
     }
 
-    pub fn from_arc(db: Arc<Database>) -> Self {
+    pub fn from_arc(db: Arc<Mutex<Database>>) -> Self {
         Self { db }
     }
 
-    pub fn database(&self) -> &Database {
+    pub fn database(&self) -> &Mutex<Database> {
         &self.db
     }
 }
@@ -31,6 +36,12 @@ impl OtterbrixProxy {
 fn map_join_error(err: tokio::task::JoinError) -> DbErr {
     DbErr::Conn(RuntimeErr::Internal(format!(
         "blocking otterbrix task aborted: {err}"
+    )))
+}
+
+fn map_poison<T>(err: std::sync::PoisonError<T>) -> DbErr {
+    DbErr::Conn(RuntimeErr::Internal(format!(
+        "otterbrix database mutex poisoned: {err}"
     )))
 }
 
@@ -44,12 +55,13 @@ impl ProxyDatabaseTrait for OtterbrixProxy {
         tokio::task::spawn_blocking(move || -> Result<Vec<ProxyRow>, DbErr> {
             let (sql, values) = split_statement(statement);
             let sql = rewrite_placeholders(&sql);
+            let guard = db.lock().map_err(map_poison)?;
             let cursor = match values.as_ref() {
                 Some(v) => {
                     let params = statement_params(v)?;
-                    db.execute_with_params(&sql, &params)
+                    guard.execute_with_params(&sql, &params)
                 }
-                None => db.execute(&sql),
+                None => guard.execute(&sql),
             }
             .map_err(map_otterbrix_error)?;
             Ok(cursor_to_proxy_rows(&cursor))
@@ -63,12 +75,13 @@ impl ProxyDatabaseTrait for OtterbrixProxy {
         tokio::task::spawn_blocking(move || -> Result<ProxyExecResult, DbErr> {
             let (sql, values) = split_statement(statement);
             let sql = rewrite_placeholders(&sql);
+            let guard = db.lock().map_err(map_poison)?;
             let cursor = match values.as_ref() {
                 Some(v) => {
                     let params = statement_params(v)?;
-                    db.execute_with_params(&sql, &params)
+                    guard.execute_with_params(&sql, &params)
                 }
-                None => db.execute(&sql),
+                None => guard.execute(&sql),
             }
             .map_err(map_otterbrix_error)?;
             let affected = cursor.size().max(0) as u64;

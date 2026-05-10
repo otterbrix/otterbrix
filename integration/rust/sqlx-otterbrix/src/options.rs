@@ -110,7 +110,7 @@ impl ConnectOptions for OtterbrixConnectOptions {
                 .map_err(|e| Error::protocol(format!("task join: {e}")))?
                 .map_err(crate::convert::map_otterbrix_error)?;
             Ok(OtterbrixConnection {
-                inner: std::sync::Arc::new(db),
+                inner: std::sync::Arc::new(std::sync::Mutex::new(db)),
                 log_settings,
             })
         })

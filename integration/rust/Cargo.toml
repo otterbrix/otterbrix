@@ -1,3 +1,8 @@
 [workspace]
-members = ["otterbrix-sys", "otterbrix", "seaorm-otterbrix", "sqlx-otterbrix"]
+members = [
+    "otterbrix-sys",
+    "otterbrix",
+    "seaorm-otterbrix",
+    "sqlx-otterbrix",
+]
 resolver = "2"

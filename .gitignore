@@ -427,3 +427,6 @@ build
 *.wal
 *.txt.user
 benchmark/data/
+
+# Local Rust integration: absolute paths to otterbrix-dist (see .cargo/config.toml)
+integration/rust/.cargo/

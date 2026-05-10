@@ -11,6 +11,7 @@ pub type OtterbrixArgumentBuffer<'q> = Vec<OtterbrixArgumentValue<'q>>;
 
 #[derive(Debug, Clone)]
 pub enum OtterbrixArgumentValue<'q> {
+    Null,
     Bool(bool),
     Int64(i64),
     UInt64(u64),
@@ -21,6 +22,7 @@ pub enum OtterbrixArgumentValue<'q> {
 impl<'q> OtterbrixArgumentValue<'q> {
     pub(crate) fn into_static(self) -> OtterbrixArgumentValue<'static> {
         match self {
+            OtterbrixArgumentValue::Null => OtterbrixArgumentValue::Null,
             OtterbrixArgumentValue::Bool(b) => OtterbrixArgumentValue::Bool(b),
             OtterbrixArgumentValue::Int64(n) => OtterbrixArgumentValue::Int64(n),
             OtterbrixArgumentValue::UInt64(n) => OtterbrixArgumentValue::UInt64(n),
@@ -60,7 +62,8 @@ impl<'q> Arguments<'q> for OtterbrixArguments<'q> {
         match value.encode(&mut self.values) {
             Ok(IsNull::Yes) => {
                 self.values.truncate(before);
-                Err("encoding NULL is not supported by the Otterbrix driver".into())
+                self.values.push(OtterbrixArgumentValue::Null);
+                Ok(())
             }
             Ok(IsNull::No) => Ok(()),
             Err(e) => {

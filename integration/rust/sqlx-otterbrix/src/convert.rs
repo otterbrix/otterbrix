@@ -83,6 +83,7 @@ pub(crate) fn arguments_to_params<'a>(
         .enumerate()
         .map(|(i, v)| {
             let value = match v {
+                OtterbrixArgumentValue::Null => SqlParamValue::Null,
                 OtterbrixArgumentValue::Bool(b) => SqlParamValue::Bool(*b),
                 OtterbrixArgumentValue::Int64(n) => SqlParamValue::Int64(*n),
                 OtterbrixArgumentValue::UInt64(n) => SqlParamValue::UInt64(*n),

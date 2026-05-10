@@ -44,22 +44,17 @@ pub fn sea_value_to_param<'a>(index: i32, value: &'a SeaValue) -> Result<SqlPara
 
         SeaValue::String(Some(s)) => SqlParamValue::Str(s.as_str()),
 
-        SeaValue::Bool(None)
-        | SeaValue::TinyInt(None)
+        SeaValue::Bool(None) => SqlParamValue::Null,
+        SeaValue::TinyInt(None)
         | SeaValue::SmallInt(None)
         | SeaValue::Int(None)
-        | SeaValue::BigInt(None)
-        | SeaValue::TinyUnsigned(None)
+        | SeaValue::BigInt(None) => SqlParamValue::Null,
+        SeaValue::TinyUnsigned(None)
         | SeaValue::SmallUnsigned(None)
         | SeaValue::Unsigned(None)
-        | SeaValue::BigUnsigned(None)
-        | SeaValue::Float(None)
-        | SeaValue::Double(None)
-        | SeaValue::String(None) => {
-            return Err(DbErr::Type(
-                "NULL parameters are not supported by the otterbrix backend".into(),
-            ))
-        }
+        | SeaValue::BigUnsigned(None) => SqlParamValue::Null,
+        SeaValue::Float(None) | SeaValue::Double(None) => SqlParamValue::Null,
+        SeaValue::String(None) => SqlParamValue::Null,
 
         other => {
             return Err(DbErr::Type(format!(

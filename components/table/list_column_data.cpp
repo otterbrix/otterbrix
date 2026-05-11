@@ -288,4 +288,6 @@ namespace components::table {
         col_path.back() = 1;
         child_column->get_column_segment_info(row_group_index, col_path, result);
     }
+
+    uint64_t list_column_data_t::list_offset(int64_t row_idx) { return fetch_list_offset(row_idx); }
 } // namespace components::table

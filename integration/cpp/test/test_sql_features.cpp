@@ -479,6 +479,52 @@ TEST_CASE("integration::cpp::test_sql_features::count_distinct") {
     }
 }
 
+TEST_CASE("integration::cpp::test_sql_features::nullable_string_insert_with_null_first") {
+    auto config = test_create_config("/tmp/test_sql_features/nullable_string_insert_with_null_first");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur =
+            dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.TestCollection (id bigint, note string);");
+        REQUIRE(cur->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "INSERT INTO TestDatabase.TestCollection (id, note) VALUES "
+                                           "(1, NULL), "
+                                           "(2, 'note_2'), "
+                                           "(3, NULL);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT id FROM TestDatabase.TestCollection "
+                                           "WHERE note IS NULL;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT id FROM TestDatabase.TestCollection "
+                                           "WHERE note = 'note_2';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+}
+
 TEST_CASE("integration::cpp::test_sql_features::having") {
     auto config = test_create_config("/tmp/test_sql_features/having");
     test_clear_directory(config);

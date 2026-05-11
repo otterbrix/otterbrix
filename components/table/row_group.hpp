@@ -12,6 +12,10 @@ namespace components::table {
     class row_version_manager_t;
     struct row_group_test_access_t;
 
+    namespace detail {
+        bool is_explicit_pax_columnar_only_root_type(const types::complex_logical_type& type);
+    } // namespace detail
+
     constexpr static uint64_t MAX_ROW_GROUP_SIZE = uint64_t(1) << 30;
 
     class data_table_t;

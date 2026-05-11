@@ -206,6 +206,10 @@ namespace components::types {
                 return sizeof(int32_t);
             case physical_type::INT64:
                 return sizeof(int64_t);
+            case physical_type::UINT128:
+                return sizeof(uint128_t);
+            case physical_type::INT128:
+                return sizeof(int128_t);
             case physical_type::FLOAT:
                 return sizeof(float);
             case physical_type::DOUBLE:
@@ -247,6 +251,10 @@ namespace components::types {
                 return alignof(int32_t);
             case physical_type::INT64:
                 return alignof(int64_t);
+            case physical_type::UINT128:
+                return alignof(uint128_t);
+            case physical_type::INT128:
+                return alignof(int128_t);
             case physical_type::FLOAT:
                 return alignof(float);
             case physical_type::DOUBLE:
@@ -359,6 +367,9 @@ namespace components::types {
 
     bool complex_logical_type::is_convertable_to(const complex_logical_type& other) const {
         if (*this == other) {
+            return true;
+        }
+        if (type_ == logical_type::NA) {
             return true;
         }
 

@@ -36,6 +36,20 @@ namespace components::sql::transform {
             chunk.set_cardinality(vals.size());
             size_t row_index = 0;
             bool has_params = false;
+            auto promote_null_column = [&](size_t column_index, const types::logical_value_t& value) {
+                auto& column = chunk.data[column_index];
+                if (column.type().type() != types::logical_type::NA || value.is_null()) {
+                    return;
+                }
+
+                vector::vector_t promoted(resource_, value.type(), chunk.capacity());
+                for (size_t prev_row = 0; prev_row < row_index; ++prev_row) {
+                    promoted.set_value(prev_row,
+                                       types::logical_value_t(resource_,
+                                                              types::complex_logical_type{types::logical_type::NA}));
+                }
+                column = std::move(promoted);
+            };
 
             for (auto row : vals) {
                 auto values = pg_ptr_cast<List>(row.data)->lst;
@@ -73,10 +87,13 @@ namespace components::sql::transform {
                                 return column.type().alias() == it_field->as_string();
                             });
                         size_t column_index = it - chunk.data.begin();
-                        if (it == chunk.data.end()) {
+                        if (!value.value().type().has_alias()) {
                             value.value().set_alias(it_field->as_string());
+                        }
+                        if (it == chunk.data.end()) {
                             chunk.data.emplace_back(resource_, value.value().type(), chunk.capacity());
                         }
+                        promote_null_column(column_index, value.value());
                         chunk.set_value(column_index, row_index, std::move(value.value()));
                     } else {
                         auto value = get_value(resource_, pg_ptr_cast<Node>(it_value->data));
@@ -89,10 +106,13 @@ namespace components::sql::transform {
                                 return column.type().alias() == it_field->as_string();
                             });
                         size_t column_index = it - chunk.data.begin();
-                        if (it == chunk.data.end()) {
+                        if (!value.value().type().has_alias()) {
                             value.value().set_alias(it_field->as_string());
+                        }
+                        if (it == chunk.data.end()) {
                             chunk.data.emplace_back(resource_, value.value().type(), chunk.capacity());
                         }
+                        promote_null_column(column_index, value.value());
                         chunk.set_value(column_index, row_index, std::move(value.value()));
                     }
                 }

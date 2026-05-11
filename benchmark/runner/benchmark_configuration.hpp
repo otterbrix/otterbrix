@@ -6,6 +6,12 @@
 namespace otterbrix::benchmark {
 
 struct benchmark_configuration_t {
+    enum class disk_layout_policy : uint8_t
+    {
+        auto_select = 0,
+        columnar_only = 1
+    };
+
     std::string name_pattern;
     std::string group_pattern;
     uint64_t nruns = 0;
@@ -17,6 +23,7 @@ struct benchmark_configuration_t {
     std::string output_file;
     std::string single_file;
     bool disk_on = false;
+    disk_layout_policy layout_policy = disk_layout_policy::auto_select;
     bool wal_on = false;
     bool verbose = false;
     bool skip_load = false;

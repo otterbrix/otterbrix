@@ -7,6 +7,7 @@
 #include <map>
 #include <regex>
 #include <set>
+#include <stdexcept>
 
 #include <components/configuration/configuration.hpp>
 #include <integration/cpp/base_spaces.hpp>
@@ -18,6 +19,36 @@ namespace otterbrix::benchmark {
 
 namespace {
 
+std::filesystem::path benchmark_state_root(const benchmark_configuration_t& config) {
+    auto root = std::filesystem::temp_directory_path() / "otterbrix-benchmark-runner";
+    root /= config.disk_on ? "disk" : "memory";
+    root /= config.layout_policy == benchmark_configuration_t::disk_layout_policy::columnar_only ? "columnar"
+                                                                                                  : "auto";
+    root /= config.wal_on ? "wal_on" : "wal_off";
+    return root;
+}
+
+void recreate_benchmark_state_root(const benchmark_configuration_t& config) {
+    auto root = benchmark_state_root(config);
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    if (ec) {
+        throw std::runtime_error("Cannot clear benchmark state directory " + root.string() + ": " + ec.message());
+    }
+    std::filesystem::create_directories(root, ec);
+    if (ec) {
+        throw std::runtime_error("Cannot create benchmark state directory " + root.string() + ": " + ec.message());
+    }
+}
+
+void ensure_benchmark_state_root_exists(const benchmark_configuration_t& config) {
+    auto root = benchmark_state_root(config);
+    if (!std::filesystem::exists(root)) {
+        throw std::runtime_error("Benchmark state directory not found: " + root.string() +
+                                 ". Run once without --skip-load or use --load-only first.");
+    }
+}
+
 class benchmark_instance_t final : public base_otterbrix_t {
 public:
     explicit benchmark_instance_t(const benchmark_configuration_t& config)
@@ -25,9 +56,18 @@ public:
 
 private:
     static configuration::config make_config(const benchmark_configuration_t& config) {
-        auto cfg = configuration::config::default_config();
+        auto root = benchmark_state_root(config);
+        auto cfg = configuration::config::create_config(root);
+        cfg.main_path = root;
+        cfg.log.path = root / "log";
+        cfg.disk.path = root / "disk";
+        cfg.wal.path = root / "wal";
         cfg.log.level = log_t::level::off;
         cfg.disk.on = config.disk_on;
+        cfg.disk.layout_policy =
+            config.layout_policy == benchmark_configuration_t::disk_layout_policy::columnar_only
+                ? configuration::disk_layout_policy::columnar_only
+                : configuration::disk_layout_policy::auto_select;
         cfg.wal.on = config.wal_on;
         cfg.wal.sync_to_disk = config.disk_on;
         return cfg;
@@ -235,6 +275,9 @@ void benchmark_runner_t::run(const benchmark_configuration_t& config) {
 
     // Load-only mode: create one shared instance, run load() for first benchmark per group, then exit
     if (config.load_only) {
+        if (config.disk_on || config.wal_on) {
+            recreate_benchmark_state_root(config);
+        }
         benchmark_instance_t instance(config);
         benchmark_state_t state;
         state.dispatcher = instance.dispatcher();
@@ -292,9 +335,21 @@ benchmark_result_t benchmark_runner_t::run_single(benchmark_t& bench, const benc
 
     if (config.verbose) {
         std::cout << "  Loading data for " << bench.name() << "...\n";
+        if (config.disk_on || config.wal_on) {
+            std::cout << "  State dir: " << benchmark_state_root(config).string()
+                      << (config.skip_load ? " (reusing)\n" : " (resetting)\n");
+        }
     }
 
     try {
+        if (config.disk_on || config.wal_on) {
+            if (config.skip_load) {
+                ensure_benchmark_state_root_exists(config);
+            } else {
+                recreate_benchmark_state_root(config);
+            }
+        }
+
         benchmark_instance_t instance(config);
         benchmark_state_t state;
         state.dispatcher = instance.dispatcher();

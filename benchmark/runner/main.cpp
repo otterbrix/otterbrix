@@ -23,6 +23,7 @@ void print_usage() {
               << "  --benchmarks=DIR    Directory with .benchmark/.sql files\n"
               << "  --file=PATH         Run a single .benchmark or .sql file\n"
               << "  --disk              Enable disk persistence\n"
+              << "  --layout=MODE       Disk layout policy: auto|columnar\n"
               << "  --wal               Enable WAL\n"
               << "  --config=FILE       Load benchmark config (enable/disable benchmarks)\n"
               << "  --generate-config=FILE  Generate config file from loaded benchmarks\n"
@@ -69,6 +70,18 @@ int main(int argc, char* argv[]) {
             config.show_query = true;
         } else if (arg == "--disk") {
             config.disk_on = true;
+        } else if (arg.starts_with("--layout=")) {
+            auto mode = arg.substr(9);
+            if (mode == "auto") {
+                config.layout_policy = otterbrix::benchmark::benchmark_configuration_t::disk_layout_policy::auto_select;
+            } else if (mode == "columnar") {
+                config.layout_policy =
+                    otterbrix::benchmark::benchmark_configuration_t::disk_layout_policy::columnar_only;
+            } else {
+                std::cerr << "Unknown layout mode: " << mode << "\n";
+                print_usage();
+                return 1;
+            }
         } else if (arg == "--wal") {
             config.wal_on = true;
         } else if (arg == "--skip-load") {

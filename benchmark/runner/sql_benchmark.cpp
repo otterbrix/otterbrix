@@ -237,7 +237,9 @@ void sql_benchmark_t::execute_sql_block(benchmark_state_t& state, const std::str
             if (!stmt.empty()) {
                 auto cursor = state.dispatcher->execute_sql(state.session, stmt);
                 if (cursor->is_error()) {
-                    throw std::runtime_error("SQL error: " + cursor->get_error().what);
+                    std::string msg = "SQL error: ";
+                    msg += std::string_view(cursor->get_error().what);
+                    throw std::runtime_error(msg);
                 }
             }
             current.clear();
@@ -250,7 +252,9 @@ void sql_benchmark_t::execute_sql_block(benchmark_state_t& state, const std::str
     if (!stmt.empty()) {
         auto cursor = state.dispatcher->execute_sql(state.session, stmt);
         if (cursor->is_error()) {
-            throw std::runtime_error("SQL error: " + cursor->get_error().what);
+            std::string msg = "SQL error: ";
+            msg += std::string_view(cursor->get_error().what);
+            throw std::runtime_error(msg);
         }
     }
 }
@@ -300,7 +304,9 @@ void sql_benchmark_t::load_csv_file(benchmark_state_t& state, const sql_csv_entr
         }
         auto cursor = state.dispatcher->execute_sql(state.session, sql);
         if (cursor->is_error()) {
-            throw std::runtime_error("CSV load SQL error for " + entry.table + ": " + cursor->get_error().what);
+            std::string msg = "CSV load SQL error for " + entry.table + ": ";
+            msg += std::string_view(cursor->get_error().what);
+            throw std::runtime_error(msg);
         }
         value_tuples.clear();
     };
@@ -380,7 +386,9 @@ void sql_benchmark_t::load(benchmark_state_t& state) {
         auto create_db = "CREATE DATABASE " + database_;
         auto cursor = state.dispatcher->execute_sql(state.session, create_db);
         if (cursor->is_error()) {
-            throw std::runtime_error("Cannot create database: " + cursor->get_error().what);
+            std::string msg = "Cannot create database: ";
+            msg += std::string_view(cursor->get_error().what);
+            throw std::runtime_error(msg);
         }
     }
 
@@ -396,7 +404,9 @@ void sql_benchmark_t::run(benchmark_state_t& state) {
     auto qualified = qualify_sql(sql_);
     auto cursor = state.dispatcher->execute_sql(state.session, qualified);
     if (cursor->is_error()) {
-        throw std::runtime_error("SQL error: " + cursor->get_error().what);
+        std::string msg = "SQL error: ";
+        msg += std::string_view(cursor->get_error().what);
+        throw std::runtime_error(msg);
     }
 }
 

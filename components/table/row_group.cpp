@@ -1,6 +1,7 @@
 #include "row_group.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
@@ -10,14 +11,35 @@
 #include <components/table/storage/buffer_manager.hpp>
 #include <components/table/storage/block_handle.hpp>
 #include <components/table/storage/partial_block_manager.hpp>
+#include <core/operations_helper.hpp>
 #include <vector/data_chunk.hpp>
 
 #include "collection.hpp"
+#include "array_column_data.hpp"
+#include "list_column_data.hpp"
 #include "row_version_manager.hpp"
 #include "standard_column_data.hpp"
 #include "struct_column_data.hpp"
 #include <components/vector/indexing_vector.hpp>
 #include <components/vector/vector_operations.hpp>
+
+namespace components::table::detail {
+
+    bool is_explicit_pax_columnar_only_root_type(const components::types::complex_logical_type& type) {
+        using components::types::logical_type;
+
+        switch (type.type()) {
+            case logical_type::BLOB:
+            case logical_type::INTERVAL:
+            case logical_type::MAP:
+            case logical_type::VARIANT:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+} // namespace components::table::detail
 
 namespace {
 
@@ -27,10 +49,11 @@ namespace {
     constexpr uint32_t PAX_STRING_BIG_MARKER_SIZE = sizeof(uint32_t) + sizeof(int32_t);
     constexpr uint64_t PAX_STRING_DEFAULT_BLOCK_LIMIT = 4096;
 
-    bool is_pax_fixed_integer_type(const components::types::complex_logical_type& type) {
+    bool is_pax_fixed_scalar_type(const components::types::complex_logical_type& type) {
         using components::types::logical_type;
 
         switch (type.type()) {
+            case logical_type::BOOLEAN:
             case logical_type::TINYINT:
             case logical_type::UTINYINT:
             case logical_type::SMALLINT:
@@ -39,34 +62,59 @@ namespace {
             case logical_type::UINTEGER:
             case logical_type::BIGINT:
             case logical_type::UBIGINT:
+            case logical_type::HUGEINT:
+            case logical_type::UHUGEINT:
+            case logical_type::TIMESTAMP_SEC:
+            case logical_type::TIMESTAMP_MS:
+            case logical_type::TIMESTAMP_US:
+            case logical_type::TIMESTAMP_NS:
+            case logical_type::DECIMAL:
+            case logical_type::FLOAT:
+            case logical_type::DOUBLE:
+            case logical_type::UUID:
+            case logical_type::ENUM:
                 return true;
             default:
                 return false;
         }
     }
 
+    bool is_pax_fixed_projected_type(const components::types::complex_logical_type& type) {
+        return is_pax_fixed_scalar_type(type);
+    }
+
     components::table::storage::pax_fixed_column_type
     to_pax_fixed_column_type(const components::types::complex_logical_type& type) {
         using components::table::storage::pax_fixed_column_type;
-        using components::types::logical_type;
+        using components::types::physical_type;
 
-        switch (type.type()) {
-            case logical_type::TINYINT:
+        switch (type.to_physical_type()) {
+            case physical_type::BOOL:
+                return pax_fixed_column_type::BOOL;
+            case physical_type::INT8:
                 return pax_fixed_column_type::INT8;
-            case logical_type::UTINYINT:
-                return pax_fixed_column_type::UINT8;
-            case logical_type::SMALLINT:
+            case physical_type::INT16:
                 return pax_fixed_column_type::INT16;
-            case logical_type::USMALLINT:
-                return pax_fixed_column_type::UINT16;
-            case logical_type::INTEGER:
+            case physical_type::INT32:
                 return pax_fixed_column_type::INT32;
-            case logical_type::UINTEGER:
-                return pax_fixed_column_type::UINT32;
-            case logical_type::BIGINT:
+            case physical_type::INT64:
                 return pax_fixed_column_type::INT64;
-            case logical_type::UBIGINT:
+            case physical_type::INT128:
+                return pax_fixed_column_type::INT128;
+            case physical_type::UINT8:
+                return pax_fixed_column_type::UINT8;
+            case physical_type::UINT16:
+                return pax_fixed_column_type::UINT16;
+            case physical_type::UINT32:
+                return pax_fixed_column_type::UINT32;
+            case physical_type::UINT64:
                 return pax_fixed_column_type::UINT64;
+            case physical_type::UINT128:
+                return pax_fixed_column_type::UINT128;
+            case physical_type::FLOAT:
+                return pax_fixed_column_type::FLOAT;
+            case physical_type::DOUBLE:
+                return pax_fixed_column_type::DOUBLE;
             default:
                 throw std::logic_error("unsupported logical type for pax_fixed column");
         }
@@ -76,9 +124,11 @@ namespace {
         return components::vector::validity_mask_t::validity_mask_size(tuple_count);
     }
 
-    bool is_supported_pax_fixed_layout_version(uint16_t version) { return version == 1 || version == 2; }
+    bool is_supported_pax_fixed_layout_version(uint16_t version) {
+        return version == 1 || version == 2 || version == 3;
+    }
 
-    bool is_supported_pax_generic_layout_version(uint16_t version) { return version == 1 || version == 2; }
+    bool is_supported_pax_generic_layout_version(uint16_t version) { return version >= 1 && version <= 3; }
 
     void write_pax_fixed_slice(components::table::column_data_t& column,
                                uint64_t row_group_start,
@@ -155,7 +205,27 @@ namespace {
     }
 
     bool is_pax_generic_struct_type(const components::types::complex_logical_type& type) {
-        return type.type() == components::types::logical_type::STRUCT;
+        using components::types::logical_type;
+
+        switch (type.type()) {
+            case logical_type::STRUCT:
+            case logical_type::UNION:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    bool is_pax_generic_collection_type(const components::types::complex_logical_type& type) {
+        using components::types::logical_type;
+
+        switch (type.type()) {
+            case logical_type::LIST:
+            case logical_type::ARRAY:
+                return true;
+            default:
+                return false;
+        }
     }
 
     bool is_pax_generic_fixed_plain_type(const components::types::complex_logical_type& type) {
@@ -184,6 +254,9 @@ namespace {
     bool is_supported_pax_generic_column_type(const components::types::complex_logical_type& type) {
         if (is_pax_generic_string_type(type) || is_pax_generic_fixed_plain_type(type)) {
             return true;
+        }
+        if (is_pax_generic_collection_type(type)) {
+            return is_supported_pax_generic_column_type(type.child_type());
         }
         if (!is_pax_generic_struct_type(type)) {
             return false;
@@ -231,6 +304,34 @@ namespace {
             components::table::storage::pax_generic_codec_kind::VALIDITY_ALL_VALID};
         std::optional<components::table::storage::data_pointer_t> validity_pointer;
     };
+
+    struct pax_generic_plain_payload_write_result_t {
+        components::table::storage::data_pointer_t main_pointer;
+    };
+
+    pax_generic_plain_payload_write_result_t
+    write_pax_generic_plain_payload(uint64_t absolute_row_start,
+                                    uint32_t tuple_count,
+                                    const std::byte* data,
+                                    uint64_t type_size,
+                                    components::table::storage::partial_block_manager_t& partial_block_manager) {
+        using components::table::compression::compression_type;
+        using components::table::storage::block_pointer_t;
+
+        const auto payload_size = static_cast<uint64_t>(tuple_count) * type_size;
+        auto allocation = partial_block_manager.get_block_allocation(payload_size);
+        if (payload_size > 0) {
+            partial_block_manager.write_to_block(allocation.block_id, allocation.offset_in_block, data, payload_size);
+        }
+
+        pax_generic_plain_payload_write_result_t result;
+        result.main_pointer.row_start = absolute_row_start;
+        result.main_pointer.tuple_count = tuple_count;
+        result.main_pointer.block_pointer = block_pointer_t(allocation.block_id, allocation.offset_in_block);
+        result.main_pointer.compression = compression_type::UNCOMPRESSED;
+        result.main_pointer.segment_size = payload_size;
+        return result;
+    }
 
     pax_generic_string_page_write_result_t
     write_pax_generic_string_page(components::table::column_data_t& column,
@@ -546,6 +647,72 @@ namespace {
             return;
         }
 
+        if (is_pax_generic_collection_type(column.type())) {
+            auto validity_result =
+                write_pax_generic_validity_page(column, row_group_start, row_offset, tuple_count, partial_block_manager);
+            append_pax_generic_validity_slice(page, root_column_index, field_path, validity_result);
+
+            if (column.type().type() == logical_type::LIST) {
+                auto& list_column = dynamic_cast<components::table::list_column_data_t&>(column);
+                const auto page_row_start = static_cast<int64_t>(row_group_start + row_offset);
+                std::vector<uint64_t> offsets(tuple_count, 0);
+                for (uint32_t i = 0; i < tuple_count; i++) {
+                    offsets[i] = list_column.list_offset(page_row_start + static_cast<int64_t>(i));
+                }
+
+                auto offsets_payload = write_pax_generic_plain_payload(row_group_start + row_offset,
+                                                                       tuple_count,
+                                                                       reinterpret_cast<const std::byte*>(offsets.data()),
+                                                                       sizeof(uint64_t),
+                                                                       partial_block_manager);
+
+                components::table::storage::pax_generic_slice_t offsets_slice;
+                offsets_slice.column_index = root_column_index;
+                offsets_slice.slice_kind = pax_generic_slice_kind::FIXED_VALUES;
+                offsets_slice.codec_kind = pax_generic_codec_kind::FIXED_PLAIN;
+                offsets_slice.field_path = field_path;
+                offsets_slice.fixed_logical_type = logical_type::UBIGINT;
+                offsets_slice.payload = pax_block_payload_t{offsets_payload.main_pointer, {}};
+                page.slices.push_back(std::move(offsets_slice));
+
+                const auto previous_offset =
+                    page_row_start == list_column.start() ? 0 : list_column.list_offset(page_row_start - 1);
+                const auto child_tuple_count =
+                    offsets.empty() ? 0 : static_cast<uint32_t>(offsets.back() - previous_offset);
+                if (child_tuple_count > 0) {
+                    auto child_path = field_path;
+                    child_path.push_back(0);
+                    write_pax_generic_column_page(*list_column.child_column,
+                                                  root_column_index,
+                                                  child_path,
+                                                  row_group_start + previous_offset,
+                                                  0,
+                                                  child_tuple_count,
+                                                  partial_block_manager,
+                                                  page);
+                }
+                return;
+            }
+
+            auto& array_column = dynamic_cast<components::table::array_column_data_t&>(column);
+            auto child_path = field_path;
+            child_path.push_back(0);
+            const auto child_tuple_count = static_cast<uint32_t>(static_cast<uint64_t>(tuple_count) * array_column.array_size());
+            if (child_tuple_count > 0) {
+                const auto child_row_start =
+                    row_group_start + static_cast<uint64_t>(row_offset) * static_cast<uint64_t>(array_column.array_size());
+                write_pax_generic_column_page(*array_column.child_column,
+                                              root_column_index,
+                                              child_path,
+                                              child_row_start,
+                                              0,
+                                              child_tuple_count,
+                                              partial_block_manager,
+                                              page);
+            }
+            return;
+        }
+
         if (is_pax_generic_string_type(column.type())) {
             auto page_result = write_pax_generic_string_page(column,
                                                              row_group_start,
@@ -604,6 +771,8 @@ namespace {
             case compare_type::gte:
             case compare_type::lt:
             case compare_type::lte:
+            case compare_type::is_null:
+            case compare_type::is_not_null:
                 return true;
             default:
                 return false;
@@ -896,8 +1065,39 @@ namespace {
     }
 
     template<typename T>
-    uint64_t apply_pax_fixed_constant_filter_typed(const components::vector::vector_t& values,
-                                                   const components::table::constant_filter_t& filter,
+    bool apply_compare(components::expressions::compare_type type, const T& lhs, const T& rhs) {
+        using components::expressions::compare_type;
+
+        switch (type) {
+            case compare_type::eq:
+                if constexpr (std::is_floating_point_v<T>) {
+                    return core::is_equals(lhs, rhs);
+                } else {
+                    return lhs == rhs;
+                }
+            case compare_type::ne:
+                if constexpr (std::is_floating_point_v<T>) {
+                    return !core::is_equals(lhs, rhs);
+                } else {
+                    return lhs != rhs;
+                }
+            case compare_type::gt:
+                return lhs > rhs;
+            case compare_type::gte:
+                return lhs >= rhs;
+            case compare_type::lt:
+                return lhs < rhs;
+            case compare_type::lte:
+                return lhs <= rhs;
+            default:
+                return false;
+        }
+    }
+
+    template<typename T>
+    uint64_t apply_pax_fixed_constant_filter_value(const components::vector::vector_t& values,
+                                                   components::expressions::compare_type compare_type,
+                                                   const T& constant_value,
                                                    uint64_t count,
                                                    components::vector::indexing_vector_t& indexing) {
         const auto* data = values.data<T>();
@@ -907,39 +1107,125 @@ namespace {
             if (!validity.row_is_valid(i)) {
                 continue;
             }
-            if (filter.compare(data[i])) {
+            if (apply_compare(compare_type, data[i], constant_value)) {
                 indexing.set_index(approved_count++, i);
             }
         }
         return approved_count;
     }
 
+    template<typename T>
+    uint64_t apply_pax_fixed_constant_filter_typed(const components::vector::vector_t& values,
+                                                   const components::table::constant_filter_t& filter,
+                                                   uint64_t count,
+                                                   components::vector::indexing_vector_t& indexing) {
+        return apply_pax_fixed_constant_filter_value(values,
+                                                     filter.filter_type,
+                                                     filter.constant.value<T>(),
+                                                     count,
+                                                     indexing);
+    }
+
     uint64_t apply_pax_fixed_constant_filter(const components::vector::vector_t& values,
                                              const components::table::constant_filter_t& filter,
                                              uint64_t count,
                                              components::vector::indexing_vector_t& indexing) {
-        using components::types::physical_type;
+        using components::types::logical_type;
 
-        switch (values.type().to_physical_type()) {
-            case physical_type::INT8:
+        switch (values.type().type()) {
+            case logical_type::BOOLEAN:
+                return apply_pax_fixed_constant_filter_typed<bool>(values, filter, count, indexing);
+            case logical_type::TINYINT:
                 return apply_pax_fixed_constant_filter_typed<int8_t>(values, filter, count, indexing);
-            case physical_type::INT16:
-                return apply_pax_fixed_constant_filter_typed<int16_t>(values, filter, count, indexing);
-            case physical_type::INT32:
-                return apply_pax_fixed_constant_filter_typed<int32_t>(values, filter, count, indexing);
-            case physical_type::INT64:
-                return apply_pax_fixed_constant_filter_typed<int64_t>(values, filter, count, indexing);
-            case physical_type::UINT8:
+            case logical_type::UTINYINT:
                 return apply_pax_fixed_constant_filter_typed<uint8_t>(values, filter, count, indexing);
-            case physical_type::UINT16:
+            case logical_type::SMALLINT:
+                return apply_pax_fixed_constant_filter_typed<int16_t>(values, filter, count, indexing);
+            case logical_type::USMALLINT:
                 return apply_pax_fixed_constant_filter_typed<uint16_t>(values, filter, count, indexing);
-            case physical_type::UINT32:
+            case logical_type::INTEGER:
+            case logical_type::ENUM:
+                return apply_pax_fixed_constant_filter_typed<int32_t>(values, filter, count, indexing);
+            case logical_type::UINTEGER:
                 return apply_pax_fixed_constant_filter_typed<uint32_t>(values, filter, count, indexing);
-            case physical_type::UINT64:
+            case logical_type::BIGINT:
+                return apply_pax_fixed_constant_filter_typed<int64_t>(values, filter, count, indexing);
+            case logical_type::UBIGINT:
                 return apply_pax_fixed_constant_filter_typed<uint64_t>(values, filter, count, indexing);
+            case logical_type::HUGEINT:
+                return apply_pax_fixed_constant_filter_typed<components::types::int128_t>(values,
+                                                                                           filter,
+                                                                                           count,
+                                                                                           indexing);
+            case logical_type::UHUGEINT:
+                return apply_pax_fixed_constant_filter_typed<components::types::uint128_t>(values,
+                                                                                            filter,
+                                                                                            count,
+                                                                                            indexing);
+            case logical_type::UUID:
+                return apply_pax_fixed_constant_filter_typed<components::types::int128_t>(values,
+                                                                                           filter,
+                                                                                           count,
+                                                                                           indexing);
+            case logical_type::FLOAT:
+                return apply_pax_fixed_constant_filter_typed<float>(values, filter, count, indexing);
+            case logical_type::DOUBLE:
+                return apply_pax_fixed_constant_filter_typed<double>(values, filter, count, indexing);
+            case logical_type::TIMESTAMP_SEC:
+                return apply_pax_fixed_constant_filter_value(values,
+                                                             filter.filter_type,
+                                                             filter.constant.value<std::chrono::seconds>().count(),
+                                                             count,
+                                                             indexing);
+            case logical_type::TIMESTAMP_MS:
+                return apply_pax_fixed_constant_filter_value(values,
+                                                             filter.filter_type,
+                                                             filter.constant.value<std::chrono::milliseconds>().count(),
+                                                             count,
+                                                             indexing);
+            case logical_type::TIMESTAMP_US:
+                return apply_pax_fixed_constant_filter_value(values,
+                                                             filter.filter_type,
+                                                             filter.constant.value<std::chrono::microseconds>().count(),
+                                                             count,
+                                                             indexing);
+            case logical_type::TIMESTAMP_NS:
+                return apply_pax_fixed_constant_filter_value(values,
+                                                             filter.filter_type,
+                                                             filter.constant.value<std::chrono::nanoseconds>().count(),
+                                                             count,
+                                                             indexing);
+            case logical_type::DECIMAL:
+                if (values.type().to_physical_type() == components::types::physical_type::INT128) {
+                    return apply_pax_fixed_constant_filter_value(values,
+                                                                 filter.filter_type,
+                                                                 filter.constant.value<components::types::int128_t>(),
+                                                                 count,
+                                                                 indexing);
+                }
+                return apply_pax_fixed_constant_filter_value(values,
+                                                             filter.filter_type,
+                                                             filter.constant.value<int64_t>(),
+                                                             count,
+                                                             indexing);
             default:
                 return 0;
         }
+    }
+
+    uint64_t apply_pax_validity_filter(const components::vector::vector_t& values,
+                                       components::expressions::compare_type compare_type,
+                                       uint64_t count,
+                                       components::vector::indexing_vector_t& indexing) {
+        const auto& validity = values.validity();
+        const bool select_valid = compare_type == components::expressions::compare_type::is_not_null;
+        uint64_t approved_count = 0;
+        for (uint64_t i = 0; i < count; i++) {
+            if (validity.row_is_valid(i) == select_valid) {
+                indexing.set_index(approved_count++, i);
+            }
+        }
+        return approved_count;
     }
 
     std::string_view materialize_pax_generic_string(components::vector::vector_t& result,
@@ -1407,6 +1693,7 @@ namespace components::table {
         }
 
         const constant_filter_t* constant_filter = nullptr;
+        const is_null_filter_t* null_filter = nullptr;
         uint32_t filter_column_index = 0;
         int64_t filter_scan_index = -1;
 
@@ -1416,12 +1703,22 @@ namespace components::table {
                 return false;
             }
 
-            auto* constant = dynamic_cast<const constant_filter_t*>(filter);
-            if (!constant || constant->table_indices.size() != 1) {
-                return false;
+            if (filter->filter_type == expressions::compare_type::is_null ||
+                filter->filter_type == expressions::compare_type::is_not_null) {
+                auto* null_ptr = dynamic_cast<const is_null_filter_t*>(filter);
+                if (!null_ptr || null_ptr->table_indices.size() != 1) {
+                    return false;
+                }
+                filter_column_index = static_cast<uint32_t>(null_ptr->table_indices.front());
+                null_filter = null_ptr;
+            } else {
+                auto* constant = dynamic_cast<const constant_filter_t*>(filter);
+                if (!constant || constant->table_indices.size() != 1) {
+                    return false;
+                }
+                filter_column_index = static_cast<uint32_t>(constant->table_indices.front());
+                constant_filter = constant;
             }
-            filter_column_index = static_cast<uint32_t>(constant->table_indices.front());
-            constant_filter = constant;
         }
 
         for (uint64_t i = 0; i < column_ids.size(); i++) {
@@ -1439,20 +1736,17 @@ namespace components::table {
             if (!is_pax_generic_string_type(column_data.type()) || column_data.has_updates()) {
                 return false;
             }
-            if (constant_filter && column_index == filter_column_index) {
+            if ((constant_filter || null_filter) && column_index == filter_column_index) {
                 filter_scan_index = static_cast<int64_t>(i);
             }
         }
 
-        if (constant_filter) {
+        if (constant_filter || null_filter) {
             if (filter_column_index >= get_column_count()) {
                 return false;
             }
             auto& filter_column = get_column(filter_column_index);
             if (!is_pax_generic_string_type(filter_column.type()) || filter_column.has_updates()) {
-                return false;
-            }
-            if (filter_scan_index < 0) {
                 return false;
             }
         }
@@ -1512,7 +1806,7 @@ namespace components::table {
             }
 
             const auto result_offset = result.size();
-            if (!constant_filter) {
+            if (!constant_filter && !null_filter) {
                 validate_chunk_capacity(result, result_offset + max_count);
                 for (const auto& column : column_ids) {
                     const auto out_idx = column.primary_index();
@@ -1562,8 +1856,12 @@ namespace components::table {
             }
 
             vector::indexing_vector_t indexing(result.resource(), max_count);
-            auto approved_count =
-                apply_pax_generic_string_constant_filter(filter_values, *constant_filter, max_count, indexing);
+            auto approved_count = constant_filter
+                                      ? apply_pax_generic_string_constant_filter(filter_values,
+                                                                                 *constant_filter,
+                                                                                 max_count,
+                                                                                 indexing)
+                                      : apply_pax_validity_filter(filter_values, null_filter->filter_type, max_count, indexing);
             if (approved_count == 0) {
                 state.vector_index++;
                 for (auto& column_state : state.column_scans) {
@@ -1581,7 +1879,7 @@ namespace components::table {
                     return false;
                 }
 
-                if (static_cast<int64_t>(i) == filter_scan_index) {
+                if (constant_filter && static_cast<int64_t>(i) == filter_scan_index) {
                     vector::vector_ops::copy(filter_values,
                                              result.data[out_idx],
                                              indexing,
@@ -1645,6 +1943,7 @@ namespace components::table {
         }
 
         const constant_filter_t* constant_filter = nullptr;
+        const is_null_filter_t* null_filter = nullptr;
         uint32_t filter_column_index = 0;
         int64_t filter_scan_index = -1;
 
@@ -1654,12 +1953,22 @@ namespace components::table {
                 return false;
             }
 
-            auto* constant = dynamic_cast<const constant_filter_t*>(filter);
-            if (!constant || constant->table_indices.size() != 1) {
-                return false;
+            if (filter->filter_type == expressions::compare_type::is_null ||
+                filter->filter_type == expressions::compare_type::is_not_null) {
+                auto* null_ptr = dynamic_cast<const is_null_filter_t*>(filter);
+                if (!null_ptr || null_ptr->table_indices.size() != 1) {
+                    return false;
+                }
+                filter_column_index = static_cast<uint32_t>(null_ptr->table_indices.front());
+                null_filter = null_ptr;
+            } else {
+                auto* constant = dynamic_cast<const constant_filter_t*>(filter);
+                if (!constant || constant->table_indices.size() != 1) {
+                    return false;
+                }
+                filter_column_index = static_cast<uint32_t>(constant->table_indices.front());
+                constant_filter = constant;
             }
-            filter_column_index = static_cast<uint32_t>(constant->table_indices.front());
-            constant_filter = constant;
         }
 
         for (uint64_t i = 0; i < column_ids.size(); i++) {
@@ -1672,23 +1981,20 @@ namespace components::table {
                 return false;
             }
             auto& column_data = get_column(column_index);
-            if (!is_pax_fixed_integer_type(column_data.type()) || column_data.has_updates()) {
+            if (!is_pax_fixed_projected_type(column_data.type()) || column_data.has_updates()) {
                 return false;
             }
-            if (constant_filter && column_index == filter_column_index) {
+            if ((constant_filter || null_filter) && column_index == filter_column_index) {
                 filter_scan_index = static_cast<int64_t>(i);
             }
         }
 
-        if (constant_filter) {
+        if (constant_filter || null_filter) {
             if (filter_column_index >= get_column_count()) {
                 return false;
             }
             auto& filter_column = get_column(filter_column_index);
-            if (!is_pax_fixed_integer_type(filter_column.type()) || filter_column.has_updates()) {
-                return false;
-            }
-            if (filter_scan_index < 0) {
+            if (!is_pax_fixed_projected_type(filter_column.type()) || filter_column.has_updates()) {
                 return false;
             }
         }
@@ -1748,7 +2054,7 @@ namespace components::table {
 
             const auto result_offset = result.size();
 
-            if (!constant_filter) {
+            if (!constant_filter && !null_filter) {
                 validate_chunk_capacity(result, result_offset + max_count);
                 for (const auto& column : column_ids) {
                     const auto out_idx = column.primary_index();
@@ -1799,7 +2105,9 @@ namespace components::table {
             }
 
             vector::indexing_vector_t indexing(result.resource(), max_count);
-            auto approved_count = apply_pax_fixed_constant_filter(filter_values, *constant_filter, max_count, indexing);
+            auto approved_count = constant_filter
+                                      ? apply_pax_fixed_constant_filter(filter_values, *constant_filter, max_count, indexing)
+                                      : apply_pax_validity_filter(filter_values, null_filter->filter_type, max_count, indexing);
             if (approved_count == 0) {
                 state.vector_index++;
                 for (auto& column_state : state.column_scans) {
@@ -1816,7 +2124,7 @@ namespace components::table {
                     return false;
                 }
 
-                if (static_cast<int64_t>(i) == filter_scan_index) {
+                if (constant_filter && static_cast<int64_t>(i) == filter_scan_index) {
                     vector::vector_ops::copy(filter_values,
                                              result.data[out_idx],
                                              indexing,
@@ -2382,14 +2690,21 @@ namespace components::table {
         auto col_count = get_column_count();
         pointer.columnar_data_pointers.resize(col_count);
 
+        const bool force_columnar =
+            block_manager().layout_policy() == storage::row_group_layout_policy::COLUMNAR_ONLY;
+
         std::vector<uint64_t> pax_generic_columns;
         pax_generic_columns.reserve(col_count);
         std::vector<uint64_t> pax_fixed_columns;
         pax_fixed_columns.reserve(col_count);
         bool pax_generic_requires_v2 = false;
+        bool pax_generic_requires_v3 = false;
         for (uint64_t i = 0; i < col_count; i++) {
             auto& column = get_column(i);
-            if (is_pax_generic_string_type(column.type())) {
+            if (force_columnar || components::table::detail::is_explicit_pax_columnar_only_root_type(column.type())) {
+                auto persistent = column.checkpoint(partial_block_manager);
+                pointer.columnar_data_pointers[i] = std::move(persistent.data_pointers);
+            } else if (is_pax_generic_string_type(column.type())) {
                 pax_generic_columns.push_back(i);
             } else if (is_pax_generic_struct_type(column.type())) {
                 if (!is_supported_pax_generic_column_type(column.type())) {
@@ -2399,7 +2714,15 @@ namespace components::table {
                 }
                 pax_generic_columns.push_back(i);
                 pax_generic_requires_v2 = true;
-            } else if (is_pax_fixed_integer_type(column.type())) {
+            } else if (is_pax_generic_collection_type(column.type())) {
+                if (!is_supported_pax_generic_column_type(column.type())) {
+                    auto persistent = column.checkpoint(partial_block_manager);
+                    pointer.columnar_data_pointers[i] = std::move(persistent.data_pointers);
+                    continue;
+                }
+                pax_generic_columns.push_back(i);
+                pax_generic_requires_v3 = true;
+            } else if (is_pax_fixed_scalar_type(column.type())) {
                 pax_fixed_columns.push_back(i);
             } else {
                 auto persistent = column.checkpoint(partial_block_manager);
@@ -2420,7 +2743,7 @@ namespace components::table {
             }
 
             storage::pax_generic_row_group_layout_t pax_layout;
-            pax_layout.version = pax_generic_requires_v2 ? 2 : 1;
+            pax_layout.version = pax_generic_requires_v3 ? 3 : (pax_generic_requires_v2 ? 2 : 1);
             pax_layout.rows_per_page = PAX_GENERIC_ROWS_PER_PAGE;
 
             for (uint64_t row_offset = 0; row_offset < pointer.tuple_count; row_offset += PAX_GENERIC_ROWS_PER_PAGE) {
@@ -2491,7 +2814,7 @@ namespace components::table {
         }
 
         storage::pax_fixed_row_group_layout_t pax_layout;
-        pax_layout.version = 2;
+        pax_layout.version = 3;
         pax_layout.rows_per_page = PAX_FIXED_ROWS_PER_PAGE;
 
         for (uint64_t row_offset = 0; row_offset < pointer.tuple_count; row_offset += PAX_FIXED_ROWS_PER_PAGE) {
@@ -2539,6 +2862,61 @@ namespace components::table {
             columns_[i]->initialize_column(pcd);
         }
 
+        if (layout_kind_ == storage::row_group_layout_kind::PAX_FIXED && pax_fixed_layout_.has_value()) {
+            if (!is_supported_pax_fixed_layout_version(pax_fixed_layout_->version)) {
+                throw std::logic_error("unsupported pax_fixed layout version");
+            }
+
+            for (uint64_t column_index = 0; column_index < min_count; column_index++) {
+                auto* standard_column = dynamic_cast<standard_column_data_t*>(columns_[column_index].get());
+                if (!standard_column) {
+                    continue;
+                }
+
+                auto validity_lock = standard_column->validity.data_.lock();
+                for (uint64_t page_index = 0; page_index < pax_fixed_layout_->pages.size(); page_index++) {
+                    const auto& page = pax_fixed_layout_->pages[page_index];
+                    const auto* slice = find_pax_fixed_slice(page, static_cast<uint32_t>(column_index));
+                    if (!slice) {
+                        continue;
+                    }
+
+                    auto* validity_segment = standard_column->validity.data_.segment_at(validity_lock,
+                                                                                        static_cast<int64_t>(page_index));
+                    if (!validity_segment) {
+                        throw std::logic_error("missing validity segment for pax_fixed load");
+                    }
+
+                    auto validity_handle = block_manager().buffer_manager.pin(validity_segment->block);
+                    auto* target_ptr = validity_handle.ptr() + validity_segment->block_offset();
+                    switch (slice->validity_kind) {
+                        case storage::pax_fixed_validity_kind::ALL_VALID:
+                            std::memset(target_ptr, 0xFF, validity_segment->segment_size());
+                            break;
+                        case storage::pax_fixed_validity_kind::ALL_INVALID:
+                            std::memset(target_ptr, 0, validity_segment->segment_size());
+                            break;
+                        case storage::pax_fixed_validity_kind::BITMASK: {
+                            if (!slice->validity_data_pointer.has_value()) {
+                                throw std::logic_error("missing pax_fixed validity payload");
+                            }
+                            auto source_block =
+                                block_manager().register_block(slice->validity_data_pointer->block_pointer.block_id);
+                            auto source_handle = block_manager().buffer_manager.pin(source_block);
+                            auto* source_ptr =
+                                source_handle.ptr() + slice->validity_data_pointer->block_pointer.offset;
+                            std::memcpy(target_ptr, source_ptr, slice->validity_data_pointer->segment_size);
+                            break;
+                        }
+                        case storage::pax_fixed_validity_kind::RLE:
+                        default:
+                            throw std::logic_error("invalid pax_fixed validity codec");
+                    }
+                }
+            }
+            return;
+        }
+
         if (layout_kind_ != storage::row_group_layout_kind::PAX_GENERIC || !pax_generic_layout_.has_value()) {
             return;
         }
@@ -2553,6 +2931,17 @@ namespace components::table {
             storage::pax_generic_codec_kind codec_kind;
             std::optional<storage::pax_block_payload_t> payload;
         };
+
+        struct pax_generic_window_t {
+            uint64_t row_start;
+            uint32_t tuple_count;
+        };
+
+        std::vector<pax_generic_window_t> root_windows;
+        root_windows.reserve(pax_generic_layout_->pages.size());
+        for (const auto& page : pax_generic_layout_->pages) {
+            root_windows.push_back({static_cast<uint64_t>(start) + page.row_offset_in_group, page.tuple_count});
+        }
 
         auto collect_generic_slices =
             [&](uint32_t root_column_index,
@@ -2570,18 +2959,26 @@ namespace components::table {
 
         auto collect_generic_validity_infos =
             [&](uint32_t root_column_index,
-                const std::vector<uint16_t>& field_path) -> std::vector<pax_generic_validity_page_info_t> {
+                const std::vector<uint16_t>& field_path,
+                const std::vector<pax_generic_window_t>& windows) -> std::vector<pax_generic_validity_page_info_t> {
             std::vector<pax_generic_validity_page_info_t> infos;
+            infos.reserve(windows.size());
+            uint64_t window_index = 0;
             for (const auto& page : pax_generic_layout_->pages) {
                 const auto* slice =
                     find_pax_generic_slice(page, root_column_index, storage::pax_generic_slice_kind::VALIDITY, field_path);
                 if (!slice) {
                     continue;
                 }
-                infos.push_back({static_cast<uint64_t>(start) + page.row_offset_in_group,
-                                 page.tuple_count,
-                                 slice->codec_kind,
-                                 slice->payload});
+                if (window_index >= windows.size()) {
+                    throw std::logic_error("pax_generic validity window count mismatch");
+                }
+                infos.push_back(
+                    {windows[window_index].row_start, windows[window_index].tuple_count, slice->codec_kind, slice->payload});
+                window_index++;
+            }
+            if (window_index != windows.size()) {
+                throw std::logic_error("missing pax_generic validity slices for expected windows");
             }
             return infos;
         };
@@ -2664,20 +3061,30 @@ namespace components::table {
             }
         };
 
-        std::function<void(column_data_t&, uint32_t, const std::vector<uint16_t>&, bool)> load_generic_column;
+        std::function<void(column_data_t&,
+                           uint32_t,
+                           const std::vector<uint16_t>&,
+                           bool,
+                           const std::vector<pax_generic_window_t>&)>
+            load_generic_column;
         load_generic_column = [&](column_data_t& column,
                                   uint32_t root_column_index,
                                   const std::vector<uint16_t>& field_path,
-                                  bool is_top_level) {
+                                  bool is_top_level,
+                                  const std::vector<pax_generic_window_t>& windows) {
             if (is_pax_generic_struct_type(column.type())) {
                 auto* struct_column = dynamic_cast<struct_column_data_t*>(&column);
                 if (!struct_column) {
                     throw std::logic_error("pax_generic struct column is not a struct column");
                 }
 
-                auto validity_infos = collect_generic_validity_infos(root_column_index, field_path);
+                auto validity_infos = collect_generic_validity_infos(root_column_index, field_path, windows);
                 apply_validity_infos(struct_column->validity, validity_infos, true);
-                struct_column->count_ = count.load();
+                uint64_t struct_count = 0;
+                for (const auto& window : windows) {
+                    struct_count += window.tuple_count;
+                }
+                struct_column->count_ = struct_count;
 
                 for (uint16_t child_index = 0; child_index < struct_column->sub_columns.size(); child_index++) {
                     auto child_path = field_path;
@@ -2685,7 +3092,8 @@ namespace components::table {
                     load_generic_column(*struct_column->sub_columns[child_index],
                                         root_column_index,
                                         child_path,
-                                        false);
+                                        false,
+                                        windows);
                 }
                 return;
             }
@@ -2719,7 +3127,7 @@ namespace components::table {
                 }
 
                 register_string_blocks(*standard_column, value_slices);
-                auto validity_infos = collect_generic_validity_infos(root_column_index, field_path);
+                auto validity_infos = collect_generic_validity_infos(root_column_index, field_path, windows);
                 apply_validity_infos(standard_column->validity, validity_infos, false);
                 return;
             }
@@ -2750,8 +3158,109 @@ namespace components::table {
                 }
                 standard_column->initialize_column(pcd);
 
-                auto validity_infos = collect_generic_validity_infos(root_column_index, field_path);
+                auto validity_infos = collect_generic_validity_infos(root_column_index, field_path, windows);
                 apply_validity_infos(standard_column->validity, validity_infos, false);
+                return;
+            }
+
+            if (is_pax_generic_collection_type(column.type())) {
+                if (column.type().type() == types::logical_type::LIST) {
+                    auto* list_column = dynamic_cast<list_column_data_t*>(&column);
+                    if (!list_column) {
+                        throw std::logic_error("pax_generic list column is not a list column");
+                    }
+
+                    auto value_slices =
+                        collect_generic_slices(root_column_index, field_path, storage::pax_generic_slice_kind::FIXED_VALUES);
+                    if (value_slices.empty()) {
+                        throw std::logic_error("missing pax_generic list offset slices");
+                    }
+
+                    persistent_column_data_t pcd(list_column->resource());
+                    pcd.data_pointers.reserve(value_slices.size());
+                    for (const auto* slice : value_slices) {
+                        if (slice->codec_kind != storage::pax_generic_codec_kind::FIXED_PLAIN ||
+                            !slice->payload.has_value() ||
+                            (pax_generic_layout_->version >= 2 && slice->fixed_logical_type != types::logical_type::UBIGINT)) {
+                            throw std::logic_error("invalid pax_generic list offset slice payload");
+                        }
+                        pcd.data_pointers.push_back(slice->payload->main_pointer);
+                    }
+                    list_column->initialize_column(pcd);
+
+                    auto validity_infos = collect_generic_validity_infos(root_column_index, field_path, windows);
+                    apply_validity_infos(list_column->validity, validity_infos, true);
+
+                    std::vector<pax_generic_window_t> child_windows;
+                    child_windows.reserve(windows.size());
+                    for (const auto& window : windows) {
+                        if (window.tuple_count == 0) {
+                            continue;
+                        }
+                        const auto row_start = static_cast<int64_t>(window.row_start);
+                        const auto previous_offset =
+                            row_start == list_column->start() ? 0 : list_column->list_offset(row_start - 1);
+                        const auto current_offset =
+                            list_column->list_offset(row_start + static_cast<int64_t>(window.tuple_count) - 1);
+                        const auto child_tuple_count = static_cast<uint32_t>(current_offset - previous_offset);
+                        if (child_tuple_count == 0) {
+                            continue;
+                        }
+                        child_windows.push_back({static_cast<uint64_t>(list_column->start()) + previous_offset,
+                                                 child_tuple_count});
+                    }
+
+                    if (!child_windows.empty()) {
+                        auto child_path = field_path;
+                        child_path.push_back(0);
+                        load_generic_column(*list_column->child_column,
+                                            root_column_index,
+                                            child_path,
+                                            false,
+                                            child_windows);
+                    } else {
+                        list_column->child_column->count_ = 0;
+                    }
+                    return;
+                }
+
+                auto* array_column = dynamic_cast<array_column_data_t*>(&column);
+                if (!array_column) {
+                    throw std::logic_error("pax_generic array column is not an array column");
+                }
+
+                auto validity_infos = collect_generic_validity_infos(root_column_index, field_path, windows);
+                apply_validity_infos(array_column->validity, validity_infos, true);
+                uint64_t array_count = 0;
+                for (const auto& window : windows) {
+                    array_count += window.tuple_count;
+                }
+                array_column->count_ = array_count;
+
+                std::vector<pax_generic_window_t> child_windows;
+                child_windows.reserve(windows.size());
+                const auto array_size = static_cast<uint64_t>(array_column->array_size());
+                for (const auto& window : windows) {
+                    if (window.tuple_count == 0) {
+                        continue;
+                    }
+                    child_windows.push_back(
+                        {static_cast<uint64_t>(array_column->start()) +
+                             (window.row_start - static_cast<uint64_t>(array_column->start())) * array_size,
+                         static_cast<uint32_t>(static_cast<uint64_t>(window.tuple_count) * array_size)});
+                }
+
+                if (!child_windows.empty()) {
+                    auto child_path = field_path;
+                    child_path.push_back(0);
+                    load_generic_column(*array_column->child_column,
+                                        root_column_index,
+                                        child_path,
+                                        false,
+                                        child_windows);
+                } else {
+                    array_column->child_column->count_ = 0;
+                }
                 return;
             }
 
@@ -2768,7 +3277,8 @@ namespace components::table {
                 load_generic_column(*columns_[column_index],
                                     slice.column_index,
                                     empty_pax_generic_field_path(),
-                                    true);
+                                    true,
+                                    root_windows);
                 initialized_roots[column_index] = true;
             }
         }

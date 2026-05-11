@@ -53,6 +53,8 @@ namespace components::table {
                                      std::vector<uint64_t> col_path,
                                      std::vector<column_segment_info>& result) override;
 
+        uint64_t list_offset(int64_t row_idx);
+
     private:
         uint64_t fetch_list_offset(int64_t row_idx);
     };

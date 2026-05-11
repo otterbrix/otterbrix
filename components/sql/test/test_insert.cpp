@@ -128,6 +128,27 @@ TEST_CASE("components::sql::insert_into") {
         REQUIRE(chunk.value(2, 4) == components::types::logical_value_t(&arena_resource, 5));
     }
 
+    SECTION("insert into multi-documents with null-first string column") {
+        auto select = linitial(raw_parser(&arena_resource,
+                                          "INSERT INTO TestCollection (id, note) VALUES "
+                                          "(1, NULL), "
+                                          "(2, 'note_2'), "
+                                          "(3, NULL);"));
+        auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize();
+        REQUIRE(!result.has_error());
+        auto node = result.value().node;
+        REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
+        const auto& chunk =
+            reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
+        REQUIRE(chunk.size() == 3);
+        REQUIRE(chunk.value(0, 0) == components::types::logical_value_t(&arena_resource, 1));
+        REQUIRE(chunk.value(1, 0).is_null());
+        REQUIRE(chunk.data[1].type().type() == components::types::logical_type::STRING_LITERAL);
+        REQUIRE(chunk.value(0, 1) == components::types::logical_value_t(&arena_resource, 2));
+        REQUIRE(chunk.value(1, 1) == components::types::logical_value_t(&arena_resource, "note_2"));
+        REQUIRE(chunk.value(1, 2).is_null());
+    }
+
     SECTION("insert from select") {
         auto select = linitial(raw_parser(&arena_resource, R"_(INSERT INTO table2 (column1, column2, column3)
 SELECT column1, column2, column3

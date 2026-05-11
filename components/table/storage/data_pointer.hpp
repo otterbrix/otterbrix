@@ -34,7 +34,12 @@ namespace components::table::storage {
         UINT8 = 4,
         UINT16 = 5,
         UINT32 = 6,
-        UINT64 = 7
+        UINT64 = 7,
+        BOOL = 8,
+        INT128 = 9,
+        UINT128 = 10,
+        FLOAT = 11,
+        DOUBLE = 12
     };
 
     enum class pax_fixed_validity_kind : uint8_t
@@ -93,7 +98,7 @@ namespace components::table::storage {
     };
 
     struct pax_fixed_row_group_layout_t {
-        uint16_t version{1};
+        uint16_t version{3};
         uint16_t rows_per_page{0};
         std::vector<pax_fixed_page_t> pages;
 

@@ -22,3 +22,12 @@ target_link_libraries(
         ${PROJECT_NAME} PRIVATE
         cpp_otterbrix
 )
+
+file(COPY
+        ${CMAKE_CURRENT_SOURCE_DIR}/../clickbench
+        ${CMAKE_CURRENT_SOURCE_DIR}/../job
+        ${CMAKE_CURRENT_SOURCE_DIR}/../ldbc
+        ${CMAKE_CURRENT_SOURCE_DIR}/../pax
+        ${CMAKE_CURRENT_SOURCE_DIR}/../tpcds
+        DESTINATION ${CMAKE_CURRENT_BINARY_DIR}/benchmarks
+)

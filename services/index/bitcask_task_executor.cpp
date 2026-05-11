@@ -1,8 +1,8 @@
 #include "bitcask_task_executor.hpp"
 
 namespace services::index {
-    bitcask_task_executor_t::bitcask_task_executor_t()
-        : worker_([this]() { worker_loop_(); }) {
+    bitcask_task_executor_t::bitcask_task_executor_t() {
+        worker_ = std::thread([this]() { worker_loop_(); });
     }
 
     bitcask_task_executor_t::~bitcask_task_executor_t() {

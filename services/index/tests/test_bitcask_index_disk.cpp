@@ -120,7 +120,7 @@ TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen") {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
-    REQUIRE(count_bitcask_data_files(path) >= 1);
+    REQUIRE(count_bitcask_data_files(path) == 1);
 
     {
         auto index = bitcask_index_disk_t(path,
@@ -159,7 +159,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_immutable_segments") {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
-    REQUIRE(count_bitcask_data_files(path) >= 2);
+    REQUIRE(count_bitcask_data_files(path) == 2);
 
     {
         auto index = bitcask_index_disk_t(path, &resource);
@@ -396,7 +396,7 @@ TEST_CASE("services::index::bitcask_index_disk::drop_removes_storage_and_recreat
         index.insert(logical_value_t(&resource, 99l), 999);
         index.force_flush();
         REQUIRE(std::filesystem::exists(path));
-        REQUIRE(count_bitcask_data_files(path) >= 1);
+        REQUIRE(count_bitcask_data_files(path) == 1);
 
         index.drop();
         REQUIRE_FALSE(std::filesystem::exists(path));

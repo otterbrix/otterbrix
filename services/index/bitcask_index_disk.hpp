@@ -58,7 +58,6 @@ namespace services::index {
         struct keydir_entry_t {
             uint64_t segment_id{0};
             uint64_t value_offset{0};
-            uint64_t value_size{0};
             uint64_t timestamp{0};
         };
 

@@ -364,7 +364,6 @@ namespace services::index {
                                  rows,
                                  keydir_entry_t{segment.id,
                                                 payload_offset,
-                                                static_cast<uint64_t>(header.payload_size),
                                                 header.timestamp});
                 } else {
                     break;
@@ -507,19 +506,29 @@ namespace services::index {
                 continue;
             }
 
+            if (entry.value_offset < sizeof(record_header_t)) {
+                throw std::runtime_error("invalid payload offset in keydir during merge");
+            }
+            const uint64_t header_offset = entry.value_offset - sizeof(record_header_t);
+            record_header_t source_header{};
+            if (!segment_it->second->read(&source_header, sizeof(source_header), header_offset)) {
+                throw std::runtime_error("failed to read immutable bitcask record header during merge");
+            }
+
             std::pmr::string payload(resource_);
-            payload.resize(static_cast<size_t>(entry.value_size));
-            if (entry.value_size != 0 &&
-                !segment_it->second->read(payload.data(), entry.value_size, entry.value_offset)) {
+            payload.resize(static_cast<size_t>(source_header.payload_size));
+            if (source_header.payload_size != 0 &&
+                !segment_it->second->read(payload.data(), source_header.payload_size, entry.value_offset)) {
                 throw std::runtime_error("failed to read immutable bitcask payload during merge");
             }
 
             const auto offset = merged_file->seek_position();
             write_record(*merged_file, static_cast<uint8_t>(record_kind_t::value), entry.timestamp, payload);
 
-            updated_entries.emplace(
-                value_t(resource_, key),
-                keydir_entry_t{merged_segment_id, offset + sizeof(record_header_t), entry.value_size, entry.timestamp});
+            updated_entries.emplace(value_t(resource_, key),
+                                    keydir_entry_t{merged_segment_id,
+                                                   offset + sizeof(record_header_t),
+                                                   entry.timestamp});
         }
 
         merged_file->sync();
@@ -571,7 +580,6 @@ namespace services::index {
                      rows,
                      keydir_entry_t{active_segment_id_,
                                     offset + sizeof(record_header_t),
-                                    static_cast<uint64_t>(payload.size()),
                                     next_timestamp_});
         ++active_segment_records_;
     }

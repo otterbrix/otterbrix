@@ -17,7 +17,7 @@ fn fresh_dir() -> tempfile::TempDir {
 
 pub struct TestConn {
     pub conn: OtterbrixConnection,
-    _dir: tempfile::TempDir,
+    pub _dir: tempfile::TempDir,
 }
 
 pub async fn open_test_conn() -> TestConn {

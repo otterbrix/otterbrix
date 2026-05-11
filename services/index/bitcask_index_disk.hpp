@@ -13,6 +13,7 @@
 #include <map>
 #include <memory>
 #include <memory_resource>
+#include <atomic>
 #include <shared_mutex>
 #include <vector>
 
@@ -76,6 +77,7 @@ namespace services::index {
         void open_active_segment();
         void rotate_active_segment();
         void rotate_active_segment_if_needed();
+        uint64_t allocate_next_segment_id();
         void merge_immutable_segments();
         row_ids_t clone_rows(const row_ids_t& rows) const;
         row_ids_t current_rows(const value_t& key) const;
@@ -94,6 +96,7 @@ namespace services::index {
         ordered_index_t index_;
         std::map<value_t, keydir_entry_t, std::less<>> keydir_;
         uint64_t next_timestamp_{0};
+        std::atomic<uint64_t> next_segment_id_{1};
         uint64_t active_segment_id_{0};
         uint64_t active_segment_records_{0};
         uint64_t segment_record_limit_{default_segment_record_limit_};

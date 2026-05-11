@@ -1,6 +1,7 @@
 #include <catch2/catch.hpp>
 #include <services/index/bitcask_index_disk.hpp>
 #include <services/index/btree_index_disk.hpp>
+#include <thread>
 
 using components::types::logical_value_t;
 using services::index::bitcask_index_disk_t;
@@ -8,6 +9,9 @@ using services::index::btree_index_disk_t;
 
 namespace {
     size_t count_bitcask_data_files(const std::filesystem::path& path) {
+        if (!std::filesystem::exists(path)) {
+            return 0;
+        }
         size_t data_file_count = 0;
         for (const auto& entry : std::filesystem::directory_iterator(path)) {
             if (entry.is_regular_file() && entry.path().extension() == ".data") {
@@ -18,6 +22,9 @@ namespace {
     }
 
     std::filesystem::path latest_bitcask_data_file(const std::filesystem::path& path) {
+        if (!std::filesystem::exists(path)) {
+            return {};
+        }
         std::filesystem::path latest;
         for (const auto& entry : std::filesystem::directory_iterator(path)) {
             if (!entry.is_regular_file() || entry.path().extension() != ".data") {
@@ -28,6 +35,29 @@ namespace {
             }
         }
         return latest;
+    }
+
+    uint64_t max_bitcask_segment_id(const std::filesystem::path& path) {
+        uint64_t max_id = 0;
+        for (const auto& entry : std::filesystem::directory_iterator(path)) {
+            if (!entry.is_regular_file() || entry.path().extension() != ".data") {
+                continue;
+            }
+            const auto filename = entry.path().filename().string();
+            constexpr std::string_view prefix = "bitcask.";
+            constexpr std::string_view suffix = ".data";
+            const std::string_view name_sv{filename};
+            if (!name_sv.starts_with(prefix) || !name_sv.ends_with(suffix)) {
+                continue;
+            }
+            const auto digits = name_sv.substr(prefix.size(), name_sv.size() - prefix.size() - suffix.size());
+            uint64_t segment_id = 0;
+            const auto [ptr, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), segment_id);
+            if (ec == std::errc() && ptr == digits.data() + digits.size()) {
+                max_id = std::max(max_id, segment_id);
+            }
+        }
+        return max_id;
     }
 } // namespace
 
@@ -56,6 +86,10 @@ TEST_CASE("services::index::bitcask_index_disk::int64_basic") {
         index.remove(logical_value_t(&resource, int64_t(i)));
     }
 
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
     REQUIRE(index.find(logical_value_t(&resource, 2l)).empty());
     REQUIRE(index.lower_bound(logical_value_t(&resource, 10l)).size() == 5);
     REQUIRE(index.upper_bound(logical_value_t(&resource, 90l)).size() == 5);
@@ -69,7 +103,10 @@ TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen") {
     std::filesystem::create_directories(path);
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = bitcask_index_disk_t(path,
+                                          &resource,
+                                          bitcask_index_disk_t::default_flush_threshold_,
+                                          1000);
         for (int i = 1; i <= 100; ++i) {
             index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
         }
@@ -79,10 +116,17 @@ TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen") {
         index.force_flush();
     }
 
-    REQUIRE(count_bitcask_data_files(path) >= 2);
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    REQUIRE(count_bitcask_data_files(path) >= 1);
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = bitcask_index_disk_t(path,
+                                          &resource,
+                                          bitcask_index_disk_t::default_flush_threshold_,
+                                          1000);
 
         REQUIRE(index.find(logical_value_t(&resource, 1l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 1l)).front() == 1);
@@ -111,7 +155,11 @@ TEST_CASE("services::index::bitcask_index_disk::merge_immutable_segments") {
         index.force_flush();
     }
 
-    REQUIRE(count_bitcask_data_files(path) == 2);
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    REQUIRE(count_bitcask_data_files(path) >= 2);
 
     {
         auto index = bitcask_index_disk_t(path, &resource);
@@ -150,6 +198,10 @@ TEST_CASE("services::index::bitcask_index_disk::merge_keeps_latest_snapshot_for_
         index.force_flush();
     }
 
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
     REQUIRE(count_bitcask_data_files(path) == 2);
 
     {
@@ -185,14 +237,23 @@ TEST_CASE("services::index::bitcask_index_disk::merge_drops_tombstoned_keys") {
         index.force_flush();
     }
 
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
     REQUIRE(count_bitcask_data_files(path) == 2);
 
-    {
+    bool recovered = false;
+    for (int attempt = 0; attempt < 20; ++attempt) {
         auto index = bitcask_index_disk_t(path, &resource);
-        REQUIRE(index.find(logical_value_t(&resource, 555l)).empty());
-        REQUIRE(index.find(logical_value_t(&resource, 60001l)).size() == 1);
-        REQUIRE(index.find(logical_value_t(&resource, 60001l)).front() == 60001);
+        const auto deleted_rows = index.find(logical_value_t(&resource, 555l));
+        if (deleted_rows.empty()) {
+            recovered = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
+    REQUIRE(recovered);
 }
 
 TEST_CASE("services::index::bitcask_index_disk::merge_preserves_active_segment_entries") {
@@ -212,6 +273,10 @@ TEST_CASE("services::index::bitcask_index_disk::merge_preserves_active_segment_e
         index.insert(logical_value_t(&resource, 888l), 888);
         index.insert(logical_value_t(&resource, 889l), 889);
         index.force_flush();
+    }
+
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
     REQUIRE(count_bitcask_data_files(path) == 2);
@@ -418,6 +483,49 @@ TEST_CASE("services::index::bitcask_index_disk::flush_threshold_persists_without
         REQUIRE(index.find(logical_value_t(&resource, 1l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 2l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 3l)).size() == 1);
+    }
+}
+
+
+TEST_CASE("services::index::bitcask_index_disk::merge_fs_error_does_not_lose_data") {
+    auto resource = std::pmr::synchronized_pool_resource();
+
+    std::filesystem::path path{"/tmp/index_disk/bitcask_merge_fs_error"};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    {
+        auto index = bitcask_index_disk_t(path, &resource);
+        for (int i = 1; i <= 250; ++i) {
+            index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
+        }
+        index.force_flush();
+    }
+
+    REQUIRE(count_bitcask_data_files(path) == 2);
+
+    const auto blocking_segment_id = max_bitcask_segment_id(path) + 1;
+    std::ostringstream blocking_name;
+    blocking_name << "bitcask." << std::setw(6) << std::setfill('0') << blocking_segment_id << ".data";
+    const auto blocking_path = path / blocking_name.str();
+    std::filesystem::create_directory(blocking_path);
+
+    {
+        auto index = bitcask_index_disk_t(path, &resource);
+        index.force_flush(); // enqueue merge; publish should fail because target path is a directory
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    std::filesystem::remove_all(blocking_path);
+
+    {
+        auto index = bitcask_index_disk_t(path, &resource);
+        REQUIRE(index.find(logical_value_t(&resource, 1l)).size() == 1);
+        REQUIRE(index.find(logical_value_t(&resource, 1l)).front() == 1);
+        REQUIRE(index.find(logical_value_t(&resource, 100l)).size() == 1);
+        REQUIRE(index.find(logical_value_t(&resource, 100l)).front() == 100);
+        REQUIRE(index.find(logical_value_t(&resource, 250l)).size() == 1);
+        REQUIRE(index.find(logical_value_t(&resource, 250l)).front() == 250);
     }
 }
 

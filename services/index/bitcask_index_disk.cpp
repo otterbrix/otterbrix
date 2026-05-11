@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cstring>
+#include <fstream>
 #include <mutex>
 #include <iomanip>
 #include <sstream>
@@ -27,6 +28,7 @@ namespace services::index {
     namespace {
         constexpr const char* segment_prefix = "bitcask.";
         constexpr const char* segment_suffix = ".data";
+        constexpr const char* current_segment_file = "CURRENT";
         constexpr unsigned SEGMENT_ID_WIDTH = 6;
 
         struct record_header_t {
@@ -196,6 +198,10 @@ namespace services::index {
             return segment_file_path(directory, segment_id).string() + ".merge";
         }
 
+        std::filesystem::path current_segment_path(const std::filesystem::path& directory) {
+            return directory / current_segment_file;
+        }
+
         bool parse_segment_id(const std::filesystem::path& path, uint64_t& segment_id) {
             const auto filename = path.filename().string();
             const std::string_view filename_sv{filename};
@@ -212,6 +218,34 @@ namespace services::index {
 
             const auto [ptr, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), segment_id);
             return ec == std::errc() && ptr == digits.data() + digits.size();
+        }
+
+        bool read_current_segment_id(const std::filesystem::path& directory, uint64_t& segment_id) {
+            std::ifstream input(current_segment_path(directory));
+            if (!input.good()) {
+                return false;
+            }
+            input >> segment_id;
+            return !input.fail();
+        }
+
+        void write_current_segment_id(const std::filesystem::path& directory, uint64_t segment_id) {
+            const auto current_path = current_segment_path(directory);
+            const auto temp_path = current_path.string() + ".tmp";
+            {
+                std::ofstream output(temp_path, std::ios::trunc);
+                if (!output.good()) {
+                    throw std::runtime_error("failed to write CURRENT temp file");
+                }
+                output << segment_id;
+                output.flush();
+                if (!output.good()) {
+                    throw std::runtime_error("failed to flush CURRENT temp file");
+                }
+            }
+            std::error_code ec;
+            std::filesystem::remove(current_path, ec);
+            std::filesystem::rename(temp_path, current_path);
         }
 
         void write_record(core::filesystem::file_handle_t& file,
@@ -257,9 +291,6 @@ namespace services::index {
     }
 
     bitcask_index_disk_t::~bitcask_index_disk_t() {
-        if (task_executor_) {
-            task_executor_->stop();
-        }
         force_flush();
     }
 
@@ -277,6 +308,7 @@ namespace services::index {
         auto segments = collect_segments();
         if (segments.empty()) {
             active_segment_id_ = 1;
+            next_segment_id_.store(2);
             active_segment_records_ = 0;
             active_data_file_path_ = segment_file_path(path_, active_segment_id_);
             return;
@@ -343,14 +375,24 @@ namespace services::index {
             }
         }
 
-        const auto& last_segment = segments.back();
-        active_segment_id_ = last_segment.id;
-        active_segment_records_ = last_segment.record_count;
-        active_data_file_path_ = last_segment.path;
+        uint64_t configured_active_segment_id = 0;
+        const bool has_configured_active_segment = read_current_segment_id(path_, configured_active_segment_id);
+
+        const auto active_it = std::find_if(segments.begin(), segments.end(), [&](const auto& segment) {
+            return has_configured_active_segment && segment.id == configured_active_segment_id;
+        });
+        const auto& active_segment = active_it == segments.end() ? segments.back() : *active_it;
+        active_segment_id_ = active_segment.id;
+        next_segment_id_.store(segments.back().id + 1);
+        active_segment_records_ = active_segment.record_count;
+        active_data_file_path_ = active_segment.path;
     }
 
     std::vector<bitcask_index_disk_t::segment_info_t> bitcask_index_disk_t::collect_segments() const {
         std::vector<segment_info_t> segments;
+        if (!std::filesystem::exists(path_) || !std::filesystem::is_directory(path_)) {
+            return segments;
+        }
         for (const auto& entry : std::filesystem::directory_iterator(path_)) {
             if (!entry.is_regular_file()) {
                 continue;
@@ -368,7 +410,7 @@ namespace services::index {
 
     void bitcask_index_disk_t::open_active_segment() {
         if (active_data_file_path_.empty()) {
-            active_segment_id_ = active_segment_id_ == 0 ? 1 : active_segment_id_;
+            active_segment_id_ = active_segment_id_ == 0 ? allocate_next_segment_id() : active_segment_id_;
             active_data_file_path_ = segment_file_path(path_, active_segment_id_);
         }
 
@@ -380,15 +422,23 @@ namespace services::index {
             throw std::runtime_error("failed to open bitcask data file: " + active_data_file_path_.string());
         }
         file_->seek(file_->file_size());
+        write_current_segment_id(path_, active_segment_id_);
+    }
+
+    uint64_t bitcask_index_disk_t::allocate_next_segment_id() {
+        return next_segment_id_.fetch_add(1);
     }
 
     void bitcask_index_disk_t::rotate_active_segment() {
         force_flush_unlocked();
         file_.reset();
-        ++active_segment_id_;
+        active_segment_id_ = allocate_next_segment_id();
         active_segment_records_ = 0;
         active_data_file_path_ = segment_file_path(path_, active_segment_id_);
         open_active_segment();
+        enqueue_task([this]() {
+            merge_immutable_segments();
+        });
     }
 
     void bitcask_index_disk_t::rotate_active_segment_if_needed() {
@@ -398,7 +448,6 @@ namespace services::index {
     }
 
     void bitcask_index_disk_t::merge_immutable_segments() {
-
         std::unique_lock lock(mutex_);
         uint64_t last_active_segment_id = active_segment_id_;
         std::map<value_t, keydir_entry_t, std::less<>> last_keydir = keydir_;
@@ -408,7 +457,7 @@ namespace services::index {
         std::vector<segment_info_t> immutable_segments;
         immutable_segments.reserve(segments.size());
         for (const auto& segment : segments) {
-            if (segment.id != last_active_segment_id) {
+            if (segment.id < last_active_segment_id) {
                 immutable_segments.push_back(segment);
             }
         }
@@ -416,7 +465,7 @@ namespace services::index {
             return;
         }
 
-        const auto merged_segment_id = immutable_segments.front().id;
+        const auto merged_segment_id = allocate_next_segment_id();
         const auto merged_path = segment_file_path(path_, merged_segment_id);
         const auto temp_path = merge_temp_file_path(path_, merged_segment_id);
         remove_file(fs_, temp_path);
@@ -442,7 +491,7 @@ namespace services::index {
 
         live_entries.reserve(last_keydir.size());
         for (const auto& [key, entry] : last_keydir) {
-            if (entry.segment_id == last_active_segment_id) {
+            if (entry.segment_id >= last_active_segment_id) {
                 continue;
             }
             if (!segment_files.contains(entry.segment_id)) {
@@ -477,16 +526,16 @@ namespace services::index {
         merged_file.reset();
 
         lock.lock();
-        for (const auto& segment : immutable_segments) {
-            remove_file(fs_, segment.path);
-        }
         if (!move_files(fs_, temp_path, merged_path)) {
             throw std::runtime_error("failed to publish merged bitcask data file: " + merged_path.string());
+        }
+        for (const auto& segment : immutable_segments) {
+            remove_file(fs_, segment.path);
         }
 
         for (auto& [key, entry] : updated_entries) {
             auto keydir_it = keydir_.find(key);
-            if (keydir_it != keydir_.end() && keydir_it->second.segment_id != active_segment_id_) {
+            if (keydir_it != keydir_.end() && keydir_it->second.segment_id < last_active_segment_id) {
                 keydir_it->second = entry;
             }
         }
@@ -622,9 +671,6 @@ namespace services::index {
     void bitcask_index_disk_t::force_flush_unlocked() {
         if (is_dirty() && file_) {
             file_->sync();
-            enqueue_task([this]() {
-                merge_immutable_segments();
-            });
             reset_flush_state();
         }
     }
@@ -702,6 +748,7 @@ namespace services::index {
         keydir_.clear();
         reset_flush_state();
         next_timestamp_ = 0;
+        next_segment_id_.store(1);
         active_segment_id_ = 0;
         active_segment_records_ = 0;
         active_data_file_path_.clear();

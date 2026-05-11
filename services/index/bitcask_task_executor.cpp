@@ -1,9 +1,8 @@
 #include "bitcask_task_executor.hpp"
 
 namespace services::index {
-
     bitcask_task_executor_t::bitcask_task_executor_t()
-        : worker_([this](std::stop_token) { worker_loop_(); }) {
+        : worker_([this]() { worker_loop_(); }) {
     }
 
     bitcask_task_executor_t::~bitcask_task_executor_t() {
@@ -22,14 +21,26 @@ namespace services::index {
     }
 
     void bitcask_task_executor_t::stop() {
+        std::thread local_worker;
         {
             std::lock_guard<std::mutex> guard(queue_mutex_);
+            if (stop_worker_flag_) {
+                return;
+            }
             stop_worker_flag_ = true;
+            local_worker = std::move(worker_);
         }
         queue_cv_.notify_all();
-        if (worker_.joinable()) {
-            worker_.request_stop();
-            worker_.join();
+        if (local_worker.joinable()) {
+            if (local_worker.get_id() == std::this_thread::get_id()) {
+                local_worker.detach();
+                return;
+            }
+            try {
+                local_worker.join();
+            } catch (const std::system_error&) {
+                // Stop path must never terminate the process.
+            }
         }
     }
 
@@ -45,7 +56,11 @@ namespace services::index {
                 task = std::move(tasks_.front());
                 tasks_.pop();
             }
-            task();
+            try {
+                task();
+            } catch (...) {
+                // Background maintenance must not crash the process.
+            }
         }
     }
 

@@ -24,7 +24,7 @@ namespace services::index {
     private:
         void worker_loop_();
 
-        std::jthread worker_;
+        std::thread worker_;
         std::mutex queue_mutex_;
         std::condition_variable queue_cv_;
         std::queue<std::function<void()>> tasks_;

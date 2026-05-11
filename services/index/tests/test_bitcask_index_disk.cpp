@@ -243,17 +243,10 @@ TEST_CASE("services::index::bitcask_index_disk::merge_drops_tombstoned_keys") {
 
     REQUIRE(count_bitcask_data_files(path) == 2);
 
-    bool recovered = false;
-    for (int attempt = 0; attempt < 20; ++attempt) {
-        auto index = bitcask_index_disk_t(path, &resource);
-        const auto deleted_rows = index.find(logical_value_t(&resource, 555l));
-        if (deleted_rows.empty()) {
-            recovered = true;
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    }
-    REQUIRE(recovered);
+    auto index = bitcask_index_disk_t(path, &resource);
+    REQUIRE(index.find(logical_value_t(&resource, 555l)).empty());
+    REQUIRE(index.find(logical_value_t(&resource, 60001l)).size() == 1);
+    REQUIRE(index.find(logical_value_t(&resource, 60001l)).front() == 60001);
 }
 
 TEST_CASE("services::index::bitcask_index_disk::merge_preserves_active_segment_entries") {

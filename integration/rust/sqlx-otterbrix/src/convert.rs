@@ -155,7 +155,7 @@ pub(crate) fn materialize_cursor(cursor: &Cursor) -> Result<(Vec<OtterbrixRow>, 
     let column_names = std::sync::Arc::new(column_names);
 
     let mut rows = Vec::with_capacity(row_count);
-    for r in 0..cursor.size().max(0) {
+    for r in 0..row_count as i32 {
         let mut values = Vec::with_capacity(column_count);
         for c in 0..column_count {
             let cell = cursor.get_value(r, c as i32);
@@ -169,7 +169,7 @@ pub(crate) fn materialize_cursor(cursor: &Cursor) -> Result<(Vec<OtterbrixRow>, 
         });
     }
 
-    let rows_affected = estimate_rows_affected(cursor, column_count, row_count);
+    let rows_affected = cursor.size().max(0) as u64;
     Ok((rows, rows_affected))
 }
 
@@ -185,10 +185,209 @@ fn cell_to_value(cell: ObValue, col_logical: Option<LogicalType>) -> OtterbrixVa
     }
 }
 
-fn estimate_rows_affected(cursor: &Cursor, column_count: usize, row_count: usize) -> u64 {
-    if column_count > 0 {
-        row_count as u64
-    } else {
-        (cursor.size().max(0) as u64).max(1)
+#[cfg(test)]
+mod placeholder_tests {
+    use super::{count_placeholders, rewrite_placeholders};
+
+    #[test]
+    fn rewrites_simple_sequence() {
+        assert_eq!(
+            rewrite_placeholders("SELECT * FROM t WHERE a = ? AND b = ?"),
+            "SELECT * FROM t WHERE a = $1 AND b = $2"
+        );
+    }
+
+    #[test]
+    fn ignores_question_marks_inside_single_quotes() {
+        assert_eq!(
+            rewrite_placeholders("SELECT * FROM t WHERE a = '?' AND b = ?"),
+            "SELECT * FROM t WHERE a = '?' AND b = $1"
+        );
+    }
+
+    #[test]
+    fn ignores_question_marks_inside_double_quotes() {
+        assert_eq!(
+            rewrite_placeholders(r#"SELECT "?" FROM t WHERE a = ?"#),
+            r#"SELECT "?" FROM t WHERE a = $1"#
+        );
+    }
+
+    #[test]
+    fn handles_doubled_single_quote_inside_string() {
+        assert_eq!(
+            rewrite_placeholders("SELECT * FROM t WHERE a = 'O''Brien' AND b = ?"),
+            "SELECT * FROM t WHERE a = 'O''Brien' AND b = $1"
+        );
+    }
+
+    #[test]
+    fn leaves_existing_dollar_placeholders_untouched() {
+        assert_eq!(
+            rewrite_placeholders("SELECT * FROM t WHERE a = $1 AND b = $2"),
+            "SELECT * FROM t WHERE a = $1 AND b = $2"
+        );
+    }
+
+    #[test]
+    fn count_matches_rewrite() {
+        let sql = "INSERT INTO t (a, b, c) VALUES (?, ?, ?)";
+        assert_eq!(count_placeholders(sql), 3);
+    }
+
+    #[test]
+    fn count_skips_placeholders_inside_strings() {
+        let sql = "SELECT '?' FROM t WHERE a = ? AND b = \"?\" AND c = ?";
+        assert_eq!(count_placeholders(sql), 2);
+    }
+
+    #[test]
+    fn count_zero_for_no_placeholders() {
+        assert_eq!(count_placeholders("SELECT 1"), 0);
+    }
+}
+
+#[cfg(test)]
+mod error_mapping_tests {
+    use super::map_otterbrix_error;
+    use otterbrix::Error as ObError;
+    use sqlx_core::error::Error;
+
+    #[test]
+    fn query_error_becomes_database_error_with_code_and_message() {
+        let err = map_otterbrix_error(ObError::Query {
+            code: 42,
+            message: "boom".to_owned(),
+        });
+        match err {
+            Error::Database(db_err) => {
+                assert_eq!(db_err.message(), "boom");
+                assert_eq!(db_err.code().as_deref(), Some("42"));
+            }
+            other => panic!("expected Error::Database, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn null_pointer_becomes_protocol_error() {
+        let err = map_otterbrix_error(ObError::NullPointer);
+        assert!(matches!(err, Error::Protocol(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn invalid_path_becomes_configuration_error() {
+        let err = map_otterbrix_error(ObError::InvalidPath("/x/y".into()));
+        assert!(matches!(err, Error::Configuration(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn type_mismatch_becomes_protocol_error() {
+        let err = map_otterbrix_error(ObError::TypeMismatch {
+            expected: "Int",
+            got: "String",
+        });
+        assert!(matches!(err, Error::Protocol(_)), "got {err:?}");
+    }
+}
+
+#[cfg(test)]
+mod arguments_to_params_tests {
+    use super::arguments_to_params;
+    use crate::arguments::OtterbrixArgumentValue;
+    use otterbrix::SqlParamValue;
+
+    #[test]
+    fn empty_list_yields_empty_vec() {
+        let params = arguments_to_params(&[]).expect("ok");
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn indices_start_from_one_and_are_sequential() {
+        let args = vec![
+            OtterbrixArgumentValue::Int64(10),
+            OtterbrixArgumentValue::Int64(20),
+            OtterbrixArgumentValue::Int64(30),
+        ];
+        let params = arguments_to_params(&args).expect("ok");
+        let indices: Vec<i32> = params.iter().map(|p| p.index).collect();
+        assert_eq!(indices, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn each_kind_maps_to_matching_sql_param_value() {
+        let args = vec![
+            OtterbrixArgumentValue::Null,
+            OtterbrixArgumentValue::Bool(true),
+            OtterbrixArgumentValue::Int64(-7),
+            OtterbrixArgumentValue::UInt64(42),
+            OtterbrixArgumentValue::Double(1.5),
+            OtterbrixArgumentValue::Str(std::borrow::Cow::Borrowed("hi")),
+        ];
+        let params = arguments_to_params(&args).expect("ok");
+        assert!(matches!(params[0].value, SqlParamValue::Null));
+        assert!(matches!(params[1].value, SqlParamValue::Bool(true)));
+        assert!(matches!(params[2].value, SqlParamValue::Int64(-7)));
+        assert!(matches!(params[3].value, SqlParamValue::UInt64(42)));
+        match params[4].value {
+            SqlParamValue::Double(v) => assert!((v - 1.5).abs() < 1e-9),
+            ref other => panic!("expected Double, got {other:?}"),
+        }
+        match &params[5].value {
+            SqlParamValue::Str(s) => assert_eq!(*s, "hi"),
+            other => panic!("expected Str, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod logical_to_type_info_tests {
+    use super::logical_to_type_info;
+    use crate::r#type::OtterbrixTypeInfo;
+    use otterbrix::{
+        LOGICAL_TYPE_BIGINT, LOGICAL_TYPE_BOOLEAN, LOGICAL_TYPE_DOUBLE, LOGICAL_TYPE_FLOAT,
+        LOGICAL_TYPE_INTEGER, LOGICAL_TYPE_NA, LOGICAL_TYPE_SMALLINT, LOGICAL_TYPE_STRING_LITERAL,
+        LOGICAL_TYPE_TINYINT, LOGICAL_TYPE_UBIGINT, LOGICAL_TYPE_UINTEGER, LOGICAL_TYPE_USMALLINT,
+        LOGICAL_TYPE_UTINYINT,
+    };
+
+    #[test]
+    fn maps_each_logical_to_expected_kind() {
+        let cases: &[(_, OtterbrixTypeInfo)] = &[
+            (LOGICAL_TYPE_BOOLEAN, OtterbrixTypeInfo::bool()),
+            (LOGICAL_TYPE_TINYINT, OtterbrixTypeInfo::integer()),
+            (LOGICAL_TYPE_SMALLINT, OtterbrixTypeInfo::integer()),
+            (LOGICAL_TYPE_INTEGER, OtterbrixTypeInfo::integer()),
+            (LOGICAL_TYPE_BIGINT, OtterbrixTypeInfo::integer()),
+            (LOGICAL_TYPE_UTINYINT, OtterbrixTypeInfo::unsigned()),
+            (LOGICAL_TYPE_USMALLINT, OtterbrixTypeInfo::unsigned()),
+            (LOGICAL_TYPE_UINTEGER, OtterbrixTypeInfo::unsigned()),
+            (LOGICAL_TYPE_UBIGINT, OtterbrixTypeInfo::unsigned()),
+            (LOGICAL_TYPE_FLOAT, OtterbrixTypeInfo::float()),
+            (LOGICAL_TYPE_DOUBLE, OtterbrixTypeInfo::float()),
+            (LOGICAL_TYPE_STRING_LITERAL, OtterbrixTypeInfo::text()),
+        ];
+        for (lt, expected) in cases {
+            let got = logical_to_type_info(Some(*lt));
+            assert_eq!(&got, expected, "wrong kind for {lt}");
+        }
+    }
+
+    #[test]
+    fn na_falls_back_to_text() {
+        let got = logical_to_type_info(Some(LOGICAL_TYPE_NA));
+        assert_eq!(got, OtterbrixTypeInfo::text());
+    }
+
+    #[test]
+    fn none_falls_back_to_text() {
+        let got = logical_to_type_info(None);
+        assert_eq!(got, OtterbrixTypeInfo::text());
+    }
+
+    #[test]
+    fn unknown_logical_falls_back_to_text() {
+        let got = logical_to_type_info(Some(9999));
+        assert_eq!(got, OtterbrixTypeInfo::text());
     }
 }

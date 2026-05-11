@@ -1,13 +1,15 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use futures_core::future::BoxFuture;
 use futures_core::stream::BoxStream;
 use futures_util::future;
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 use otterbrix::Database as ObDatabase;
+use parking_lot::Mutex;
 use sqlx_core::describe::Describe;
 use sqlx_core::error::Error;
 use sqlx_core::executor::{Execute, Executor};
+use sqlx_core::logger::QueryLogger;
 use sqlx_core::Either;
 
 use crate::arguments::OtterbrixArguments;
@@ -25,9 +27,7 @@ fn run_sql(
     maybe_args: Option<OtterbrixArguments<'_>>,
 ) -> Result<(Vec<OtterbrixRow>, u64), Error> {
     let rewritten = rewrite_placeholders(sql);
-    let guard = db
-        .lock()
-        .map_err(|e| Error::protocol(format!("otterbrix database mutex poisoned: {e}")))?;
+    let guard = db.lock();
     let cursor = match maybe_args {
         None => guard.execute(&rewritten),
         Some(ref args) => {
@@ -57,13 +57,22 @@ impl<'c> Executor<'c> for &'c mut OtterbrixConnection {
         };
         let maybe_args = maybe_args.map(OtterbrixArguments::into_static);
         let db = self.inner.clone();
+        let log_settings = self.log_settings.clone();
 
         stream::once(async move {
-            let join = tokio::task::spawn_blocking(move || run_sql(&db, &sql, maybe_args)).await;
+            let mut logger = QueryLogger::new(&sql, log_settings);
+            let sql_for_blocking = sql.clone();
+            let join =
+                tokio::task::spawn_blocking(move || run_sql(&db, &sql_for_blocking, maybe_args))
+                    .await;
             let items: Vec<Result<Either<OtterbrixQueryResult, OtterbrixRow>, Error>> = match join {
                 Err(e) => vec![Err(Error::protocol(format!("task join: {e}")))],
                 Ok(Err(e)) => vec![Err(e)],
                 Ok(Ok((rows, rows_affected))) => {
+                    logger.increase_rows_affected(rows_affected);
+                    for _ in &rows {
+                        logger.increment_rows_returned();
+                    }
                     let mut v = vec![Ok(Either::Left(OtterbrixQueryResult::from_execution(
                         rows_affected,
                     )))];
@@ -71,6 +80,7 @@ impl<'c> Executor<'c> for &'c mut OtterbrixConnection {
                     v
                 }
             };
+            drop(logger);
             stream::iter(items)
         })
         .flatten()

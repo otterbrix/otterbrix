@@ -1806,6 +1806,7 @@ dependencies = [
  "futures-util",
  "log",
  "otterbrix",
+ "parking_lot",
  "sqlx",
  "sqlx-core",
  "tempfile",

@@ -62,13 +62,10 @@ impl FromStr for OtterbrixConnectOptions {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Some(rest) = s.strip_prefix("otterbrix://") {
-            let path = Path::new(rest);
-            return Ok(Self::new(path));
+            return Ok(Self::new(Path::new(rest)));
         }
         if let Some(rest) = s.strip_prefix("otterbrix:") {
-            let rest = rest.trim_start_matches('/');
-            let path = Path::new(rest);
-            return Ok(Self::new(path));
+            return Ok(Self::new(Path::new(rest)));
         }
         Ok(Self::new(Path::new(s)))
     }
@@ -110,7 +107,7 @@ impl ConnectOptions for OtterbrixConnectOptions {
                 .map_err(|e| Error::protocol(format!("task join: {e}")))?
                 .map_err(crate::convert::map_otterbrix_error)?;
             Ok(OtterbrixConnection {
-                inner: std::sync::Arc::new(std::sync::Mutex::new(db)),
+                inner: std::sync::Arc::new(parking_lot::Mutex::new(db)),
                 log_settings,
             })
         })
@@ -124,5 +121,72 @@ impl ConnectOptions for OtterbrixConnectOptions {
     fn log_slow_statements(mut self, level: LevelFilter, duration: std::time::Duration) -> Self {
         self.log_settings.log_slow_statements(level, duration);
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx_core::connection::ConnectOptions;
+    use sqlx_core::Url;
+
+    #[test]
+    fn from_str_with_otterbrix_scheme_double_slash() {
+        let opts: OtterbrixConnectOptions = "otterbrix:///tmp/foo".parse().expect("parse");
+        assert_eq!(opts.storage_dir, std::path::PathBuf::from("/tmp/foo"));
+    }
+
+    #[test]
+    fn from_str_with_otterbrix_scheme_single_slash() {
+        let opts: OtterbrixConnectOptions = "otterbrix:/tmp/foo".parse().expect("parse");
+        assert_eq!(opts.storage_dir, std::path::PathBuf::from("/tmp/foo"));
+    }
+
+    #[test]
+    fn from_str_with_bare_path_falls_back_to_path() {
+        let opts: OtterbrixConnectOptions = "/tmp/bar".parse().expect("parse");
+        assert_eq!(opts.storage_dir, std::path::PathBuf::from("/tmp/bar"));
+    }
+
+    #[test]
+    fn from_url_accepts_otterbrix_scheme() {
+        let url: Url = "otterbrix:///tmp/baz".parse().expect("url");
+        let opts = OtterbrixConnectOptions::from_url(&url).expect("from_url");
+        assert_eq!(opts.storage_dir, std::path::PathBuf::from("/tmp/baz"));
+    }
+
+    #[test]
+    fn from_url_rejects_other_schemes() {
+        let url: Url = "postgres://user@host/db".parse().expect("url");
+        let err = OtterbrixConnectOptions::from_url(&url).expect_err("must reject");
+        let msg = err.to_string();
+        assert!(msg.contains("otterbrix"), "msg = {msg}");
+    }
+
+    #[test]
+    fn from_url_rejects_empty_path() {
+        let url: Url = "otterbrix://".parse().expect("url");
+        let err = OtterbrixConnectOptions::from_url(&url).expect_err("must reject");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("filesystem base path"),
+            "msg = {msg}"
+        );
+    }
+
+    #[test]
+    fn to_url_lossy_round_trips_to_otterbrix_scheme() {
+        let opts = OtterbrixConnectOptions::new("/tmp/qux");
+        let url = opts.to_url_lossy();
+        assert_eq!(url.scheme(), "otterbrix");
+        assert!(url.as_str().contains("/tmp/qux"));
+    }
+
+    #[test]
+    fn debug_includes_storage_dir() {
+        let opts = OtterbrixConnectOptions::new("/tmp/dbg");
+        let s = format!("{opts:?}");
+        assert!(s.contains("storage_dir"), "got {s}");
+        assert!(s.contains("/tmp/dbg"), "got {s}");
     }
 }

@@ -1,9 +1,10 @@
 use std::fmt;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use futures_core::future::BoxFuture;
 use futures_util::future;
 use otterbrix::Database as ObDatabase;
+use parking_lot::Mutex;
 use sqlx_core::connection::{Connection, LogSettings};
 use sqlx_core::error::Error;
 use sqlx_core::transaction::Transaction;
@@ -12,11 +13,7 @@ use crate::database::Otterbrix;
 use crate::options::OtterbrixConnectOptions;
 
 pub struct OtterbrixConnection {
-    /// Shared, serialized handle to the Otterbrix engine.
-    /// Otterbrix' wrapper does not advertise `Sync`, so we serialize FFI access
-    /// through a `Mutex` taken inside `spawn_blocking`.
     pub(crate) inner: Arc<Mutex<ObDatabase>>,
-    #[allow(dead_code)] // Reserved for statement logging parity with other drivers.
     pub(crate) log_settings: LogSettings,
 }
 

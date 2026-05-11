@@ -9,6 +9,7 @@ use crate::column::OtterbrixColumn;
 use crate::database::Otterbrix;
 use crate::value::{OtterbrixValue, OtterbrixValueRef};
 
+#[derive(Debug)]
 pub struct OtterbrixRow {
     pub(crate) values: Box<[OtterbrixValue]>,
     pub(crate) columns: Arc<Vec<OtterbrixColumn>>,

@@ -29,47 +29,43 @@ namespace services::disk {
                                                                             wal::id_t current_wal_id) {
         trace(log_, "manager_disk_t::checkpoint_all , session : {} , wal_id : {}", session.data(), current_wal_id);
 
-        // W-TORN crash-safe checkpoint per DISK table:
-        //   1. copy_file(otbx → otbx.prev)         // backup (block_manager keeps writing into open inode of otbx)
-        //   2. table.compact() + table.checkpoint(current_wal_id)
-        //        — flush data + 1st fsync, write header + 2nd fsync
-        //        — updates per-table prev_checkpoint_wal_id_ ← old, checkpoint_wal_id_ ← current_wal_id
-        //   3. remove(otbx.prev)                   // backup no longer needed
-        // Crash points:
-        //   pre-1: only otbx, valid. Replay from checkpoint_wal_id_.
-        //   1..2:  both files exist, otbx mid-write. Recovery: load_storage_disk_sync falls back to .prev.
-        //   2..3:  both files, otbx is the new good checkpoint. load() prefers otbx, falls back to .prev on CRC fail.
-        //   post-3: only otbx, new. Replay from new checkpoint_wal_id_.
-        // Returned wal_id: min(prev_checkpoint_wal_id_) across DISK tables — the safe truncation lower bound.
-        // Truncating WAL up to checkpoint_wal_id_ would lose records that .prev (still pointing at prev state)
-        // would need on recovery; min(prev) keeps WAL coverage for the worst-case .prev fallback.
         wal::id_t min_prev_id = std::numeric_limits<wal::id_t>::max();
         size_t disk_table_count = 0;
-        // pg_catalog.* must be checkpointed BEFORE user tables (Appendix A breaking change #3
-        // in the migration doc). Rationale: the catalog is the source of truth for what user
-        // tables exist. If a user table is checkpointed first and we crash before pg_class is
-        // flushed, recovery sees a "phantom" on-disk storage that the catalog doesn't know
-        // about. system-first ordering preserves the invariant "every persisted user table is
-        // also persisted in pg_class". The collection_full_name_t.database == "pg_catalog"
-        // tag identifies system rows.
-        std::vector<std::pair<const collection_full_name_t*, collection_storage_entry_t*>> ordered;
+        // System tables (well-known OIDs) must be checkpointed BEFORE user tables.
+        std::vector<std::pair<components::catalog::oid_t, collection_storage_entry_t*>> ordered;
         ordered.reserve(storages_.size());
-        for (auto& [name, entry] : storages_) {
-            if (name.database == "pg_catalog") {
-                ordered.emplace_back(&name, entry.get());
+        // System tables (well-known OIDs < FIRST_USER_OID).
+        for (auto& [oid, entry] : storages_) {
+            if (oid < components::catalog::FIRST_USER_OID) {
+                ordered.emplace_back(oid, entry.get());
             }
         }
-        for (auto& [name, entry] : storages_) {
-            if (name.database != "pg_catalog") {
-                ordered.emplace_back(&name, entry.get());
+        // User tables.
+        for (auto& [oid, entry] : storages_) {
+            if (oid >= components::catalog::FIRST_USER_OID) {
+                ordered.emplace_back(oid, entry.get());
             }
         }
-        for (auto& [name_ptr, entry] : ordered) {
-            const auto& name = *name_ptr;
+        // Phase 11.C: use the actual on-disk path captured at storage-creation time
+        // (entry->otbx_path), NOT a synthesised path. Previously this code hard-coded
+        // `main_database / tbl_oid / table.otbx`, which is correct only for system
+        // tables — user tables live under their own database_oid (passed to
+        // create_storage_disk). The wrong path meant user-table sidecars landed in
+        // a non-existent directory (silent fs failure), so on restart the WAL
+        // replay's sidecar filter could not skip already-checkpointed records →
+        // duplicate replay / phantom storages / schema mismatches.
+        for (auto& [tbl_oid, entry] : ordered) {
             if (entry->table_storage.mode() == storage_mode_t::DISK) {
-                trace(log_, "manager_disk_t::checkpoint_all checkpointing : {}", name.to_string());
+                if (entry->otbx_path.empty()) {
+                    // DISK-mode entry with no stored path — created via a legacy
+                    // path or test fixture. Skip — we have nowhere reliable to put
+                    // the sidecar.
+                    continue;
+                }
+                trace(log_, "manager_disk_t::checkpoint_all checkpointing : oid={}",
+                      static_cast<unsigned>(tbl_oid));
 
-                auto otbx_path = config_.path / name.database / "main" / name.collection / "table.otbx";
+                const auto& otbx_path = entry->otbx_path;
                 auto prev_path = otbx_path;
                 prev_path += ".prev";
 
@@ -162,8 +158,8 @@ namespace services::disk {
                                                                    uint64_t lowest_active_start_time) {
         trace(log_, "manager_disk_t::vacuum_all , session : {}", session.data());
 
-        for (auto& [name, entry] : storages_) {
-            trace(log_, "manager_disk_t::vacuum_all cleaning : {}", name.to_string());
+        for (auto& [oid, entry] : storages_) {
+            trace(log_, "manager_disk_t::vacuum_all cleaning : oid={}", static_cast<unsigned>(oid));
             auto& table = entry->table_storage.table();
             table.cleanup_versions(lowest_active_start_time);
             table.compact();
@@ -175,7 +171,14 @@ namespace services::disk {
 
     manager_disk_t::unique_future<void> manager_disk_t::maybe_cleanup(execution_context_t ctx,
                                                                       uint64_t lowest_active_start_time) {
-        auto it = storages_.find(ctx.name);
+        // Phase 8.B: oid-only routing. ctx.table_oid identifies the table whose
+        // GC threshold the executor wants to check (typically the just-deleted
+        // DML target). INVALID_OID → no-op (executor guards against this but be
+        // defensive).
+        if (ctx.table_oid == components::catalog::INVALID_OID) {
+            co_return;
+        }
+        auto it = storages_.find(ctx.table_oid);
         if (it == storages_.end()) {
             co_return;
         }
@@ -190,19 +193,14 @@ namespace services::disk {
         auto committed = rg->committed_row_count();
         auto deleted = total - committed;
 
-        // Cleanup if > 30% of rows are deleted
         static constexpr double gc_threshold = 0.3;
         if (static_cast<double>(deleted) / static_cast<double>(total) > gc_threshold) {
-            // Skip GC if any active txn could still see the soon-to-be-removed tombstones.
-            // lowest_active_start_time == TRANSACTION_ID_START means no active txn — only
-            // safe in that case. Otherwise an in-flight reader might be expecting to see
-            // a row our compact would drop. Mirrors the safety check in scan_committed.
             if (lowest_active_start_time < components::table::TRANSACTION_ID_START) {
                 co_return;
             }
             trace(log_,
-                  "manager_disk_t::maybe_cleanup: {}, deleted {}/{}, running compact",
-                  ctx.name.to_string(),
+                  "manager_disk_t::maybe_cleanup: oid={}, deleted {}/{}, running compact",
+                  static_cast<unsigned>(ctx.table_oid),
                   deleted,
                   total);
             // Compact reads via scan_committed(COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED) which
@@ -220,38 +218,40 @@ namespace services::disk {
 
     // --- Synchronous storage creation (for init before schedulers start) ---
 
-    void manager_disk_t::create_storage_with_columns_sync(const collection_full_name_t& name,
+    void manager_disk_t::create_storage_with_columns_sync(components::catalog::oid_t table_oid,
+                                                          components::catalog::oid_t /*database_oid*/,
                                                           std::vector<components::table::column_definition_t> columns) {
-        trace(log_, "manager_disk_t::create_storage_with_columns_sync , name : {}", name.to_string());
-        storages_.emplace(name, std::make_unique<collection_storage_entry_t>(resource(), std::move(columns)));
+        trace(log_, "manager_disk_t::create_storage_with_columns_sync , oid : {}",
+              static_cast<unsigned>(table_oid));
+        storages_.emplace(table_oid,
+                           std::make_unique<collection_storage_entry_t>(resource(), std::move(columns)));
     }
 
-    void manager_disk_t::create_storage_disk_sync(const collection_full_name_t& name,
+    void manager_disk_t::create_storage_disk_sync(components::catalog::oid_t table_oid,
+                                                  components::catalog::oid_t /*database_oid*/,
                                                   std::vector<components::table::column_definition_t> columns,
                                                   const std::filesystem::path& otbx_path) {
         trace(log_,
-              "manager_disk_t::create_storage_disk_sync , name : {} , path : {}",
-              name.to_string(),
+              "manager_disk_t::create_storage_disk_sync , oid : {} , path : {}",
+              static_cast<unsigned>(table_oid),
               otbx_path.string());
-        storages_.emplace(name,
-                          std::make_unique<collection_storage_entry_t>(resource(), std::move(columns), otbx_path));
+        storages_.emplace(table_oid,
+                           std::make_unique<collection_storage_entry_t>(resource(), std::move(columns), otbx_path));
     }
 
-    void manager_disk_t::load_storage_disk_sync(const collection_full_name_t& name,
-                                                const std::filesystem::path& otbx_path) {
+    void manager_disk_t::load_storage_disk_sync(components::catalog::oid_t table_oid,
+                                                 components::catalog::oid_t /*database_oid*/,
+                                                 const std::filesystem::path& otbx_path) {
         trace(log_,
-              "manager_disk_t::load_storage_disk_sync , name : {} , path : {}",
-              name.to_string(),
+              "manager_disk_t::load_storage_disk_sync , oid : {} , path : {}",
+              static_cast<unsigned>(table_oid),
               otbx_path.string());
-        // W-TORN recovery: if otbx is corrupt or missing, fall back to otbx.prev (the previous good checkpoint).
-        // .prev exists only after a crash between checkpoint_all step 1 (copy) and step 3 (remove).
         auto prev_path = otbx_path;
         prev_path += ".prev";
         const bool otbx_exists = std::filesystem::exists(otbx_path);
         const bool prev_exists = std::filesystem::exists(prev_path);
 
         if (!otbx_exists && prev_exists) {
-            // Only .prev — promote it.
             warn(log_,
                  "load_storage_disk_sync: {} missing, promoting .prev",
                  otbx_path.string());
@@ -260,20 +260,18 @@ namespace services::disk {
             if (ec) {
                 throw std::runtime_error("W-TORN promote .prev failed: " + ec.message());
             }
-            storages_.emplace(name, std::make_unique<collection_storage_entry_t>(resource(), otbx_path));
+            storages_.emplace(table_oid, std::make_unique<collection_storage_entry_t>(resource(), otbx_path));
             return;
         }
 
         try {
-            storages_.emplace(name, std::make_unique<collection_storage_entry_t>(resource(), otbx_path));
+            storages_.emplace(table_oid, std::make_unique<collection_storage_entry_t>(resource(), otbx_path));
         } catch (const std::exception& e) {
-            // otbx is corrupt — try the .prev backup.
             warn(log_,
                  "load_storage_disk_sync: failed to load {} : {}",
                  otbx_path.string(),
                  e.what());
             if (!prev_exists) {
-                // No backup — propagate.
                 throw;
             }
             auto broken_path = otbx_path;
@@ -290,28 +288,22 @@ namespace services::disk {
             warn(log_,
                  "load_storage_disk_sync: recovered {} from .prev (corrupt original kept as .broken)",
                  otbx_path.string());
-            storages_.emplace(name, std::make_unique<collection_storage_entry_t>(resource(), otbx_path));
+            storages_.emplace(table_oid, std::make_unique<collection_storage_entry_t>(resource(), otbx_path));
             return;
         }
 
-        // Successful load of otbx. Stale .prev (left by a crash that completed step 2 but not step 3)
-        // is no longer needed — clean it up.
         if (prev_exists) {
             std::error_code ec;
             std::filesystem::remove(prev_path, ec);
         }
 
-        // Read checkpoint_wal_id sidecar (if present) so WAL replay knows up to which
-        // wal_id this storage is current. Missing sidecar → checkpoint_wal_id_=0 (treat
-        // as never-checkpointed; replay from start). Read-time corruption (short read) is
-        // also treated as never-checkpointed since the safe fallback is to replay all records.
         auto sidecar_path = otbx_path;
         sidecar_path += ".wal_id";
         if (std::filesystem::exists(sidecar_path)) {
             std::ifstream sidecar(sidecar_path, std::ios::binary);
             uint64_t v = 0;
             if (sidecar.read(reinterpret_cast<char*>(&v), sizeof(v)) && sidecar.gcount() == sizeof(v)) {
-                auto it = storages_.find(name);
+                auto it = storages_.find(table_oid);
                 if (it != storages_.end()) {
                     it->second->table_storage.set_checkpoint_wal_id(wal::id_t{v});
                 }
@@ -319,17 +311,19 @@ namespace services::disk {
         }
     }
 
-    wal::id_t manager_disk_t::peek_checkpoint_wal_id_from_disk(const collection_full_name_t& name) const noexcept {
-        // Fast path: storage already loaded.
-        auto it = storages_.find(name);
+    wal::id_t manager_disk_t::peek_checkpoint_wal_id_from_disk(components::catalog::oid_t table_oid,
+                                                                components::catalog::oid_t database_oid) const noexcept {
+        auto it = storages_.find(table_oid);
         if (it != storages_.end()) {
             return it->second->table_storage.checkpoint_wal_id();
         }
-        // Slow path: read the .wal_id sidecar file directly.
-        if (config_.path.empty() || name.database.empty() || name.collection.empty()) {
+        if (config_.path.empty() || table_oid == components::catalog::INVALID_OID
+            || database_oid == components::catalog::INVALID_OID) {
             return wal::id_t{0};
         }
-        auto sidecar = config_.path / name.database / "main" / name.collection / "table.otbx.wal_id";
+        auto sidecar = config_.path / std::to_string(static_cast<unsigned>(database_oid))
+                                    / std::to_string(static_cast<unsigned>(table_oid))
+                                    / "table.otbx.wal_id";
         std::ifstream f(sidecar, std::ios::binary);
         uint64_t v = 0;
         if (f && f.read(reinterpret_cast<char*>(&v), sizeof(v)) &&
@@ -339,17 +333,21 @@ namespace services::disk {
         return wal::id_t{0};
     }
 
-    void manager_disk_t::load_storage_for_wal_replay_sync(const collection_full_name_t& name) {
-        if (has_storage(name) || config_.path.empty() ||
-            name.database.empty() || name.collection.empty()) {
+    void manager_disk_t::load_storage_for_wal_replay_sync(components::catalog::oid_t table_oid,
+                                                           components::catalog::oid_t database_oid) {
+        if (has_storage(table_oid) || config_.path.empty() ||
+            table_oid == components::catalog::INVALID_OID ||
+            database_oid == components::catalog::INVALID_OID) {
             return;
         }
-        auto otbx_path = config_.path / name.database / "main" / name.collection / "table.otbx";
+        auto otbx_path = config_.path / std::to_string(static_cast<unsigned>(database_oid))
+                                      / std::to_string(static_cast<unsigned>(table_oid))
+                                      / "table.otbx";
         if (!std::filesystem::exists(otbx_path)) {
             return; // in-memory table — WAL replay creates it from the first INSERT chunk
         }
         try {
-            load_storage_disk_sync(name, otbx_path);
+            load_storage_disk_sync(table_oid, database_oid, otbx_path);
         } catch (const std::exception& e) {
             warn(log_, "load_storage_for_wal_replay_sync: failed to load {}: {}",
                  otbx_path.string(), e.what());

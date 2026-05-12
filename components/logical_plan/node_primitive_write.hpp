@@ -2,6 +2,7 @@
 
 #include "node.hpp"
 
+#include <components/catalog/catalog_oids.hpp>
 #include <components/vector/data_chunk.hpp>
 
 namespace components::logical_plan {
@@ -11,19 +12,19 @@ namespace components::logical_plan {
     class node_primitive_write_t final : public node_t {
     public:
         node_primitive_write_t(std::pmr::memory_resource*   resource,
-                                collection_full_name_t        catalog_table,
+                                catalog::oid_t                catalog_table_oid,
                                 vector::data_chunk_t          row);
 
-        const collection_full_name_t& catalog_table() const noexcept { return catalog_table_; }
-        vector::data_chunk_t&         row()           noexcept       { return row_; }
-        const vector::data_chunk_t&   row()           const noexcept { return row_; }
+        catalog::oid_t                catalog_table_oid() const noexcept { return catalog_table_oid_; }
+        vector::data_chunk_t&         row()              noexcept       { return row_; }
+        const vector::data_chunk_t&   row()              const noexcept { return row_; }
 
     private:
         hash_t      hash_impl()      const override;
         std::string to_string_impl() const override;
 
-        collection_full_name_t catalog_table_;
-        vector::data_chunk_t   row_;
+        catalog::oid_t       catalog_table_oid_;
+        vector::data_chunk_t row_;
     };
 
     using node_primitive_write_ptr = boost::intrusive_ptr<node_primitive_write_t>;

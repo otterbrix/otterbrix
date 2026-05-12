@@ -20,8 +20,8 @@ TEST_CASE("components::sql::insert_into") {
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());
         auto node = result.node;
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
-        REQUIRE(node->database_name() == "testdatabase");
-        REQUIRE(node->collection_name() == "testcollection");
+        REQUIRE(node->dbname() == "testdatabase");
+        REQUIRE(node->relname() == "testcollection");
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
         REQUIRE(chunk.size() == 1);
@@ -36,8 +36,8 @@ TEST_CASE("components::sql::insert_into") {
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());
         auto node = result.node;
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
-        REQUIRE(node->database_name() == "");
-        REQUIRE(node->collection_name() == "testcollection");
+        REQUIRE(node->dbname() == "");
+        REQUIRE(node->relname() == "testcollection");
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
         REQUIRE(chunk.size() == 1);
@@ -52,8 +52,8 @@ TEST_CASE("components::sql::insert_into") {
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());
         auto node = result.node;
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
-        REQUIRE(node->database_name() == "");
-        REQUIRE(node->collection_name() == "testcollection");
+        REQUIRE(node->dbname() == "");
+        REQUIRE(node->relname() == "testcollection");
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
         REQUIRE(chunk.size() == 1);
@@ -69,8 +69,8 @@ TEST_CASE("components::sql::insert_into") {
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());
         auto node = result.node;
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
-        REQUIRE(node->database_name() == "");
-        REQUIRE(node->collection_name() == "testcollection");
+        REQUIRE(node->dbname() == "");
+        REQUIRE(node->relname() == "testcollection");
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
         REQUIRE(chunk.size() == 1);
@@ -84,8 +84,8 @@ TEST_CASE("components::sql::insert_into") {
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());
         auto node = result.node;
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
-        REQUIRE(node->database_name() == "");
-        REQUIRE(node->collection_name() == "testcollection");
+        REQUIRE(node->dbname() == "");
+        REQUIRE(node->relname() == "testcollection");
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
         REQUIRE(chunk.size() == 1);
@@ -109,8 +109,8 @@ TEST_CASE("components::sql::insert_into") {
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());
         auto node = result.node;
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
-        REQUIRE(node->database_name() == "");
-        REQUIRE(node->collection_name() == "testcollection");
+        REQUIRE(node->dbname() == "");
+        REQUIRE(node->relname() == "testcollection");
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
         REQUIRE(chunk.size() == 5);
@@ -130,11 +130,11 @@ WHERE condition = true;)_"));
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());
         auto node = result.node;
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
-        REQUIRE(node->database_name() == "");
-        REQUIRE(node->collection_name() == "table2");
+        REQUIRE(node->dbname() == "");
+        REQUIRE(node->relname() == "table2");
         REQUIRE(reinterpret_cast<components::logical_plan::node_aggregate_ptr&>(node->children().front())
-                    ->database_name() == "");
+                    ->dbname() == "");
         REQUIRE(reinterpret_cast<components::logical_plan::node_aggregate_ptr&>(node->children().front())
-                    ->collection_name() == "table1");
+                    ->relname() == "table1");
     }
 }

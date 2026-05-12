@@ -27,8 +27,14 @@ namespace components::sql::transform {
         std::vector<components::table::column_definition_t> col_defs;
         fill_column_definitions(col_defs, resource_, *coldefs);
 
+        auto qn = rangevar_to_qualified_name(node.relation);
+
         if (col_defs.empty()) {
-            return logical_plan::make_node_create_collection(resource_, rangevar_to_collection(node.relation));
+            return logical_plan::make_node_create_collection(resource_,
+                                                             std::move(qn.dbname),
+                                                             std::move(qn.relname),
+                                                             std::move(qn.schemaname),
+                                                             std::move(qn.uuid));
         }
 
         auto constraints = extract_table_constraints(*coldefs);
@@ -51,10 +57,13 @@ namespace components::sql::transform {
         }
 
         return logical_plan::make_node_create_collection(resource_,
-                                                         rangevar_to_collection(node.relation),
+                                                         std::move(qn.dbname),
+                                                         std::move(qn.relname),
                                                          std::move(col_defs),
                                                          std::move(constraints),
-                                                         disk_storage);
+                                                         disk_storage,
+                                                         std::move(qn.schemaname),
+                                                         std::move(qn.uuid));
     }
 
     logical_plan::node_ptr transformer::transform_drop(DropStmt& node) {
@@ -65,32 +74,40 @@ namespace components::sql::transform {
                     case table: {
                         return logical_plan::make_node_drop_collection(
                             resource_,
-                            {database_name_t(), strVal(drop_name.front().data)});
+                            std::string{},
+                            std::string(strVal(drop_name.front().data)));
                     }
                     case database_table: {
                         auto it = drop_name.begin();
-                        auto database = strVal(it++->data);
-                        auto collection = strVal(it->data);
-                        return logical_plan::make_node_drop_collection(resource_, {database, collection});
+                        std::string database = strVal(it++->data);
+                        std::string collection = strVal(it->data);
+                        return logical_plan::make_node_drop_collection(resource_, std::move(database), std::move(collection));
                     }
                     case database_schema_table: {
                         auto it = drop_name.begin();
-                        auto database = strVal(it++->data);
-                        auto schema = strVal(it++->data);
-                        auto collection = strVal(it->data);
-                        return logical_plan::make_node_drop_collection(resource_, {database, schema, collection});
+                        std::string database = strVal(it++->data);
+                        std::string schema = strVal(it++->data);
+                        std::string collection = strVal(it->data);
+                        return logical_plan::make_node_drop_collection(resource_,
+                                                                        std::move(database),
+                                                                        std::move(collection),
+                                                                        std::move(schema));
                     }
                     case uuid_database_schema_table: {
                         auto it = drop_name.begin();
-                        auto uuid = strVal(it++->data);
-                        auto database = strVal(it++->data);
-                        auto schema = strVal(it++->data);
-                        auto collection = strVal(it->data);
-                        return logical_plan::make_node_drop_collection(resource_, {uuid, database, schema, collection});
+                        std::string uuid = strVal(it++->data);
+                        std::string database = strVal(it++->data);
+                        std::string schema = strVal(it++->data);
+                        std::string collection = strVal(it->data);
+                        return logical_plan::make_node_drop_collection(resource_,
+                                                                        std::move(database),
+                                                                        std::move(collection),
+                                                                        std::move(schema),
+                                                                        std::move(uuid));
                     }
                     default:
                         throw parser_exception_t{"incorrect drop: arguments size", ""};
-                        return logical_plan::make_node_drop_collection(resource_, {});
+                        return logical_plan::make_node_drop_collection(resource_, std::string{}, std::string{});
                 }
             }
             case OBJECT_INDEX: {
@@ -103,33 +120,40 @@ namespace components::sql::transform {
                 switch (static_cast<table_name>(drop_name.size() - 1)) {
                     case database_table: {
                         auto it = drop_name.begin();
-                        auto database = strVal(it++->data);
-                        auto collection = strVal(it++->data);
-                        auto name = strVal(it->data);
-                        return logical_plan::make_node_drop_index(resource_, {database, collection}, name);
+                        std::string database = strVal(it++->data);
+                        std::string collection = strVal(it++->data);
+                        std::string name = strVal(it->data);
+                        return logical_plan::make_node_drop_index(resource_, std::move(database), std::move(collection), std::move(name));
                     }
                     case database_schema_table: {
                         auto it = drop_name.begin();
-                        auto database = strVal(it++->data);
-                        auto schema = strVal(it++->data);
-                        auto collection = strVal(it++->data);
-                        auto name = strVal(it->data);
-                        return logical_plan::make_node_drop_index(resource_, {database, schema, collection}, name);
+                        std::string database = strVal(it++->data);
+                        std::string schema = strVal(it++->data);
+                        std::string collection = strVal(it++->data);
+                        std::string name = strVal(it->data);
+                        return logical_plan::make_node_drop_index(resource_,
+                                                                   std::move(database),
+                                                                   std::move(collection),
+                                                                   std::move(name),
+                                                                   std::move(schema));
                     }
                     case uuid_database_schema_table: {
                         auto it = drop_name.begin();
-                        auto uuid = strVal(it++->data);
-                        auto database = strVal(it++->data);
-                        auto schema = strVal(it++->data);
-                        auto collection = strVal(it++->data);
-                        auto name = strVal(it->data);
+                        std::string uuid = strVal(it++->data);
+                        std::string database = strVal(it++->data);
+                        std::string schema = strVal(it++->data);
+                        std::string collection = strVal(it++->data);
+                        std::string name = strVal(it->data);
                         return logical_plan::make_node_drop_index(resource_,
-                                                                  {uuid, database, schema, collection},
-                                                                  name);
+                                                                   std::move(database),
+                                                                   std::move(collection),
+                                                                   std::move(name),
+                                                                   std::move(schema),
+                                                                   std::move(uuid));
                     }
                     default:
                         throw parser_exception_t{"incorrect drop: arguments size", ""};
-                        return logical_plan::make_node_drop_index(resource_, {}, "");
+                        return logical_plan::make_node_drop_index(resource_, std::string{}, std::string{}, std::string{});
                 }
             }
             case OBJECT_TYPE: {
@@ -145,13 +169,14 @@ namespace components::sql::transform {
                     case table: {
                         return logical_plan::make_node_drop_sequence(
                             resource_,
-                            {database_name_t(), strVal(drop_name.front().data)});
+                            std::string{},
+                            std::string(strVal(drop_name.front().data)));
                     }
                     case database_table: {
                         auto it = drop_name.begin();
-                        auto database = strVal(it++->data);
-                        auto seq_name = strVal(it->data);
-                        return logical_plan::make_node_drop_sequence(resource_, {database, seq_name});
+                        std::string database = strVal(it++->data);
+                        std::string seq_name = strVal(it->data);
+                        return logical_plan::make_node_drop_sequence(resource_, std::move(database), std::move(seq_name));
                     }
                     default:
                         throw parser_exception_t{"incorrect drop: arguments size", ""};
@@ -162,13 +187,14 @@ namespace components::sql::transform {
                 switch (static_cast<table_name>(drop_name.size())) {
                     case table: {
                         return logical_plan::make_node_drop_view(resource_,
-                                                                 {database_name_t(), strVal(drop_name.front().data)});
+                                                                  std::string{},
+                                                                  std::string(strVal(drop_name.front().data)));
                     }
                     case database_table: {
                         auto it = drop_name.begin();
-                        auto database = strVal(it++->data);
-                        auto view_name = strVal(it->data);
-                        return logical_plan::make_node_drop_view(resource_, {database, view_name});
+                        std::string database = strVal(it++->data);
+                        std::string view_name = strVal(it->data);
+                        return logical_plan::make_node_drop_view(resource_, std::move(database), std::move(view_name));
                     }
                     default:
                         throw parser_exception_t{"incorrect drop: arguments size", ""};
@@ -179,13 +205,14 @@ namespace components::sql::transform {
                 switch (static_cast<table_name>(drop_name.size())) {
                     case table: {
                         return logical_plan::make_node_drop_macro(resource_,
-                                                                  {database_name_t(), strVal(drop_name.front().data)});
+                                                                   std::string{},
+                                                                   std::string(strVal(drop_name.front().data)));
                     }
                     case database_table: {
                         auto it = drop_name.begin();
-                        auto database = strVal(it++->data);
-                        auto macro_name = strVal(it->data);
-                        return logical_plan::make_node_drop_macro(resource_, {database, macro_name});
+                        std::string database = strVal(it++->data);
+                        std::string macro_name = strVal(it->data);
+                        return logical_plan::make_node_drop_macro(resource_, std::move(database), std::move(macro_name));
                     }
                     default:
                         throw parser_exception_t{"incorrect drop: arguments size", ""};

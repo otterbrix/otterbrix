@@ -1,7 +1,11 @@
 #include "utils.hpp"
 
+#include <components/logical_plan/node_catalog_resolve_namespace.hpp>
+#include <components/logical_plan/node_catalog_resolve_table.hpp>
+#include <components/logical_plan/node_sequence.hpp>
 #include <components/types/logical_value.hpp>
 
+#include <atomic>
 #include <cstdlib>
 
 namespace components::sql::transform {
@@ -40,20 +44,20 @@ namespace components::sql::transform {
     }
 
     bool name_collection_t::is_left_table(const std::string& name) const {
-        return name == left_name.collection || name == left_alias;
+        return name == left_name.relname || name == left_alias;
     }
 
     bool name_collection_t::is_right_table(const std::string& name) const {
-        return name == right_name.collection || name == right_alias;
+        return name == right_name.relname || name == right_alias;
     }
 
     expressions::side_t deduce_side(const name_collection_t& names, const std::string& target_name) {
         if (target_name.empty()) {
             return expressions::side_t::undefined;
         }
-        if (names.left_name.collection == target_name || names.left_alias == target_name) {
+        if (names.left_name.relname == target_name || names.left_alias == target_name) {
             return expressions::side_t::left;
-        } else if (names.right_name.collection == target_name || names.right_alias == target_name) {
+        } else if (names.right_name.relname == target_name || names.right_alias == target_name) {
             return expressions::side_t::right;
         } else {
             return expressions::side_t::undefined;
@@ -628,6 +632,74 @@ namespace components::sql::transform {
                         "AND/OR/NOT, IS NULL/IS NOT NULL",
                     ""};
         }
+    }
+
+    // -- Phase 13 T13: catalog-resolve emission toggle and wrap helpers ---------
+    //
+    // Global toggle. Defaults to false: emitting catalog_resolve_*_t at parse
+    // time changes the root of the logical plan to sequence_t, which is not
+    // yet supported by dispatcher.cpp::execute_plan (it captures
+    // `original_type = plan->type()` and routes on the captured value before
+    // the planner has rewritten anything; see lines 264..387 in dispatcher.cpp).
+    // The wrap helpers below honour this flag so the plumbing is in place but
+    // inert; a downstream patch can flip the default after dispatcher routing
+    // learns to peer through the wrapper.
+    namespace {
+        std::atomic<bool> g_emit_catalog_resolve_enabled{false};
+    } // namespace
+
+    bool transformer_emit_catalog_resolve_enabled() noexcept {
+        return g_emit_catalog_resolve_enabled.load(std::memory_order_relaxed);
+    }
+
+    void set_transformer_emit_catalog_resolve(bool enabled) noexcept {
+        g_emit_catalog_resolve_enabled.store(enabled, std::memory_order_relaxed);
+    }
+
+    logical_plan::node_ptr maybe_wrap_with_catalog_resolve_table(
+        std::pmr::memory_resource* resource,
+        const std::string& dbname,
+        const std::string& relname,
+        logical_plan::node_ptr main_node) {
+        if (!transformer_emit_catalog_resolve_enabled()) {
+            return main_node;
+        }
+        if (!main_node) {
+            return main_node;
+        }
+        // Build sequence_t([resolve_namespace?], [resolve_table?], main_node).
+        // Empty dbname/relname means the caller doesn't have a target identity
+        // (e.g. parameter-only statements, schemaless DDL) — skip the resolve
+        // node so the wrapped plan still carries useful structure.
+        auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(resource));
+        if (!dbname.empty()) {
+            seq->append_child(logical_plan::make_node_catalog_resolve_namespace(resource, dbname));
+        }
+        if (!relname.empty()) {
+            seq->append_child(
+                logical_plan::make_node_catalog_resolve_table(resource, dbname, relname));
+        }
+        seq->append_child(std::move(main_node));
+        return seq;
+    }
+
+    logical_plan::node_ptr maybe_wrap_with_catalog_resolve_namespace(
+        std::pmr::memory_resource* resource,
+        const std::string& dbname,
+        logical_plan::node_ptr main_node) {
+        if (!transformer_emit_catalog_resolve_enabled()) {
+            return main_node;
+        }
+        if (!main_node) {
+            return main_node;
+        }
+        if (dbname.empty()) {
+            return main_node;
+        }
+        auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(resource));
+        seq->append_child(logical_plan::make_node_catalog_resolve_namespace(resource, dbname));
+        seq->append_child(std::move(main_node));
+        return seq;
     }
 
 } // namespace components::sql::transform

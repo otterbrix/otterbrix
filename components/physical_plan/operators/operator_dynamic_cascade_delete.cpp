@@ -1,6 +1,5 @@
 #include "operator_dynamic_cascade_delete.hpp"
 
-#include <components/base/collection_full_name.hpp>
 #include <components/catalog/cascade_planner.hpp>
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
@@ -39,53 +38,41 @@ namespace components::operators {
         // task #49 can simply replace the dispatcher BFS with a logical
         // node_dynamic_cascade_delete_t and let the planner route to us.
         struct per_step_delete_t {
-            collection_full_name_t catalog_table;
-            std::int64_t           oid_col_idx;
+            catalog::oid_t catalog_table_oid;
+            std::int64_t   oid_col_idx;
         };
 
         std::vector<per_step_delete_t> deletes_for_classid(catalog::oid_t classid) {
             using namespace catalog::well_known_oid;
-            const collection_full_name_t kPgClass     {"pg_catalog", "main", "pg_class"};
-            const collection_full_name_t kPgAttribute {"pg_catalog", "main", "pg_attribute"};
-            const collection_full_name_t kPgConstraint{"pg_catalog", "main", "pg_constraint"};
-            const collection_full_name_t kPgIndex     {"pg_catalog", "main", "pg_index"};
-            const collection_full_name_t kPgSequence  {"pg_catalog", "main", "pg_sequence"};
-            const collection_full_name_t kPgRewrite   {"pg_catalog", "main", "pg_rewrite"};
-            const collection_full_name_t kPgDepend    {"pg_catalog", "main", "pg_depend"};
-            const collection_full_name_t kPgType      {"pg_catalog", "main", "pg_type"};
-            const collection_full_name_t kPgProc      {"pg_catalog", "main", "pg_proc"};
-            const collection_full_name_t kPgNamespace {"pg_catalog", "main", "pg_namespace"};
-            const collection_full_name_t kPgComputedColumn{"pg_catalog", "main", "pg_computed_column"};
-
             std::vector<per_step_delete_t> out;
             if (classid == pg_class_table) {
-                out.push_back({kPgIndex,           0}); // pg_index.indexrelid
-                out.push_back({kPgIndex,           1}); // pg_index.indrelid
-                out.push_back({kPgSequence,        0}); // pg_sequence.seqrelid
-                out.push_back({kPgRewrite,         2}); // pg_rewrite.ev_class
-                out.push_back({kPgAttribute,       1}); // pg_attribute.attrelid
-                out.push_back({kPgComputedColumn,  0}); // pg_computed_column.relid (relkind='g' tables)
-                out.push_back({kPgConstraint,      2}); // pg_constraint.conrelid
-                out.push_back({kPgConstraint,      4}); // pg_constraint.confrelid
-                out.push_back({kPgDepend,          1}); // pg_depend.objid
-                out.push_back({kPgDepend,          3}); // pg_depend.refobjid
-                out.push_back({kPgClass,           0}); // pg_class.oid (last)
+                out.push_back({pg_index_table,           0}); // pg_index.indexrelid
+                out.push_back({pg_index_table,           1}); // pg_index.indrelid
+                out.push_back({pg_sequence_table,        0}); // pg_sequence.seqrelid
+                out.push_back({pg_rewrite_table,         2}); // pg_rewrite.ev_class
+                out.push_back({pg_attribute_table,       1}); // pg_attribute.attrelid
+                out.push_back({pg_computed_column_table, 0}); // pg_computed_column.relid (relkind='g' tables)
+                out.push_back({pg_constraint_table,      2}); // pg_constraint.conrelid
+                out.push_back({pg_constraint_table,      4}); // pg_constraint.confrelid
+                out.push_back({pg_depend_table,          1}); // pg_depend.objid
+                out.push_back({pg_depend_table,          3}); // pg_depend.refobjid
+                out.push_back({pg_class_table,           0}); // pg_class.oid (last)
             } else if (classid == pg_constraint_table) {
-                out.push_back({kPgConstraint, 0});
-                out.push_back({kPgDepend,     1});
-                out.push_back({kPgDepend,     3});
+                out.push_back({pg_constraint_table, 0});
+                out.push_back({pg_depend_table,     1});
+                out.push_back({pg_depend_table,     3});
             } else if (classid == pg_type_table) {
-                out.push_back({kPgType,       0});
-                out.push_back({kPgDepend,     1});
-                out.push_back({kPgDepend,     3});
+                out.push_back({pg_type_table,       0});
+                out.push_back({pg_depend_table,     1});
+                out.push_back({pg_depend_table,     3});
             } else if (classid == pg_proc_table) {
-                out.push_back({kPgProc,       0});
-                out.push_back({kPgDepend,     1});
-                out.push_back({kPgDepend,     3});
+                out.push_back({pg_proc_table,       0});
+                out.push_back({pg_depend_table,     1});
+                out.push_back({pg_depend_table,     3});
             } else if (classid == pg_namespace_table) {
-                out.push_back({kPgNamespace,  0});
-                out.push_back({kPgDepend,     1});
-                out.push_back({kPgDepend,     3});
+                out.push_back({pg_namespace_table,  0});
+                out.push_back({pg_depend_table,     1});
+                out.push_back({pg_depend_table,     3});
             }
             return out;
         }
@@ -124,7 +111,7 @@ namespace components::operators {
             co_return;
         }
 
-        const collection_full_name_t kPgDepend{"pg_catalog", "main", "pg_depend"};
+        constexpr catalog::oid_t kPgDepend = catalog::well_known_oid::pg_depend_table;
 
         // Step 1 — async BFS over pg_depend(refclassid, refobjid). The walk
         // is identical to the four copies in services/dispatcher/ddl.cpp
@@ -202,24 +189,24 @@ namespace components::operators {
         }
 
         // Step 3 — for every pg_class object we are about to drop that
-        // backs an actual table (relkind='r'/'g'), pre-resolve its
-        // (database, schema, name) tuple BEFORE we delete its pg_class row.
-        // We cannot resolve it after the row is gone. We piggyback on the
-        // same dep_graph entries: each (pg_class, oid) in the plan needs a
-        // pg_class row read joined with pg_namespace for nspname.
+        // backs an actual table (relkind='r'/'g'), record the table_oid
+        // BEFORE we delete its pg_class row. The pg_class scan happens
+        // here (rather than after the deletes) because once the row is
+        // gone we can no longer distinguish storage-backed objects from
+        // pure-catalog ones (sequence/view/macro/composite type).
         struct pending_storage_drop_t {
-            collection_full_name_t name;
-            char                   relkind{'r'};
+            catalog::oid_t table_oid{catalog::INVALID_OID};
         };
         std::vector<pending_storage_drop_t> pending_storage_drops;
 
-        const collection_full_name_t kPgClass    {"pg_catalog", "main", "pg_class"};
-        const collection_full_name_t kPgNamespace{"pg_catalog", "main", "pg_namespace"};
+        constexpr catalog::oid_t kPgClass = catalog::well_known_oid::pg_class_table;
 
         for (const auto& step : plan.steps) {
             if (step.classid != catalog::well_known_oid::pg_class_table) continue;
 
-            // Read pg_class row for this oid: (oid, relname, relnamespace, relkind, relstoragemode)
+            // Read pg_class row for this oid to inspect relkind: (oid, relname, relnamespace, relkind, ...)
+            // Storage routing is by table_oid only — relname/nspname are no longer needed
+            // (Phase 10.F removed the cfn-based routing path).
             types::logical_value_t pcoid_lv(resource_, step.objid);
             auto [_pc, pcf] = actor_zeta::send(
                 ctx->disk_address,
@@ -231,9 +218,6 @@ namespace components::operators {
             if (pc_rows.empty() || pc_rows[0].size() < 4) continue;
             const auto& row = pc_rows[0];
 
-            std::string relname{row[1].value<std::string_view>()};
-            const auto relnamespace = static_cast<catalog::oid_t>(
-                row[2].value<std::uint32_t>());
             const auto rkv = row[3].is_null()
                                  ? std::string_view{"r"}
                                  : row[3].value<std::string_view>();
@@ -247,25 +231,7 @@ namespace components::operators {
                 continue;
             }
 
-            // Read pg_namespace.nspname for the relnamespace oid.
-            types::logical_value_t nsoid_lv(resource_, relnamespace);
-            auto [_ns, nsf] = actor_zeta::send(
-                ctx->disk_address,
-                &services::disk::manager_disk_t::read_rows_by_key,
-                exec_ctx, kPgNamespace,
-                std::vector<std::string>{"oid"},
-                std::vector<types::logical_value_t>{nsoid_lv});
-            auto ns_rows = co_await std::move(nsf);
-            std::string nspname;
-            if (!ns_rows.empty() && ns_rows[0].size() >= 2) {
-                nspname = std::string{ns_rows[0][1].value<std::string_view>()};
-            }
-            // SQL-created tables use the namespace as the database key in
-            // collection_full_name_t (rangevar_to_collection convention used
-            // by storage and the index actor).
-            pending_storage_drops.push_back({
-                collection_full_name_t{nspname, "", std::move(relname)},
-                relkind});
+            pending_storage_drops.push_back({step.objid});
         }
 
         // Step 4 — execute the catalog-row deletes in the planned order.
@@ -277,9 +243,9 @@ namespace components::operators {
                 auto [_d, df] = actor_zeta::send(
                     ctx->disk_address,
                     &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                    exec_ctx, d.catalog_table, d.oid_col_idx, step.objid);
+                    exec_ctx, d.catalog_table_oid, d.oid_col_idx, step.objid);
                 co_await std::move(df);
-                if (ctx->txn.transaction_id != 0) ctx->pg_catalog_delete_tables.insert(d.catalog_table);
+                if (ctx->txn.transaction_id != 0) ctx->pg_catalog_delete_tables.insert(d.catalog_table_oid);
             }
         }
 
@@ -292,13 +258,13 @@ namespace components::operators {
                 auto [_ui, uif] = actor_zeta::send(
                     ctx->index_address,
                     &services::index::manager_index_t::unregister_collection,
-                    ctx->session, sd.name);
+                    ctx->session, sd.table_oid);
                 co_await std::move(uif);
             }
             auto [_ds, dsf] = actor_zeta::send(
                 ctx->disk_address,
                 &services::disk::manager_disk_t::drop_storage,
-                ctx->session, sd.name);
+                ctx->session, sd.table_oid);
             co_await std::move(dsf);
         }
 

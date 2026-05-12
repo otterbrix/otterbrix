@@ -9,24 +9,24 @@ namespace components::sql::transform {
 
     logical_plan::node_ptr transformer::transform_rename(RenameStmt& node) {
         if (node.renameType != OBJECT_COLUMN) {
-            // Other rename targets (TABLE, etc.) not yet supported — return a no-op so
-            // the parser doesn't reject SQL that hits unrelated rename forms.
-            collection_full_name_t empty_coll;
-            return logical_plan::make_node_alter_table_drop_column(resource_, empty_coll, std::string{});
+            return logical_plan::make_node_alter_table_drop_column(resource_, std::string{}, std::string{}, std::string{});
         }
-        auto coll = rangevar_to_collection(node.relation);
+        auto qn = rangevar_to_qualified_name(node.relation);
         std::string old_name = node.subname ? node.subname : "";
         std::string new_name = node.newname ? node.newname : "";
-        return logical_plan::make_node_alter_table_rename_column(resource_, coll,
-                                                                   std::move(old_name),
-                                                                   std::move(new_name));
+        return logical_plan::make_node_alter_table_rename_column(resource_,
+                                                                  std::move(qn.dbname),
+                                                                  std::move(qn.relname),
+                                                                  std::move(old_name),
+                                                                  std::move(new_name));
     }
 
     logical_plan::node_ptr transformer::transform_alter_table(AlterTableStmt& node) {
-        auto coll = rangevar_to_collection(node.relation);
+        auto qn = rangevar_to_qualified_name(node.relation);
+        const std::string& db = qn.dbname;
+        const std::string& rel = qn.relname;
         if (!node.cmds || node.cmds->lst.empty()) {
-            // Empty ALTER — emit no-op alter (drop_column with empty name) so caller doesn't crash.
-            return logical_plan::make_node_alter_table_drop_column(resource_, coll, std::string{});
+            return logical_plan::make_node_alter_table_drop_column(resource_, db, rel, std::string{});
         }
         std::vector<logical_plan::alter_table_subcommand_t> subs;
         subs.reserve(node.cmds->lst.size());
@@ -67,28 +67,34 @@ namespace components::sql::transform {
                     auto* constr = pg_ptr_cast<Constraint>(cmd->def);
                     if (constr->contype == CONSTR_FOREIGN && constr->pktable) {
                         std::string con_name = constr->conname ? constr->conname : "";
-                        // Resolve parent table reference.
-                        collection_full_name_t ref_coll;
+                        std::string ref_db;
                         if (constr->pktable->catalogname) {
-                            ref_coll.database = constr->pktable->catalogname;
+                            ref_db = constr->pktable->catalogname;
                         } else if (constr->pktable->schemaname) {
-                            ref_coll.database = constr->pktable->schemaname;
+                            ref_db = constr->pktable->schemaname;
                         } else {
-                            ref_coll.database = coll.database;
+                            ref_db = db;
                         }
-                        ref_coll.collection = constr->pktable->relname ? constr->pktable->relname : "";
+                        std::string ref_rel = constr->pktable->relname ? constr->pktable->relname : "";
                         auto fk_node = logical_plan::make_node_create_constraint(
-                            resource_, coll, std::move(con_name),
-                            logical_plan::constraint_kind::foreign_key, std::move(ref_coll));
+                            resource_, db, rel, std::move(con_name),
+                            logical_plan::constraint_kind::foreign_key,
+                            std::move(ref_db), std::move(ref_rel));
                         if (constr->fk_attrs) {
+                            std::vector<std::string> fk_cols;
+                            fk_cols.reserve(constr->fk_attrs->lst.size());
                             for (auto& col : constr->fk_attrs->lst) {
-                                fk_node->columns().emplace_back(strVal(col.data));
+                                fk_cols.emplace_back(strVal(col.data));
                             }
+                            fk_node->set_local_col_names(std::move(fk_cols));
                         }
                         if (constr->pk_attrs) {
+                            std::vector<std::string> ref_cols;
+                            ref_cols.reserve(constr->pk_attrs->lst.size());
                             for (auto& col : constr->pk_attrs->lst) {
-                                fk_node->ref_columns().emplace_back(strVal(col.data));
+                                ref_cols.emplace_back(strVal(col.data));
                             }
+                            fk_node->set_ref_col_names(std::move(ref_cols));
                         }
                         const char mt = constr->fk_matchtype;
                         fk_node->set_match_type((mt == 'f' || mt == 'p' || mt == 's') ? mt : 's');
@@ -102,14 +108,12 @@ namespace components::sql::transform {
                         std::string expr_text = deparse_check_expr(constr->raw_expr);
                         if (!expr_text.empty()) {
                             std::string con_name = constr->conname ? constr->conname : "";
-                            auto node = logical_plan::make_node_create_constraint(
-                                resource_, coll, std::move(con_name),
+                            auto check_node = logical_plan::make_node_create_constraint(
+                                resource_, db, rel, std::move(con_name),
                                 logical_plan::constraint_kind::check);
-                            node->set_check_expr(std::move(expr_text));
-                            return node;
+                            check_node->set_check_expr(std::move(expr_text));
+                            return check_node;
                         }
-                        // CHECK expression contains unsupported constructs (e.g. function calls,
-                        // subqueries, CASE). Reject early rather than silently creating a no-op.
                         throw parser_exception_t{
                             "CHECK constraint expression contains unsupported constructs; "
                             "allowed: comparisons, AND/OR/NOT, IS NULL/IS NOT NULL, "
@@ -119,29 +123,28 @@ namespace components::sql::transform {
                     break;
                 }
                 default:
-                    // Unsupported ALTER subtypes (AT_AlterColumnType, AT_SetNotNull, etc.) skipped
-                    // silently — preserves prior no-op behavior for unsupported forms.
                     break;
             }
         }
         if (subs.empty()) {
-            return logical_plan::make_node_alter_table_drop_column(resource_, coll, std::string{});
+            return logical_plan::make_node_alter_table_drop_column(resource_, db, rel, std::string{});
         }
         if (subs.size() == 1) {
-            // Preserve single-cmd factory shape (some downstream paths assume kind() reflects intent).
             auto& s = subs.front();
             switch (s.kind) {
                 case logical_plan::alter_table_kind::add_column:
-                    return logical_plan::make_node_alter_table_add_column(resource_, coll, std::move(s.column));
+                    return logical_plan::make_node_alter_table_add_column(resource_, db, rel, std::move(s.column));
                 case logical_plan::alter_table_kind::drop_column:
-                    return logical_plan::make_node_alter_table_drop_column(resource_, coll, std::move(s.column_name));
+                    return logical_plan::make_node_alter_table_drop_column(resource_, db, rel, std::move(s.column_name));
                 case logical_plan::alter_table_kind::rename_column:
-                    return logical_plan::make_node_alter_table_rename_column(resource_, coll,
+                    return logical_plan::make_node_alter_table_rename_column(resource_,
+                                                                              db,
+                                                                              rel,
                                                                               std::move(s.column_name),
                                                                               std::move(s.new_column_name));
             }
         }
-        return logical_plan::make_node_alter_table_multi(resource_, coll, std::move(subs));
+        return logical_plan::make_node_alter_table_multi(resource_, db, rel, std::move(subs));
     }
 
 } // namespace components::sql::transform

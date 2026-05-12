@@ -7,7 +7,7 @@ namespace components::logical_plan {
         components::catalog::oid_t           seed_classid,
         components::catalog::oid_t           seed_objid,
         components::catalog::drop_behavior_t behavior)
-        : node_t(resource, node_type::dynamic_cascade_delete_t, collection_full_name_t{})
+        : node_t(resource, node_type::dynamic_cascade_delete_t)
         , seed_classid_(seed_classid)
         , seed_objid_(seed_objid)
         , behavior_(behavior) {}

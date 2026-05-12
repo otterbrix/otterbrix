@@ -4,12 +4,16 @@ namespace components::logical_plan {
 
     node_computed_field_register_t::node_computed_field_register_t(
         std::pmr::memory_resource* resource,
-        collection_full_name_t      collection,
-        components::catalog::oid_t  table_oid,
+        std::string dbname,
+        std::string relname,
+        components::catalog::oid_t table_oid,
         std::vector<components::table::column_definition_t> columns)
-        : node_t(resource, node_type::computed_field_register_t, std::move(collection))
-        , table_oid_(table_oid)
-        , columns_(std::move(columns)) {}
+        : node_t(resource, node_type::computed_field_register_t)
+        , dbname_(std::move(dbname))
+        , relname_(std::move(relname))
+        , columns_(std::move(columns)) {
+        set_table_oid(table_oid);
+    }
 
     hash_t node_computed_field_register_t::hash_impl() const { return 0; }
 

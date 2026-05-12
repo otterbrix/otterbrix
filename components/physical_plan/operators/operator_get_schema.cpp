@@ -56,10 +56,10 @@ namespace components::operators {
 
     actor_zeta::unique_future<void>
     operator_get_schema_t::await_async_and_resume(pipeline::context_t* ctx) {
-        const collection_full_name_t kPgNamespace      {"pg_catalog", "main", "pg_namespace"};
-        const collection_full_name_t kPgClass          {"pg_catalog", "main", "pg_class"};
-        const collection_full_name_t kPgAttribute      {"pg_catalog", "main", "pg_attribute"};
-        const collection_full_name_t kPgComputedColumn {"pg_catalog", "main", "pg_computed_column"};
+        constexpr catalog::oid_t kPgNamespace      = catalog::well_known_oid::pg_namespace_table;
+        constexpr catalog::oid_t kPgClass          = catalog::well_known_oid::pg_class_table;
+        constexpr catalog::oid_t kPgAttribute      = catalog::well_known_oid::pg_attribute_table;
+        constexpr catalog::oid_t kPgComputedColumn = catalog::well_known_oid::pg_computed_column_table;
 
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
@@ -121,9 +121,9 @@ namespace components::operators {
 
             // 3. Scan column source per relkind.
             //    relkind='g' (Phase 7 dynamic schema): pg_computed_column owns
-            //      the schema (relid, attoid, attname, atttypid, attversion,
-            //      attrefcount). Resolver picks max(attversion) per attname
-            //      where attrefcount > 0.
+            //      the schema (Phase 11.F-B: relid, attoid, attname, atttypid,
+            //      atttypspec, attversion, attrefcount). Resolver picks
+            //      max(attversion) per attname where attrefcount > 0.
             //    relkind='r' (static): pg_attribute owns the schema. The
             //      catalog_view_t cache used by the legacy path materialized
             //      columns in attnum order. read_rows_by_key returns rows in
@@ -141,27 +141,35 @@ namespace components::operators {
                     std::vector<types::logical_value_t>{toid_lv});
                 auto cc_rows = co_await std::move(pcf);
                 // Pick latest attversion per attname where refcount > 0.
+                // Phase 11.F-B: schema is now [0=relid, 1=attoid, 2=attname,
+                // 3=atttypid, 4=atttypspec, 5=attversion, 6=attrefcount].
                 struct cc_entry_t {
                     catalog::oid_t atttypid;
+                    std::string    atttypspec;
                     std::int64_t   attversion;
                 };
                 std::unordered_map<std::string, cc_entry_t> latest;
                 for (const auto& row : cc_rows) {
-                    if (row.size() < 6) continue;
-                    if (row[5].is_null() || row[5].template value<std::int64_t>() <= 0) continue;
-                    if (row[2].is_null() || row[3].is_null() || row[4].is_null()) continue;
+                    if (row.size() < 7) continue;
+                    if (row[6].is_null() || row[6].template value<std::int64_t>() <= 0) continue;
+                    if (row[2].is_null() || row[5].is_null()) continue;
                     std::string attname{row[2].template value<std::string_view>()};
-                    auto atttypid = static_cast<catalog::oid_t>(
-                        row[3].template value<std::uint32_t>());
-                    auto attversion = row[4].template value<std::int64_t>();
+                    auto atttypid = row[3].is_null()
+                                        ? catalog::INVALID_OID
+                                        : static_cast<catalog::oid_t>(
+                                              row[3].template value<std::uint32_t>());
+                    std::string atttypspec;
+                    if (!row[4].is_null())
+                        atttypspec.assign(row[4].template value<std::string_view>());
+                    auto attversion = row[5].template value<std::int64_t>();
                     auto it = latest.find(attname);
                     if (it == latest.end() || it->second.attversion < attversion) {
-                        latest[attname] = {atttypid, attversion};
+                        latest[attname] = {atttypid, std::move(atttypspec), attversion};
                     }
                 }
                 col_types.reserve(latest.size());
                 for (auto& [attname, entry] : latest) {
-                    auto t = column_type_from_attribute(resource_, std::string{}, entry.atttypid);
+                    auto t = column_type_from_attribute(resource_, entry.atttypspec, entry.atttypid);
                     t.set_alias(attname);
                     col_types.push_back(std::move(t));
                 }

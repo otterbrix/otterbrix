@@ -87,23 +87,23 @@ namespace components::operators {
 
     full_scan::full_scan(std::pmr::memory_resource* resource,
                          log_t log,
-                         collection_full_name_t name,
+                         components::catalog::oid_t table_oid,
                          const expressions::compare_expression_ptr& expression,
                          logical_plan::limit_t limit)
         : read_only_operator_t(resource, log, operator_type::full_scan)
-        , name_(std::move(name))
+        , table_oid_(table_oid)
         , expression_(expression)
         , limit_(limit) {}
 
     void full_scan::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
-        if (name_.empty())
+        if (table_oid_ == components::catalog::INVALID_OID)
             return;
         async_wait();
     }
 
     actor_zeta::unique_future<void> full_scan::await_async_and_resume(pipeline::context_t* ctx) {
         if (log_.is_valid()) {
-            trace(log(), "full_scan::await_async_and_resume on {}", name_.to_string());
+            trace(log(), "full_scan::await_async_and_resume on oid={}", static_cast<unsigned>(table_oid_));
         }
 
         // Short-circuit: if expression is all_false, return empty result immediately
@@ -115,7 +115,7 @@ namespace components::operators {
 
         // Get types to build filter
         auto [_t, tf] =
-            actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::storage_types, ctx->session, name_);
+            actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::storage_types, ctx->session, table_oid_);
         auto types = co_await std::move(tf);
 
         // Build filter from expression
@@ -126,7 +126,7 @@ namespace components::operators {
         auto [_s, sf] = actor_zeta::send(ctx->disk_address,
                                          &services::disk::manager_disk_t::storage_scan,
                                          ctx->session,
-                                         name_,
+                                         table_oid_,
                                          std::move(filter),
                                          limit_val,
                                          ctx->txn);

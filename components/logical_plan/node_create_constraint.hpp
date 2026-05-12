@@ -17,28 +17,28 @@ namespace components::logical_plan {
         not_null = 'n',
     };
 
-    // node_create_constraint — single CREATE CONSTRAINT or table-bound constraint clause.
-    // FK form carries ref_collection (database+collection) for the referenced table; the
-    // executor resolves it to ref_table_oid via resolve_table before calling ddl_create_constraint.
-    // Non-FK forms leave ref_collection empty.
     class node_create_constraint_t final : public node_t {
     public:
+        // Phase 10.D: ctor takes role-named strings instead of cfn struct. ref_dbname/
+        // ref_relname carry the FK referenced table; empty for non-FK kinds.
         node_create_constraint_t(std::pmr::memory_resource* resource,
-                                  const collection_full_name_t& collection,
-                                  std::string name,
-                                  constraint_kind kind,
-                                  collection_full_name_t ref_collection);
+                                 std::string dbname,
+                                 std::string relname,
+                                 std::string name,
+                                 constraint_kind kind,
+                                 std::string ref_dbname = {},
+                                 std::string ref_relname = {});
 
         const std::string& name() const noexcept { return name_; }
         constraint_kind kind() const noexcept { return kind_; }
-        const collection_full_name_t& ref_collection() const noexcept { return ref_collection_; }
-        const std::vector<std::string>& columns() const noexcept { return columns_; }
-        const std::vector<std::string>& ref_columns() const noexcept { return ref_columns_; }
-        std::vector<std::string>& columns() noexcept { return columns_; }
-        std::vector<std::string>& ref_columns() noexcept { return ref_columns_; }
+        const std::string& ref_dbname() const noexcept { return ref_dbname_; }
+        const std::string& ref_relname() const noexcept { return ref_relname_; }
 
-        // FK semantic flags — meaningful only when kind_ == foreign_key.
-        // Defaults: 's' MATCH SIMPLE, 'a' NO ACTION on delete/update.
+        const std::vector<std::string>& local_col_names() const noexcept { return local_col_names_; }
+        const std::vector<std::string>& ref_col_names() const noexcept { return ref_col_names_; }
+        void set_local_col_names(std::vector<std::string> v) noexcept { local_col_names_ = std::move(v); }
+        void set_ref_col_names(std::vector<std::string> v) noexcept { ref_col_names_ = std::move(v); }
+
         char match_type() const noexcept { return match_type_; }
         char del_action() const noexcept { return del_action_; }
         char upd_action() const noexcept { return upd_action_; }
@@ -46,15 +46,8 @@ namespace components::logical_plan {
         void set_del_action(char c) noexcept { del_action_ = c; }
         void set_upd_action(char c) noexcept { upd_action_ = c; }
 
-        // CHECK constraint expression SQL text — meaningful only when kind_ == check.
         const std::string& check_expr() const noexcept { return check_expr_; }
         void set_check_expr(std::string expr) { check_expr_ = std::move(expr); }
-
-        // Resolved metadata — populated by enrich_logical_plan before planner runs.
-        // Allows the DDL planner (which has no catalog_view access) to drive
-        // build_create_constraint_writes purely from the node.
-        components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
-        void set_table_oid(components::catalog::oid_t oid) noexcept { table_oid_ = oid; }
 
         components::catalog::oid_t ref_table_oid() const noexcept { return ref_table_oid_; }
         void set_ref_table_oid(components::catalog::oid_t oid) noexcept { ref_table_oid_ = oid; }
@@ -73,20 +66,26 @@ namespace components::logical_plan {
             ref_col_attoids_ = std::move(v);
         }
 
+        // Phase 9.W/10.D: role-named accessors. ALTER TABLE ADD CONSTRAINT target identifiers.
+        const std::string& relname() const noexcept { return relname_; }
+        const std::string& dbname() const noexcept { return dbname_; }
+
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
+        std::string dbname_;
+        std::string relname_;
         std::string name_;
         constraint_kind kind_;
-        collection_full_name_t ref_collection_;
-        std::vector<std::string> columns_;     // local column names participating in constraint
-        std::vector<std::string> ref_columns_; // referenced column names (FK only)
-        char match_type_{'s'};                 // 's' SIMPLE / 'f' FULL / 'p' PARTIAL
-        char del_action_{'a'};                 // 'a' NO ACTION / 'r' RESTRICT / 'c' CASCADE / 'n' SET NULL / 'd' SET DEFAULT
-        char upd_action_{'a'};                 // same alphabet
-        std::string check_expr_;               // CHECK constraint SQL text (empty for non-CHECK)
-        components::catalog::oid_t table_oid_{components::catalog::INVALID_OID};
+        std::string ref_dbname_;
+        std::string ref_relname_;
+        std::vector<std::string> local_col_names_;
+        std::vector<std::string> ref_col_names_;
+        char match_type_{'s'};
+        char del_action_{'a'};
+        char upd_action_{'a'};
+        std::string check_expr_;
         components::catalog::oid_t ref_table_oid_{components::catalog::INVALID_OID};
         std::vector<components::catalog::oid_t> fk_col_attoids_;
         std::vector<components::catalog::oid_t> ref_col_attoids_;
@@ -96,9 +95,11 @@ namespace components::logical_plan {
 
     node_create_constraint_ptr
     make_node_create_constraint(std::pmr::memory_resource* resource,
-                                  const collection_full_name_t& collection,
-                                  std::string name,
-                                  constraint_kind kind,
-                                  collection_full_name_t ref_collection = {});
+                                std::string dbname,
+                                std::string relname,
+                                std::string name,
+                                constraint_kind kind,
+                                std::string ref_dbname = {},
+                                std::string ref_relname = {});
 
 } // namespace components::logical_plan

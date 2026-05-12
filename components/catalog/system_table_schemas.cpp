@@ -206,12 +206,16 @@ namespace components::catalog {
 
         std::vector<column_definition_t> pg_computed_column_columns() {
             std::vector<column_definition_t> c;
-            c.emplace_back("relid", oid_col(), true);         // pg_class.oid (parent relation, always relkind='g' generated/computing)
-            c.emplace_back("attoid", oid_col(), true);
-            c.emplace_back("attname", str_col(), true);
-            c.emplace_back("atttypid", oid_col(), true);
-            c.emplace_back("attversion", i64_col(), true);   // C1: version counter for trie eviction
-            c.emplace_back("attrefcount", i64_col(), true);  // ref-counted versioned trie
+            c.emplace_back("relid", oid_col(), true);          // 0: pg_class.oid (parent relation, always relkind='g' generated/computing)
+            c.emplace_back("attoid", oid_col(), true);         // 1
+            c.emplace_back("attname", str_col(), true);        // 2
+            c.emplace_back("atttypid", oid_col(), true);       // 3: builtin scalar oid (complex types use atttypspec)
+            c.emplace_back("atttypspec", str_col(), true);     // 4: Phase 11.F-B — flat-text encoded complex_logical_type
+                                                                //    for ARRAY / STRUCT / UNION / DECIMAL / fixed-width sub-types.
+                                                                //    Empty for builtin scalars (atttypid alone reconstructs the type).
+                                                                //    Mirrors pg_attribute.atttypspec.
+            c.emplace_back("attversion", i64_col(), true);    // 5: was 4
+            c.emplace_back("attrefcount", i64_col(), true);   // 6: was 5
             return c;
         }
     } // namespace

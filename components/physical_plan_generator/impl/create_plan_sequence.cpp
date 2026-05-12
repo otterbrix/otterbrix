@@ -32,12 +32,13 @@ namespace services::planner::impl {
             writes.reserve(node->children().size() - 1);
             for (std::size_t i = 1; i < node->children().size(); ++i) {
                 auto* pw = static_cast<node_primitive_write_t*>(node->children()[i].get());
-                writes.emplace_back(pw->catalog_table(), std::move(pw->row()));
+                writes.emplace_back(pw->catalog_table_oid(), std::move(pw->row()));
             }
             return boost::intrusive_ptr(new components::operators::operator_create_collection_t(
                 context.resource,
                 context.log.clone(),
-                cc->collection_full_name(),
+                cc->table_oid(),
+                cc->namespace_oid(),
                 cc->column_definitions(),
                 cc->is_disk_storage(),
                 std::move(writes)));
@@ -58,7 +59,7 @@ namespace services::planner::impl {
             writes.reserve(node->children().size() - 1);
             for (std::size_t i = 0; i + 1 < node->children().size(); ++i) {
                 auto* pw = static_cast<node_primitive_write_t*>(node->children()[i].get());
-                writes.emplace_back(pw->catalog_table(), std::move(pw->row()));
+                writes.emplace_back(pw->catalog_table_oid(), std::move(pw->row()));
             }
             auto metadata_op = boost::intrusive_ptr(
                 new components::operators::operator_create_index_metadata_t(
@@ -69,7 +70,6 @@ namespace services::planner::impl {
                 new components::operators::operator_create_index_backfill_t(
                     context.resource,
                     context.log.clone(),
-                    ci->collection_full_name(),
                     ci->name(),
                     ci->type(),
                     ci->keys(),
@@ -93,13 +93,13 @@ namespace services::planner::impl {
             deletes.reserve(node->children().size() - 1);
             for (std::size_t i = 0; i + 1 < node->children().size(); ++i) {
                 auto* pd = static_cast<node_primitive_delete_t*>(node->children()[i].get());
-                deletes.push_back({pd->catalog_table(), pd->oid_col_idx(), pd->target_oid()});
+                deletes.push_back({pd->catalog_table_oid(), pd->oid_col_idx(), pd->target_oid()});
             }
             return boost::intrusive_ptr(
                 new components::operators::operator_drop_index_t(
                     context.resource,
                     context.log.clone(),
-                    di->collection_full_name(),
+                    di->table_oid(),
                     di->name(),
                     std::move(deletes)));
         }

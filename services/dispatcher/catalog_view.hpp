@@ -68,6 +68,14 @@ namespace services::dispatcher {
         const resolved_type_t* try_get_type(components::catalog::oid_t namespace_oid,
                                               std::string_view name) const noexcept;
 
+        // Phase 8.F oid hot path: O(1) lookup by table OID. Backed by tbl_by_oid_,
+        // a secondary index over tbl_cache_ populated alongside the (ns_oid, name)
+        // primary index in get_table(). Resolved-stage consumers (post-enrich)
+        // already carry table_oid on the node and never need to re-resolve via
+        // (ns, name); this accessor lets them probe the cache directly without
+        // reconstructing the parser-side cfn or doing a name-keyed scan.
+        const resolved_table_t* try_get_table_by_oid(components::catalog::oid_t oid) const noexcept;
+
         // FK snapshot getters.  Both async variants call disk.read_rows_by_key on
         // pg_constraint + pg_attribute to build fully-resolved resolved_fk_t entries
         // and store them in the per-txn fk_outgoing_ / fk_referencing_ maps.
@@ -101,6 +109,11 @@ namespace services::dispatcher {
         std::unordered_map<std::string, resolved_namespace_t> ns_cache_;
         std::unordered_map<std::string, resolved_table_t> tbl_cache_;
         std::unordered_map<std::string, resolved_type_t> type_cache_;
+        // Secondary index over tbl_cache_ — pointers stay valid across map mutations
+        // because std::unordered_map guarantees pointer/reference stability for
+        // existing elements on insert. We only ever insert into tbl_cache_; entries
+        // are not erased for the lifetime of catalog_view_t (per-execute_plan).
+        std::unordered_map<components::catalog::oid_t, resolved_table_t*> tbl_by_oid_;
         std::unordered_map<components::catalog::oid_t, std::vector<resolved_fk_t>> fk_outgoing_;
         std::unordered_map<components::catalog::oid_t, std::vector<resolved_fk_t>> fk_referencing_;
     };

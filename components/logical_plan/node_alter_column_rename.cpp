@@ -3,14 +3,18 @@
 namespace components::logical_plan {
 
     node_alter_column_rename_t::node_alter_column_rename_t(std::pmr::memory_resource* resource,
-                                                            collection_full_name_t      collection,
-                                                            components::catalog::oid_t  table_oid,
-                                                            std::string                 old_name,
-                                                            std::string                 new_name)
-        : node_t(resource, node_type::alter_column_rename_t, std::move(collection))
-        , table_oid_(table_oid)
+                                                           std::string dbname,
+                                                           std::string relname,
+                                                           components::catalog::oid_t table_oid,
+                                                           std::string old_name,
+                                                           std::string new_name)
+        : node_t(resource, node_type::alter_column_rename_t)
+        , dbname_(std::move(dbname))
+        , relname_(std::move(relname))
         , old_name_(std::move(old_name))
-        , new_name_(std::move(new_name)) {}
+        , new_name_(std::move(new_name)) {
+        set_table_oid(table_oid);
+    }
 
     hash_t node_alter_column_rename_t::hash_impl() const { return 0; }
 

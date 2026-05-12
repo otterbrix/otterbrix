@@ -4,6 +4,7 @@
 
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/function_expression.hpp>
+#include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/operators/operator_match.hpp>
 #include <components/physical_plan/operators/scan/full_scan.hpp>
@@ -80,10 +81,10 @@ namespace services::planner::impl {
         }
 
         components::operators::operator_ptr create_plan_match_(const context_storage_t& context,
-                                                               const collection_full_name_t& coll_name,
+                                                               components::catalog::oid_t table_oid,
                                                                const components::expressions::expression_ptr& expr,
                                                                components::logical_plan::limit_t limit) {
-            if (context.has_collection(coll_name)) {
+            if (context.has_table_oid(table_oid)) {
                 // TODO: function_expr in scans
                 if (is_pure_compare(expr)) {
                     auto comp_expr = reinterpret_cast<const expr::compare_expression_ptr&>(expr);
@@ -99,7 +100,7 @@ namespace services::planner::impl {
                             auto ctype = key_on_left ? comp_expr->type() : mirror_compare(comp_expr->type());
                             return boost::intrusive_ptr(new components::operators::index_scan(context.resource,
                                                                                               context.log.clone(),
-                                                                                              coll_name,
+                                                                                              table_oid,
                                                                                               key,
                                                                                               value,
                                                                                               ctype,
@@ -109,7 +110,7 @@ namespace services::planner::impl {
 
                     return boost::intrusive_ptr(new components::operators::full_scan(context.resource,
                                                                                      context.log.clone(),
-                                                                                     coll_name,
+                                                                                     table_oid,
                                                                                      comp_expr,
                                                                                      limit));
                 } else {
@@ -122,7 +123,7 @@ namespace services::planner::impl {
                     match_operator->set_children(
                         boost::intrusive_ptr(new components::operators::full_scan(context.resource,
                                                                                   context.log.clone(),
-                                                                                  coll_name,
+                                                                                  table_oid,
                                                                                   nullptr,
                                                                                   limit)));
                     return match_operator;
@@ -137,15 +138,17 @@ namespace services::planner::impl {
                                                           const components::logical_plan::node_ptr& node,
                                                           components::logical_plan::limit_t limit) {
         if (node->expressions().empty()) {
-            if (context.has_collection(node->collection_full_name())) {
+            if (context.has_table_oid(node->table_oid())) {
                 return boost::intrusive_ptr(
-                    new components::operators::transfer_scan(context.resource, node->collection_full_name(), limit));
+                    new components::operators::transfer_scan(context.resource, node->table_oid(), limit));
             } else {
                 return boost::intrusive_ptr(
-                    new components::operators::transfer_scan(nullptr, node->collection_full_name(), limit));
+                    new components::operators::transfer_scan(nullptr, node->table_oid(), limit));
             }
         } else {
-            return create_plan_match_(context, node->collection_full_name(), node->expressions()[0], limit);
+            // Phase 10.F: index_scan no longer takes cfn — pass table_oid only.
+            const auto* match_node = static_cast<const components::logical_plan::node_match_t*>(node.get());
+            return create_plan_match_(context, match_node->table_oid(), match_node->expressions()[0], limit);
         }
     }
 
@@ -156,7 +159,7 @@ namespace services::planner::impl {
             return nullptr;
         }
         auto expr = reinterpret_cast<const components::expressions::compare_expression_ptr*>(&node->expressions()[0]);
-        if (context.has_collection(node->collection_full_name())) {
+        if (context.has_table_oid(node->table_oid())) {
             return boost::intrusive_ptr(
                 new components::operators::operator_match_t(context.resource, context.log.clone(), *expr, limit));
         } else {

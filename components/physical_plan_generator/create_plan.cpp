@@ -13,6 +13,10 @@
 #include "impl/create_plan_abort_transaction.hpp"
 #include "impl/create_plan_computed_field_register.hpp"
 #include "impl/create_plan_computed_field_unregister.hpp"
+#include "impl/create_plan_resolve_function.hpp"
+#include "impl/create_plan_resolve_namespace.hpp"
+#include "impl/create_plan_resolve_table.hpp"
+#include "impl/create_plan_resolve_type.hpp"
 #include "impl/create_plan_fk_check.hpp"
 #include "impl/create_plan_fk_cascade.hpp"
 #include "impl/create_plan_sequence.hpp"
@@ -94,6 +98,14 @@ namespace services::planner {
                 return impl::create_plan_computed_field_register(context, node);
             case node_type::computed_field_unregister_t:
                 return impl::create_plan_computed_field_unregister(context, node);
+            case node_type::catalog_resolve_namespace_t:
+                return impl::create_plan_resolve_namespace(context, node);
+            case node_type::catalog_resolve_function_t:
+                return impl::create_plan_resolve_function(context, node);
+            case node_type::catalog_resolve_table_t:
+                return impl::create_plan_resolve_table(context, node);
+            case node_type::catalog_resolve_type_t:
+                return impl::create_plan_resolve_type(context, node);
             default:
                 break;
         }

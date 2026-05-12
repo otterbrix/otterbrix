@@ -147,14 +147,14 @@ namespace components::sql::transform {
         logical_plan::node_match_ptr match;
         std::pmr::vector<update_expr_ptr> updates(resource_);
         name_collection_t names;
-        names.left_name = rangevar_to_collection(node.relation);
+        names.left_name = rangevar_to_qualified_name(node.relation);
         names.left_alias = construct_alias(node.relation->alias);
 
         if (!node.fromClause->lst.empty()) {
             // has from
             auto from_first = node.fromClause->lst.front().data;
             if (nodeTag(from_first) == T_RangeVar) {
-                names.right_name = rangevar_to_collection(pg_ptr_cast<RangeVar>(from_first));
+                names.right_name = rangevar_to_qualified_name(pg_ptr_cast<RangeVar>(from_first));
                 names.right_alias = construct_alias(pg_ptr_cast<RangeVar>(from_first)->alias);
             } else {
                 throw parser_exception_t{"undefined token in UPDATE FROM", ""};
@@ -192,22 +192,37 @@ namespace components::sql::transform {
             } else {
                 where_expr = transform_a_expr(pg_ptr_cast<A_Expr>(node.whereClause), names, params);
             }
-            match = logical_plan::make_node_match(resource_, names.left_name, where_expr);
+            match = logical_plan::make_node_match(resource_,
+                                                  names.left_name.dbname,
+                                                  names.left_name.relname,
+                                                  where_expr);
         } else {
             match = logical_plan::make_node_match(resource_,
-                                                  names.left_name,
+                                                  names.left_name.dbname,
+                                                  names.left_name.relname,
                                                   make_compare_expression(resource_, compare_type::all_true));
         }
 
+        logical_plan::node_ptr upd;
         if (names.right_name.empty()) {
-            return logical_plan::make_node_update_many(resource_, names.left_name, match, updates, false);
+            upd = logical_plan::make_node_update_many(resource_,
+                                                       names.left_name.dbname,
+                                                       names.left_name.relname,
+                                                       match,
+                                                       updates,
+                                                       false);
         } else {
-            return logical_plan::make_node_update_many(resource_,
-                                                       names.left_name,
-                                                       names.right_name,
+            upd = logical_plan::make_node_update_many(resource_,
+                                                       names.left_name.dbname,
+                                                       names.left_name.relname,
+                                                       names.right_name.dbname,
+                                                       names.right_name.relname,
                                                        match,
                                                        updates,
                                                        false);
         }
+        // Phase 13 T13: catalog-resolve wrap for UPDATE target table.
+        return maybe_wrap_with_catalog_resolve_table(
+            resource_, names.left_name.dbname, names.left_name.relname, std::move(upd));
     }
 } // namespace components::sql::transform

@@ -29,7 +29,7 @@ namespace components::operators {
         components::table::transaction_data txn_data =
             txn_t ? txn_t->data() : components::table::transaction_data{0, 0};
         std::vector<components::pg_catalog_append_range_t> swap_appends;
-        std::set<collection_full_name_t>                   swap_deletes;
+        std::set<components::catalog::oid_t>               swap_deletes;
         if (txn_t) {
             swap_appends = std::move(txn_t->pg_catalog_appends);
             swap_deletes = std::move(txn_t->pg_catalog_delete_tables);

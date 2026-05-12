@@ -17,6 +17,10 @@ namespace components::catalog {
 
         bool  empty()    const noexcept { return next >= oids.size(); }
         oid_t allocate()       noexcept { assert(!empty()); return oids[next++]; }
+        // Inspect the next OID without consuming it. Used by the planner to mirror
+        // the about-to-be-allocated table_oid onto the cc node for the physical
+        // plan generator.
+        oid_t peek()     const noexcept { assert(!empty()); return oids[next]; }
     };
 
 } // namespace components::catalog

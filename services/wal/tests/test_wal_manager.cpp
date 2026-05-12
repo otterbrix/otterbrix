@@ -6,6 +6,7 @@
 #include <services/wal/wal_sync_mode.hpp>
 #include <services/wal/record.hpp>
 #include <services/wal/base.hpp>
+#include <components/catalog/catalog_oids.hpp>
 #include <components/tests/generaty.hpp>
 #include <components/configuration/configuration.hpp>
 #include <components/log/log.hpp>
@@ -18,11 +19,17 @@ using namespace components::session;
 using namespace components::vector;
 using namespace components::types;
 
+namespace catalog = components::catalog;
+constexpr auto kMainDb = catalog::well_known_oid::main_database;
+constexpr catalog::oid_t kTestTableOidA = 16500;
+constexpr catalog::oid_t kTestTableOidB = 16501;
+
 static const std::filesystem::path base_mgr_path = "/tmp/otterbrix_test_wal_manager";
 
 // ---------------------------------------------------------------------------
 // Fixture: spawns a manager_wal_replicate_t (which creates workers internally
-// on demand for each database).
+// keyed by database_oid). Phase 8.E uses main_database for all WAL traffic;
+// the manager creates a single worker on demand.
 // ---------------------------------------------------------------------------
 struct test_wal_manager {
     test_wal_manager(const std::filesystem::path& path, bool wal_enabled = true)
@@ -50,8 +57,7 @@ struct test_wal_manager {
 
     // ----- convenience senders -------------------------------------------
 
-    actor_zeta::unique_future<services::wal::id_t> send_insert(const std::string& db,
-                                                  const std::string& collection,
+    actor_zeta::unique_future<services::wal::id_t> send_insert(catalog::oid_t table_oid,
                                                   uint64_t txn_id,
                                                   size_t row_count,
                                                   uint64_t row_start = 0) {
@@ -61,8 +67,7 @@ struct test_wal_manager {
             actor_zeta::otterbrix::send(address(),
                                         &manager_wal_replicate_t::write_physical_insert,
                                         session_id_t::generate_uid(),
-                                        std::string(db),
-                                        std::string(collection),
+                                        table_oid,
                                         std::make_unique<data_chunk_t>(std::move(chunk)),
                                         row_start,
                                         row_count,
@@ -71,7 +76,7 @@ struct test_wal_manager {
     }
 
     actor_zeta::unique_future<services::wal::id_t> send_commit(uint64_t txn_id,
-                                                  const std::string& database = "testdb",
+                                                  catalog::oid_t database_oid = kMainDb,
                                                   wal_sync_mode sync_mode = wal_sync_mode::NORMAL) {
         auto [ns, fut] =
             actor_zeta::otterbrix::send(address(),
@@ -79,7 +84,7 @@ struct test_wal_manager {
                                         session_id_t::generate_uid(),
                                         txn_id,
                                         sync_mode,
-                                        std::string(database));
+                                        database_oid);
         return std::move(fut);
     }
 
@@ -118,51 +123,48 @@ struct test_wal_manager {
 };
 
 // ===========================================================================
-//  1. manager_route_by_database
-//     Write to two different databases. Verify that separate WAL directories
-//     are created for each.
+//  1. manager_route_by_database_oid
+//     Phase 8.E: WAL writes are routed by main_database; a single worker
+//     directory ${path}/${main_database}/ holds all WAL.
 // ===========================================================================
-TEST_CASE("wal_manager::route_by_database") {
+TEST_CASE("wal_manager::route_by_database_oid") {
     test_wal_manager env(base_mgr_path / "route_db");
 
-    env.send_insert("db1", "tbl", /*txn_id=*/100, /*row_count=*/5);
-    env.send_insert("db2", "tbl", /*txn_id=*/101, /*row_count=*/5);
+    env.send_insert(kTestTableOidA, /*txn_id=*/100, /*row_count=*/5);
+    env.send_insert(kTestTableOidB, /*txn_id=*/101, /*row_count=*/5);
 
-    // Each database should have its own subdirectory (or at least distinct
-    // segment files) under the WAL path.
-    bool has_db1 = false;
-    bool has_db2 = false;
+    // Phase 8.E uses main_database for everything → single worker directory.
+    bool found_main_db_dir = false;
+    auto expected = std::to_string(static_cast<unsigned>(kMainDb));
     for (auto& entry : std::filesystem::recursive_directory_iterator(env.path_)) {
-        auto p = entry.path().string();
-        if (p.find("db1") != std::string::npos) has_db1 = true;
-        if (p.find("db2") != std::string::npos) has_db2 = true;
+        if (entry.is_directory() && entry.path().filename().string() == expected) {
+            found_main_db_dir = true;
+            break;
+        }
     }
-    REQUIRE(has_db1);
-    REQUIRE(has_db2);
+    REQUIRE(found_main_db_dir);
 }
 
 // ===========================================================================
-//  2. manager_commit_to_database
-//     Write INSERT to "db1", commit with database="db1".  Load from "db1"
-//     should have the record.
+//  2. manager_commit_records_table_oid
+//     Write INSERT for an oid, commit, load. Records carry table_oid round-trip.
 // ===========================================================================
-TEST_CASE("wal_manager::commit_to_database") {
+TEST_CASE("wal_manager::commit_records_table_oid") {
     test_wal_manager env(base_mgr_path / "commit_db");
 
-    auto fut_id = env.send_insert("db1", "users", /*txn_id=*/200, /*row_count=*/8);
+    auto fut_id = env.send_insert(kTestTableOidA, /*txn_id=*/200, /*row_count=*/8);
     REQUIRE(fut_id.valid());
     auto wal_id = std::move(fut_id).get();
     REQUIRE(wal_id > 0);
 
-    env.send_commit(200, "db1");
+    env.send_commit(200);
 
     auto records = std::move(env.send_load(0)).get();
     bool found = false;
     for (const auto& r : records) {
         if (r.record_type == wal_record_type::PHYSICAL_INSERT && r.transaction_id == 200) {
             found = true;
-            REQUIRE(r.collection_name.database == "db1");
-            REQUIRE(r.collection_name.collection == "users");
+            REQUIRE(r.table_oid == kTestTableOidA);
             REQUIRE(r.physical_row_count == 8);
         }
     }
@@ -170,72 +172,41 @@ TEST_CASE("wal_manager::commit_to_database") {
 }
 
 // ===========================================================================
-//  3. manager_load_all_databases
-//     Write to "db1" and "db2".  load(0) should merge and return records from
-//     both, sorted by wal_id.
+//  3. manager_load_returns_all
+//     Multiple writes from different oids — load returns merged sorted records.
 // ===========================================================================
-TEST_CASE("wal_manager::load_all_databases") {
+TEST_CASE("wal_manager::load_returns_all") {
     test_wal_manager env(base_mgr_path / "load_all");
 
-    env.send_insert("db1", "a", /*txn_id=*/300, /*row_count=*/3);
-    env.send_commit(300, "db1");
+    env.send_insert(kTestTableOidA, /*txn_id=*/300, /*row_count=*/3);
+    env.send_commit(300);
 
-    env.send_insert("db2", "b", /*txn_id=*/301, /*row_count=*/4);
-    env.send_commit(301, "db2");
+    env.send_insert(kTestTableOidB, /*txn_id=*/301, /*row_count=*/4);
+    env.send_commit(301);
 
     auto records = std::move(env.send_load(0)).get();
 
     // We expect at least 4 records: 2 inserts + 2 commits.
     REQUIRE(records.size() >= 4);
 
-    // Verify that records from both databases are present.
-    bool seen_db1 = false;
-    bool seen_db2 = false;
+    bool seen_a = false;
+    bool seen_b = false;
     services::wal::id_t prev_id = 0;
     for (const auto& r : records) {
-        if (r.collection_name.database == "db1") seen_db1 = true;
-        if (r.collection_name.database == "db2") seen_db2 = true;
+        if (r.is_physical()) {
+            if (r.table_oid == kTestTableOidA) seen_a = true;
+            if (r.table_oid == kTestTableOidB) seen_b = true;
+        }
         // Records should be sorted by wal_id.
         REQUIRE(r.id >= prev_id);
         prev_id = r.id;
     }
-    REQUIRE(seen_db1);
-    REQUIRE(seen_db2);
+    REQUIRE(seen_a);
+    REQUIRE(seen_b);
 }
 
 // ===========================================================================
-//  4. manager_load_per_database
-//     If the load interface supports per-database filtering (future feature),
-//     verify that loading from a specific database returns only that db's
-//     records.  For now we verify via collection_name.database on the merged
-//     result set.
-// ===========================================================================
-TEST_CASE("wal_manager::load_per_database") {
-    test_wal_manager env(base_mgr_path / "load_per");
-
-    env.send_insert("alpha", "t1", /*txn_id=*/400, /*row_count=*/6);
-    env.send_commit(400, "alpha");
-
-    env.send_insert("beta", "t2", /*txn_id=*/401, /*row_count=*/7);
-    env.send_commit(401, "beta");
-
-    auto records = std::move(env.send_load(0)).get();
-
-    // Partition by database name.
-    size_t alpha_count = 0;
-    size_t beta_count = 0;
-    for (const auto& r : records) {
-        if (r.is_physical()) {
-            if (r.collection_name.database == "alpha") ++alpha_count;
-            if (r.collection_name.database == "beta") ++beta_count;
-        }
-    }
-    REQUIRE(alpha_count >= 1);
-    REQUIRE(beta_count >= 1);
-}
-
-// ===========================================================================
-//  5. manager_truncate_all
+//  4. manager_truncate_all
 //     Write records, get the current WAL id, truncate_before that id.
 //     Verify old records are gone on the next load.
 // ===========================================================================
@@ -243,15 +214,15 @@ TEST_CASE("wal_manager::truncate_all") {
     test_wal_manager env(base_mgr_path / "truncate");
 
     // Write a first batch.
-    env.send_insert("db1", "tbl", /*txn_id=*/500, /*row_count=*/5);
-    env.send_commit(500, "db1");
+    env.send_insert(kTestTableOidA, /*txn_id=*/500, /*row_count=*/5);
+    env.send_commit(500);
 
     auto checkpoint_id = std::move(env.send_current_wal_id()).get();
     REQUIRE(checkpoint_id > 0);
 
     // Write a second batch after the checkpoint.
-    env.send_insert("db1", "tbl", /*txn_id=*/501, /*row_count=*/3);
-    env.send_commit(501, "db1");
+    env.send_insert(kTestTableOidA, /*txn_id=*/501, /*row_count=*/3);
+    env.send_commit(501);
 
     // Truncate everything up to and including the checkpoint id.
     env.send_truncate_before(checkpoint_id);
@@ -267,16 +238,15 @@ TEST_CASE("wal_manager::truncate_all") {
 }
 
 // ===========================================================================
-//  6. manager_current_wal_id
-//     Write to multiple databases.  current_wal_id should be the maximum
-//     across all workers.
+//  5. manager_current_wal_id
+//     Multiple writes across oids — current_wal_id reflects the global counter.
 // ===========================================================================
 TEST_CASE("wal_manager::current_wal_id") {
     test_wal_manager env(base_mgr_path / "cur_id");
 
-    env.send_insert("db_x", "t", /*txn_id=*/600, /*row_count=*/2);
-    env.send_insert("db_y", "t", /*txn_id=*/601, /*row_count=*/2);
-    env.send_insert("db_x", "t", /*txn_id=*/602, /*row_count=*/2);
+    env.send_insert(kTestTableOidA, /*txn_id=*/600, /*row_count=*/2);
+    env.send_insert(kTestTableOidB, /*txn_id=*/601, /*row_count=*/2);
+    env.send_insert(kTestTableOidA, /*txn_id=*/602, /*row_count=*/2);
 
     auto cur_id = std::move(env.send_current_wal_id()).get();
     // We wrote 3 records total; the global WAL id should be at least 3.
@@ -284,39 +254,8 @@ TEST_CASE("wal_manager::current_wal_id") {
 }
 
 // ===========================================================================
-//  7. manager_create_on_demand
-//     First write to an unknown database creates a worker.  A second write to
-//     the same database reuses the existing worker (no duplicate directory).
-// ===========================================================================
-TEST_CASE("wal_manager::create_on_demand") {
-    test_wal_manager env(base_mgr_path / "on_demand");
-
-    // First write to "new_db" -- should create the worker.
-    auto id1 = std::move(env.send_insert("new_db", "c", /*txn_id=*/700, /*row_count=*/4)).get();
-    REQUIRE(id1 > 0);
-
-    // Second write to "new_db" -- should reuse the same worker.
-    auto id2 = std::move(env.send_insert("new_db", "c", /*txn_id=*/701, /*row_count=*/4)).get();
-    REQUIRE(id2 > id1);
-
-    // There should be exactly one subdirectory for "new_db" (no duplicates).
-    size_t dir_count = 0;
-    auto wal_dir = env.path_ / "wal";
-    for (auto& entry : std::filesystem::directory_iterator(wal_dir)) {
-        if (entry.is_directory()) {
-            auto name = entry.path().filename().string();
-            if (name.find("new_db") != std::string::npos) {
-                ++dir_count;
-            }
-        }
-    }
-    // Exactly one directory for the database.
-    REQUIRE(dir_count == 1);
-}
-
-// ===========================================================================
-//  8. manager_disabled
-//     config.wal.on=false.  All write / commit / load return 0 or empty.
+//  6. manager_disabled
+//     config.wal.on=false. All write / commit / load return 0 or empty.
 // ===========================================================================
 TEST_CASE("wal_manager::disabled") {
     test_wal_manager env(base_mgr_path / "disabled", /*wal_enabled=*/false);
@@ -329,8 +268,7 @@ TEST_CASE("wal_manager::disabled") {
             actor_zeta::otterbrix::send(env.address(),
                                         &manager_wal_replicate_t::write_physical_insert,
                                         session_id_t::generate_uid(),
-                                        std::string("db1"),
-                                        std::string("tbl"),
+                                        kTestTableOidA,
                                         std::make_unique<data_chunk_t>(std::move(chunk)),
                                         uint64_t{0},
                                         uint64_t{5},
@@ -348,7 +286,7 @@ TEST_CASE("wal_manager::disabled") {
                                         session_id_t::generate_uid(),
                                         uint64_t{800},
                                         wal_sync_mode::NORMAL,
-                                        std::string("db1"));
+                                        kMainDb);
 
         REQUIRE(std::move(fut).get() == 0);
     }
@@ -377,7 +315,7 @@ TEST_CASE("wal_manager::disabled") {
 }
 
 // ===========================================================================
-//  9. test_auto_checkpoint_on_wal_size (§1.12)
+//  7. test_auto_checkpoint_on_wal_size (§1.12)
 //     auto_checkpoint_wal_id returns 0 before threshold and a non-zero wal_id
 //     (and resets the counter) after the threshold is crossed.
 // ===========================================================================
@@ -414,8 +352,7 @@ TEST_CASE("wal_manager::test_auto_checkpoint_on_wal_size") {
         auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
                                                       &manager_wal_replicate_t::write_physical_insert,
                                                       session_id_t::generate_uid(),
-                                                      std::string("checkpointdb"),
-                                                      std::string("tbl"),
+                                                      kTestTableOidA,
                                                       std::make_unique<data_chunk_t>(std::move(chunk)),
                                                       uint64_t{0},
                                                       uint64_t{10},
@@ -428,7 +365,7 @@ TEST_CASE("wal_manager::test_auto_checkpoint_on_wal_size") {
                                                       session_id_t::generate_uid(),
                                                       uint64_t{1001},
                                                       wal_sync_mode::NORMAL,
-                                                      std::string("checkpointdb"));
+                                                      kMainDb);
         std::move(fut).get();
     }
 
@@ -455,8 +392,8 @@ TEST_CASE("wal_manager::test_auto_checkpoint_on_wal_size") {
 }
 
 // ===========================================================================
-//  10. manager_sync_addresses
-//     Call sync() with mock addresses.  Verify no crash and addresses stored.
+//  8. manager_sync_addresses
+//     Call sync() with mock addresses. Verify no crash and addresses stored.
 // ===========================================================================
 TEST_CASE("wal_manager::sync_addresses") {
     test_wal_manager env(base_mgr_path / "sync_addr");
@@ -470,7 +407,7 @@ TEST_CASE("wal_manager::sync_addresses") {
     }
 
     // The manager should still be functional after re-sync.
-    auto fut_id = env.send_insert("db_sync", "t", /*txn_id=*/900, /*row_count=*/2);
+    auto fut_id = env.send_insert(kTestTableOidA, /*txn_id=*/900, /*row_count=*/2);
     REQUIRE(fut_id.valid());
     auto wal_id = std::move(fut_id).get();
     REQUIRE(wal_id > 0);

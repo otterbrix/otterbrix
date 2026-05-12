@@ -82,23 +82,43 @@ namespace components::sql::transform {
                 row_index++;
             }
 
+            auto qn = rangevar_to_qualified_name(node.relation);
+            // Phase 13 T13: capture (dbname, relname) before moving them into the
+            // insert node so the catalog-resolve wrap can name the target table.
+            const std::string dbname_for_resolve = qn.dbname;
+            const std::string relname_for_resolve = qn.relname;
+            logical_plan::node_ptr ins;
             if (has_params) {
                 parameter_insert_rows_ = std::move(chunk);
-                return logical_plan::make_node_insert(resource_,
-                                                      rangevar_to_collection(node.relation),
+                ins = logical_plan::make_node_insert(resource_,
+                                                      std::move(qn.dbname),
+                                                      std::move(qn.relname),
                                                       vector::data_chunk_t(resource_, {}, 0),
                                                       std::move(key_translation));
             } else {
-                return logical_plan::make_node_insert(resource_,
-                                                      rangevar_to_collection(node.relation),
+                ins = logical_plan::make_node_insert(resource_,
+                                                      std::move(qn.dbname),
+                                                      std::move(qn.relname),
                                                       std::move(chunk),
                                                       std::move(key_translation));
             }
+            return maybe_wrap_with_catalog_resolve_table(resource_,
+                                                          dbname_for_resolve,
+                                                          relname_for_resolve,
+                                                          std::move(ins));
         } else {
-            auto res = logical_plan::make_node_insert(resource_, rangevar_to_collection(node.relation));
+            auto qn = rangevar_to_qualified_name(node.relation);
+            const std::string dbname_for_resolve = qn.dbname;
+            const std::string relname_for_resolve = qn.relname;
+            auto res = logical_plan::make_node_insert(resource_,
+                                                      std::move(qn.dbname),
+                                                      std::move(qn.relname));
             res->append_child(transform_select(*pg_ptr_cast<SelectStmt>(node.selectStmt), params));
             res->key_translation() = key_translation;
-            return res;
+            return maybe_wrap_with_catalog_resolve_table(resource_,
+                                                          dbname_for_resolve,
+                                                          relname_for_resolve,
+                                                          std::move(res));
         }
     }
 } // namespace components::sql::transform

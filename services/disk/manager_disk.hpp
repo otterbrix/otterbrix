@@ -37,6 +37,7 @@
 #include <components/context/pg_catalog_swap.hpp>
 #include <core/executor.hpp>
 #include <set>
+#include <unordered_set>
 #include <mutex>
 #include <services/wal/base.hpp>
 #include <thread>
@@ -140,47 +141,46 @@ namespace services::disk {
 
         void set_run_fn(run_fn_t fn) { run_fn_ = std::move(fn); }
 
-        // True if a storage entry is registered for `name` (used by WAL replay to lazily
+        // True if a storage entry is registered for `table_oid` (used by WAL replay to lazily
         // create in-memory storages on the first PHYSICAL_INSERT for tables without an .otbx).
-        bool has_storage(const collection_full_name_t& name) const noexcept {
-            return storages_.find(name) != storages_.end();
+        bool has_storage(components::catalog::oid_t table_oid) const noexcept {
+            return storages_.find(table_oid) != storages_.end();
         }
         // Sync row-count probe used by base_spaces WAL replay to avoid duplicating already-
-        // checkpointed records. Returns 0 for unknown names.
-        uint64_t total_rows_sync(const collection_full_name_t& name) const noexcept {
-            auto it = storages_.find(name);
+        // checkpointed records. Returns 0 for unknown OIDs.
+        uint64_t total_rows_sync(components::catalog::oid_t table_oid) const noexcept {
+            auto it = storages_.find(table_oid);
             if (it == storages_.end()) return 0;
             return it->second->table_storage.table().calculate_size();
         }
-        // Returns the persisted checkpoint_wal_id for `name` (0 if never checkpointed or unknown).
-        // Read at startup from the .wal_id sidecar; lets WAL replay skip records already covered
-        // by the .otbx state without depending on a row-count heuristic.
-        wal::id_t checkpoint_wal_id_sync(const collection_full_name_t& name) const noexcept {
-            auto it = storages_.find(name);
+        // Returns the persisted checkpoint_wal_id for `table_oid` (0 if never checkpointed or unknown).
+        wal::id_t checkpoint_wal_id_sync(components::catalog::oid_t table_oid) const noexcept {
+            auto it = storages_.find(table_oid);
             if (it == storages_.end()) return wal::id_t{0};
             return it->second->table_storage.checkpoint_wal_id();
         }
 
         // Read the .otbx.wal_id sidecar directly from disk without loading the storage.
-        // Falls back to the in-memory value if the storage is already loaded.
-        // Returns 0 when the table has never been checkpointed or for in-memory-only tables.
-        // Used by the D4-lazy WAL replay path to skip already-checkpointed records.
-        wal::id_t peek_checkpoint_wal_id_from_disk(const collection_full_name_t& name) const noexcept;
+        wal::id_t peek_checkpoint_wal_id_from_disk(components::catalog::oid_t table_oid,
+                                                    components::catalog::oid_t database_oid) const noexcept;
 
         // Load a user-table storage from its .otbx file on demand. Called by WAL replay
         // when it encounters a record for a disk-backed table that hasn't been loaded yet.
-        // No-op if storage already loaded or if no .otbx exists (in-memory table, handled
-        // by WAL replay's create_storage path).
-        void load_storage_for_wal_replay_sync(const collection_full_name_t& name);
+        void load_storage_for_wal_replay_sync(components::catalog::oid_t table_oid,
+                                              components::catalog::oid_t database_oid);
 
         // Synchronous storage creation for initialization (before schedulers start).
-        void create_storage_with_columns_sync(const collection_full_name_t& name,
+        void create_storage_with_columns_sync(components::catalog::oid_t table_oid,
+                                              components::catalog::oid_t database_oid,
                                               std::vector<components::table::column_definition_t> columns);
         // Disk storage: create new or load existing
-        void create_storage_disk_sync(const collection_full_name_t& name,
+        void create_storage_disk_sync(components::catalog::oid_t table_oid,
+                                      components::catalog::oid_t database_oid,
                                       std::vector<components::table::column_definition_t> columns,
                                       const std::filesystem::path& otbx_path);
-        void load_storage_disk_sync(const collection_full_name_t& name, const std::filesystem::path& otbx_path);
+        void load_storage_disk_sync(components::catalog::oid_t table_oid,
+                                     components::catalog::oid_t database_oid,
+                                     const std::filesystem::path& otbx_path);
 
         // System catalog (pg_*) bootstrap and load. Called from base_spaces during PHASE 1
         // before any actor is spawned. bootstrap creates the 9 .otbx files for the system
@@ -188,6 +188,21 @@ namespace services::disk {
         // resulting `storages_` map — collections are keyed by `pg_catalog.<name>`.
         void bootstrap_system_tables_sync();
         void load_system_tables_sync();
+        // Phase 11.C: walk config_.path looking for user-table .otbx files
+        // (${db_oid}/${tbl_oid}/table.otbx where tbl_oid >= FIRST_USER_OID) and
+        // load each into storages_ via load_storage_disk_sync. Called by
+        // base_spaces after bootstrap_system_tables_sync so that subsequent
+        // WAL replay can (1) read each user table's checkpoint_wal_id sidecar
+        // for filtering and (2) avoid synthesising phantom storages with
+        // possibly-wrong schemas from a single WAL chunk.
+        void load_user_table_storages_sync();
+        // Phase 11.C: synchronous scan of pg_class.oid column, returning the set
+        // of user-table OIDs (oid >= FIRST_USER_OID) currently alive in the
+        // catalog. Called by base_spaces between system-record replay and
+        // user-record replay so user WAL records targeting a dropped table
+        // (whose .otbx and pg_class row are gone) are skipped instead of
+        // resurrecting a phantom storage.
+        std::unordered_set<components::catalog::oid_t> alive_user_oids_sync() const;
         // After load, scan pg_class/pg_attribute/pg_type/pg_proc/pg_constraint and seed
         // oid_gen_ to max(oid)+1 so future allocate() never collides with on-disk OIDs.
         // Scans pg_class/pg_attribute/pg_type/pg_proc/pg_constraint/pg_index for the max
@@ -253,46 +268,32 @@ namespace services::disk {
         allocate_oids_batch(std::size_t count);
 
         // WAL-safe append of a single pre-built row into a pg_catalog table.
-        // Called by operator_primitive_write when executing planner-emitted DDL plans.
-        // Semantics: WAL physical_insert + direct_append_sync (same as internal DDL methods).
         unique_future<components::pg_catalog_append_range_t>
         append_pg_catalog_row(execution_context_t ctx,
-                              collection_full_name_t name,
+                              components::catalog::oid_t table_oid,
                               components::vector::data_chunk_t row);
 
         // WAL-safe delete of all rows where column[oid_col_idx] == target_oid.
-        // Emits WAL write_physical_delete before the MVCC tombstone so drops survive
-        // crash-before-checkpoint. Called by operator_primitive_delete and execute_ddl's
-        // sequence handler for planner-built drop plans.
         unique_future<void> delete_pg_catalog_rows(execution_context_t ctx,
-                                                    collection_full_name_t name,
+                                                    components::catalog::oid_t table_oid,
                                                     std::int64_t oid_col_idx,
                                                     components::catalog::oid_t target_oid);
 
-        // Pure storage scan: row_ids of txn-visible rows in `name` where
-        // key_col_names[i] == key_values[i] for every i.
+        // Pure storage scan: row_ids of txn-visible rows in the table with `table_oid`
+        // where key_col_names[i] == key_values[i] for every i.
         unique_future<std::pmr::vector<std::int64_t>>
         scan_by_key(execution_context_t ctx,
-                    collection_full_name_t name,
+                    components::catalog::oid_t table_oid,
                     std::vector<std::string> key_col_names,
                     std::vector<components::types::logical_value_t> key_values);
 
         // Full row-data scan: returns all column values for every txn-visible row
-        // where key_col_names[i] == key_values[i]. Same filter as scan_by_key but
-        // returns complete row data instead of row_ids.
+        // where key_col_names[i] == key_values[i].
         unique_future<std::vector<std::vector<components::types::logical_value_t>>>
         read_rows_by_key(execution_context_t ctx,
-                          collection_full_name_t name,
+                          components::catalog::oid_t table_oid,
                           std::vector<std::string> key_col_names,
                           std::vector<components::types::logical_value_t> key_values);
-
-        // OID-keyed scan: resolves table_oid → collection internally, then scans.
-        // Returns row_ids of matching txn-visible rows. Empty on unknown OID.
-        unique_future<std::pmr::vector<std::int64_t>>
-        scan_by_table_oid(execution_context_t ctx,
-                           components::catalog::oid_t table_oid,
-                           std::vector<std::string> key_col_names,
-                           std::vector<components::types::logical_value_t> key_values);
 
         // Phase 7.5b physical column compaction. For an IN_MEMORY relkind='g' storage,
         // drop every physical column whose name is NOT in `live_attnames`. Called by
@@ -303,28 +304,25 @@ namespace services::disk {
         // storages — that would need segment rewrites + checkpoint coordination.
         unique_future<std::uint64_t>
         compact_relkind_g_storage(execution_context_t ctx,
-                                   collection_full_name_t name,
+                                   components::catalog::oid_t table_oid,
                                    std::set<std::string> live_attnames);
 
         // ALTER TABLE ADD COLUMN owned by operator_alter_column_add_t; computed
         // tables maintained via operator_computed_field_register_t.
 
         // Synchronous direct replay methods for physical WAL (before schedulers start).
-        // The txn overload takes an explicit transaction_data: pass {0, 0} for
-        // committed-at-txn=0 semantics, or an active transaction for MVCC-aware appends.
-        // Returns the row offset where the append began (for later commit_append).
-        uint64_t direct_append_sync(const collection_full_name_t& name, components::vector::data_chunk_t& data);
-        uint64_t direct_append_sync(const collection_full_name_t& name,
+        uint64_t direct_append_sync(components::catalog::oid_t table_oid, components::vector::data_chunk_t& data);
+        uint64_t direct_append_sync(components::catalog::oid_t table_oid,
                                     components::vector::data_chunk_t& data,
                                     const components::table::transaction_data& txn);
-        void direct_delete_sync(const collection_full_name_t& name,
+        void direct_delete_sync(components::catalog::oid_t table_oid,
                                 const std::pmr::vector<int64_t>& row_ids,
                                 uint64_t count);
-        void direct_delete_sync(const collection_full_name_t& name,
+        void direct_delete_sync(components::catalog::oid_t table_oid,
                                 const std::pmr::vector<int64_t>& row_ids,
                                 uint64_t count,
                                 const components::table::transaction_data& txn);
-        void direct_update_sync(const collection_full_name_t& name,
+        void direct_update_sync(components::catalog::oid_t table_oid,
                                 const std::pmr::vector<int64_t>& row_ids,
                                 components::vector::data_chunk_t& new_data);
 
@@ -349,52 +347,72 @@ namespace services::disk {
         unique_future<void> maybe_cleanup(execution_context_t ctx, uint64_t lowest_active_start_time);
 
         // Storage management
-        unique_future<void> create_storage(session_id_t session, collection_full_name_t name);
+        unique_future<void> create_storage(session_id_t session,
+                                            components::catalog::oid_t table_oid,
+                                            components::catalog::oid_t database_oid);
         unique_future<void> create_storage_with_columns(session_id_t session,
-                                                        collection_full_name_t name,
+                                                        components::catalog::oid_t table_oid,
+                                                        components::catalog::oid_t database_oid,
                                                         std::vector<components::table::column_definition_t> columns);
         unique_future<void> create_storage_disk(session_id_t session,
-                                                collection_full_name_t name,
+                                                components::catalog::oid_t table_oid,
+                                                components::catalog::oid_t database_oid,
                                                 std::vector<components::table::column_definition_t> columns);
-        unique_future<void> drop_storage(session_id_t session, collection_full_name_t name);
+        unique_future<void> drop_storage(session_id_t session, components::catalog::oid_t table_oid);
 
         // Storage queries
         unique_future<std::pmr::vector<components::types::complex_logical_type>>
-        storage_types(session_id_t session, collection_full_name_t name);
-        unique_future<uint64_t> storage_total_rows(session_id_t session, collection_full_name_t name);
+        storage_types(session_id_t session, components::catalog::oid_t table_oid);
+        unique_future<uint64_t> storage_total_rows(session_id_t session, components::catalog::oid_t table_oid);
 
         // Storage data operations
         unique_future<std::unique_ptr<components::vector::data_chunk_t>>
         storage_scan(session_id_t session,
-                     collection_full_name_t name,
+                     components::catalog::oid_t table_oid,
                      std::unique_ptr<components::table::table_filter_t> filter,
                      int limit,
                      components::table::transaction_data txn);
         unique_future<std::unique_ptr<components::vector::data_chunk_t>>
         storage_fetch(session_id_t session,
-                      collection_full_name_t name,
+                      components::catalog::oid_t table_oid,
                       components::vector::vector_t row_ids,
                       uint64_t count);
         unique_future<std::unique_ptr<components::vector::data_chunk_t>>
-        storage_scan_segment(session_id_t session, collection_full_name_t name, int64_t start, uint64_t count);
+        storage_scan_segment(session_id_t session,
+                              components::catalog::oid_t table_oid,
+                              int64_t start,
+                              uint64_t count);
         unique_future<std::pair<uint64_t, uint64_t>>
-        storage_append(execution_context_t ctx, std::unique_ptr<components::vector::data_chunk_t> data);
+        storage_append(execution_context_t ctx,
+                       components::catalog::oid_t table_oid,
+                       std::unique_ptr<components::vector::data_chunk_t> data);
 
         unique_future<std::pair<int64_t, uint64_t>>
         storage_update(execution_context_t ctx,
+                       components::catalog::oid_t table_oid,
                        components::vector::vector_t row_ids,
                        std::unique_ptr<components::vector::data_chunk_t> data);
         unique_future<uint64_t>
-        storage_delete_rows(execution_context_t ctx, components::vector::vector_t row_ids, uint64_t count);
+        storage_delete_rows(execution_context_t ctx,
+                             components::catalog::oid_t table_oid,
+                             components::vector::vector_t row_ids,
+                             uint64_t count);
         // MVCC commit/revert
         unique_future<void>
-        storage_commit_append(execution_context_t ctx, uint64_t commit_id, int64_t row_start, uint64_t count);
-        unique_future<void> storage_revert_append(execution_context_t ctx, int64_t row_start, uint64_t count);
-        unique_future<void> storage_commit_delete(execution_context_t ctx, uint64_t commit_id);
+        storage_commit_append(execution_context_t ctx,
+                               components::catalog::oid_t table_oid,
+                               uint64_t commit_id,
+                               int64_t row_start,
+                               uint64_t count);
+        unique_future<void> storage_revert_append(execution_context_t ctx,
+                                                   components::catalog::oid_t table_oid,
+                                                   int64_t row_start,
+                                                   uint64_t count);
+        unique_future<void> storage_commit_delete(execution_context_t ctx,
+                                                   components::catalog::oid_t table_oid,
+                                                   uint64_t commit_id);
 
-        // Phase 5b: batched MVCC swap. Each call dispatches one actor message;
-        // disk processes the entire batch sequentially inside its mailbox handler.
-        // ctx.session/txn used; ctx.name unused (each range carries its own name).
+        // Phase 5b: batched MVCC swap. Each range carries its own table_oid.
         unique_future<void>
         storage_commit_appends(execution_context_t ctx,
                                uint64_t commit_id,
@@ -403,7 +421,7 @@ namespace services::disk {
         unique_future<void>
         storage_commit_deletes(execution_context_t ctx,
                                uint64_t commit_id,
-                               std::set<collection_full_name_t> tables);
+                               std::set<components::catalog::oid_t> tables);
 
         unique_future<void>
         storage_revert_appends(execution_context_t ctx,
@@ -449,7 +467,6 @@ namespace services::disk {
                                                        &manager_disk_t::delete_pg_catalog_rows,
                                                        &manager_disk_t::scan_by_key,
                                                        &manager_disk_t::read_rows_by_key,
-                                                       &manager_disk_t::scan_by_table_oid,
                                                        &manager_disk_t::compact_relkind_g_storage>;
 
     private:
@@ -469,6 +486,13 @@ namespace services::disk {
         struct collection_storage_entry_t {
             table_storage_t table_storage;
             std::unique_ptr<components::storage::storage_t> storage;
+            // Phase 11.C: the actual on-disk path for DISK-mode tables. Empty for
+            // IN_MEMORY entries. Used by checkpoint_all (sidecar lands next to .otbx)
+            // and drop_storage (physical file removal). Before this field existed,
+            // checkpoint_all synthesised a path under `main_database/<oid>/` which
+            // was correct only for system tables — user tables silently lost their
+            // sidecar to a non-existent directory, breaking restart filtering.
+            std::filesystem::path otbx_path;
 
             /// In-memory: schema-less
             explicit collection_storage_entry_t(std::pmr::memory_resource* resource)
@@ -486,16 +510,18 @@ namespace services::disk {
             /// Disk: create new table.otbx
             collection_storage_entry_t(std::pmr::memory_resource* resource,
                                        std::vector<components::table::column_definition_t> columns,
-                                       const std::filesystem::path& otbx_path)
-                : table_storage(resource, std::move(columns), otbx_path)
+                                       const std::filesystem::path& otbx_path_in)
+                : table_storage(resource, std::move(columns), otbx_path_in)
                 , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
-                                                                                         resource)) {}
+                                                                                         resource))
+                , otbx_path(otbx_path_in) {}
 
             /// Disk: load existing table.otbx
-            collection_storage_entry_t(std::pmr::memory_resource* resource, const std::filesystem::path& otbx_path)
-                : table_storage(resource, otbx_path)
+            collection_storage_entry_t(std::pmr::memory_resource* resource, const std::filesystem::path& otbx_path_in)
+                : table_storage(resource, otbx_path_in)
                 , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
-                                                                                         resource)) {}
+                                                                                         resource))
+                , otbx_path(otbx_path_in) {}
 
             /// Update live in-memory schema: add new column to table_ and recreate the storage adapter.
             void add_column(components::table::column_definition_t& col, std::pmr::memory_resource* res) {
@@ -514,10 +540,10 @@ namespace services::disk {
                 return true;
             }
         };
-        std::unordered_map<collection_full_name_t, std::unique_ptr<collection_storage_entry_t>, collection_name_hash>
+        std::unordered_map<components::catalog::oid_t, std::unique_ptr<collection_storage_entry_t>>
             storages_;
 
-        components::storage::storage_t* get_storage(const collection_full_name_t& name);
+        components::storage::storage_t* get_storage(components::catalog::oid_t table_oid);
 
         void create_agent(int count_agents);
         auto agent() -> actor_zeta::address_t;

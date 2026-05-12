@@ -1,6 +1,5 @@
 #pragma once
 
-#include <components/base/collection_full_name.hpp>
 #include <components/expressions/forward.hpp>
 #include <components/expressions/key.hpp>
 #include <components/logical_plan/node_join.hpp>
@@ -38,17 +37,52 @@ namespace components::sql::transform {
 
     std::pmr::string indices_to_str(std::pmr::memory_resource* resource, A_Indices* indices);
 
-    inline collection_full_name_t rangevar_to_collection(RangeVar* table) {
-        return {construct(table->uid),
-                construct(table->catalogname),
-                construct(table->schemaname),
-                construct(table->relname)};
+    // Phase 10.E: role-named DTO produced by the transformer when reading a RangeVar
+    // (table reference) out of the parser AST. Replaces the historical
+    // `rangevar_to_collection` -> cfn output and the `rangevar_to_dbname_relname` /
+    // `cfn_dbname` interim helpers added in 10.D. Carries each of the four name
+    // components a SQL parser may attach to a qualified table reference: optional
+    // catalog (database), optional schema, the relation (table) name, and an optional
+    // uid. dbname picker logic (catalog with schema as fallback) is applied at
+    // construction so callers see a single role-named field.
+    struct qualified_name {
+        std::string dbname;
+        std::string relname;
+        std::string schemaname;
+        std::string uuid;
+
+        bool empty() const noexcept {
+            return dbname.empty() && relname.empty() && schemaname.empty() && uuid.empty();
+        }
+    };
+
+    inline qualified_name rangevar_to_qualified_name(RangeVar* table) {
+        std::string dbname = construct(table->catalogname);
+        std::string schema = construct(table->schemaname);
+        std::string rel = construct(table->relname);
+        std::string uuid = construct(table->uid);
+        // The parser produces several RangeVar shapes:
+        //   `tbl`            -> catalogname="", schemaname=""
+        //   `db.tbl`         -> catalogname=db, schemaname=""
+        //   `schema.tbl`     -> catalogname="", schemaname=schema
+        //                       (from makeRangeVarFromAnyName: ALTER/RENAME paths)
+        //   `db.schema.tbl`  -> catalogname=db, schemaname=schema
+        //   `uid.db.schema.tbl` -> uid=uid, catalogname=db, schemaname=schema
+        // Pre-10.E callers ran the picker `cfn.database.empty() ? cfn.schema :
+        // cfn.database` at every use site while keeping cfn.schema unchanged.
+        // Mirror that here: pick dbname once, but leave schemaname intact so
+        // factories that consume both fields (create_collection, create_index,
+        // drop_collection, drop_index) keep the original parser-display schema.
+        if (dbname.empty()) {
+            dbname = schema;
+        }
+        return {std::move(dbname), std::move(rel), std::move(schema), std::move(uuid)};
     }
 
     struct name_collection_t {
-        collection_full_name_t left_name;
+        qualified_name left_name;
         std::string left_alias;
-        collection_full_name_t right_name;
+        qualified_name right_name;
         std::string right_alias;
 
         bool is_left_table(const std::string& name) const;
@@ -151,5 +185,51 @@ namespace components::sql::transform {
                                  std::pmr::memory_resource* resource,
                                  PGList& table_elts);
     std::vector<table::table_constraint_t> extract_table_constraints(PGList& table_elts);
+
+    // Phase 13 T13 — transformer catalog-resolve emission.
+    //
+    // The transformer is allowed to wrap a main DML/DDL `node_ptr` in a
+    // `sequence_t(catalog_resolve_*_t..., main_node)` so the planner can later
+    // treat catalog resolution as a first-class dep in the pipeline (instead of
+    // routing through the existing catalog_view_t side-channel). The wrap is
+    // gated by `transformer_emit_catalog_resolve_enabled()` so the integration
+    // can land without disturbing dispatcher routing — which still relies on
+    // `plan->type()` being the original DML/DDL discriminant at the entrypoint
+    // (services/dispatcher/dispatcher.cpp captures `original_type = plan->type()`
+    // before the planner has a chance to rewrite anything; if we wrapped at
+    // transform time the root would always be sequence_t and every
+    // `original_type == node_type::insert_t` check would miss).
+    //
+    // The hooks below are wired into each transform_* path so that flipping
+    // the toggle is the only thing needed to start exercising the new pipeline.
+    // Per-call wrap behavior is documented at each emission site.
+
+    // Returns the current emission toggle. Defaults to false (disabled).
+    // TODO(P13 T13): once enrich_logical_plan + dispatcher.cpp learn to descend
+    // through a transformer-emitted sequence_t(catalog_resolve_*, main_node)
+    // wrapper, flip the default to true via a follow-up patch.
+    bool transformer_emit_catalog_resolve_enabled() noexcept;
+    void set_transformer_emit_catalog_resolve(bool enabled) noexcept;
+
+    // Wrap `main_node` (an INSERT/SELECT/UPDATE/DELETE-style consumer that
+    // targets a specific (dbname, relname)) in
+    //   sequence_t(catalog_resolve_namespace_t, catalog_resolve_table_t, main_node)
+    // when the toggle is enabled. Otherwise returns `main_node` unchanged so
+    // existing dispatcher/enrich routing is preserved. Empty dbname/relname
+    // skips the corresponding resolve node.
+    logical_plan::node_ptr maybe_wrap_with_catalog_resolve_table(
+        std::pmr::memory_resource* resource,
+        const std::string& dbname,
+        const std::string& relname,
+        logical_plan::node_ptr main_node);
+
+    // Wrap `main_node` (a database-scoped DDL — CREATE DATABASE, DROP DATABASE,
+    // CREATE TYPE, etc.) in
+    //   sequence_t(catalog_resolve_namespace_t, main_node)
+    // when the toggle is enabled.
+    logical_plan::node_ptr maybe_wrap_with_catalog_resolve_namespace(
+        std::pmr::memory_resource* resource,
+        const std::string& dbname,
+        logical_plan::node_ptr main_node);
 
 } // namespace components::sql::transform

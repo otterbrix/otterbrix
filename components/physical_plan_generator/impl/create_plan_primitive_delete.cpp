@@ -12,7 +12,7 @@ namespace services::planner::impl {
         return boost::intrusive_ptr(new components::operators::operator_primitive_delete_t(
             context.resource,
             context.log.clone(),
-            n->catalog_table(),
+            n->catalog_table_oid(),
             n->oid_col_idx(),
             n->target_oid()));
     }

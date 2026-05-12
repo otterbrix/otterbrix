@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include <components/catalog/catalog_oids.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/logical_plan/node_insert.hpp>
@@ -39,7 +40,7 @@ static const collection_name_t collection_name_2 = "testcollection2";
 #define FILL_COLLECTION_WAL(DB, COLL, COUNT)                                                                           \
     do {                                                                                                               \
         auto chunk = gen_data_chunk(COUNT, dispatcher->resource());                                                    \
-        auto ins = components::logical_plan::make_node_insert(dispatcher->resource(), {DB, COLL}, std::move(chunk));   \
+        auto ins = components::logical_plan::make_node_insert(dispatcher->resource(), DB, COLL, std::move(chunk));   \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
             dispatcher->execute_plan(session, ins);                                                                    \
@@ -49,13 +50,13 @@ static const collection_name_t collection_name_2 = "testcollection2";
 #define CHECK_FIND_WAL(DB, COLL, KEY, COMPARE, VALUE, COUNT)                                                           \
     do {                                                                                                               \
         auto session = otterbrix::session_id_t();                                                                      \
-        auto plan = components::logical_plan::make_node_aggregate(dispatcher->resource(), {DB, COLL});                 \
+        auto plan = components::logical_plan::make_node_aggregate(dispatcher->resource(), DB, COLL);                 \
         auto expr = components::expressions::make_compare_expression(dispatcher->resource(),                           \
                                                                      COMPARE,                                          \
                                                                      key{dispatcher->resource(), KEY, side_t::left},   \
                                                                      id_par{1});                                       \
         plan->append_child(                                                                                            \
-            components::logical_plan::make_node_match(dispatcher->resource(), {DB, COLL}, std::move(expr)));           \
+            components::logical_plan::make_node_match(dispatcher->resource(), DB, COLL, std::move(expr)));           \
         auto params = components::logical_plan::make_parameter_node(dispatcher->resource());                           \
         params->add_parameter(id_par{1}, VALUE);                                                                       \
         auto c = dispatcher->find(session, plan, params);                                                              \
@@ -83,8 +84,11 @@ TEST_CASE("integration::cpp::test_wal_pool::per_worker_files_created") {
     }
 
     INFO("verify per-worker WAL segment files exist") {
-        // New WAL creates per-database directories with segments inside
-        auto database_wal_directory = config.wal.path / "testdatabase";
+        // Phase 8.E: WAL creates per-database-oid directories. Otterbrix routes all
+        // DML in this phase to main_database (oid=4) — single worker.
+        constexpr auto kMainDb = components::catalog::well_known_oid::main_database;
+        auto database_wal_directory =
+            config.wal.path / std::to_string(static_cast<unsigned>(kMainDb));
         REQUIRE(std::filesystem::exists(database_wal_directory));
         bool found_wal_segment = false;
         for (const auto& entry : std::filesystem::directory_iterator(database_wal_directory)) {

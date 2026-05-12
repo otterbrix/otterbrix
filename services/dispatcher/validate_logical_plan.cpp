@@ -16,16 +16,47 @@
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
+#include <components/logical_plan/node_alter_column_add.hpp>
+#include <components/logical_plan/node_alter_column_drop.hpp>
+#include <components/logical_plan/node_alter_column_rename.hpp>
+#include <components/logical_plan/node_alter_table.hpp>
+#include <components/logical_plan/node_catalog_resolve_function.hpp>
+#include <components/logical_plan/node_catalog_resolve_namespace.hpp>
+#include <components/logical_plan/node_catalog_resolve_table.hpp>
+#include <components/logical_plan/node_catalog_resolve_type.hpp>
+#include <components/logical_plan/node_check_constraint.hpp>
+#include <components/logical_plan/node_computed_field_register.hpp>
+#include <components/logical_plan/node_computed_field_unregister.hpp>
+#include <components/logical_plan/node_create_collection.hpp>
+#include <components/logical_plan/node_create_constraint.hpp>
+#include <components/logical_plan/node_create_database.hpp>
+#include <components/logical_plan/node_create_macro.hpp>
+#include <components/logical_plan/node_create_sequence.hpp>
+#include <components/logical_plan/node_create_view.hpp>
 #include <components/logical_plan/node_data.hpp>
+#include <components/logical_plan/node_delete.hpp>
+#include <components/logical_plan/node_drop_collection.hpp>
+#include <components/logical_plan/node_drop_database.hpp>
+#include <components/logical_plan/node_drop_index.hpp>
+#include <components/logical_plan/node_drop_macro.hpp>
+#include <components/logical_plan/node_drop_sequence.hpp>
+#include <components/logical_plan/node_drop_view.hpp>
+#include <components/logical_plan/node_fk_cascade.hpp>
+#include <components/logical_plan/node_fk_check.hpp>
 #include <components/logical_plan/node_function.hpp>
 #include <components/logical_plan/node_group.hpp>
+#include <components/logical_plan/node_having.hpp>
 #include <components/logical_plan/node_join.hpp>
+#include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_sort.hpp>
 #include <components/table/column_definition.hpp>
+#include <atomic>
 #include <list>
+#include <optional>
 #include <queue>
 #include <set>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -38,13 +69,201 @@ namespace services::dispatcher {
     using namespace components::catalog;
 
     namespace impl {
+        // Phase 13 T16: metadata-aware path for catalog lookups.
+        // ---------------------------------------------------------------------
+        // When the transformer emits node_catalog_resolve_* leaf nodes (gated
+        // by toggle g_emit_catalog_resolve_enabled, OFF by default in T16),
+        // those nodes carry the OID(s) stamped by enrich_logical_plan. We
+        // collect them into an index keyed by name and probe it before falling
+        // back to the catalog_view_t actor-send path.
+        //
+        // T16 only wires the namespace_oid lookup (the dominant fallback site
+        // inside validate_types_sync / validate_schema_sync). Type / function
+        // OID lookups are placeholders for T17+; we collect them so they are
+        // observable in the to_string dump and so the counters reveal that
+        // gating is wired end-to-end.
+        //
+        // T20 removes the view fallback once all DML paths emit resolves.
+        struct plan_resolve_index_t {
+            // Namespace name -> ns_oid (from node_catalog_resolve_namespace_t
+            // AND from node_catalog_resolve_table_t::namespace_oid()).
+            std::unordered_map<std::string, components::catalog::oid_t> ns_by_dbname;
+            // "dbname|relname" -> namespace_oid (from resolve_table nodes).
+            // The table_oid itself is not carried on resolve_table — only the
+            // namespace it belongs to — so we use this to short-circuit
+            // ns_oid_for(view, table_id) without the try_get_namespace probe.
+            std::unordered_map<std::string, components::catalog::oid_t> tbl_ns_by_qname;
+            // "dbname|typename" -> type_oid (from resolve_type nodes).
+            // Reserved for T17; today the validate path uses try_get_type by
+            // (ns_oid, name) and these would short-circuit the name probe.
+            std::unordered_map<std::string, components::catalog::oid_t> type_oid_by_qname;
+            // "dbname|fnname" -> fn_oid (from resolve_function nodes).
+            // Reserved for T17.
+            std::unordered_map<std::string, components::catalog::oid_t> fn_oid_by_qname;
+
+            bool empty() const noexcept {
+                return ns_by_dbname.empty() && tbl_ns_by_qname.empty() &&
+                       type_oid_by_qname.empty() && fn_oid_by_qname.empty();
+            }
+        };
+
+        // Telemetry: count how often the plan-tree probe beats / falls through
+        // to the catalog_view fallback. Visible to T20 to gate the deletion
+        // of catalog_view methods (a non-zero miss after the toggle is ON
+        // means a transformer site still hasn't been migrated). atomic so
+        // concurrent validates do not race; relaxed because the values are
+        // observability-only and never consumed by control flow.
+        inline std::atomic<std::size_t>& plan_resolve_ns_hit_counter() {
+            static std::atomic<std::size_t> v{0};
+            return v;
+        }
+        inline std::atomic<std::size_t>& plan_resolve_ns_miss_counter() {
+            static std::atomic<std::size_t> v{0};
+            return v;
+        }
+
+        // File-private active-index pointer. Set via scoped_plan_resolve_index_t
+        // at the top of validate_types_sync / validate_schema_sync; queried by
+        // ns_oid_for and check_*_exists. nullptr means "no T16 path active —
+        // use catalog_view fallback only".
+        inline const plan_resolve_index_t*& active_plan_resolve_index() {
+            thread_local const plan_resolve_index_t* p = nullptr;
+            return p;
+        }
+
+        // RAII setter. Stacks (saves the prior value on entry, restores it on
+        // exit) so nested validates from tests or future composite plans see
+        // the inner index without leaking it past the inner call.
+        struct scoped_plan_resolve_index_t {
+            scoped_plan_resolve_index_t(const plan_resolve_index_t* idx) noexcept
+                : prev_(active_plan_resolve_index()) {
+                active_plan_resolve_index() = idx;
+            }
+            ~scoped_plan_resolve_index_t() noexcept {
+                active_plan_resolve_index() = prev_;
+            }
+            scoped_plan_resolve_index_t(const scoped_plan_resolve_index_t&) = delete;
+            scoped_plan_resolve_index_t& operator=(const scoped_plan_resolve_index_t&) = delete;
+        private:
+            const plan_resolve_index_t* prev_;
+        };
+
+        // Walk plan tree once; collect every node_catalog_resolve_* leaf and
+        // populate the index. Resolve-leaves whose oid is still INVALID_OID
+        // (enrich_logical_plan did not stamp them — name did not resolve) are
+        // skipped — we only emit hits for genuinely-resolved entries so the
+        // caller's `if (oid != INVALID_OID)` test stays a single check.
+        inline void gather_plan_resolve_index(components::logical_plan::node_t* root,
+                                              plan_resolve_index_t& out) {
+            using namespace components::logical_plan;
+            if (!root) return;
+            std::queue<node_t*> q;
+            q.push(root);
+            while (!q.empty()) {
+                auto* n = q.front();
+                q.pop();
+                switch (n->type()) {
+                    case node_type::catalog_resolve_namespace_t: {
+                        auto* rn = static_cast<node_catalog_resolve_namespace_t*>(n);
+                        if (rn->namespace_oid() != components::catalog::INVALID_OID) {
+                            out.ns_by_dbname[rn->dbname()] = rn->namespace_oid();
+                        }
+                        break;
+                    }
+                    case node_type::catalog_resolve_table_t: {
+                        auto* rt = static_cast<node_catalog_resolve_table_t*>(n);
+                        if (rt->namespace_oid() != components::catalog::INVALID_OID) {
+                            // Stamp the dbname mapping too — saves a separate
+                            // resolve_namespace_t lookup at the same site.
+                            out.ns_by_dbname[rt->dbname()] = rt->namespace_oid();
+                            std::string key;
+                            key.reserve(rt->dbname().size() + 1 + rt->relname().size());
+                            key.append(rt->dbname()).push_back('|');
+                            key.append(rt->relname());
+                            out.tbl_ns_by_qname[std::move(key)] = rt->namespace_oid();
+                        }
+                        break;
+                    }
+                    case node_type::catalog_resolve_type_t: {
+                        auto* tr = static_cast<node_catalog_resolve_type_t*>(n);
+                        if (tr->type_oid() != components::catalog::INVALID_OID) {
+                            std::string key;
+                            key.reserve(tr->dbname().size() + 1 + tr->type_name().size());
+                            key.append(tr->dbname()).push_back('|');
+                            key.append(tr->type_name());
+                            out.type_oid_by_qname[std::move(key)] = tr->type_oid();
+                        }
+                        break;
+                    }
+                    case node_type::catalog_resolve_function_t: {
+                        auto* fr = static_cast<node_catalog_resolve_function_t*>(n);
+                        if (fr->function_oid() != components::catalog::INVALID_OID) {
+                            std::string key;
+                            key.reserve(fr->dbname().size() + 1 + fr->function_name().size());
+                            key.append(fr->dbname()).push_back('|');
+                            key.append(fr->function_name());
+                            out.fn_oid_by_qname[std::move(key)] = fr->function_oid();
+                        }
+                        break;
+                    }
+                    default:
+                        break;
+                }
+                for (const auto& c : n->children()) {
+                    if (c) q.push(c.get());
+                }
+            }
+        }
+
         // V4 helpers. ns_oid_for resolves the namespace_oid for a table_id by looking up
         // the cached resolved_namespace_t. Returns INVALID_OID if not in cache.
+        //
+        // T16: probe active_plan_resolve_index() first; on miss fall back to
+        // view.try_get_namespace. The counter bump is a free no-op when the
+        // index is empty (active_plan_resolve_index() == nullptr); but once
+        // the transformer toggle is flipped (T17+) it reveals the residual
+        // sites that still need migrating before T20 deletion.
         inline components::catalog::oid_t ns_oid_for(const services::dispatcher::catalog_view_t& view,
                                                       const components::catalog::table_id& id) {
             auto& ns = id.get_namespace();
             if (ns.empty()) return components::catalog::INVALID_OID;
+            if (auto* idx = active_plan_resolve_index(); idx) {
+                // Probe by (dbname, relname) first — most specific entry —
+                // then by dbname alone. Both maps key std::string; id.get_namespace()
+                // is std::pmr::vector<std::pmr::string>, so build std::string copies.
+                std::string ns_key(ns.front().data(), ns.front().size());
+                std::string qkey;
+                qkey.reserve(ns_key.size() + 1 + id.table_name().size());
+                qkey.append(ns_key).push_back('|');
+                qkey.append(id.table_name().data(), id.table_name().size());
+                if (auto it = idx->tbl_ns_by_qname.find(qkey); it != idx->tbl_ns_by_qname.end()) {
+                    plan_resolve_ns_hit_counter().fetch_add(1, std::memory_order_relaxed);
+                    return it->second;
+                }
+                if (auto it = idx->ns_by_dbname.find(ns_key); it != idx->ns_by_dbname.end()) {
+                    plan_resolve_ns_hit_counter().fetch_add(1, std::memory_order_relaxed);
+                    return it->second;
+                }
+                plan_resolve_ns_miss_counter().fetch_add(1, std::memory_order_relaxed);
+            }
             auto* n = view.try_get_namespace(std::string_view(ns.front()));
+            return n ? n->oid : components::catalog::INVALID_OID;
+        }
+
+        // Variant for sites that have only a dbname (no relname yet) — used by
+        // check_namespace_exists. Same probe-then-fallback shape as ns_oid_for.
+        inline components::catalog::oid_t ns_oid_for_dbname(const services::dispatcher::catalog_view_t& view,
+                                                             std::string_view dbname) {
+            if (dbname.empty()) return components::catalog::INVALID_OID;
+            if (auto* idx = active_plan_resolve_index(); idx) {
+                if (auto it = idx->ns_by_dbname.find(std::string(dbname));
+                    it != idx->ns_by_dbname.end()) {
+                    plan_resolve_ns_hit_counter().fetch_add(1, std::memory_order_relaxed);
+                    return it->second;
+                }
+                plan_resolve_ns_miss_counter().fetch_add(1, std::memory_order_relaxed);
+            }
+            auto* n = view.try_get_namespace(dbname);
             return n ? n->oid : components::catalog::INVALID_OID;
         }
 
@@ -685,12 +904,12 @@ namespace services::dispatcher {
                                                                   bool same_schema) {
             if (node->expressions().empty()) {
                 // physical plan reinterprets this as default scan
-                table_id id(resource, node->collection_full_name());
+                table_id id(resource, collection_full_name_t{node->dbname(), node->relname()});
                 auto* tbl = view.try_get_table(ns_oid_for(view, id), std::string_view(id.table_name()));
                 if (tbl && tbl->relkind != 'g') {
                     named_schema result(resource);
                     for (const auto& column : tbl->columns) {
-                        result.emplace_back(type_from_t{node->collection_name(), column.type});
+                        result.emplace_back(type_from_t{node->relname(), column.type});
                     }
                     return schema_result<named_schema>{std::move(result)};
                 }
@@ -698,7 +917,7 @@ namespace services::dispatcher {
                     named_schema result(resource);
                     for (const auto& column : tbl->columns) {
                         result.emplace_back(
-                            type_from_t{node->result_alias().empty() ? node->collection_name() : node->result_alias(),
+                            type_from_t{node->result_alias().empty() ? node->relname() : node->result_alias(),
                                         column.type});
                     }
                     return schema_result<named_schema>{std::move(result)};
@@ -759,7 +978,15 @@ namespace services::dispatcher {
                             const catalog_view_t& view,
                             const components::catalog::table_id& id) {
         const auto& ns = id.get_namespace();
-        if (ns.empty() || !view.try_get_namespace(std::string_view(ns.front()))) {
+        if (ns.empty()) {
+            return make_cursor(resource, error_code_t::database_not_exists, "database does not exist");
+        }
+        // T16: probe plan-resolve index first (when an active scope was set by
+        // validate_*_sync). impl::ns_oid_for_dbname returns INVALID_OID if it
+        // missed BOTH the plan and the view cache — same semantics as the
+        // pre-T16 try_get_namespace == nullptr check.
+        if (impl::ns_oid_for_dbname(view, std::string_view(ns.front())) ==
+            components::catalog::INVALID_OID) {
             return make_cursor(resource, error_code_t::database_not_exists, "database does not exist");
         }
         return {};
@@ -770,12 +997,17 @@ namespace services::dispatcher {
                              const catalog_view_t& view,
                              const components::catalog::table_id& id) {
         if (auto err = check_namespace_exists(resource, view, id)) return err;
-        const auto* ns = view.try_get_namespace(std::string_view(id.get_namespace().front()));
-        // ns can't be null here (check_namespace_exists passed) but defensive code:
-        if (!ns) {
+        // T16: prefer plan-resolved ns_oid; fall back to view.try_get_namespace
+        // when none. We only need oid here — not the full resolved_namespace_t
+        // — to thread into try_get_table.
+        auto ns_oid = impl::ns_oid_for_dbname(view, std::string_view(id.get_namespace().front()));
+        if (ns_oid == components::catalog::INVALID_OID) {
             return make_cursor(resource, error_code_t::database_not_exists, "database does not exist");
         }
-        const auto* tbl = view.try_get_table(ns->oid, std::string_view(id.table_name()));
+        // table_oid lookup still goes through the view — node_catalog_resolve_table_t
+        // does not carry table_oid (only its namespace_oid). T17+ can introduce a
+        // resolve_table_oid stamp; for now this is the residual fallback site.
+        const auto* tbl = view.try_get_table(ns_oid, std::string_view(id.table_name()));
         if (!tbl) {
             return make_cursor(resource, error_code_t::collection_not_exists, "collection does not exist");
         }
@@ -830,7 +1062,138 @@ namespace services::dispatcher {
         }
     }
 
+    namespace {
+        // Phase 10.C: file-private replacement for the (removed) free
+        // helper `cfn_of(node_t*)`. Walks polymorphically via node->type() and
+        // returns a stack-allocated cfn assembled from the derived node's
+        // role-named accessors. Used by check_node / gather_cfn_deps below
+        // — the only sites that operate on a generic `node_t*` and need cfn
+        // as a single value (for table_id construction and for the
+        // dependency-set populated by validate_types/_schema). Resolved-
+        // stage routing should use node->table_oid() instead.
+        collection_full_name_t local_node_cfn(const node_t* node) {
+            if (!node) return {};
+            switch (node->type()) {
+                case node_type::aggregate_t:
+                    return {static_cast<const node_aggregate_t*>(node)->dbname(),
+                            static_cast<const node_aggregate_t*>(node)->relname()};
+                case node_type::alter_column_add_t:
+                    return {static_cast<const node_alter_column_add_t*>(node)->dbname(),
+                            static_cast<const node_alter_column_add_t*>(node)->relname()};
+                case node_type::alter_column_drop_t:
+                    return {static_cast<const node_alter_column_drop_t*>(node)->dbname(),
+                            static_cast<const node_alter_column_drop_t*>(node)->relname()};
+                case node_type::alter_column_rename_t:
+                    return {static_cast<const node_alter_column_rename_t*>(node)->dbname(),
+                            static_cast<const node_alter_column_rename_t*>(node)->relname()};
+                case node_type::alter_table_t:
+                    return {static_cast<const node_alter_table_t*>(node)->dbname(),
+                            static_cast<const node_alter_table_t*>(node)->relname()};
+                case node_type::check_constraint_t:
+                    return {static_cast<const node_check_constraint_t*>(node)->dbname(),
+                            static_cast<const node_check_constraint_t*>(node)->relname()};
+                case node_type::computed_field_register_t:
+                    return {static_cast<const node_computed_field_register_t*>(node)->dbname(),
+                            static_cast<const node_computed_field_register_t*>(node)->relname()};
+                case node_type::computed_field_unregister_t:
+                    return {static_cast<const node_computed_field_unregister_t*>(node)->dbname(),
+                            static_cast<const node_computed_field_unregister_t*>(node)->relname()};
+                case node_type::create_collection_t:
+                    return {static_cast<const node_create_collection_t*>(node)->dbname(),
+                            static_cast<const node_create_collection_t*>(node)->relname()};
+                case node_type::create_constraint_t:
+                    return {static_cast<const node_create_constraint_t*>(node)->dbname(),
+                            static_cast<const node_create_constraint_t*>(node)->relname()};
+                case node_type::create_database_t: {
+                    const auto* n = static_cast<const node_create_database_t*>(node);
+                    return {n->dbname(), {}};
+                }
+                case node_type::create_index_t:
+                    return {static_cast<const node_create_index_t*>(node)->dbname(),
+                            static_cast<const node_create_index_t*>(node)->relname()};
+                case node_type::create_macro_t:
+                    return {static_cast<const node_create_macro_t*>(node)->dbname(),
+                            static_cast<const node_create_macro_t*>(node)->macroname()};
+                case node_type::create_sequence_t:
+                    return {static_cast<const node_create_sequence_t*>(node)->dbname(),
+                            static_cast<const node_create_sequence_t*>(node)->seqname()};
+                case node_type::create_view_t:
+                    return {static_cast<const node_create_view_t*>(node)->dbname(),
+                            static_cast<const node_create_view_t*>(node)->viewname()};
+                case node_type::delete_t:
+                    return {static_cast<const node_delete_t*>(node)->dbname(),
+                            static_cast<const node_delete_t*>(node)->relname()};
+                case node_type::drop_collection_t:
+                    return {static_cast<const node_drop_collection_t*>(node)->dbname(),
+                            static_cast<const node_drop_collection_t*>(node)->relname()};
+                case node_type::drop_database_t: {
+                    const auto* n = static_cast<const node_drop_database_t*>(node);
+                    return {n->dbname(), {}};
+                }
+                case node_type::drop_index_t: {
+                    const auto* n = static_cast<const node_drop_index_t*>(node);
+                    return {n->dbname(), n->indexname()};
+                }
+                case node_type::drop_macro_t:
+                    return {static_cast<const node_drop_macro_t*>(node)->dbname(),
+                            static_cast<const node_drop_macro_t*>(node)->macroname()};
+                case node_type::drop_sequence_t:
+                    return {static_cast<const node_drop_sequence_t*>(node)->dbname(),
+                            static_cast<const node_drop_sequence_t*>(node)->seqname()};
+                case node_type::drop_view_t:
+                    return {static_cast<const node_drop_view_t*>(node)->dbname(),
+                            static_cast<const node_drop_view_t*>(node)->viewname()};
+                case node_type::fk_cascade_t:
+                    return {static_cast<const node_fk_cascade_t*>(node)->dbname(),
+                            static_cast<const node_fk_cascade_t*>(node)->relname()};
+                case node_type::fk_check_t:
+                    return {static_cast<const node_fk_check_t*>(node)->dbname(),
+                            static_cast<const node_fk_check_t*>(node)->relname()};
+                case node_type::group_t:
+                    return {static_cast<const node_group_t*>(node)->dbname(),
+                            static_cast<const node_group_t*>(node)->relname()};
+                case node_type::having_t:
+                    return {static_cast<const node_having_t*>(node)->dbname(),
+                            static_cast<const node_having_t*>(node)->relname()};
+                case node_type::insert_t:
+                    return {static_cast<const node_insert_t*>(node)->dbname(),
+                            static_cast<const node_insert_t*>(node)->relname()};
+                case node_type::join_t:
+                    return {static_cast<const node_join_t*>(node)->dbname(),
+                            static_cast<const node_join_t*>(node)->relname()};
+                case node_type::limit_t:
+                    return {static_cast<const node_limit_t*>(node)->dbname(),
+                            static_cast<const node_limit_t*>(node)->relname()};
+                case node_type::match_t:
+                    return {static_cast<const node_match_t*>(node)->dbname(),
+                            static_cast<const node_match_t*>(node)->relname()};
+                case node_type::sort_t:
+                    return {static_cast<const node_sort_t*>(node)->dbname(),
+                            static_cast<const node_sort_t*>(node)->relname()};
+                case node_type::update_t:
+                    return {static_cast<const node_update_t*>(node)->dbname(),
+                            static_cast<const node_update_t*>(node)->relname()};
+                default:
+                    return {};
+            }
+        }
+    } // namespace
+
     cursor_t_ptr validate_types_sync(std::pmr::memory_resource* resource, const catalog_view_t& view, node_t* logical_plan) {
+        // T16: build the plan-resolve index once per validate and publish it
+        // via scoped_plan_resolve_index_t. Skip publishing if the active index
+        // is already set (a parent validate is active) to avoid masking it
+        // with our locally-rebuilt copy; skip too if the gather found no
+        // resolve nodes (toggle off / nothing to migrate).
+        std::optional<impl::scoped_plan_resolve_index_t> scope_idx;
+        impl::plan_resolve_index_t plan_idx;
+        if (impl::active_plan_resolve_index() == nullptr) {
+            impl::gather_plan_resolve_index(logical_plan, plan_idx);
+            if (!plan_idx.empty()) {
+                scope_idx.emplace(&plan_idx);
+            }
+        }
+
         std::pmr::vector<complex_logical_type> encountered_types{resource};
         // Track every table namespace we walked so the data-conversion UDT probe below
         // can search them in addition to public/pg_catalog. Without this, a UDT registered
@@ -840,8 +1203,9 @@ namespace services::dispatcher {
         cursor_t_ptr result = make_cursor(resource, operation_status_t::success);
 
         auto check_node = [&](node_t* node) {
-            if (!node->collection_full_name().empty()) {
-                table_id id(resource, node->collection_full_name());
+            auto node_cfn = local_node_cfn(node);
+            if (!node_cfn.empty()) {
+                table_id id(resource, node_cfn);
                 if (auto res = check_collection_exists(resource, view, id); !res) {
                     auto* tbl = view.try_get_table(impl::ns_oid_for(view, id),
                                                     std::string_view(id.table_name()));
@@ -941,6 +1305,21 @@ namespace services::dispatcher {
                          const catalog_view_t& view,
                          node_t* node,
                          const components::logical_plan::storage_parameters& parameters) {
+        // T16: same indexed-resolve scope as validate_types_sync. Only emit
+        // the scope on the outermost call — inner recursions (validate_schema_sync
+        // → validate_schema_sync from JOIN, aggregate, etc.) observe the
+        // parent's index through the thread_local. Distinguish by checking
+        // whether the active index is already non-null; if so, skip the
+        // re-walk to avoid quadratic cost on deeply-nested plans.
+        std::optional<impl::scoped_plan_resolve_index_t> scope_idx;
+        impl::plan_resolve_index_t plan_idx;
+        if (impl::active_plan_resolve_index() == nullptr) {
+            impl::gather_plan_resolve_index(node, plan_idx);
+            if (!plan_idx.empty()) {
+                scope_idx.emplace(&plan_idx);
+            }
+        }
+
         named_schema result{resource};
 
         switch (node->type()) {
@@ -982,18 +1361,19 @@ namespace services::dispatcher {
                     } else {
                         incoming_schema = std::move(node_data_res.value());
                     }
-                } else if (!node->collection_full_name().database.empty()) {
+                } else if (auto* agg_node = static_cast<node_aggregate_t*>(node);
+                           !agg_node->dbname().empty()) {
                     // there will be a scan
-                    table_id id(resource, node->collection_full_name());
+                    table_id id(resource, collection_full_name_t{agg_node->dbname(), agg_node->relname()});
                     auto* tbl = view.try_get_table(impl::ns_oid_for(view, id),
                                                     std::string_view(id.table_name()));
                     if (tbl && tbl->relkind != 'g') {
                         for (const auto& column : tbl->columns) {
-                            table_schema.emplace_back(type_from_t{node->collection_name(), column.type});
+                            table_schema.emplace_back(type_from_t{agg_node->relname(), column.type});
                         }
                     } else if (tbl && tbl->relkind == 'g') {
                         for (const auto& column : tbl->columns) {
-                            table_schema.emplace_back(type_from_t{node->result_alias().empty() ? node->collection_name()
+                            table_schema.emplace_back(type_from_t{node->result_alias().empty() ? agg_node->relname()
                                                                                                : node->result_alias(),
                                                                   column.type});
                         }
@@ -1454,7 +1834,7 @@ namespace services::dispatcher {
             // For now next 3 nodes do not support returning clause:
             case node_type::insert_t: {
                 auto* insert_node = reinterpret_cast<node_insert_t*>(node);
-                table_id id(resource, node->collection_full_name());
+                table_id id(resource, collection_full_name_t{insert_node->dbname(), insert_node->relname()});
                 if (auto err = check_collection_exists(resource, view, id); err) {
                     return schema_result<named_schema>{resource, err->get_error()};
                 }
@@ -1469,19 +1849,60 @@ namespace services::dispatcher {
                                                         std::string_view(id.table_name()));
                     if (tbl_ins && tbl_ins->relkind != 'g') {
                         for (const auto& column : tbl_ins->columns) {
-                            table_schema.emplace_back(type_from_t{node->result_alias().empty() ? node->collection_name()
+                            table_schema.emplace_back(type_from_t{node->result_alias().empty() ? insert_node->relname()
                                                                                                : node->result_alias(),
                                                                   column.type});
                         }
                     } else if (tbl_ins && tbl_ins->relkind == 'g') {
                         is_computed = true;
                         for (const auto& column : tbl_ins->columns) {
-                            table_schema.emplace_back(type_from_t{node->collection_name(), column.type});
+                            table_schema.emplace_back(type_from_t{insert_node->relname(), column.type});
                         }
+                    }
+                    // Phase 11.E/F: relkind='g' (dynamic-schema) tables accept INSERTs
+                    // whose shape differs from the catalog's currently-registered columns,
+                    // BUT only for simple types. Complex types (ARRAY/STRUCT/UNION/LIST)
+                    // crash the storage layer's adopt_schema path — those tests stay
+                    // rejected at validate to surface as a clean error instead of SIGSEGV.
+                    auto is_simple_chunk = [&]() {
+                        for (const auto& nt : incoming_schema.value()) {
+                            const auto lt = nt.type.type();
+                            if (lt == components::types::logical_type::ARRAY ||
+                                lt == components::types::logical_type::LIST ||
+                                lt == components::types::logical_type::STRUCT ||
+                                lt == components::types::logical_type::UNION ||
+                                lt == components::types::logical_type::MAP) {
+                                return false;
+                            }
+                        }
+                        return true;
+                    };
+                    // Phase 11.F-B: even on an empty relkind='g' schema we reject
+                    // complex-type INSERTs at validate, because the downstream
+                    // storage layer (table_storage_t::adopt_schema → row_group →
+                    // array_column_data_t) can't initialise an ARRAY/STRUCT/UNION/
+                    // LIST/MAP column without crashing (assert in
+                    // complex_logical_type::size() when UNKNOWN child appears,
+                    // and other edge cases). atttypspec now correctly preserves
+                    // the type in the catalog (catalog roundtrip works post-11.F-B),
+                    // but the storage path is a separate scope — even VALUES
+                    // literal sources still SIGSEGV (Phase 11.I attempt
+                    // confirmed it; lifting requires deeper storage layer work).
+                    if (is_computed && !is_simple_chunk()) {
+                        return schema_result<named_schema>{
+                            resource,
+                            components::cursor::error_t{
+                                error_code_t::schema_error,
+                                "insert_node: complex types (ARRAY/STRUCT/UNION/LIST/MAP) "
+                                "are not yet supported on relkind='g' (dynamic-schema) tables"}};
                     }
                     if (table_schema.empty()) {
                         // Schemaless table (no columns defined) or computing table with no
                         // columns yet — accept any INSERT without column count validation.
+                    } else if (is_computed && is_simple_chunk()) {
+                        // Computing table with simple-typed INSERT: skip the static-shape
+                        // checks. operator_computed_field_register registers new attoids
+                        // for added/widened columns at execute time.
                     } else if (incoming_schema.value().size() > table_schema.size()) {
                         return schema_result<named_schema>{
                             resource,
@@ -1586,13 +2007,22 @@ namespace services::dispatcher {
                 named_schema table_schema(resource);
                 named_schema incoming_schema(resource);
                 bool same_schema = false;
-                table_id id(resource, node->collection_full_name());
+                // Phase 10.B: dispatch role-named accessors based on actual node type.
+                // Both node_delete_t and node_update_t expose relname()/dbname() with the
+                // same semantics (target table identity at parser stage).
+                const std::string& target_relname = (node->type() == node_type::update_t)
+                    ? reinterpret_cast<node_update_t*>(node)->relname()
+                    : reinterpret_cast<node_delete_t*>(node)->relname();
+                const std::string& target_dbname = (node->type() == node_type::update_t)
+                    ? reinterpret_cast<node_update_t*>(node)->dbname()
+                    : reinterpret_cast<node_delete_t*>(node)->dbname();
+                table_id id(resource, collection_full_name_t{target_dbname, target_relname});
                 auto* tbl_upd = view.try_get_table(impl::ns_oid_for(view, id),
                                                     std::string_view(id.table_name()));
                 if (tbl_upd && tbl_upd->relkind != 'g') {
                     for (const auto& column : tbl_upd->columns) {
                         table_schema.emplace_back(
-                            type_from_t{node->result_alias().empty() ? node->collection_name() : node->result_alias(),
+                            type_from_t{node->result_alias().empty() ? target_relname : node->result_alias(),
                                         column.type});
                     }
                 } else if (tbl_upd && tbl_upd->relkind == 'g') {
@@ -1631,7 +2061,7 @@ namespace services::dispatcher {
                                     components::cursor::error_t{
                                         error_code_t::schema_error,
                                         "UPDATE on dynamic-schema (relkind='g') table '" +
-                                            std::string(node->collection_name()) +
+                                            target_relname +
                                             "' references column '" + column_name +
                                             "' that is not registered. Insert with this field first to register it. "
                                             "(Auto-registration on UPDATE may be added in a future Phase, see task #106.)"}};
@@ -1640,7 +2070,7 @@ namespace services::dispatcher {
                     }
                     for (const auto& column : tbl_upd->columns) {
                         table_schema.emplace_back(
-                            type_from_t{node->result_alias().empty() ? node->collection_name() : node->result_alias(),
+                            type_from_t{node->result_alias().empty() ? target_relname : node->result_alias(),
                                         column.type});
                     }
                 } else {
@@ -1705,7 +2135,8 @@ namespace services::dispatcher {
                 return schema_result{std::move(result)};
             }
             case node_type::create_index_t: {
-                table_id id(resource, node->collection_full_name());
+                auto* idx_node = static_cast<node_create_index_t*>(node);
+                table_id id(resource, collection_full_name_t{idx_node->dbname(), idx_node->relname()});
                 if (auto err = check_collection_exists(resource, view, id); err) {
                     return schema_result<named_schema>{resource, err->get_error()};
                 }
@@ -1725,10 +2156,10 @@ namespace services::dispatcher {
                             "section 7.6)."}};
                 } else if (tbl_idx) {
                     for (const auto& column : tbl_idx->columns) {
-                        table_schema.emplace_back(type_from_t{node->collection_name(), column.type});
+                        table_schema.emplace_back(type_from_t{idx_node->relname(), column.type});
                     }
                 }
-                auto& keys = reinterpret_cast<node_create_index_t*>(node)->keys();
+                auto& keys = idx_node->keys();
                 for (auto& key : keys) {
                     auto key_res = impl::validate_key(resource, key, table_schema, table_schema, true);
                     if (key_res.is_error()) {
@@ -1799,6 +2230,35 @@ namespace services::dispatcher {
 
     } // namespace
 
+    namespace {
+        // Phase 9.W: replacement for the removed node_t::collection_dependencies().
+        // Walks the plan tree gathering every per-node cfn (via local_node_cfn())
+        // plus collection_from() for update/delete nodes. Used by
+        // validate_types/_schema to drive prewalk_table_types.
+        void gather_cfn_deps(node_t* node,
+                             std::unordered_set<collection_full_name_t, collection_name_hash>& deps) {
+            if (!node) return;
+            auto self = local_node_cfn(node);
+            if (!self.empty()) {
+                deps.insert(self);
+            }
+            if (node->type() == node_type::update_t) {
+                auto* upd = reinterpret_cast<node_update_t*>(node);
+                if (!upd->relname_from().empty()) {
+                    deps.insert(collection_full_name_t{upd->dbname_from(), upd->relname_from()});
+                }
+            } else if (node->type() == node_type::delete_t) {
+                auto* del = reinterpret_cast<node_delete_t*>(node);
+                if (!del->relname_from().empty()) {
+                    deps.insert(collection_full_name_t{del->dbname_from(), del->relname_from()});
+                }
+            }
+            for (const auto& child : node->children()) {
+                gather_cfn_deps(child.get(), deps);
+            }
+        }
+    } // namespace
+
     actor_zeta::unique_future<components::cursor::cursor_t_ptr>
     validate_types(std::pmr::memory_resource* resource,
                    catalog_view_t& view,
@@ -1806,7 +2266,8 @@ namespace services::dispatcher {
                    node_t* logical_plan) {
         // Pre-walk: gather every collection referenced by the plan (covers tables in
         // FROM, JOIN, INSERT/UPDATE/DELETE targets, sub-plans). Returns deduplicated set.
-        auto deps = logical_plan->collection_dependencies();
+        std::unordered_set<collection_full_name_t, collection_name_hash> deps;
+        gather_cfn_deps(logical_plan, deps);
         for (const auto& cfn : deps) {
             std::string ns_name = cfn.database;
             if (ns_name.empty()) continue;
@@ -1830,7 +2291,8 @@ namespace services::dispatcher {
                     components::execution_context_t ctx,
                     node_t* node,
                     const components::logical_plan::storage_parameters& parameters) {
-        auto deps = node->collection_dependencies();
+        std::unordered_set<collection_full_name_t, collection_name_hash> deps;
+        gather_cfn_deps(node, deps);
         for (const auto& cfn : deps) {
             std::string ns_name = cfn.database;
             if (ns_name.empty()) continue;

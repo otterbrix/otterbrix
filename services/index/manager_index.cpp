@@ -225,35 +225,35 @@ namespace services::index {
 
     // --- Collection lifecycle ---
 
-    manager_index_t::unique_future<void> manager_index_t::register_collection(session_id_t /*session*/,
-                                                                              collection_full_name_t name) {
-        trace(log_, "manager_index_t::register_collection: {}", name.to_string());
+    manager_index_t::unique_future<void>
+    manager_index_t::register_collection(session_id_t /*session*/, components::catalog::oid_t table_oid) {
+        trace(log_, "manager_index_t::register_collection: oid={}", static_cast<unsigned>(table_oid));
 
-        auto it = engines_.find(name);
+        auto it = engines_.find(table_oid);
         if (it == engines_.end()) {
-            engines_.emplace(name, components::index::make_index_engine(resource_));
+            engines_.emplace(table_oid, components::index::make_index_engine(resource_));
         }
         co_return;
     }
 
-    manager_index_t::unique_future<void> manager_index_t::unregister_collection(session_id_t /*session*/,
-                                                                                collection_full_name_t name) {
-        trace(log_, "manager_index_t::unregister_collection: {}", name.to_string());
+    manager_index_t::unique_future<void>
+    manager_index_t::unregister_collection(session_id_t /*session*/, components::catalog::oid_t table_oid) {
+        trace(log_, "manager_index_t::unregister_collection: oid={}", static_cast<unsigned>(table_oid));
 
-        engines_.erase(name);
+        engines_.erase(table_oid);
         co_return;
     }
 
     // --- DDL: index management ---
 
     manager_index_t::unique_future<uint32_t> manager_index_t::create_index(session_id_t /*session*/,
-                                                                           collection_full_name_t name,
+                                                                           components::catalog::oid_t table_oid,
                                                                            index_name_t index_name,
                                                                            components::index::keys_base_storage_t keys,
                                                                            components::logical_plan::index_type type) {
-        trace(log_, "manager_index_t::create_index: {} on {}", index_name, name.to_string());
+        trace(log_, "manager_index_t::create_index: {} on oid={}", index_name, static_cast<unsigned>(table_oid));
 
-        auto it = engines_.find(name);
+        auto it = engines_.find(table_oid);
         if (it == engines_.end()) {
             co_return components::index::INDEX_ID_UNDEFINED;
         }
@@ -277,9 +277,10 @@ namespace services::index {
         }
 
         if (id_index != components::index::INDEX_ID_UNDEFINED) {
-            // Load index data from btree (persistent storage)
+            // Load index data from btree (persistent storage). Path layout
+            // mirrors disk-side ${path_db}/${table_oid}/${index_name}/.
             if (!path_db_.empty()) {
-                auto btree_path = path_db_ / name.database / name.collection / index_name;
+                auto btree_path = path_db_ / std::to_string(static_cast<unsigned>(table_oid)) / index_name;
                 if (std::filesystem::exists(btree_path / "metadata")) {
                     try {
                         core::filesystem::local_file_system_t fs;
@@ -319,8 +320,11 @@ namespace services::index {
             // Create disk agent for persistent storage
             if (!path_db_.empty()) {
                 try {
-                    auto agent =
-                        actor_zeta::spawn<index_agent_disk_t>(resource_, path_db_, name, std::string(index_name), log_);
+                    auto agent = actor_zeta::spawn<index_agent_disk_t>(resource_,
+                                                                       path_db_,
+                                                                       table_oid,
+                                                                       std::string(index_name),
+                                                                       log_);
 
                     // Link disk agent with in-memory index
                     auto* idx = components::index::search_index(engine, keys);
@@ -340,11 +344,12 @@ namespace services::index {
         co_return id_index;
     }
 
-    manager_index_t::unique_future<void>
-    manager_index_t::drop_index(session_id_t session, collection_full_name_t name, index_name_t index_name) {
-        trace(log_, "manager_index_t::drop_index: {} on {}", index_name, name.to_string());
+    manager_index_t::unique_future<void> manager_index_t::drop_index(session_id_t session,
+                                                                     components::catalog::oid_t table_oid,
+                                                                     index_name_t index_name) {
+        trace(log_, "manager_index_t::drop_index: {} on oid={}", index_name, static_cast<unsigned>(table_oid));
 
-        auto it = engines_.find(name);
+        auto it = engines_.find(table_oid);
         if (it == engines_.end())
             co_return;
 
@@ -377,9 +382,10 @@ namespace services::index {
 
     // --- Query ---
 
-    manager_index_t::unique_future<bool>
-    manager_index_t::has_index(session_id_t /*session*/, collection_full_name_t name, index_name_t index_name) {
-        auto it = engines_.find(name);
+    manager_index_t::unique_future<bool> manager_index_t::has_index(session_id_t /*session*/,
+                                                                    components::catalog::oid_t table_oid,
+                                                                    index_name_t index_name) {
+        auto it = engines_.find(table_oid);
         if (it == engines_.end())
             co_return false;
 
@@ -390,6 +396,7 @@ namespace services::index {
 
     manager_index_t::unique_future<void>
     manager_index_t::insert_rows(execution_context_t ctx,
+                                 components::catalog::oid_t table_oid,
                                  std::unique_ptr<components::vector::data_chunk_t> data,
                                  uint64_t start_row_id,
                                  uint64_t count) {
@@ -397,7 +404,7 @@ namespace services::index {
             co_return;
 
         auto txn_id = ctx.txn.transaction_id;
-        auto it = engines_.find(ctx.name);
+        auto it = engines_.find(table_oid);
         if (it == engines_.end())
             co_return;
 
@@ -412,13 +419,14 @@ namespace services::index {
 
     manager_index_t::unique_future<void>
     manager_index_t::delete_rows(execution_context_t ctx,
+                                 components::catalog::oid_t table_oid,
                                  std::unique_ptr<components::vector::data_chunk_t> data,
                                  std::pmr::vector<int64_t> row_ids) {
         if (!data || row_ids.empty())
             co_return;
 
         auto txn_id = ctx.txn.transaction_id;
-        auto it = engines_.find(ctx.name);
+        auto it = engines_.find(table_oid);
         if (it == engines_.end())
             co_return;
 
@@ -433,6 +441,7 @@ namespace services::index {
 
     manager_index_t::unique_future<void>
     manager_index_t::update_rows(execution_context_t ctx,
+                                 components::catalog::oid_t table_oid,
                                  std::unique_ptr<components::vector::data_chunk_t> old_data,
                                  std::unique_ptr<components::vector::data_chunk_t> new_data,
                                  std::pmr::vector<int64_t> row_ids,
@@ -441,7 +450,7 @@ namespace services::index {
             co_return;
 
         auto txn_id = ctx.txn.transaction_id;
-        auto it = engines_.find(ctx.name);
+        auto it = engines_.find(table_oid);
         if (it == engines_.end())
             co_return;
 
@@ -462,10 +471,12 @@ namespace services::index {
 
     // --- MVCC commit/revert/cleanup ---
 
-    manager_index_t::unique_future<void> manager_index_t::commit_insert(execution_context_t ctx, uint64_t commit_id) {
+    manager_index_t::unique_future<void> manager_index_t::commit_insert(execution_context_t ctx,
+                                                                        components::catalog::oid_t table_oid,
+                                                                        uint64_t commit_id) {
         auto session = ctx.session;
         auto txn_id = ctx.txn.transaction_id;
-        auto it = engines_.find(ctx.name);
+        auto it = engines_.find(table_oid);
         if (it == engines_.end())
             co_return;
 
@@ -494,10 +505,12 @@ namespace services::index {
         co_return;
     }
 
-    manager_index_t::unique_future<void> manager_index_t::commit_delete(execution_context_t ctx, uint64_t commit_id) {
+    manager_index_t::unique_future<void> manager_index_t::commit_delete(execution_context_t ctx,
+                                                                        components::catalog::oid_t table_oid,
+                                                                        uint64_t commit_id) {
         auto session = ctx.session;
         auto txn_id = ctx.txn.transaction_id;
-        auto it = engines_.find(ctx.name);
+        auto it = engines_.find(table_oid);
         if (it == engines_.end())
             co_return;
 
@@ -526,9 +539,10 @@ namespace services::index {
         co_return;
     }
 
-    manager_index_t::unique_future<void> manager_index_t::revert_insert(execution_context_t ctx) {
+    manager_index_t::unique_future<void> manager_index_t::revert_insert(execution_context_t ctx,
+                                                                        components::catalog::oid_t table_oid) {
         auto txn_id = ctx.txn.transaction_id;
-        auto it = engines_.find(ctx.name);
+        auto it = engines_.find(table_oid);
         if (it == engines_.end())
             co_return;
 
@@ -540,7 +554,7 @@ namespace services::index {
 
     manager_index_t::unique_future<void> manager_index_t::cleanup_all_versions(session_id_t /*session*/,
                                                                                uint64_t lowest_active) {
-        for (auto& [name, engine] : engines_) {
+        for (auto& [oid, engine] : engines_) {
             engine->cleanup_versions(lowest_active);
         }
 
@@ -548,8 +562,8 @@ namespace services::index {
     }
 
     manager_index_t::unique_future<void> manager_index_t::rebuild_indexes(session_id_t /*session*/,
-                                                                          collection_full_name_t name) {
-        auto it = engines_.find(name);
+                                                                          components::catalog::oid_t table_oid) {
+        auto it = engines_.find(table_oid);
         if (it == engines_.end())
             co_return;
 
@@ -565,7 +579,9 @@ namespace services::index {
 
         // Rebuild will be triggered by executor sending scan data to
         // manager_index for index rebuild.
-        trace(log_, "manager_index_t::rebuild_indexes: cleared indexes for {}", name.to_string());
+        trace(log_,
+              "manager_index_t::rebuild_indexes: cleared indexes for oid={}",
+              static_cast<unsigned>(table_oid));
 
         co_return;
     }
@@ -574,7 +590,7 @@ namespace services::index {
 
     manager_index_t::unique_future<std::pmr::vector<int64_t>>
     manager_index_t::search(session_id_t /*session*/,
-                            collection_full_name_t name,
+                            components::catalog::oid_t table_oid,
                             components::index::keys_base_storage_t keys,
                             components::types::logical_value_t value,
                             components::expressions::compare_type compare,
@@ -582,7 +598,7 @@ namespace services::index {
                             uint64_t txn_id) {
         std::pmr::vector<int64_t> result(resource_);
 
-        auto it = engines_.find(name);
+        auto it = engines_.find(table_oid);
         if (it == engines_.end())
             co_return result;
 
@@ -594,8 +610,8 @@ namespace services::index {
     }
 
     manager_index_t::unique_future<std::pmr::vector<components::index::keys_base_storage_t>>
-    manager_index_t::get_indexed_keys(session_id_t /*session*/, collection_full_name_t name) {
-        auto it = engines_.find(name);
+    manager_index_t::get_indexed_keys(session_id_t /*session*/, components::catalog::oid_t table_oid) {
+        auto it = engines_.find(table_oid);
         if (it == engines_.end()) {
             co_return std::pmr::vector<components::index::keys_base_storage_t>(resource_);
         }

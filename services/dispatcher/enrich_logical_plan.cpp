@@ -52,10 +52,9 @@ namespace services::dispatcher {
         }
 
         void enrich_insert_sync(components::logical_plan::node_insert_t* node, catalog_view_t& view) {
-            const auto& coll = node->collection_full_name();
-            const auto* ns = view.try_get_namespace(coll.database.empty() ? coll.schema : coll.database);
+            const auto* ns = view.try_get_namespace(node->dbname());
             if (!ns) return;
-            const auto* tbl = view.try_get_table(ns->oid, coll.collection);
+            const auto* tbl = view.try_get_table(ns->oid, node->relname());
             if (!tbl) return;
             std::vector<std::string> nn;
             fill_not_null(*tbl, nn, /*include_with_defaults=*/false);
@@ -63,10 +62,9 @@ namespace services::dispatcher {
         }
 
         void enrich_update_sync(components::logical_plan::node_update_t* node, catalog_view_t& view) {
-            const auto& coll = node->collection_full_name();
-            const auto* ns = view.try_get_namespace(coll.database.empty() ? coll.schema : coll.database);
+            const auto* ns = view.try_get_namespace(node->dbname());
             if (!ns) return;
-            const auto* tbl = view.try_get_table(ns->oid, coll.collection);
+            const auto* tbl = view.try_get_table(ns->oid, node->relname());
             if (!tbl) return;
             std::vector<std::string> nn;
             fill_not_null(*tbl, nn, /*include_with_defaults=*/true);
@@ -75,8 +73,7 @@ namespace services::dispatcher {
 
         void enrich_create_collection_sync(components::logical_plan::node_create_collection_t* node,
                                            catalog_view_t& view) {
-            const auto& coll = node->collection_full_name();
-            const auto* ns = view.try_get_namespace(coll.database.empty() ? coll.schema : coll.database);
+            const auto* ns = view.try_get_namespace(node->dbname());
             if (!ns) return;
             node->set_namespace_oid(ns->oid);
         }
@@ -105,7 +102,8 @@ namespace services::dispatcher {
         case node_type::insert_t: {
             auto* node = static_cast<node_insert_t*>(root.get());
             enrich_insert_sync(node, view);
-            const auto tbl_oid = resolve_table_oid(node->collection_full_name(), view);
+            const auto tbl_oid = resolve_table_oid(
+                collection_full_name_t{node->dbname(), node->relname()}, view);
             if (tbl_oid != components::catalog::INVALID_OID) {
                 auto fks = co_await view.get_fks_outgoing(ctx, tbl_oid);
                 // Resolve child column names → positions in the INSERT chunk.
@@ -128,7 +126,8 @@ namespace services::dispatcher {
         case node_type::update_t: {
             auto* node = static_cast<node_update_t*>(root.get());
             enrich_update_sync(node, view);
-            const auto tbl_oid = resolve_table_oid(node->collection_full_name(), view);
+            const auto tbl_oid = resolve_table_oid(
+                collection_full_name_t{node->dbname(), node->relname()}, view);
             if (tbl_oid != components::catalog::INVALID_OID) {
                 auto fks = co_await view.get_fks_outgoing(ctx, tbl_oid);
                 node->set_outgoing_fks(std::move(fks));
@@ -137,15 +136,14 @@ namespace services::dispatcher {
         }
         case node_type::delete_t: {
             auto* node = static_cast<node_delete_t*>(root.get());
-            const auto& coll = node->collection_full_name();
             // Use async fallback so FK enrichment works even on a cold cache.
-            const std::string& del_ns_name = coll.database.empty() ? coll.schema : coll.database;
+            const std::string& del_ns_name = node->dbname();
             const auto* ns = view.try_get_namespace(del_ns_name);
             if (!ns) ns = co_await view.get_namespace(ctx, del_ns_name);
             const resolved_table_t* tbl = nullptr;
             if (ns) {
-                tbl = view.try_get_table(ns->oid, coll.collection);
-                if (!tbl) tbl = co_await view.get_table(ctx, ns->oid, std::string(coll.collection));
+                tbl = view.try_get_table(ns->oid, node->relname());
+                if (!tbl) tbl = co_await view.get_table(ctx, ns->oid, node->relname());
             }
             if (ns && tbl) {
                 const auto tbl_oid = tbl->oid;
@@ -200,8 +198,7 @@ namespace services::dispatcher {
         }
         case node_type::create_sequence_t: {
             auto* node = static_cast<node_create_sequence_t*>(root.get());
-            const auto& coll = node->collection_full_name();
-            const std::string& ns_name = coll.database.empty() ? coll.schema : coll.database;
+            const std::string& ns_name = node->dbname();
             const auto* ns = view.try_get_namespace(ns_name);
             if (!ns) ns = co_await view.get_namespace(ctx, ns_name);
             if (ns) node->set_namespace_oid(ns->oid);
@@ -209,8 +206,7 @@ namespace services::dispatcher {
         }
         case node_type::create_view_t: {
             auto* node = static_cast<node_create_view_t*>(root.get());
-            const auto& coll = node->collection_full_name();
-            const std::string& ns_name = coll.database.empty() ? coll.schema : coll.database;
+            const std::string& ns_name = node->dbname();
             const auto* ns = view.try_get_namespace(ns_name);
             if (!ns) ns = co_await view.get_namespace(ctx, ns_name);
             if (ns) node->set_namespace_oid(ns->oid);
@@ -218,8 +214,7 @@ namespace services::dispatcher {
         }
         case node_type::create_macro_t: {
             auto* node = static_cast<node_create_macro_t*>(root.get());
-            const auto& coll = node->collection_full_name();
-            const std::string& ns_name = coll.database.empty() ? coll.schema : coll.database;
+            const std::string& ns_name = node->dbname();
             const auto* ns = view.try_get_namespace(ns_name);
             if (!ns) ns = co_await view.get_namespace(ctx, ns_name);
             if (ns) node->set_namespace_oid(ns->oid);
@@ -230,26 +225,24 @@ namespace services::dispatcher {
             // synchronously call build_create_index_writes. The index_oid is allocated
             // by the dispatcher and stamped on the node before the planner runs.
             auto* node = static_cast<node_create_index_t*>(root.get());
-            const auto& coll = node->collection_full_name();
-            const std::string& ns_name = coll.database.empty() ? coll.schema : coll.database;
+            const std::string& ns_name = node->dbname();
             const auto* ns = view.try_get_namespace(ns_name);
             if (!ns) ns = co_await view.get_namespace(ctx, ns_name);
             if (!ns) break;
             node->set_namespace_oid(ns->oid);
-            const auto* tbl = view.try_get_table(ns->oid, coll.collection);
-            if (!tbl) tbl = co_await view.get_table(ctx, ns->oid, std::string(coll.collection));
+            const auto* tbl = view.try_get_table(ns->oid, node->relname());
+            if (!tbl) tbl = co_await view.get_table(ctx, ns->oid, node->relname());
             if (!tbl) break;
             node->set_table_oid(tbl->oid);
 
             // Resolve key column names → attoids (preserving column order).
-            std::vector<std::string> col_names;
+            // Phase 9.G: node_create_index_t no longer stores column_names; the planner
+            // reads names from keys() directly. We only stamp attoids + indkey here.
             std::vector<components::catalog::oid_t> col_attoids;
             std::string indkey;
-            col_names.reserve(node->keys().size());
             col_attoids.reserve(node->keys().size());
             for (std::size_t i = 0; i < node->keys().size(); ++i) {
-                std::string cn = node->keys()[i].as_string();
-                col_names.push_back(cn);
+                const std::string cn = node->keys()[i].as_string();
                 components::catalog::oid_t attoid = components::catalog::INVALID_OID;
                 for (const auto& ci : tbl->columns) {
                     if (ci.attname == cn) { attoid = ci.attoid; break; }
@@ -258,41 +251,42 @@ namespace services::dispatcher {
                 if (i) indkey += ",";
                 indkey += std::to_string(attoid);
             }
-            node->set_column_names(std::move(col_names));
             node->set_column_attoids(std::move(col_attoids));
             node->set_indkey(std::move(indkey));
             break;
         }
         case node_type::drop_index_t: {
-            // Resolve index OID by name. Catalog stores indexes in pg_class with
-            // relkind='i'; resolve_table looks them up by name within the namespace.
+            // Phase 11.D: resolve the TARGET table directly via node->relname().
+            // Resolve index_oid separately by node->indexname() — indexes live
+            // in pg_class with relkind='i' as their own entries.
             auto* node = static_cast<node_drop_index_t*>(root.get());
-            const auto& coll = node->collection_full_name();
-            const std::string& ns_name = coll.database.empty() ? coll.schema : coll.database;
+            const std::string& ns_name = node->dbname();
             const auto* ns = view.try_get_namespace(ns_name);
             if (!ns) ns = co_await view.get_namespace(ctx, ns_name);
             if (!ns) break;
             node->set_namespace_oid(ns->oid);
-            const auto* tbl = view.try_get_table(ns->oid, node->name());
-            if (!tbl) tbl = co_await view.get_table(ctx, ns->oid, node->name());
-            if (tbl) node->set_index_oid(tbl->oid);
+            const auto* tbl = view.try_get_table(ns->oid, node->relname());
+            if (!tbl) tbl = co_await view.get_table(ctx, ns->oid, node->relname());
+            if (tbl) node->set_table_oid(tbl->oid);
+            const auto* idx = view.try_get_table(ns->oid, node->indexname());
+            if (!idx) idx = co_await view.get_table(ctx, ns->oid, node->indexname());
+            if (idx) node->set_index_oid(idx->oid);
             break;
         }
         case node_type::create_constraint_t: {
             auto* node = static_cast<node_create_constraint_t*>(root.get());
-            const auto& coll = node->collection_full_name();
-            const std::string& ns_name = coll.database.empty() ? coll.schema : coll.database;
+            const std::string& ns_name = node->dbname();
             const auto* ns = view.try_get_namespace(ns_name);
             if (!ns) ns = co_await view.get_namespace(ctx, ns_name);
             if (!ns) break;
-            const auto* tbl = view.try_get_table(ns->oid, coll.collection);
-            if (!tbl) tbl = co_await view.get_table(ctx, ns->oid, std::string(coll.collection));
+            const auto* tbl = view.try_get_table(ns->oid, node->relname());
+            if (!tbl) tbl = co_await view.get_table(ctx, ns->oid, node->relname());
             if (!tbl) break;
             node->set_table_oid(tbl->oid);
 
             // Resolve local (child) column names → attoids.
             std::vector<components::catalog::oid_t> fk_attoids;
-            for (const auto& col_name : node->columns()) {
+            for (const auto& col_name : node->local_col_names()) {
                 for (const auto& ci : tbl->columns) {
                     if (ci.attname == col_name) {
                         fk_attoids.push_back(ci.attoid);
@@ -303,23 +297,30 @@ namespace services::dispatcher {
             node->set_fk_col_attoids(std::move(fk_attoids));
 
             // FK only — resolve referenced table + parent column attoids.
-            if (node->kind() == constraint_kind::foreign_key && !node->ref_collection().empty()) {
-                const auto* rrt = view.try_get_table(ns->oid, node->ref_collection().collection);
-                if (!rrt)
-                    rrt = co_await view.get_table(ctx, ns->oid,
-                                                  std::string(node->ref_collection().collection));
-                if (rrt) {
-                    node->set_ref_table_oid(rrt->oid);
-                    std::vector<components::catalog::oid_t> ref_attoids;
-                    for (const auto& col_name : node->ref_columns()) {
-                        for (const auto& ci : rrt->columns) {
-                            if (ci.attname == col_name) {
-                                ref_attoids.push_back(ci.attoid);
-                                break;
+            if (node->kind() == constraint_kind::foreign_key && !node->ref_relname().empty()) {
+                // ref_dbname() may be empty → fall back to the same namespace as the
+                // constrained table (mirrors prior cfn-based behavior).
+                const std::string& ref_ns_name =
+                    node->ref_dbname().empty() ? ns_name : node->ref_dbname();
+                const auto* ref_ns = view.try_get_namespace(ref_ns_name);
+                if (!ref_ns) ref_ns = co_await view.get_namespace(ctx, ref_ns_name);
+                if (ref_ns) {
+                    const auto* rrt = view.try_get_table(ref_ns->oid, node->ref_relname());
+                    if (!rrt)
+                        rrt = co_await view.get_table(ctx, ref_ns->oid, node->ref_relname());
+                    if (rrt) {
+                        node->set_ref_table_oid(rrt->oid);
+                        std::vector<components::catalog::oid_t> ref_attoids;
+                        for (const auto& col_name : node->ref_col_names()) {
+                            for (const auto& ci : rrt->columns) {
+                                if (ci.attname == col_name) {
+                                    ref_attoids.push_back(ci.attoid);
+                                    break;
+                                }
                             }
                         }
+                        node->set_ref_col_attoids(std::move(ref_attoids));
                     }
-                    node->set_ref_col_attoids(std::move(ref_attoids));
                 }
             }
             break;
@@ -331,13 +332,12 @@ namespace services::dispatcher {
             // (dynamic-schema) tables through computed_field_unregister instead of the
             // static-schema pg_attribute tombstone path. P7.3.
             auto* node = static_cast<node_alter_table_t*>(root.get());
-            const auto& coll = node->collection_full_name();
-            const std::string& ns_name = coll.database.empty() ? coll.schema : coll.database;
+            const std::string& ns_name = node->dbname();
             const auto* ns = view.try_get_namespace(ns_name);
             if (!ns) ns = co_await view.get_namespace(ctx, ns_name);
             if (!ns) break;
-            const auto* tbl = view.try_get_table(ns->oid, coll.collection);
-            if (!tbl) tbl = co_await view.get_table(ctx, ns->oid, std::string(coll.collection));
+            const auto* tbl = view.try_get_table(ns->oid, node->relname());
+            if (!tbl) tbl = co_await view.get_table(ctx, ns->oid, node->relname());
             if (tbl) {
                 node->set_table_oid(tbl->oid);
                 node->set_relkind(tbl->relkind);
@@ -348,7 +348,7 @@ namespace services::dispatcher {
             // Resolve the namespace OID so the planner can seed a
             // node_dynamic_cascade_delete_t at (pg_namespace, ns_oid). Phase 2 #49.
             auto* node = static_cast<node_drop_database_t*>(root.get());
-            const std::string ns_name = std::string(node->database_name());
+            const std::string ns_name = node->dbname();
             if (ns_name.empty()) break;
             const auto* ns = view.try_get_namespace(ns_name);
             if (!ns) ns = co_await view.get_namespace(ctx, ns_name);
@@ -361,33 +361,29 @@ namespace services::dispatcher {
             // Computing tables (relkind='g') resolve identically — the cascade
             // operator's drop_storage call handles both 'r' and 'g'.
             auto* node = static_cast<node_drop_collection_t*>(root.get());
-            const auto& coll = node->collection_full_name();
-            const std::string& ns_name = coll.database.empty() ? coll.schema : coll.database;
+            const std::string& ns_name = node->dbname();
             const auto* ns = view.try_get_namespace(ns_name);
             if (!ns) ns = co_await view.get_namespace(ctx, ns_name);
             if (!ns) break;
             node->set_namespace_oid(ns->oid);
-            const auto* tbl = view.try_get_table(ns->oid, coll.collection);
-            if (!tbl) tbl = co_await view.get_table(ctx, ns->oid, std::string(coll.collection));
+            const auto* tbl = view.try_get_table(ns->oid, node->relname());
+            if (!tbl) tbl = co_await view.get_table(ctx, ns->oid, node->relname());
             if (tbl) node->set_table_oid(tbl->oid);
             break;
         }
         case node_type::drop_type_t: {
-            // Resolve the type OID across the database's search path. Phase 2 #49.
+            // Resolve the type OID. Phase 9.W: node_drop_type_t no longer carries a
+            // user-typed db/namespace, so we resolve against public_namespace only.
+            // The dispatcher pre-loads the type cache for the standard search path
+            // (see dispatcher.cpp drop_type_t handler), so this lookup will hit when
+            // the type lives in any reachable namespace.
             // Note: only ENUM-style types live in pg_type; composite types are stored
             // in pg_class with relkind='c' and aren't reached by this seed. Mirrors
             // the legacy ddl.cpp drop_type behavior (which used resolve_type +
             // pg_type/pg_depend deletes — composite types were never dropped).
             auto* node = static_cast<node_drop_type_t*>(root.get());
-            // Default search: caller-specified database OR public namespace.
-            const std::string& db_name = root->database_name();
-            components::catalog::oid_t target_ns =
+            const components::catalog::oid_t target_ns =
                 components::catalog::well_known_oid::public_namespace;
-            if (!db_name.empty()) {
-                const auto* ns = view.try_get_namespace(db_name);
-                if (!ns) ns = co_await view.get_namespace(ctx, db_name);
-                if (ns) target_ns = ns->oid;
-            }
             const auto* rt = view.try_get_type(target_ns, node->name());
             if (!rt) rt = co_await view.get_type(ctx, target_ns, node->name());
             if (rt) node->set_type_oid(rt->oid);
@@ -398,39 +394,36 @@ namespace services::dispatcher {
             // try_get_table also covers them (the cache is keyed on (ns, name)
             // regardless of relkind).
             auto* node = static_cast<node_drop_sequence_t*>(root.get());
-            const auto& coll = node->collection_full_name();
-            const std::string& ns_name = coll.database.empty() ? coll.schema : coll.database;
+            const std::string& ns_name = node->dbname();
             const auto* ns = view.try_get_namespace(ns_name);
             if (!ns) ns = co_await view.get_namespace(ctx, ns_name);
             if (!ns) break;
-            const auto* tbl = view.try_get_table(ns->oid, coll.collection);
-            if (!tbl) tbl = co_await view.get_table(ctx, ns->oid, std::string(coll.collection));
+            const auto* tbl = view.try_get_table(ns->oid, node->seqname());
+            if (!tbl) tbl = co_await view.get_table(ctx, ns->oid, node->seqname());
             if (tbl) node->set_relation_oid(tbl->oid);
             break;
         }
         case node_type::drop_view_t: {
             // Views are pg_class entries with relkind='v'.
             auto* node = static_cast<node_drop_view_t*>(root.get());
-            const auto& coll = node->collection_full_name();
-            const std::string& ns_name = coll.database.empty() ? coll.schema : coll.database;
+            const std::string& ns_name = node->dbname();
             const auto* ns = view.try_get_namespace(ns_name);
             if (!ns) ns = co_await view.get_namespace(ctx, ns_name);
             if (!ns) break;
-            const auto* tbl = view.try_get_table(ns->oid, coll.collection);
-            if (!tbl) tbl = co_await view.get_table(ctx, ns->oid, std::string(coll.collection));
+            const auto* tbl = view.try_get_table(ns->oid, node->viewname());
+            if (!tbl) tbl = co_await view.get_table(ctx, ns->oid, node->viewname());
             if (tbl) node->set_relation_oid(tbl->oid);
             break;
         }
         case node_type::drop_macro_t: {
             // Macros are pg_class entries with relkind='m' (macro).
             auto* node = static_cast<node_drop_macro_t*>(root.get());
-            const auto& coll = node->collection_full_name();
-            const std::string& ns_name = coll.database.empty() ? coll.schema : coll.database;
+            const std::string& ns_name = node->dbname();
             const auto* ns = view.try_get_namespace(ns_name);
             if (!ns) ns = co_await view.get_namespace(ctx, ns_name);
             if (!ns) break;
-            const auto* tbl = view.try_get_table(ns->oid, coll.collection);
-            if (!tbl) tbl = co_await view.get_table(ctx, ns->oid, std::string(coll.collection));
+            const auto* tbl = view.try_get_table(ns->oid, node->macroname());
+            if (!tbl) tbl = co_await view.get_table(ctx, ns->oid, node->macroname());
             if (tbl) node->set_relation_oid(tbl->oid);
             break;
         }

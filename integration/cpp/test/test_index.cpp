@@ -42,7 +42,8 @@ constexpr int kDocuments = 100;
     do {                                                                                                               \
         auto chunk = gen_data_chunk(kDocuments, dispatcher->resource());                                               \
         auto ins = components::logical_plan::make_node_insert(dispatcher->resource(),                                  \
-                                                              {database_name, collection_name},                        \
+                                                              database_name,                                           \
+                                                              collection_name,                                         \
                                                               std::move(chunk));                                       \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
@@ -54,7 +55,8 @@ constexpr int kDocuments = 100;
     do {                                                                                                               \
         auto session = otterbrix::session_id_t();                                                                      \
         auto node = components::logical_plan::make_node_create_index(dispatcher->resource(),                           \
-                                                                     {database_name, collection_name},                 \
+                                                                     database_name,                                    \
+                                                                     collection_name,                                  \
                                                                      INDEX_NAME,                                       \
                                                                      components::logical_plan::index_type::single);    \
         node->keys().emplace_back(dispatcher->resource(), KEY);                                                        \
@@ -65,21 +67,27 @@ constexpr int kDocuments = 100;
     do {                                                                                                               \
         auto session = otterbrix::session_id_t();                                                                      \
         auto node = components::logical_plan::make_node_create_index(dispatcher->resource(),                           \
-                                                                     {database_name, collection_name},                 \
+                                                                     database_name,                                    \
+                                                                     collection_name,                                  \
                                                                      INDEX_NAME,                                       \
                                                                      components::logical_plan::index_type::single);    \
         node->keys().emplace_back(dispatcher->resource(), KEY);                                                        \
         auto res = dispatcher->create_index(session, node);                                                            \
         REQUIRE(res->is_error() == true);                                                                              \
-        REQUIRE(res->get_error().type == components::cursor::error_code_t::index_create_fail);                         \
-                                                                                                                       \
+        /* Phase 5: DML operators self-contain their I/O; the executor wraps any */                                    \
+        /* operator-level set_error into create_physical_plan_error with the */                                        \
+        /* original message. operator_create_index_backfill::set_error("index already exists") */                      \
+        /* surfaces here as that wrapped code, not the older catalog-level index_create_fail. */                       \
+        REQUIRE((res->get_error().type == components::cursor::error_code_t::index_create_fail ||                       \
+                 res->get_error().type == components::cursor::error_code_t::create_physical_plan_error));              \
     } while (false)
 
 #define DROP_INDEX(INDEX_NAME)                                                                                         \
     do {                                                                                                               \
         auto session = otterbrix::session_id_t();                                                                      \
         auto node = components::logical_plan::make_node_drop_index(dispatcher->resource(),                             \
-                                                                   {database_name, collection_name},                   \
+                                                                   database_name,                                      \
+                                                                   collection_name,                                    \
                                                                    INDEX_NAME);                                        \
         dispatcher->drop_index(session, node);                                                                         \
     } while (false)
@@ -88,7 +96,7 @@ constexpr int kDocuments = 100;
     do {                                                                                                               \
         auto session = otterbrix::session_id_t();                                                                      \
         auto plan =                                                                                                    \
-            components::logical_plan::make_node_aggregate(dispatcher->resource(), {database_name, collection_name});   \
+            components::logical_plan::make_node_aggregate(dispatcher->resource(), database_name, collection_name);   \
         auto c =                                                                                                       \
             dispatcher->find(session, plan, components::logical_plan::make_parameter_node(dispatcher->resource()));    \
         REQUIRE(c->size() == kDocuments);                                                                              \
@@ -98,13 +106,14 @@ constexpr int kDocuments = 100;
     do {                                                                                                               \
         auto session = otterbrix::session_id_t();                                                                      \
         auto plan =                                                                                                    \
-            components::logical_plan::make_node_aggregate(dispatcher->resource(), {database_name, collection_name});   \
+            components::logical_plan::make_node_aggregate(dispatcher->resource(), database_name, collection_name);   \
         auto expr = components::expressions::make_compare_expression(dispatcher->resource(),                           \
                                                                      COMPARE,                                          \
                                                                      key{dispatcher->resource(), KEY, SIDE},           \
                                                                      id_par{1});                                       \
         plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),                           \
-                                                                     {database_name, collection_name},                 \
+                                                                     database_name,                                    \
+                                                                     collection_name,                                  \
                                                                      std::move(expr)));                                \
         auto params = components::logical_plan::make_parameter_node(dispatcher->resource());                           \
         params->add_parameter(id_par{1}, VALUE);                                                                       \
@@ -114,11 +123,29 @@ constexpr int kDocuments = 100;
 
 #define CHECK_FIND_COUNT(COMPARE, SIDE, VALUE, COUNT) CHECK_FIND("count", COMPARE, SIDE, VALUE, COUNT)
 
+// Phase 8.A migrated index disk layout from name-keyed
+// (${path}/${db_name}/${coll_name}/${index_name}) to oid-keyed
+// (${path}/${table_oid}/${index_name}). The test fixture creates exactly one
+// user table, so we resolve the table_oid by scanning for the numeric directory
+// that contains the named index dir.
 #define CHECK_EXISTS_INDEX(NAME, EXISTS)                                                                               \
     do {                                                                                                               \
-        auto path = config.disk.path / database_name / collection_name / NAME;                                         \
-        REQUIRE(std::filesystem::exists(path) == EXISTS);                                                              \
-        REQUIRE(std::filesystem::is_directory(path) == EXISTS);                                                        \
+        bool found = false;                                                                                            \
+        if (std::filesystem::exists(config.disk.path)) {                                                               \
+            for (const auto& d : std::filesystem::directory_iterator(config.disk.path)) {                              \
+                if (!d.is_directory()) continue;                                                                       \
+                try {                                                                                                  \
+                    auto oid = std::stoull(d.path().filename().string());                                              \
+                    if (oid < 16384) continue;                                                                         \
+                } catch (...) { continue; }                                                                            \
+                auto candidate = d.path() / NAME;                                                                      \
+                if (std::filesystem::exists(candidate) && std::filesystem::is_directory(candidate)) {                  \
+                    found = true;                                                                                      \
+                    break;                                                                                             \
+                }                                                                                                      \
+            }                                                                                                          \
+        }                                                                                                              \
+        REQUIRE(found == EXISTS);                                                                                      \
     } while (false)
 
 TEST_CASE("integration::cpp::test_index::base") {
@@ -139,14 +166,13 @@ TEST_CASE("integration::cpp::test_index::base") {
             auto session = otterbrix::session_id_t();
 
             auto plan =
-                components::logical_plan::make_node_aggregate(dispatcher->resource(), {database_name, collection_name});
+                components::logical_plan::make_node_aggregate(dispatcher->resource(), database_name, collection_name);
             auto expr =
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::eq,
                                                                  key{dispatcher->resource(), "count", side_t::left},
                                                                  id_par{1});
-            plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),
-                                                                         {database_name, collection_name},
+            plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(), database_name, collection_name,
                                                                          std::move(expr)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), 10));
@@ -302,11 +328,9 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
         {
             auto session = otterbrix::session_id_t();
             auto del = components::logical_plan::make_node_delete_many(
-                dispatcher->resource(),
-                {database_name, collection_name},
+                dispatcher->resource(), database_name, collection_name,
                 components::logical_plan::make_node_match(
-                    dispatcher->resource(),
-                    {database_name, collection_name},
+                    dispatcher->resource(), database_name, collection_name,
                     components::expressions::make_compare_expression(dispatcher->resource(),
                                                                      compare_type::gt,
                                                                      key{dispatcher->resource(), "count", side_t::left},
@@ -328,8 +352,7 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
         {
             auto session = otterbrix::session_id_t();
             auto match = components::logical_plan::make_node_match(
-                dispatcher->resource(),
-                {database_name, collection_name},
+                dispatcher->resource(), database_name, collection_name,
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::eq,
                                                                  key{dispatcher->resource(), "count", side_t::left},
@@ -337,8 +360,7 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
             components::expressions::update_expr_ptr update_expr = new components::expressions::update_expr_set_t(
                 components::expressions::key_t{dispatcher->resource(), "count"});
             update_expr->left() = new components::expressions::update_expr_get_const_value_t(id_par{2});
-            auto upd = components::logical_plan::make_node_update_many(dispatcher->resource(),
-                                                                       {database_name, collection_name},
+            auto upd = components::logical_plan::make_node_update_many(dispatcher->resource(), database_name, collection_name,
                                                                        match,
                                                                        {update_expr});
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());

@@ -68,6 +68,17 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                                                false,
                                                types::logical_value_t{dispatcher->resource(), types::logical_type::NA});
         }
+        // Phase 11.E: missing fill loop for columns_value_defaults. Without it the
+        // CREATE TABLE call gets an empty column vector → relkind='g' (computing)
+        // table, and the subsequent explicit-column INSERTs fail validation
+        // because the catalog has UNKNOWN types until the first INSERT registers
+        // pg_computed_column rows.
+        for (const auto& type : types) {
+            columns_value_defaults.emplace_back(type.alias(),
+                                                type,
+                                                false,
+                                                types::logical_value_t{dispatcher->resource(), type});
+        }
         for (const auto& type : types) {
             columns_value_defaults_not_null.emplace_back(type.alias(),
                                                          type,
@@ -98,8 +109,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
         // is the same for all
         auto full_insert = [&](const collection_name_t& collection) {
             auto chunk = gen_data_chunk(kNumInserts, 0, types, dispatcher->resource());
-            auto ins = logical_plan::make_node_insert(dispatcher->resource(),
-                                                      {table_database_name, collection},
+            auto ins = logical_plan::make_node_insert(dispatcher->resource(), table_database_name, collection,
                                                       std::move(chunk));
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_plan(session, ins);
@@ -121,8 +131,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
 
         auto reordered_insert = [&](const collection_name_t& collection) {
             auto chunk = gen_data_chunk(kNumInserts, 0, swapped_types, dispatcher->resource());
-            auto ins = logical_plan::make_node_insert(dispatcher->resource(),
-                                                      {table_database_name, collection},
+            auto ins = logical_plan::make_node_insert(dispatcher->resource(), table_database_name, collection,
                                                       std::move(chunk));
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_plan(session, ins);
@@ -144,8 +153,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
 
         auto insert_with_conversion = [&](const collection_name_t& collection) {
             auto chunk = gen_data_chunk(kNumInserts, 0, changed_types, dispatcher->resource());
-            auto ins = logical_plan::make_node_insert(dispatcher->resource(),
-                                                      {table_database_name, collection},
+            auto ins = logical_plan::make_node_insert(dispatcher->resource(), table_database_name, collection,
                                                       std::move(chunk));
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_plan(session, ins);
@@ -172,8 +180,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
 
         auto partial_insert = [&](const collection_name_t& collection) {
             auto chunk = gen_data_chunk(kNumInserts, 0, partial_types, dispatcher->resource());
-            auto ins = logical_plan::make_node_insert(dispatcher->resource(),
-                                                      {table_database_name, collection},
+            auto ins = logical_plan::make_node_insert(dispatcher->resource(), table_database_name, collection,
                                                       std::move(chunk),
                                                       std::pmr::vector<expressions::key_t>{fields});
             auto session = otterbrix::session_id_t();
@@ -291,8 +298,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
 
         auto reversed_partial_insert = [&](const collection_name_t& collection) {
             auto chunk = gen_data_chunk(kNumInserts, 0, reversed_partial_types, dispatcher->resource());
-            auto ins = logical_plan::make_node_insert(dispatcher->resource(),
-                                                      {table_database_name, collection},
+            auto ins = logical_plan::make_node_insert(dispatcher->resource(), table_database_name, collection,
                                                       std::move(chunk),
                                                       std::pmr::vector<expressions::key_t>{fields});
             auto session = otterbrix::session_id_t();
@@ -407,8 +413,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
 
         auto invalid_keys_insert = [&](const collection_name_t& collection) {
             auto chunk = gen_data_chunk(kNumInserts, 0, types, dispatcher->resource());
-            auto ins = logical_plan::make_node_insert(dispatcher->resource(),
-                                                      {table_database_name, collection},
+            auto ins = logical_plan::make_node_insert(dispatcher->resource(), table_database_name, collection,
                                                       std::move(chunk),
                                                       std::pmr::vector<expressions::key_t>{fields});
             auto session = otterbrix::session_id_t();

@@ -12,8 +12,7 @@ namespace services::disk {
                                        std::uint64_t /*since_version*/) {
         resolve_namespace_result_t out(resource());
 
-        // Scan pg_namespace: col 0 = oid, col 1 = nspname.
-        if (auto it = storages_.find(pg_namespace_name); it != storages_.end()) {
+        if (auto it = storages_.find(pg_namespace_oid_tbl); it != storages_.end()) {
             std::pmr::synchronized_pool_resource scan_resource;
             inline_scan(it->second->table_storage.table(), {0, 1}, &scan_resource,
                         [&](components::vector::data_chunk_t& chunk, uint64_t i) {
@@ -40,8 +39,7 @@ namespace services::disk {
         resolve_table_result_t out(resource());
         out.namespace_oid = namespace_oid;
 
-        // Scan pg_class: col 0 = oid, col 1 = relname, col 2 = relnamespace, col 3 = relkind.
-        if (auto it = storages_.find(pg_class_name); it != storages_.end()) {
+        if (auto it = storages_.find(pg_class_oid); it != storages_.end()) {
             std::pmr::synchronized_pool_resource scan_resource;
             inline_scan(it->second->table_storage.table(), {0, 1, 2, 3}, &scan_resource,
                         [&](components::vector::data_chunk_t& chunk, uint64_t i) {
@@ -70,14 +68,10 @@ namespace services::disk {
             co_return out;
         }
 
-        // Computing tables (relkind='g') store columns in pg_computed_column
-        // (versioned + ref-counted). Pick latest attversion per attname where
-        // attrefcount > 0, ordered by first appearance.
         if (out.relkind == catalog::relkind::computed) {
-            auto cc_it = storages_.find(pg_computed_column_name);
+            auto cc_it = storages_.find(pg_computed_column_oid);
             if (cc_it != storages_.end()) {
                 std::pmr::synchronized_pool_resource cc_scan_resource;
-                // pg_computed_column: 0=relid 1=attoid 2=attname 3=atttypid 4=attversion 5=attrefcount
                 struct cc_row_t {
                     components::catalog::oid_t attoid;
                     std::string attname;
@@ -85,33 +79,78 @@ namespace services::disk {
                     std::int64_t attversion;
                 };
                 std::unordered_map<std::string, cc_row_t> latest;
-                inline_scan(cc_it->second->table_storage.table(), {0, 1, 2, 3, 4, 5}, &cc_scan_resource,
+                // Phase 11.F-A: collect ALL rows (including tombstones with rc=0)
+                // and pick max-version per attname. Then drop entries whose
+                // chosen (max-version) row is a tombstone. Previously this code
+                // skipped tombstones early — a DROP COLUMN write tombstone with
+                // version=N+1 was filtered out before max-version selection,
+                // leaving the lower-version live row visible
+                // (dynamic_schema_drop_column failure).
+                // Phase 11.F-B: also read atttypspec (column 4) for complex
+                // types. attversion / attrefcount shifted to 5 / 6.
+                struct cc_row_with_rc_t {
+                    cc_row_t base;
+                    std::string atttypspec;
+                    std::int64_t attrefcount;
+                };
+                std::unordered_map<std::string, cc_row_with_rc_t> latest_any;
+                inline_scan(cc_it->second->table_storage.table(), {0, 1, 2, 3, 4, 5, 6}, &cc_scan_resource,
                             [&](components::vector::data_chunk_t& chunk, uint64_t i) {
                                 auto rel = chunk.value(0, i);
                                 if (rel.is_null()) return true;
                                 if (static_cast<components::catalog::oid_t>(rel.value<std::uint32_t>()) != out.oid)
                                     return true;
-                                auto rc = chunk.value(5, i);
-                                if (rc.is_null() || rc.value<std::int64_t>() <= 0) return true;
-                                cc_row_t row;
-                                row.attoid = static_cast<components::catalog::oid_t>(
+                                cc_row_with_rc_t row;
+                                row.base.attoid = static_cast<components::catalog::oid_t>(
                                     chunk.value(1, i).value<std::uint32_t>());
-                                row.attname = std::string(chunk.value(2, i).value<std::string_view>());
-                                row.atttypid = static_cast<components::catalog::oid_t>(
-                                    chunk.value(3, i).value<std::uint32_t>());
-                                row.attversion = chunk.value(4, i).value<std::int64_t>();
-                                auto it = latest.find(row.attname);
-                                if (it == latest.end() || it->second.attversion < row.attversion) {
-                                    latest[row.attname] = std::move(row);
+                                row.base.attname = std::string(chunk.value(2, i).value<std::string_view>());
+                                row.base.atttypid = chunk.value(3, i).is_null()
+                                    ? components::catalog::INVALID_OID
+                                    : static_cast<components::catalog::oid_t>(
+                                          chunk.value(3, i).value<std::uint32_t>());
+                                auto spec_v = chunk.value(4, i);
+                                if (!spec_v.is_null())
+                                    row.atttypspec = std::string(spec_v.value<std::string_view>());
+                                row.base.attversion = chunk.value(5, i).value<std::int64_t>();
+                                auto rc_v = chunk.value(6, i);
+                                row.attrefcount = rc_v.is_null() ? 0 : rc_v.value<std::int64_t>();
+                                auto it = latest_any.find(row.base.attname);
+                                if (it == latest_any.end() || it->second.base.attversion < row.base.attversion) {
+                                    latest_any[row.base.attname] = std::move(row);
                                 }
                                 return true;
                             });
+                // Filter: column is live iff its max-version row has rc > 0.
+                std::unordered_map<std::string, std::string> typspec_by_name;
+                for (auto& [name, full] : latest_any) {
+                    if (full.attrefcount > 0) {
+                        typspec_by_name[name] = std::move(full.atttypspec);
+                        latest[name] = std::move(full.base);
+                    }
+                }
+                // Order by attoid ASC: attoid is allocated monotonically in
+                // operator_computed_field_register::await_async_and_resume by iterating
+                // columns_ vector in order, so attoid order == register order ==
+                // storage's adopt_schema(local.types()) order. Without this sort the
+                // unordered_map's bucket-order would produce indices that don't match
+                // the storage chunk's column layout, breaking WHERE-filter routing
+                // (filter applied to the wrong column → 0 rows).
+                std::vector<cc_row_t> ordered;
+                ordered.reserve(latest.size());
+                for (auto& [_, row] : latest) ordered.push_back(std::move(row));
+                std::sort(ordered.begin(), ordered.end(),
+                          [](const cc_row_t& a, const cc_row_t& b) {
+                              return a.attoid < b.attoid;
+                          });
                 std::int32_t synthetic_attnum = 1;
-                for (auto& [_, row] : latest) {
+                for (auto& row : ordered) {
                     column_info_t info;
                     info.attoid = row.attoid;
-                    info.attname = row.attname;
+                    info.attname = row.attname; // copy: typspec lookup below needs name
                     info.atttypid = row.atttypid;
+                    auto ts_it = typspec_by_name.find(info.attname);
+                    if (ts_it != typspec_by_name.end())
+                        info.atttypspec = std::move(ts_it->second);
                     info.attnum = synthetic_attnum++;
                     info.attnotnull = false;
                     info.atthasdefault = false;
@@ -122,13 +161,8 @@ namespace services::disk {
             co_return out;
         }
 
-        // Collect column metadata from pg_attribute where attrelid == out.oid AND
-        // attisdropped == false. Sorted by attnum.
-        auto att_it = storages_.find(pg_attribute_name);
+        auto att_it = storages_.find(pg_attribute_oid);
         if (att_it != storages_.end()) {
-            // pg_attribute layout:
-            // 0=attoid 1=attrelid 2=attname 3=atttypid 4=attnum 5=attnotnull
-            // 6=atthasdefault 7=attisdropped 8=atttypspec 9=attdefspec
             std::pmr::synchronized_pool_resource scan_resource;
             std::vector<column_info_t> rows;
             inline_scan(att_it->second->table_storage.table(),
@@ -183,29 +217,13 @@ namespace services::disk {
         co_return out;
     }
 
-    // V4 helper: synchronous resolve of a type by name. Used by both resolve_type and
-    // its own recursive expansion path (composite STRUCT field references resolved
-    // against pg_class with relkind='c' / 'd'). Splitting this out as sync (no
-    // unique_future) lets us self-recurse without cross-actor co_await, which doesn't
-    // work from within an actor's own coroutine.
-    //
-    // KEPT (task #78, 2026-05-09): the §"Чистка manager_disk DELETE" plan listed this
-    // for removal, but inspection confirmed it is a strictly internal helper — no
-    // external callers exist outside manager_disk_resolve.cpp (verified by
-    //   grep -rn "resolve_type_sync" services/ components/ integration/
-    // — only sites are this definition, the recursion at the STRUCT-field branch, and
-    // the resolve_type wrapper). Deletion would require either inlining the body into
-    // resolve_type AND duplicating it for the recursion site, or introducing
-    // cross-actor co_await against ourselves (impossible). Keeping is correct: the
-    // plan's intent was deleting external bypass paths of the actor protocol, not
-    // private impl helpers.
     resolve_type_result_t
     manager_disk_t::resolve_type_sync(components::catalog::oid_t namespace_oid,
                                        const std::string& name) {
         resolve_type_result_t out(resource());
         out.namespace_oid = namespace_oid;
 
-        auto it = storages_.find(pg_type_name);
+        auto it = storages_.find(pg_type_oid);
         if (it != storages_.end()) {
             std::pmr::synchronized_pool_resource scan_resource;
             inline_scan(it->second->table_storage.table(), {0, 1, 2, 3}, &scan_resource,
@@ -231,9 +249,7 @@ namespace services::disk {
         if (out.found) {
             return out;
         }
-        // Composite STRUCT (CREATE TYPE ... AS (...)) — persisted in pg_class with
-        // relkind='c'. Reconstruct STRUCT shape by scanning pg_attribute.
-        auto cls_it = storages_.find(pg_class_name);
+        auto cls_it = storages_.find(pg_class_oid);
         if (cls_it == storages_.end()) {
             return out;
         }
@@ -262,7 +278,7 @@ namespace services::disk {
         if (composite_oid == components::catalog::INVALID_OID) {
             return out;
         }
-        auto att_it = storages_.find(pg_attribute_name);
+        auto att_it = storages_.find(pg_attribute_oid);
         if (att_it == storages_.end()) {
             return out;
         }
@@ -273,7 +289,6 @@ namespace services::disk {
             std::string atttypspec;
         };
         std::vector<field_row> fields;
-        // pg_attribute (col_indices map): 0=attrelid 1=attname 2=atttypid 3=attnum 4=attisdropped 5=atttypspec
         inline_scan(att_it->second->table_storage.table(),
                     {1, 2, 3, 4, 7, 8}, &scan_resource,
                     [&](components::vector::data_chunk_t& chunk, uint64_t i) {
@@ -310,8 +325,6 @@ namespace services::disk {
                 ? components::types::complex_logical_type{
                       components::catalog::oid_to_builtin_type(f.atttypid)}
                 : components::catalog::decode_type_spec(resource(), f.atttypspec);
-            // Composite fields can reference other UDTs via UNKNOWN — recurse so the
-            // returned STRUCT is fully expanded (mirrors populate-path).
             if (ft.type() == components::types::logical_type::UNKNOWN) {
                 std::string ref_name(ft.type_name());
                 if (!ref_name.empty()) {
@@ -348,11 +361,9 @@ namespace services::disk {
         resolve_function_result_t out(resource());
         out.namespace_oid = namespace_oid;
 
-        auto it = storages_.find(pg_proc_name);
+        auto it = storages_.find(pg_proc_oid);
         if (it != storages_.end()) {
             std::pmr::synchronized_pool_resource scan_resource;
-            // pg_proc layout:
-            // 0=oid 1=proname 2=pronamespace 3=pronargs 4=prouid 5=proargmatchers 6=prorettype
             inline_scan(it->second->table_storage.table(), {0, 1, 2, 3, 4, 5, 6}, &scan_resource,
                         [&](components::vector::data_chunk_t& chunk, uint64_t i) {
                             auto ns = chunk.value(2, i);
@@ -390,13 +401,11 @@ namespace services::disk {
                                               std::string name,
                                               std::uint64_t /*since_version*/) {
         std::pmr::vector<resolve_function_result_t> out(resource());
-        auto it = storages_.find(pg_proc_name);
+        auto it = storages_.find(pg_proc_oid);
         if (it == storages_.end()) {
             co_return out;
         }
         std::pmr::synchronized_pool_resource scan_resource;
-        // pg_proc layout: 0=oid 1=proname 2=pronamespace 3=pronargs 4=prouid
-        //                 5=proargmatchers 6=prorettype
         inline_scan(it->second->table_storage.table(), {0, 1, 2, 3, 4, 5, 6}, &scan_resource,
                     [&](components::vector::data_chunk_t& chunk, uint64_t i) {
                         if (!str_equals(chunk.value(1, i), name))
@@ -431,12 +440,11 @@ namespace services::disk {
     manager_disk_t::unique_future<std::pmr::vector<std::string>>
     manager_disk_t::list_namespaces(execution_context_t /*ctx*/) {
         std::pmr::vector<std::string> out(resource());
-        auto it = storages_.find(pg_namespace_name);
+        auto it = storages_.find(pg_namespace_oid_tbl);
         if (it == storages_.end()) {
             co_return out;
         }
         std::pmr::synchronized_pool_resource scan_resource;
-        // pg_namespace: 0=oid 1=nspname
         inline_scan(it->second->table_storage.table(), {0, 1}, &scan_resource,
                     [&](components::vector::data_chunk_t& chunk, uint64_t i) {
                         auto name_v = chunk.value(1, i);
@@ -452,12 +460,11 @@ namespace services::disk {
     manager_disk_t::list_tables_in_namespace(execution_context_t /*ctx*/,
                                               components::catalog::oid_t namespace_oid) {
         std::pmr::vector<std::pair<components::catalog::oid_t, std::string>> out(resource());
-        auto it = storages_.find(pg_class_name);
+        auto it = storages_.find(pg_class_oid);
         if (it == storages_.end()) {
             co_return out;
         }
         std::pmr::synchronized_pool_resource scan_resource;
-        // pg_class: 0=oid 1=relname 2=relnamespace 3=relkind
         inline_scan(it->second->table_storage.table(), {0, 1, 2, 3}, &scan_resource,
                     [&](components::vector::data_chunk_t& chunk, uint64_t i) {
                         auto rel_ns = chunk.value(2, i);
@@ -472,8 +479,6 @@ namespace services::disk {
                         if (kind_s.empty())
                             return true;
                         const char relkind = kind_s.front();
-                        // Only "live storage" kinds: regular tables and computing tables.
-                        // Indexes, sequences, views, macros, composites are filtered.
                         if (relkind != catalog::relkind::regular && relkind != catalog::relkind::computed)
                             return true;
                         auto oid_v = chunk.value(0, i);
@@ -486,13 +491,6 @@ namespace services::disk {
                     });
         co_return out;
     }
-
-    // ========================================================================
-    // populate_catalog_snapshot retired (V4): catalog_view_t serves all per-name lookups,
-    // and dispatcher's collections_ rebuild uses list_namespaces +
-    // list_tables_in_namespace. Batch resolve_*_batch methods are deferred until
-    // profiling shows warm-cache hit rate is too low.
-    // ========================================================================
 
     // --- Direct replay methods (synchronous, no MVCC, for physical WAL replay) ---
 
@@ -507,12 +505,12 @@ namespace services::disk {
     }
 
     // ---------------------------------------------------------------------------
-    // scan_by_key — pure storage primitive, no FK/semantic knowledge.
+    // scan_by_key — pure storage primitive, oid-keyed.
     // ---------------------------------------------------------------------------
 
     manager_disk_t::unique_future<std::pmr::vector<std::int64_t>>
     manager_disk_t::scan_by_key(execution_context_t ctx,
-                                 collection_full_name_t name,
+                                 components::catalog::oid_t table_oid,
                                  std::vector<std::string> key_col_names,
                                  std::vector<components::types::logical_value_t> key_values) {
         std::pmr::vector<std::int64_t> out(resource());
@@ -520,13 +518,12 @@ namespace services::disk {
             co_return out;
         }
 
-        auto it = storages_.find(name);
+        auto it = storages_.find(table_oid);
         if (it == storages_.end()) co_return out;
 
         auto& tbl = it->second->table_storage.table();
         const auto& all_cols = tbl.columns();
 
-        // Map each key column name to its table column index.
         auto filter = std::make_unique<components::table::conjunction_and_filter_t>();
         for (std::size_t ki = 0; ki < key_col_names.size(); ++ki) {
             std::size_t col_idx = all_cols.size();
@@ -536,7 +533,7 @@ namespace services::disk {
                     break;
                 }
             }
-            if (col_idx == all_cols.size()) co_return out; // unknown column → empty result
+            if (col_idx == all_cols.size()) co_return out;
             std::pmr::vector<uint64_t> idx_vec(resource());
             idx_vec.push_back(static_cast<uint64_t>(col_idx));
             filter->child_filters.push_back(
@@ -555,20 +552,16 @@ namespace services::disk {
         co_return out;
     }
 
-    // ---------------------------------------------------------------------------
-    // read_rows_by_key — full row-data variant of scan_by_key.
-    // ---------------------------------------------------------------------------
-
     manager_disk_t::unique_future<std::vector<std::vector<components::types::logical_value_t>>>
     manager_disk_t::read_rows_by_key(execution_context_t ctx,
-                                       collection_full_name_t name,
+                                       components::catalog::oid_t table_oid,
                                        std::vector<std::string> key_col_names,
                                        std::vector<components::types::logical_value_t> key_values) {
         using row_t = std::vector<components::types::logical_value_t>;
         std::vector<row_t> out;
         if (key_col_names.size() != key_values.size() || key_col_names.empty()) co_return out;
 
-        auto it = storages_.find(name);
+        auto it = storages_.find(table_oid);
         if (it == storages_.end()) co_return out;
 
         auto& tbl = it->second->table_storage.table();
@@ -602,61 +595,6 @@ namespace services::disk {
             }
             out.push_back(std::move(row));
         }
-        co_return out;
-    }
-
-    // ---------------------------------------------------------------------------
-    // scan_by_table_oid — OID-keyed variant of scan_by_key.
-    // ---------------------------------------------------------------------------
-
-    manager_disk_t::unique_future<std::pmr::vector<std::int64_t>>
-    manager_disk_t::scan_by_table_oid(execution_context_t ctx,
-                                        components::catalog::oid_t table_oid,
-                                        std::vector<std::string> key_col_names,
-                                        std::vector<components::types::logical_value_t> key_values) {
-        std::pmr::vector<std::int64_t> out(resource());
-
-        // Resolve table_oid → (ns_name, tbl_name) via pg_class + pg_namespace scan.
-        std::string tbl_name;
-        components::catalog::oid_t ns_oid = components::catalog::INVALID_OID;
-        if (auto cls_it = storages_.find(pg_class_name); cls_it != storages_.end()) {
-            std::pmr::synchronized_pool_resource scan_resource;
-            inline_scan(cls_it->second->table_storage.table(), {0, 1, 2}, &scan_resource,
-                        [&](components::vector::data_chunk_t& chunk, uint64_t i) {
-                            auto oid_v = chunk.value(0, i);
-                            if (oid_v.is_null()) return true;
-                            if (static_cast<components::catalog::oid_t>(oid_v.value<std::uint32_t>()) != table_oid)
-                                return true;
-                            auto name_v = chunk.value(1, i);
-                            auto ns_v = chunk.value(2, i);
-                            if (name_v.is_null() || ns_v.is_null()) return true;
-                            tbl_name = std::string(name_v.value<std::string_view>());
-                            ns_oid = static_cast<components::catalog::oid_t>(ns_v.value<std::uint32_t>());
-                            return false;
-                        });
-        }
-        if (tbl_name.empty()) co_return out;
-
-        std::string ns_name;
-        if (auto ns_st = storages_.find(pg_namespace_name); ns_st != storages_.end()) {
-            std::pmr::synchronized_pool_resource scan_resource;
-            inline_scan(ns_st->second->table_storage.table(), {0, 1}, &scan_resource,
-                        [&](components::vector::data_chunk_t& chunk, uint64_t i) {
-                            auto oid_v = chunk.value(0, i);
-                            if (oid_v.is_null()) return true;
-                            if (static_cast<components::catalog::oid_t>(oid_v.value<std::uint32_t>()) != ns_oid)
-                                return true;
-                            auto name_v = chunk.value(1, i);
-                            if (!name_v.is_null()) ns_name = std::string(name_v.value<std::string_view>());
-                            return false;
-                        });
-        }
-        if (ns_name.empty()) co_return out;
-
-        collection_full_name_t full{ns_name, "", tbl_name};
-        if (storages_.find(full) == storages_.end())
-            full = {"", ns_name, tbl_name};
-        out = co_await scan_by_key(ctx, std::move(full), std::move(key_col_names), std::move(key_values));
         co_return out;
     }
 

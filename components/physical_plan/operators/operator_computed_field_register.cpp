@@ -65,16 +65,16 @@ namespace components::operators {
         // which also subsumes #107 pg_depend writes.
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
-        const collection_full_name_t pg_computed_column{"pg_catalog", "main", "pg_computed_column"};
-        const collection_full_name_t pg_type            {"pg_catalog", "main", "pg_type"};
-        const collection_full_name_t pg_depend          {"pg_catalog", "main", "pg_depend"};
+        constexpr catalog::oid_t pg_computed_column = catalog::well_known_oid::pg_computed_column_table;
+        constexpr catalog::oid_t pg_type            = catalog::well_known_oid::pg_type_table;
+        constexpr catalog::oid_t pg_depend          = catalog::well_known_oid::pg_depend_table;
 
         const types::logical_value_t toid_lv(resource_, table_oid_);
 
         for (const auto& col : columns_) {
             // Step 1: read existing pg_computed_column rows for (relid, attname).
-            // pg_computed_column layout: 0=relid 1=attoid 2=attname 3=atttypid
-            // 4=attversion 5=attrefcount.
+            // pg_computed_column layout (Phase 11.F-B): 0=relid 1=attoid
+            // 2=attname 3=atttypid 4=atttypspec 5=attversion 6=attrefcount.
             types::logical_value_t name_lv(resource_, std::string(col.name()));
             auto [_r, rf] = actor_zeta::send(
                 ctx->disk_address,
@@ -86,15 +86,21 @@ namespace components::operators {
 
             std::int64_t   max_version    = -1;
             catalog::oid_t latest_atttypid = catalog::INVALID_OID;
+            std::string    latest_atttypspec;
+            std::int64_t   latest_refcount = 0;
             for (const auto& row : rows) {
-                if (row.size() < 6) continue;
-                if (row[4].is_null()) continue;
-                const auto v = row[4].value<std::int64_t>();
+                if (row.size() < 7) continue;
+                if (row[5].is_null()) continue;
+                const auto v = row[5].value<std::int64_t>();
                 if (v > max_version) {
                     max_version = v;
                     latest_atttypid = row[3].is_null()
                                           ? catalog::INVALID_OID
                                           : static_cast<catalog::oid_t>(row[3].value<std::uint32_t>());
+                    latest_atttypspec = row[4].is_null()
+                                            ? std::string{}
+                                            : std::string(row[4].value<std::string_view>());
+                    latest_refcount = row[6].is_null() ? 0 : row[6].value<std::int64_t>();
                 }
             }
 
@@ -130,10 +136,24 @@ namespace components::operators {
                 }
             }
 
+            // Phase 11.F-B: encode complex types into atttypspec so resolve_table
+            // for relkind='g' can reconstruct ARRAY/STRUCT/UNION/DECIMAL etc.
+            // exactly. Builtin scalars leave atttypspec empty — atttypid alone
+            // reconstructs them via oid_to_builtin_type.
+            std::string atttypspec;
+            if (atttypid == catalog::INVALID_OID && col.type().type() != types::logical_type::UNKNOWN) {
+                atttypspec = catalog::encode_type_spec(col.type());
+            }
+
             // Step 2: classify and decide.
-            const bool is_new = (max_version < 0);
+            // Phase 11.G: if latest row is a tombstone (refcount<=0), the
+            // column was DROP'd. Treat re-INSERT as is_new so a fresh attoid +
+            // bumped attversion are written and operator_computed_field_register
+            // doesn't short-circuit on stale type info.
+            const bool is_new = (max_version < 0) || (latest_refcount <= 0);
             const bool same_type =
-                !is_new && latest_atttypid != catalog::INVALID_OID && latest_atttypid == atttypid;
+                !is_new && latest_atttypid == atttypid && latest_atttypspec == atttypspec &&
+                (latest_atttypid != catalog::INVALID_OID || !atttypspec.empty());
             if (same_type) {
                 // No-op: column already registered with the same type. The
                 // simplified binary refcount model does not bump on every
@@ -163,7 +183,8 @@ namespace components::operators {
                 std::string(col.name()),
                 atttypid,
                 new_version,
-                /*attrefcount=*/std::int64_t{1});
+                /*attrefcount=*/std::int64_t{1},
+                atttypspec);
             auto [_w, wf] = actor_zeta::send(
                 ctx->disk_address,
                 &services::disk::manager_disk_t::append_pg_catalog_row,

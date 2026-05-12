@@ -1,6 +1,6 @@
 #pragma once
 
-#include <components/base/collection_full_name.hpp>
+#include <components/catalog/catalog_oids.hpp>
 #include <cstdint>
 
 namespace components {
@@ -10,7 +10,7 @@ namespace components {
     // dispatcher aggregates into transaction_t; commit/abort operators apply
     // storage_commit_appends / storage_revert_appends after txn_manager_.commit().
     struct pg_catalog_append_range_t {
-        collection_full_name_t name;
+        catalog::oid_t         table_oid{catalog::INVALID_OID};
         int64_t                start_row{0};
         uint64_t               count{0};
     };

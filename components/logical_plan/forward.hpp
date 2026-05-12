@@ -84,6 +84,15 @@ namespace components::logical_plan {
         // into the dispatcher happens in P7.2.
         computed_field_register_t,
         computed_field_unregister_t,
+        // Phase 13: catalog-resolve leaf nodes. Each carries a name reference
+        // and is replaced by the corresponding operator_resolve_*_t during
+        // physical plan generation. Resolves through standard pipeline
+        // (logical_plan → planner → optimizer → physical_plan_generator →
+        // executor → disk) — no catalog_view side-channel.
+        catalog_resolve_table_t,
+        catalog_resolve_namespace_t,
+        catalog_resolve_type_t,
+        catalog_resolve_function_t,
         unused
     };
 

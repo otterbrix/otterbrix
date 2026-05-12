@@ -11,20 +11,20 @@ namespace components::catalog {
 
     namespace {
 
-        const collection_full_name_t pg_class_full{"pg_catalog", "main", "pg_class"};
-        const collection_full_name_t pg_attribute_full{"pg_catalog", "main", "pg_attribute"};
-        const collection_full_name_t pg_depend_full{"pg_catalog", "main", "pg_depend"};
-        const collection_full_name_t pg_namespace_full{"pg_catalog", "main", "pg_namespace"};
-        const collection_full_name_t pg_sequence_full{"pg_catalog", "main", "pg_sequence"};
-        const collection_full_name_t pg_rewrite_full{"pg_catalog", "main", "pg_rewrite"};
-        const collection_full_name_t pg_type_full{"pg_catalog", "main", "pg_type"};
-        const collection_full_name_t pg_proc_full{"pg_catalog", "main", "pg_proc"};
-        const collection_full_name_t pg_index_full{"pg_catalog", "main", "pg_index"};
-        const collection_full_name_t pg_constraint_full{"pg_catalog", "main", "pg_constraint"};
+        constexpr oid_t pg_class_full     = well_known_oid::pg_class_table;
+        constexpr oid_t pg_attribute_full = well_known_oid::pg_attribute_table;
+        constexpr oid_t pg_depend_full    = well_known_oid::pg_depend_table;
+        constexpr oid_t pg_namespace_full = well_known_oid::pg_namespace_table;
+        constexpr oid_t pg_sequence_full  = well_known_oid::pg_sequence_table;
+        constexpr oid_t pg_rewrite_full   = well_known_oid::pg_rewrite_table;
+        constexpr oid_t pg_type_full      = well_known_oid::pg_type_table;
+        constexpr oid_t pg_proc_full      = well_known_oid::pg_proc_table;
+        constexpr oid_t pg_index_full     = well_known_oid::pg_index_table;
+        constexpr oid_t pg_constraint_full = well_known_oid::pg_constraint_table;
 
-        catalog_write_t make_write(const collection_full_name_t& target,
-                                    vector::data_chunk_t          chunk) {
-            return {target, std::move(chunk)};
+        catalog_write_t make_write(oid_t                target_oid,
+                                    vector::data_chunk_t chunk) {
+            return {target_oid, std::move(chunk)};
         }
 
     } // anonymous namespace
@@ -32,7 +32,8 @@ namespace components::catalog {
     std::vector<catalog_write_t>
     build_create_table_writes(
         std::pmr::memory_resource*                     resource,
-        const collection_full_name_t&                  coll,
+        const std::string&                             /*dbname*/, // namespace resolved via namespace_oid
+        const std::string&                             relname,
         const std::vector<table::column_definition_t>& columns,
         bool                                            is_disk_storage,
         oid_t                                           namespace_oid,
@@ -41,7 +42,7 @@ namespace components::catalog {
     {
         std::vector<catalog_write_t> result;
 
-        const std::string& table_name = coll.collection;
+        const std::string& table_name = relname;
         const oid_t table_oid = oid_batch.allocate();
 
         // pg_class row
@@ -332,7 +333,6 @@ namespace components::catalog {
         oid_t                                    namespace_oid,
         oid_t                                    table_oid,
         oid_t                                    index_oid,
-        const std::vector<std::string>&          column_names,
         const std::vector<oid_t>&               column_attoids)
     {
         std::vector<catalog_write_t> result;
@@ -643,21 +643,24 @@ namespace components::catalog {
         const std::string&          attname,
         oid_t                       atttypid,
         std::int64_t                attversion,
-        std::int64_t                attrefcount)
+        std::int64_t                attrefcount,
+        const std::string&          atttypspec)
     {
         const auto* def = find_system_table("pg_computed_column");
         if (!def) {
             std::pmr::vector<types::complex_logical_type> empty_types(resource);
             return vector::data_chunk_t(resource, empty_types, 1);
         }
+        // Phase 11.F-B: atttypspec at index 4; attversion/attrefcount at 5/6.
         return make_pg_row(resource, def->columns,
                            [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                                c.set_value(0, 0, lv_oid(r, table_oid));
                                c.set_value(1, 0, lv_oid(r, attoid));
                                c.set_value(2, 0, lv_str(r, attname));
                                c.set_value(3, 0, lv_oid(r, atttypid));
-                               c.set_value(4, 0, lv_i64(r, attversion));
-                               c.set_value(5, 0, lv_i64(r, attrefcount));
+                               c.set_value(4, 0, lv_str(r, atttypspec));
+                               c.set_value(5, 0, lv_i64(r, attversion));
+                               c.set_value(6, 0, lv_i64(r, attrefcount));
                            });
     }
 

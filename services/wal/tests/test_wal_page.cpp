@@ -59,11 +59,14 @@ namespace {
         return info;
     }
 
+    // Phase 8.E: encoders take table_oid (4 bytes) instead of (database, collection)
+    // strings. Tests pass a placeholder oid; production code uses pg_class.oid.
+    constexpr components::catalog::oid_t kTestTableOid = 16500;
+
     encoded_record_info encode_insert_rec(uint64_t wal_id,
                                       uint64_t txn_id,
                                       crc32_t last_crc,
-                                      const std::string& database,
-                                      const std::string& collection,
+                                      components::catalog::oid_t table_oid,
                                       const components::vector::data_chunk_t& chunk,
                                       uint64_t row_start,
                                       uint64_t row_count) {
@@ -72,7 +75,7 @@ namespace {
         info.txn_id = txn_id;
         info.type = wal_record_type::PHYSICAL_INSERT;
         buffer_t buf;
-        services::wal::encode_insert(buf, std::pmr::get_default_resource(), last_crc, wal_id, txn_id, database, collection, chunk, row_start, row_count);
+        services::wal::encode_insert(buf, std::pmr::get_default_resource(), last_crc, wal_id, txn_id, table_oid, chunk, row_start, row_count);
         info.data = buffer_to_vec(buf);
         return info;
     }
@@ -80,8 +83,7 @@ namespace {
     encoded_record_info encode_delete_rec(uint64_t wal_id,
                                       uint64_t txn_id,
                                       crc32_t last_crc,
-                                      const std::string& database,
-                                      const std::string& collection,
+                                      components::catalog::oid_t table_oid,
                                       const std::pmr::vector<int64_t>& row_ids,
                                       uint64_t count) {
         encoded_record_info info;
@@ -89,7 +91,7 @@ namespace {
         info.txn_id = txn_id;
         info.type = wal_record_type::PHYSICAL_DELETE;
         buffer_t buf;
-        services::wal::encode_delete(buf, last_crc, wal_id, txn_id, database, collection, row_ids.data(), count);
+        services::wal::encode_delete(buf, last_crc, wal_id, txn_id, table_oid, row_ids.data(), count);
         info.data = buffer_to_vec(buf);
         return info;
     }
@@ -97,8 +99,7 @@ namespace {
     encoded_record_info encode_update_rec(uint64_t wal_id,
                                       uint64_t txn_id,
                                       crc32_t last_crc,
-                                      const std::string& database,
-                                      const std::string& collection,
+                                      components::catalog::oid_t table_oid,
                                       const std::pmr::vector<int64_t>& row_ids,
                                       const components::vector::data_chunk_t& chunk,
                                       uint64_t count) {
@@ -107,7 +108,7 @@ namespace {
         info.txn_id = txn_id;
         info.type = wal_record_type::PHYSICAL_UPDATE;
         buffer_t buf;
-        services::wal::encode_update(buf, std::pmr::get_default_resource(), last_crc, wal_id, txn_id, database, collection, row_ids.data(), chunk, count);
+        services::wal::encode_update(buf, std::pmr::get_default_resource(), last_crc, wal_id, txn_id, table_oid, row_ids.data(), chunk, count);
         info.data = buffer_to_vec(buf);
         return info;
     }
@@ -164,7 +165,7 @@ TEST_CASE("large_record_spanning") {
         wal_page_writer_t writer(filepath, "testdb", 0);
 
         auto rec = encode_insert_rec(/*wal_id=*/1, /*txn_id=*/42, /*last_crc=*/0,
-                                 "testdb", "large_collection", chunk, 0, 500);
+                                 kTestTableOid, chunk, 0, 500);
 
         // Confirm the encoded record is larger than one page's data area.
         REQUIRE(rec.data.size() > PAGE_DATA_SIZE);
@@ -235,15 +236,15 @@ TEST_CASE("read_back_all_records") {
                     break;
                 case 1:
                     type = wal_record_type::PHYSICAL_INSERT;
-                    rec = encode_insert_rec(i, txn_id, last_crc, "testdb", "coll", small_chunk, 0, 5);
+                    rec = encode_insert_rec(i, txn_id, last_crc, kTestTableOid, small_chunk, 0, 5);
                     break;
                 case 2:
                     type = wal_record_type::PHYSICAL_DELETE;
-                    rec = encode_delete_rec(i, txn_id, last_crc, "testdb", "coll", row_ids, 5);
+                    rec = encode_delete_rec(i, txn_id, last_crc, kTestTableOid, row_ids, 5);
                     break;
                 case 3:
                     type = wal_record_type::PHYSICAL_UPDATE;
-                    rec = encode_update_rec(i, txn_id, last_crc, "testdb", "coll", row_ids, small_chunk, 5);
+                    rec = encode_update_rec(i, txn_id, last_crc, kTestTableOid, row_ids, small_chunk, 5);
                     break;
             }
 
@@ -517,7 +518,7 @@ TEST_CASE("edge_exact_fit") {
 
     // First, figure out the overhead: encode a minimal INSERT record.
     auto minimal_chunk = gen_data_chunk(1, resource);
-    auto minimal_rec = encode_insert_rec(1, 1, 0, "d", "c", minimal_chunk, 0, 1);
+    auto minimal_rec = encode_insert_rec(1, 1, 0, kTestTableOid, minimal_chunk, 0, 1);
     [[maybe_unused]] size_t minimal_size = minimal_rec.data.size();
 
     // We need a record of exactly PAGE_DATA_SIZE bytes.

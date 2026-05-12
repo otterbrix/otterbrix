@@ -5,7 +5,7 @@
 namespace components::logical_plan {
 
     node_drop_type_t::node_drop_type_t(std::pmr::memory_resource* resource, std::string&& name)
-        : node_t(resource, node_type::drop_type_t, {})
+        : node_t(resource, node_type::drop_type_t)
         , name_(std::move(name)) {}
 
     const std::string& node_drop_type_t::name() const noexcept { return name_; }

@@ -253,8 +253,10 @@ TEST_CASE("services::disk::mvcc::test_ddl_rollback_cleans_up") {
         table_oid = oids[0];
         components::catalog::oid_batch_t batch;
         batch.oids = std::move(oids);
-        collection_full_name_t coll{"public", "main", "ephemeral"};
-        auto writes = components::catalog::build_create_table_writes(&fx.resource, coll, cols, false,
+        auto writes = components::catalog::build_create_table_writes(&fx.resource,
+                                                                      std::string("public"),
+                                                                      std::string("ephemeral"),
+                                                                      cols, false,
                                                                       ns_oid, batch,
                                                                       catalog::relkind::regular);
         for (auto& w : writes) {

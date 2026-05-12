@@ -163,7 +163,7 @@ namespace components::operators {
             for (auto& w : fn_writes) {
                 auto [_w, wf] = actor_zeta::send(ctx->disk_address,
                                                   &services::disk::manager_disk_t::append_pg_catalog_row,
-                                                  exec_ctx, std::move(w.table), std::move(w.row));
+                                                  exec_ctx, w.table_oid, std::move(w.row));
                 auto rng = co_await std::move(wf);
                 if (rng.count > 0) ctx->pg_catalog_appends.push_back(std::move(rng));
             }

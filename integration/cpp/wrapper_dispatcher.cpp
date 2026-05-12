@@ -45,13 +45,13 @@ namespace otterbrix {
 
     auto wrapper_dispatcher_t::create_database(const session_id_t& session, const database_name_t& database)
         -> cursor_t_ptr {
-        auto plan = components::logical_plan::make_node_create_database(resource(), {database, {}});
+        auto plan = components::logical_plan::make_node_create_database(resource(), database);
         return send_plan(session, plan, components::logical_plan::make_parameter_node(resource()));
     }
 
     auto wrapper_dispatcher_t::drop_database(const components::session::session_id_t& session,
                                              const database_name_t& database) -> cursor_t_ptr {
-        auto plan = components::logical_plan::make_node_drop_database(resource(), {database, {}});
+        auto plan = components::logical_plan::make_node_drop_database(resource(), database);
         return send_plan(session, plan, components::logical_plan::make_parameter_node(resource()));
     }
 
@@ -62,7 +62,8 @@ namespace otterbrix {
                                                  std::vector<components::table::table_constraint_t> constraints)
         -> cursor_t_ptr {
         auto plan = components::logical_plan::make_node_create_collection(resource(),
-                                                                          {database, collection},
+                                                                          database,
+                                                                          collection,
                                                                           std::move(column_definitions),
                                                                           std::move(constraints));
         return send_plan(session, plan, components::logical_plan::make_parameter_node(resource()));
@@ -71,7 +72,7 @@ namespace otterbrix {
     auto wrapper_dispatcher_t::drop_collection(const components::session::session_id_t& session,
                                                const database_name_t& database,
                                                const collection_name_t& collection) -> cursor_t_ptr {
-        auto plan = components::logical_plan::make_node_drop_collection(resource(), {database, collection});
+        auto plan = components::logical_plan::make_node_drop_collection(resource(), database, collection);
         return send_plan(session, plan, components::logical_plan::make_parameter_node(resource()));
     }
 
@@ -81,8 +82,8 @@ namespace otterbrix {
         trace(log_,
               "wrapper_dispatcher_t::find session: {}, database: {} collection: {} ",
               session.data(),
-              condition->collection_full_name().database,
-              condition->collection_full_name().collection);
+              condition->dbname(),
+              condition->relname());
         return send_plan(session, std::move(condition), std::move(params));
     }
 
@@ -92,8 +93,8 @@ namespace otterbrix {
         trace(log_,
               "wrapper_dispatcher_t::find_one session: {}, database: {} collection: {} ",
               session.data(),
-              condition->collection_full_name().database,
-              condition->collection_full_name().collection);
+              condition->dbname(),
+              condition->relname());
         return send_plan(session, condition, std::move(params));
     }
 
@@ -103,10 +104,10 @@ namespace otterbrix {
         trace(log_,
               "wrapper_dispatcher_t::delete_one session: {}, database: {} collection: {} ",
               session.data(),
-              condition->collection_full_name().database,
-              condition->collection_full_name().collection);
+              condition->dbname(),
+              condition->relname());
         auto plan =
-            components::logical_plan::make_node_delete_one(resource(), condition->collection_full_name(), condition);
+            components::logical_plan::make_node_delete_one(resource(), condition->dbname(), condition->relname(), condition);
         return send_plan(session, std::move(plan), std::move(params));
     }
 
@@ -116,10 +117,10 @@ namespace otterbrix {
         trace(log_,
               "wrapper_dispatcher_t::delete_many session: {}, database: {} collection: {} ",
               session.data(),
-              condition->collection_full_name().database,
-              condition->collection_full_name().collection);
+              condition->dbname(),
+              condition->relname());
         auto plan =
-            components::logical_plan::make_node_delete_many(resource(), condition->collection_full_name(), condition);
+            components::logical_plan::make_node_delete_many(resource(), condition->dbname(), condition->relname(), condition);
         return send_plan(session, std::move(plan), std::move(params));
     }
 
@@ -131,10 +132,11 @@ namespace otterbrix {
         trace(log_,
               "wrapper_dispatcher_t::update_one session: {}, database: {} collection: {} ",
               session.data(),
-              condition->collection_full_name().database,
-              condition->collection_full_name().collection);
+              condition->dbname(),
+              condition->relname());
         auto plan = components::logical_plan::make_node_update_one(resource(),
-                                                                   condition->collection_full_name(),
+                                                                   condition->dbname(),
+                                                                   condition->relname(),
                                                                    condition,
                                                                    updates,
                                                                    upsert);
@@ -149,10 +151,11 @@ namespace otterbrix {
         trace(log_,
               "wrapper_dispatcher_t::update_many session: {}, database: {} collection: {} ",
               session.data(),
-              condition->collection_full_name().database,
-              condition->collection_full_name().collection);
+              condition->dbname(),
+              condition->relname());
         auto plan = components::logical_plan::make_node_update_many(resource(),
-                                                                    condition->collection_full_name(),
+                                                                    condition->dbname(),
+                                                                    condition->relname(),
                                                                     condition,
                                                                     updates,
                                                                     upsert);

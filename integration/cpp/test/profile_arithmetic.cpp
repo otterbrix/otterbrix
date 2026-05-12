@@ -42,7 +42,7 @@ int main() {
     {
         auto chunk = gen_data_chunk(kRows, dispatcher->resource());
         auto ins =
-            logical_plan::make_node_insert(dispatcher->resource(), {database_name, collection_name}, std::move(chunk));
+            logical_plan::make_node_insert(dispatcher->resource(), database_name, collection_name, std::move(chunk));
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_plan(s, ins);
         if (!cur->is_success()) {

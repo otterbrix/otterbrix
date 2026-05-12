@@ -27,8 +27,7 @@ namespace services::planner::impl {
             }
         }
 
-        auto coll_name = node->collection_full_name();
-        auto* plan_resource = context.has_collection(coll_name) ? context.resource : node->resource();
+        auto* plan_resource = context.has_table_oid(node->table_oid()) ? context.resource : node->resource();
 
         // Build operator chain directly: scan/child → match → group → sort
         components::operators::operator_ptr match_op;
@@ -69,7 +68,7 @@ namespace services::planner::impl {
         } else {
             executor = match_op ? std::move(match_op)
                                 : static_cast<components::operators::operator_ptr>(boost::intrusive_ptr(
-                                      new components::operators::transfer_scan(plan_resource, coll_name, scan_limit)));
+                                      new components::operators::transfer_scan(plan_resource, node->table_oid(), scan_limit)));
         }
         if (group_op) {
             group_op->set_children(std::move(executor));
@@ -96,7 +95,7 @@ namespace services::planner::impl {
         const auto* agg_node = static_cast<const components::logical_plan::node_aggregate_t*>(node.get());
         if (agg_node->is_distinct()) {
             auto distinct_op =
-                context.has_collection(coll_name)
+                context.has_table_oid(node->table_oid())
                     ? boost::intrusive_ptr(
                           new components::operators::operator_distinct_t(context.resource, context.log.clone()))
                     : boost::intrusive_ptr(new components::operators::operator_distinct_t(node->resource(), log_t{}));

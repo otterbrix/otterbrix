@@ -27,7 +27,8 @@ namespace components::catalog {
     std::vector<catalog_write_t>
     build_create_table_writes(
         std::pmr::memory_resource*                     resource,
-        const collection_full_name_t&                  collection,
+        const std::string&                             dbname,
+        const std::string&                             relname,
         const std::vector<table::column_definition_t>& columns,
         bool                                            is_disk_storage,
         oid_t                                           namespace_oid,
@@ -80,7 +81,9 @@ namespace components::catalog {
 
     // Writes pg_class (relkind='i') + pg_index (indisvalid=false) +
     //   pg_depend (index→table 'a') + N×pg_depend (index→column 'i').
-    // column_attoids[i] is the pg_attribute.attoid for column_names[i].
+    // column_attoids[i] is the pg_attribute.attoid for the i-th indexed column;
+    // routing identity (no name lookup needed). Phase 9.G dropped the
+    // column_names parameter (was unused inside the writer).
     // oid_batch must hold at least 1 OID (index_oid).
     std::vector<catalog_write_t>
     build_create_index_writes(
@@ -89,7 +92,6 @@ namespace components::catalog {
         oid_t                                    namespace_oid,
         oid_t                                    table_oid,
         oid_t                                    index_oid,
-        const std::vector<std::string>&          column_names,
         const std::vector<oid_t>&               column_attoids);
 
     // Writes pg_type + pg_depend (type→ns 'n').
@@ -158,7 +160,10 @@ namespace components::catalog {
         bool                        indisvalid);
 
     // pg_computed_column row builder for tests / primitive-write callers.
-    // Schema: [relid, attoid, attname, atttypid, attversion, attrefcount].
+    // Schema (Phase 11.F-B): [relid, attoid, attname, atttypid, atttypspec,
+    // attversion, attrefcount]. atttypspec defaults to "" — only complex
+    // types (ARRAY/STRUCT/UNION/DECIMAL/...) need it; builtin scalars are
+    // reconstructed from atttypid alone via oid_to_builtin_type.
     vector::data_chunk_t
     build_pg_computed_column_row(
         std::pmr::memory_resource* resource,
@@ -167,7 +172,8 @@ namespace components::catalog {
         const std::string&          attname,
         oid_t                       atttypid,
         std::int64_t                attversion,
-        std::int64_t                attrefcount);
+        std::int64_t                attrefcount,
+        const std::string&          atttypspec = std::string{});
 
     // pg_depend single-row builder for primitive-write callers (e.g. dynamic
     // computed-column register, or any operator that needs to emit one

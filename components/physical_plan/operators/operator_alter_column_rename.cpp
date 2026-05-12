@@ -16,10 +16,12 @@ namespace components::operators {
         std::pmr::memory_resource* resource,
         log_t                       log,
         catalog::oid_t              table_oid,
+        catalog::oid_t              attoid,
         std::string                 old_name,
         std::string                 new_name)
         : read_write_operator_t(resource, std::move(log), operator_type::alter_column_rename)
         , table_oid_(table_oid)
+        , attoid_(attoid)
         , old_name_(std::move(old_name))
         , new_name_(std::move(new_name)) {}
 
@@ -30,16 +32,24 @@ namespace components::operators {
     actor_zeta::unique_future<void>
     operator_alter_column_rename_t::await_async_and_resume(pipeline::context_t* ctx) {
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
-        const collection_full_name_t pg_attr{"pg_catalog", "main", "pg_attribute"};
+        constexpr catalog::oid_t pg_attr = catalog::well_known_oid::pg_attribute_table;
 
-        // Step 1: read all pg_attribute rows for this table; locate the live row matching old_name.
-        components::types::logical_value_t toid_lv(resource_, table_oid_);
+        // Phase 9.B: routing by attoid (pre-stamped by enrich_logical_plan).
+        // INVALID_OID means the resolver couldn't find the column — treat as
+        // no-op (matches the prior attname-scan miss behavior).
+        if (attoid_ == catalog::INVALID_OID) {
+            mark_executed();
+            co_return;
+        }
+
+        // Step 1: keyed single-row read of the live pg_attribute row by attoid.
+        components::types::logical_value_t attoid_lv(resource_, attoid_);
         auto [_pa, paf] = actor_zeta::send(
             ctx->disk_address,
             &services::disk::manager_disk_t::read_rows_by_key,
             exec_ctx, pg_attr,
-            std::vector<std::string>{"attrelid"},
-            std::vector<components::types::logical_value_t>{toid_lv});
+            std::vector<std::string>{"attoid"},
+            std::vector<components::types::logical_value_t>{attoid_lv});
         auto attr_rows = co_await std::move(paf);
 
         catalog::oid_t attoid = catalog::INVALID_OID;
@@ -48,8 +58,7 @@ namespace components::operators {
         bool att_not_null = false, att_has_default = false;
         std::string att_typspec, att_defspec;
         for (const auto& row : attr_rows) {
-            if (row.size() < 10 || row[2].is_null()) continue;
-            if (row[2].value<std::string_view>() != old_name_) continue;
+            if (row.size() < 10 || row[0].is_null()) continue;
             if (!row[7].is_null() && row[7].value<bool>()) continue; // dropped
             attoid          = static_cast<catalog::oid_t>(row[0].value<std::uint32_t>());
             atttypid        = row[3].is_null() ? catalog::INVALID_OID

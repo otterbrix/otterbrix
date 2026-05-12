@@ -18,9 +18,11 @@ namespace components::operators {
         std::pmr::memory_resource* resource,
         log_t                       log,
         catalog::oid_t              table_oid,
+        catalog::oid_t              attoid,
         std::string                 column_name)
         : read_write_operator_t(resource, std::move(log), operator_type::computed_field_unregister)
         , table_oid_(table_oid)
+        , attoid_(attoid)
         , column_name_(std::move(column_name)) {}
 
     void operator_computed_field_unregister_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
@@ -43,37 +45,47 @@ namespace components::operators {
         // until then, ghost data is harmless (invisible to user).
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
-        const collection_full_name_t pg_computed_column{"pg_catalog", "main", "pg_computed_column"};
+        constexpr catalog::oid_t pg_computed_column = catalog::well_known_oid::pg_computed_column_table;
 
-        // Step 1: read all rows for (relid, attname).
-        // pg_computed_column layout: 0=relid 1=attoid 2=attname 3=atttypid
-        // 4=attversion 5=attrefcount.
+        // Phase 9.B: routing by attoid (pre-stamped by enrich_logical_plan).
+        // INVALID_OID means the resolver couldn't find a live computed column —
+        // treat as idempotent no-op (matches the prior attname-scan miss).
+        if (attoid_ == catalog::INVALID_OID) {
+            mark_executed();
+            co_return;
+        }
+
+        // Step 1: scan pg_computed_column rows for this relid (table is small
+        // per-table, perf OK), filter by attoid in-callback. Cannot read by
+        // attoid alone because the same logical (relid, attoid) row may have
+        // multiple version entries; we still need max(attversion).
+        // pg_computed_column layout (Phase 11.F-B): 0=relid 1=attoid 2=attname
+        // 3=atttypid 4=atttypspec 5=attversion 6=attrefcount.
         types::logical_value_t toid_lv(resource_, table_oid_);
-        types::logical_value_t name_lv(resource_, column_name_);
         auto [_r, rf] = actor_zeta::send(
             ctx->disk_address,
             &services::disk::manager_disk_t::read_rows_by_key,
             exec_ctx, pg_computed_column,
-            std::vector<std::string>{"relid", "attname"},
-            std::vector<types::logical_value_t>{toid_lv, name_lv});
+            std::vector<std::string>{"relid"},
+            std::vector<types::logical_value_t>{toid_lv});
         auto rows = co_await std::move(rf);
 
-        // Step 2: pick the latest live row (max attversion AND attrefcount > 0).
+        // Step 2: pick the latest live row matching attoid_ (max attversion AND attrefcount > 0).
         std::int64_t   max_version  = -1;
         catalog::oid_t live_attoid  = catalog::INVALID_OID;
         catalog::oid_t live_atttypid = catalog::INVALID_OID;
         bool found_live = false;
         for (const auto& row : rows) {
-            if (row.size() < 6) continue;
-            if (row[4].is_null() || row[5].is_null()) continue;
-            const auto v  = row[4].value<std::int64_t>();
-            const auto rc = row[5].value<std::int64_t>();
+            if (row.size() < 7) continue;
+            if (row[1].is_null() || row[5].is_null() || row[6].is_null()) continue;
+            const auto row_attoid = static_cast<catalog::oid_t>(row[1].value<std::uint32_t>());
+            if (row_attoid != attoid_) continue;
+            const auto v  = row[5].value<std::int64_t>();
+            const auto rc = row[6].value<std::int64_t>();
             if (rc <= 0) continue;
             if (v > max_version) {
                 max_version    = v;
-                live_attoid    = row[1].is_null()
-                                    ? catalog::INVALID_OID
-                                    : static_cast<catalog::oid_t>(row[1].value<std::uint32_t>());
+                live_attoid    = row_attoid;
                 live_atttypid  = row[3].is_null()
                                     ? catalog::INVALID_OID
                                     : static_cast<catalog::oid_t>(row[3].value<std::uint32_t>());
@@ -106,6 +118,15 @@ namespace components::operators {
             ctx->pg_catalog_appends.push_back(std::move(rng));
         }
 
+        // Phase 11.G note: a previous version of this code added an immediate
+        // compact_relkind_g_storage call here (drop physical columns whose
+        // tombstones were just written), but the subsequent re-INSERT path
+        // (dynamic_schema_re_add_after_drop) crashed row_group::append with
+        // column-count mismatch because storage::drop_column doesn't fully
+        // reset row_group state when called mid-pipeline. Compaction is
+        // therefore deferred to operator_vacuum_t (Phase 7.5b runs the same
+        // logic asynchronously). For now SELECT * on relkind='g' continues to
+        // leak dropped columns until VACUUM runs — out of scope for 11.G.
         mark_executed();
     }
 

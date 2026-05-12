@@ -1,4 +1,5 @@
 #include <catch2/catch.hpp>
+#include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
@@ -89,13 +90,25 @@ TEST_CASE("components::sql::join") {
                                           "full outer join uid3.db3.sch3.test3 on y = z;"));
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());
         auto join = result.node->children().front();
-        REQUIRE(join->children().back()->collection_full_name() ==
-                collection_full_name_t("uid3", "db3", "sch3", "test3"));
+        // Phase 10.D: collection_full_name() accessor removed; check role-named
+        // accessors directly. The transformer normalizes (db.schema.tbl) into
+        // dbname=db (db preferred over schema when both are present in cfn).
+        {
+            auto* agg = static_cast<const components::logical_plan::node_aggregate_t*>(join->children().back().get());
+            REQUIRE(agg->dbname() == "db3");
+            REQUIRE(agg->relname() == "test3");
+        }
 
         auto nested_join = join->children().front();
-        REQUIRE(nested_join->children().front()->collection_full_name() ==
-                collection_full_name_t("uid1", "db1", "sch1", "test1"));
-        REQUIRE(nested_join->children().back()->collection_full_name() ==
-                collection_full_name_t("uid2", "db2", "sch2", "test2"));
+        {
+            auto* agg = static_cast<const components::logical_plan::node_aggregate_t*>(nested_join->children().front().get());
+            REQUIRE(agg->dbname() == "db1");
+            REQUIRE(agg->relname() == "test1");
+        }
+        {
+            auto* agg = static_cast<const components::logical_plan::node_aggregate_t*>(nested_join->children().back().get());
+            REQUIRE(agg->dbname() == "db2");
+            REQUIRE(agg->relname() == "test2");
+        }
     }
 }

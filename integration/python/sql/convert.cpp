@@ -256,7 +256,7 @@ components::logical_plan::node_group_ptr parse_group(std::pmr::memory_resource* 
             parse_group_expr(resource, py::str(it).cast<std::string>(), condition[it], aggregate, params));
     }
     return components::logical_plan::make_node_group(resource,
-                                                     {aggregate->database_name(), aggregate->collection_name()},
+                                                     {aggregate->dbname(), aggregate->relname()},
                                                      expressions);
 }
 
@@ -312,7 +312,7 @@ auto to_statement(std::pmr::memory_resource* resource,
                 case operator_type::match: {
                     aggregate->append_child(components::logical_plan::make_node_match(
                         resource,
-                        {aggregate->database_name(), aggregate->collection_name()},
+                        {aggregate->dbname(), aggregate->relname()},
                         parse_find_condition_(resource, obj[key], aggregate, params)));
                     break;
                 }

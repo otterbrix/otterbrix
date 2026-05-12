@@ -56,6 +56,11 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_abort_transaction.cpp
         operators/operator_computed_field_register.cpp
         operators/operator_computed_field_unregister.cpp
+        operators/operator_resolve_namespace.cpp
+        operators/operator_resolve_table.cpp
+        operators/operator_resolve_type.cpp
+        operators/operator_resolve_function.cpp
+        operators/resolved_table_metadata.cpp
 
         operators/arithmetic_eval.cpp
 )

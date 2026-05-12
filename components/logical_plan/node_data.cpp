@@ -5,11 +5,11 @@
 namespace components::logical_plan {
 
     node_data_t::node_data_t(std::pmr::memory_resource* resource, components::vector::data_chunk_t&& chunk)
-        : node_t(resource, node_type::data_t, {})
+        : node_t(resource, node_type::data_t)
         , data_(std::move(chunk)) {}
 
     node_data_t::node_data_t(std::pmr::memory_resource* resource, const components::vector::data_chunk_t& chunk)
-        : node_t(resource, node_type::data_t, {})
+        : node_t(resource, node_type::data_t)
         , data_(vector::data_chunk_t(resource, chunk.types(), chunk.size())) {
         chunk.copy(data_, 0);
     }

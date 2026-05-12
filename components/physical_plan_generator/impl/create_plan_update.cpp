@@ -26,11 +26,11 @@ namespace services::planner::impl {
             }
         }
         auto limit = static_cast<components::logical_plan::node_limit_t*>(node_limit.get())->limit();
-        auto coll_name = node->collection_full_name();
-        if (node_update->collection_from().empty() && !node_raw_data) {
+        auto table_oid = node->table_oid();
+        if (node_update->relname_from().empty() && !node_raw_data) {
             auto plan = boost::intrusive_ptr(new components::operators::operator_update(context.resource,
                                                                                         context.log.clone(),
-                                                                                        coll_name,
+                                                                                        table_oid,
                                                                                         node_update->updates(),
                                                                                         node_update->upsert()));
             plan->set_children(create_plan_match(context, node_match, limit));
@@ -39,27 +39,26 @@ namespace services::planner::impl {
         } else {
             auto plan = boost::intrusive_ptr(new components::operators::operator_update(context.resource,
                                                                                         context.log.clone(),
-                                                                                        coll_name,
+                                                                                        table_oid,
                                                                                         node_update->updates(),
                                                                                         node_update->upsert(),
                                                                                         node_match->expressions()[0]));
             if (node_raw_data) {
                 plan->set_children(boost::intrusive_ptr(new components::operators::full_scan(context.resource,
                                                                                              context.log.clone(),
-                                                                                             coll_name,
+                                                                                             table_oid,
                                                                                              nullptr,
                                                                                              limit)),
                                    create_plan_data(node_raw_data));
             } else {
-                auto coll_from = node_update->collection_from();
                 plan->set_children(boost::intrusive_ptr(new components::operators::full_scan(context.resource,
                                                                                              context.log.clone(),
-                                                                                             coll_name,
+                                                                                             table_oid,
                                                                                              nullptr,
                                                                                              limit)),
                                    boost::intrusive_ptr(new components::operators::full_scan(context.resource,
                                                                                              context.log.clone(),
-                                                                                             coll_from,
+                                                                                             components::catalog::INVALID_OID,
                                                                                              nullptr,
                                                                                              limit)));
             }

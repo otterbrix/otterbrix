@@ -63,105 +63,113 @@ namespace services::disk {
 
         actor_zeta::unique_future<components::pg_catalog_append_range_t>
         append_pg_catalog_row(execution_context_t ctx,
-                              collection_full_name_t name,
+                              components::catalog::oid_t table_oid,
                               components::vector::data_chunk_t row);
 
         // WAL-safe delete of all rows where column[oid_col_idx] == target_oid.
         actor_zeta::unique_future<void>
         delete_pg_catalog_rows(execution_context_t ctx,
-                               collection_full_name_t name,
+                               components::catalog::oid_t table_oid,
                                std::int64_t oid_col_idx,
                                components::catalog::oid_t target_oid);
 
-        // Pure storage scan: row_ids of committed+txn-visible rows in `name` where
-        // every key_col_names[i] == key_values[i].  No FK/semantic knowledge.
+        // Pure storage scan: row_ids of committed+txn-visible rows in the table with
+        // the given OID where every key_col_names[i] == key_values[i].
         actor_zeta::unique_future<std::pmr::vector<std::int64_t>>
         scan_by_key(execution_context_t ctx,
-                    collection_full_name_t name,
+                    components::catalog::oid_t table_oid,
                     std::vector<std::string> key_col_names,
                     std::vector<components::types::logical_value_t> key_values);
 
         // Pure row-data scan: returns the full column values for every txn-visible row
-        // in `name` where key_col_names[i] == key_values[i].  Same filter semantics as
-        // scan_by_key but returns complete row data instead of row_ids.
+        // in the table with the given OID where key_col_names[i] == key_values[i].
         // Outer vector = rows, inner vector = column values in schema order.
         actor_zeta::unique_future<std::vector<std::vector<components::types::logical_value_t>>>
         read_rows_by_key(execution_context_t ctx,
-                         collection_full_name_t name,
+                         components::catalog::oid_t table_oid,
                          std::vector<std::string> key_col_names,
                          std::vector<components::types::logical_value_t> key_values);
 
-        // OID-keyed scan: row_ids of txn-visible rows in the table with the given OID
-        // where key_col_names[i] == key_values[i].  Resolves table_oid → full name
-        // internally; returns empty on unknown OID.  Used by operator_fk_check_t.
-        actor_zeta::unique_future<std::pmr::vector<std::int64_t>>
-        scan_by_table_oid(execution_context_t ctx,
-                          components::catalog::oid_t table_oid,
-                          std::vector<std::string> key_col_names,
-                          std::vector<components::types::logical_value_t> key_values);
-
         // Phase 7.5b — physical column compaction for an IN_MEMORY relkind='g'
-        // table_storage_t. Drops every storage column whose name is NOT in
-        // `live_attnames` (the resolver-visible attname set after pg_computed_column
-        // GC). Returns the number of columns dropped (0 if storage is DISK-mode,
-        // unknown, or already compact). DISK-backed storages are silently skipped —
-        // segment rewrites + checkpoint coordination are out of scope for 7.5b.
-        // Called by operator_vacuum_t step 5b. Mirrors the existing compaction
-        // primitive's name-keyed addressing (operator_vacuum already maps oid→name).
+        // table_storage_t.
         actor_zeta::unique_future<std::uint64_t>
         compact_relkind_g_storage(execution_context_t ctx,
-                                   collection_full_name_t name,
+                                   components::catalog::oid_t table_oid,
                                    std::set<std::string> live_attnames);
 
         // Storage management
-        actor_zeta::unique_future<void> create_storage(session_id_t session, collection_full_name_t name);
+        actor_zeta::unique_future<void> create_storage(session_id_t session,
+                                                       components::catalog::oid_t table_oid,
+                                                       components::catalog::oid_t database_oid);
         actor_zeta::unique_future<void>
         create_storage_with_columns(session_id_t session,
-                                    collection_full_name_t name,
+                                    components::catalog::oid_t table_oid,
+                                    components::catalog::oid_t database_oid,
                                     std::vector<components::table::column_definition_t> columns);
         actor_zeta::unique_future<void>
         create_storage_disk(session_id_t session,
-                            collection_full_name_t name,
+                            components::catalog::oid_t table_oid,
+                            components::catalog::oid_t database_oid,
                             std::vector<components::table::column_definition_t> columns);
-        actor_zeta::unique_future<void> drop_storage(session_id_t session, collection_full_name_t name);
+        actor_zeta::unique_future<void> drop_storage(session_id_t session,
+                                                     components::catalog::oid_t table_oid);
 
         // Storage queries
         actor_zeta::unique_future<std::pmr::vector<components::types::complex_logical_type>>
-        storage_types(session_id_t session, collection_full_name_t name);
-        actor_zeta::unique_future<uint64_t> storage_total_rows(session_id_t session, collection_full_name_t name);
+        storage_types(session_id_t session, components::catalog::oid_t table_oid);
+        actor_zeta::unique_future<uint64_t> storage_total_rows(session_id_t session,
+                                                                components::catalog::oid_t table_oid);
         // Storage data operations
         actor_zeta::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
         storage_scan(session_id_t session,
-                     collection_full_name_t name,
+                     components::catalog::oid_t table_oid,
                      std::unique_ptr<components::table::table_filter_t> filter,
                      int limit,
                      components::table::transaction_data txn);
         actor_zeta::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
         storage_fetch(session_id_t session,
-                      collection_full_name_t name,
+                      components::catalog::oid_t table_oid,
                       components::vector::vector_t row_ids,
                       uint64_t count);
         actor_zeta::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
-        storage_scan_segment(session_id_t session, collection_full_name_t name, int64_t start, uint64_t count);
+        storage_scan_segment(session_id_t session,
+                              components::catalog::oid_t table_oid,
+                              int64_t start,
+                              uint64_t count);
 
         actor_zeta::unique_future<std::pair<uint64_t, uint64_t>>
-        storage_append(execution_context_t ctx, std::unique_ptr<components::vector::data_chunk_t> data);
+        storage_append(execution_context_t ctx,
+                       components::catalog::oid_t table_oid,
+                       std::unique_ptr<components::vector::data_chunk_t> data);
 
         actor_zeta::unique_future<std::pair<int64_t, uint64_t>>
         storage_update(execution_context_t ctx,
+                       components::catalog::oid_t table_oid,
                        components::vector::vector_t row_ids,
                        std::unique_ptr<components::vector::data_chunk_t> data);
         actor_zeta::unique_future<uint64_t>
-        storage_delete_rows(execution_context_t ctx, components::vector::vector_t row_ids, uint64_t count);
+        storage_delete_rows(execution_context_t ctx,
+                             components::catalog::oid_t table_oid,
+                             components::vector::vector_t row_ids,
+                             uint64_t count);
 
         // MVCC commit/revert
         actor_zeta::unique_future<void>
-        storage_commit_append(execution_context_t ctx, uint64_t commit_id, int64_t row_start, uint64_t count);
+        storage_commit_append(execution_context_t ctx,
+                               components::catalog::oid_t table_oid,
+                               uint64_t commit_id,
+                               int64_t row_start,
+                               uint64_t count);
         actor_zeta::unique_future<void>
-        storage_revert_append(execution_context_t ctx, int64_t row_start, uint64_t count);
-        actor_zeta::unique_future<void> storage_commit_delete(execution_context_t ctx, uint64_t commit_id);
+        storage_revert_append(execution_context_t ctx,
+                               components::catalog::oid_t table_oid,
+                               int64_t row_start,
+                               uint64_t count);
+        actor_zeta::unique_future<void> storage_commit_delete(execution_context_t ctx,
+                                                               components::catalog::oid_t table_oid,
+                                                               uint64_t commit_id);
 
-        // Phase 5b: batched MVCC swap.
+        // Phase 5b: batched MVCC swap. Each range carries its own table_oid.
         actor_zeta::unique_future<void>
         storage_commit_appends(execution_context_t ctx,
                                uint64_t commit_id,
@@ -169,7 +177,7 @@ namespace services::disk {
         actor_zeta::unique_future<void>
         storage_commit_deletes(execution_context_t ctx,
                                uint64_t commit_id,
-                               std::set<collection_full_name_t> tables);
+                               std::set<components::catalog::oid_t> tables);
         actor_zeta::unique_future<void>
         storage_revert_appends(execution_context_t ctx,
                                std::vector<components::pg_catalog_append_range_t> ranges);
@@ -213,7 +221,6 @@ namespace services::disk {
                                                             &disk_contract::delete_pg_catalog_rows,
                                                             &disk_contract::scan_by_key,
                                                             &disk_contract::read_rows_by_key,
-                                                            &disk_contract::scan_by_table_oid,
                                                             &disk_contract::compact_relkind_g_storage>;
 
         disk_contract() = delete;

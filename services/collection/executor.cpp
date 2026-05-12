@@ -206,31 +206,42 @@ namespace services::collection::executor {
             uint64_t commit_id = txn_manager_->commit(session);
             trace(log_, "executor::execute_plan: committed txn {}, commit_id {}", txn_data.transaction_id, commit_id);
 
-            // Step 5: Commit side-effects on storage and index
-            auto coll_name = logical_plan->collection_full_name();
+            // Step 5: Commit side-effects on storage and index.
+            // Phase 8.G: routing is by table_oid only — never read cfn from
+            // logical_plan, since wrappers (sequence_t etc.) have no cfn and
+            // would shadow the inner DML node's identity (root cause of #132).
+            // result.dml_table_oid is stamped by the inner DML operator; it
+            // identifies the storage/index target unambiguously.
             if (result.dml_append_row_count > 0 && commit_id > 0) {
-                components::execution_context_t ctx{session, txn_data, coll_name};
+                components::execution_context_t ctx{session, txn_data, result.dml_table_oid};
                 auto [_ca, caf] = actor_zeta::send(disk_address_,
                                                    &disk::manager_disk_t::storage_commit_append,
                                                    ctx,
+                                                   result.dml_table_oid,
                                                    commit_id,
                                                    result.dml_append_row_start,
                                                    result.dml_append_row_count);
                 co_await std::move(caf);
                 if (index_address_ != actor_zeta::address_t::empty_address()) {
-                    auto [_ci, cif] =
-                        actor_zeta::send(index_address_, &index::manager_index_t::commit_insert, ctx, commit_id);
+                    auto [_ci, cif] = actor_zeta::send(index_address_,
+                                                       &index::manager_index_t::commit_insert,
+                                                       ctx,
+                                                       result.dml_table_oid,
+                                                       commit_id);
                     co_await std::move(cif);
                 }
             }
             if (result.dml_delete_txn_id != 0 && commit_id > 0) {
-                components::execution_context_t del_ctx{session, txn_data, coll_name};
+                components::execution_context_t del_ctx{session, txn_data, result.dml_table_oid};
                 auto [_cd, cdf] =
-                    actor_zeta::send(disk_address_, &disk::manager_disk_t::storage_commit_delete, del_ctx, commit_id);
+                    actor_zeta::send(disk_address_, &disk::manager_disk_t::storage_commit_delete, del_ctx, result.dml_table_oid, commit_id);
                 co_await std::move(cdf);
                 if (index_address_ != actor_zeta::address_t::empty_address()) {
-                    auto [_cdi, cdif] =
-                        actor_zeta::send(index_address_, &index::manager_index_t::commit_delete, del_ctx, commit_id);
+                    auto [_cdi, cdif] = actor_zeta::send(index_address_,
+                                                         &index::manager_index_t::commit_delete,
+                                                         del_ctx,
+                                                         result.dml_table_oid,
+                                                         commit_id);
                     co_await std::move(cdif);
                 }
                 // Fire-and-forget auto-GC check
@@ -272,12 +283,16 @@ namespace services::collection::executor {
 
             // Step 6: WAL COMMIT marker
             if (wal_address_ != actor_zeta::address_t::empty_address()) {
+                // Phase 8.E: WAL workers keyed by database_oid. Single-worker
+                // model uses main_database for all DML in this phase; multi-database
+                // routing follows once CREATE DATABASE allocates per-namespace workers.
+                constexpr auto db_oid = components::catalog::well_known_oid::main_database;
                 auto [_wc, wcf] = actor_zeta::send(wal_address_,
                                                    &wal::manager_wal_replicate_t::commit_txn,
                                                    session,
                                                    txn_data.transaction_id,
                                                    wal::wal_sync_mode::NORMAL,
-                                                   std::string(coll_name.database));
+                                                   db_oid);
                 co_await std::move(wcf);
             }
 
@@ -289,18 +304,21 @@ namespace services::collection::executor {
         } else if (is_dml && result.cursor->is_error()) {
             // Abort path
             trace(log_, "executor::execute_plan: DML error, aborting txn");
-            auto coll_name = logical_plan->collection_full_name();
+            // Phase 8.G: oid-only routing on abort path; same rationale as commit path.
             if (result.dml_append_row_count > 0) {
-                components::execution_context_t abort_ctx{session, txn_data, coll_name};
+                components::execution_context_t abort_ctx{session, txn_data, result.dml_table_oid};
                 auto [_ra, raf] = actor_zeta::send(disk_address_,
                                                    &disk::manager_disk_t::storage_revert_append,
                                                    abort_ctx,
+                                                   result.dml_table_oid,
                                                    result.dml_append_row_start,
                                                    result.dml_append_row_count);
                 co_await std::move(raf);
                 if (index_address_ != actor_zeta::address_t::empty_address()) {
-                    auto [_ri, rif] =
-                        actor_zeta::send(index_address_, &index::manager_index_t::revert_insert, abort_ctx);
+                    auto [_ri, rif] = actor_zeta::send(index_address_,
+                                                       &index::manager_index_t::revert_insert,
+                                                       abort_ctx,
+                                                       result.dml_table_oid);
                     co_await std::move(rif);
                 }
             }
@@ -546,16 +564,16 @@ namespace services::collection::executor {
             if (pipeline_context.dml_append_row_count > 0) {
                 result_tracking.dml_append_row_start = pipeline_context.dml_append_row_start;
                 result_tracking.dml_append_row_count = pipeline_context.dml_append_row_count;
-                result_tracking.dml_collection       = pipeline_context.dml_collection;
+                result_tracking.dml_table_oid        = pipeline_context.dml_table_oid;
             }
             if (pipeline_context.dml_delete_txn_id != 0) {
                 result_tracking.dml_delete_txn_id = pipeline_context.dml_delete_txn_id;
-                result_tracking.dml_collection    = pipeline_context.dml_collection;
+                result_tracking.dml_table_oid     = pipeline_context.dml_table_oid;
             }
             pipeline_context.dml_append_row_start = 0;
             pipeline_context.dml_append_row_count = 0;
             pipeline_context.dml_delete_txn_id    = 0;
-            pipeline_context.dml_collection       = {};
+            pipeline_context.dml_table_oid        = components::catalog::INVALID_OID;
 
             plan_data.sub_plans.pop();
         }

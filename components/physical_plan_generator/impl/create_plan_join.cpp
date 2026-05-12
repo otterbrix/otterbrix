@@ -16,10 +16,9 @@ namespace services::planner::impl {
         const auto* join_node = static_cast<const components::logical_plan::node_join_t*>(node.get());
         // assign left table as actor for join
         // Try left child context first, fall back to right (one side may be raw data with nullptr context)
-        auto left_name = node->children().front()->collection_full_name();
-        auto right_name = node->children().back()->collection_full_name();
-        bool known = context.has_collection(left_name) || context.has_collection(right_name);
-        auto coll_name = context.has_collection(left_name) ? left_name : right_name;
+        auto left_oid = node->children().front()->table_oid();
+        auto right_oid = node->children().back()->table_oid();
+        bool known = context.has_table_oid(left_oid) || context.has_table_oid(right_oid);
         auto join = known ? boost::intrusive_ptr(new components::operators::operator_join_t(context.resource,
                                                                                             context.log.clone(),
                                                                                             join_node->type(),

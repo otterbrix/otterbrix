@@ -7,8 +7,7 @@ namespace services::planner::impl {
 
     components::operators::operator_ptr create_plan_sort(const context_storage_t& context,
                                                          const components::logical_plan::node_ptr& node) {
-        auto coll_name = node->collection_full_name();
-        auto sort = context.has_collection(coll_name)
+        auto sort = context.has_table_oid(node->table_oid())
                         ? boost::intrusive_ptr(
                               new components::operators::operator_sort_t(context.resource, context.log.clone()))
                         : boost::intrusive_ptr(new components::operators::operator_sort_t(node->resource(), log_t{}));

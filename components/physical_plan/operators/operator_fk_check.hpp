@@ -6,7 +6,7 @@
 namespace components::operators {
 
     // Enforces one outgoing FK constraint on an INSERT or UPDATE chunk.
-    // For each row: extracts FK child-col values, calls disk.scan_by_table_oid
+    // For each row: extracts FK child-col values, calls disk.scan_by_key
     // on the parent table, errors if no matching parent row is found.
     class operator_fk_check_t final : public read_write_operator_t {
     public:

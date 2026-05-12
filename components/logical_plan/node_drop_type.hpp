@@ -20,7 +20,6 @@ namespace components::logical_plan {
         void set_type_oid(components::catalog::oid_t oid) noexcept { type_oid_ = oid; }
 
         components::catalog::drop_behavior_t behavior() const noexcept { return behavior_; }
-        void set_behavior(components::catalog::drop_behavior_t b) noexcept { behavior_ = b; }
 
     private:
         hash_t hash_impl() const final;

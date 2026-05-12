@@ -13,6 +13,10 @@ namespace components::expressions {
 
 namespace components::operators {
 
+    // Phase 13 T15 — forward decl: DML operators receive parsed metadata via
+    // accept_resolved_metadata(). Defined in resolved_table_metadata.hpp.
+    struct resolved_table_metadata_t;
+
     enum class operator_type
     {
         unused = 0x0,
@@ -84,7 +88,38 @@ namespace components::operators {
         // TYPE-EVOLUTION (no-op on SAME-TYPE). unregister: append a
         // refcount=0 tombstone so the resolver hides the column.
         computed_field_register,
-        computed_field_unregister
+        computed_field_unregister,
+        // RESOLVE_TABLE (Phase 13 T1) — self-resolving catalog read that
+        // mirrors manager_disk_t::resolve_table without using the dedicated
+        // resolve_table actor message. Scans pg_class for (oid, relkind,
+        // relnamespace), then pg_attribute (relkind='r') or pg_computed_column
+        // with tombstone/max-version filter (relkind='g') for column metadata.
+        // Emits a data_chunk_t with one row per live column:
+        // (position int32, attoid oid, attname string, atttypid oid,
+        //  atttypspec string). relkind is exposed via the operator instance
+        // (resolved_relkind()) for downstream usage that needs to branch on
+        // table flavor.
+        resolve_table,
+        // RESOLVE_NAMESPACE (Phase 13 T2) — leaf operator that scans
+        // pg_namespace by nspname and emits the resolved namespace_oid as a
+        // single-row data_chunk (col 0 = UINTEGER oid). Used by name-resolution
+        // pipelines that need to avoid the dispatcher's cached catalog snapshot.
+        resolve_namespace,
+        // RESOLVE_TYPE (Phase 13 T3) — leaf operator that scans pg_type by
+        // (typname, typnamespace) and emits the matching row as a single-row
+        // data_chunk_t (cols mirror pg_type_columns: oid, typname,
+        // typnamespace, typdefspec). Drives read_rows_by_key only — no
+        // catalog_view shortcut. Composite-type reconstruction (pg_class
+        // relkind='c' fallback) is out-of-scope; that path stays on the
+        // synchronous resolve_type_sync helper until a separate operator
+        // covers it.
+        resolve_type,
+        // RESOLVE_FUNCTION (Phase 13 T4) — leaf operator that scans pg_proc by
+        // (proname, pronamespace) and emits matching pg_proc rows as a
+        // data_chunk (cols: oid, proname, pronamespace, pronargs, prouid,
+        // proargmatchers, prorettype). Mirrors manager_disk_t::resolve_function
+        // without the dedicated actor message — drives read_rows_by_key only.
+        resolve_function
     };
 
     inline bool is_scan(operator_type t) {
@@ -150,6 +185,19 @@ namespace components::operators {
         void set_error(std::string msg);
         bool has_error() const noexcept;
         const std::string& error_message() const noexcept;
+
+        // Phase 13 T15 — sibling-resolve plumbing. When an
+        // operator_resolve_table_t runs as an upstream step inside a
+        // sequence_t (or as a flattened left-child), its output chunk is
+        // parsed into resolved_table_metadata_t and handed to the next
+        // consumer via this hook. Default no-op; DML operators override
+        // (operator_insert / operator_update / operator_delete).
+        virtual void accept_resolved_metadata(resolved_table_metadata_t metadata);
+        // True when accept_resolved_metadata() may meaningfully be invoked
+        // on this operator. Used by operator_sequence_t to route the
+        // resolver's output to the appropriate sibling without inspecting
+        // operator_type.
+        virtual bool wants_resolved_metadata() const noexcept { return false; }
 
     protected:
         std::pmr::memory_resource* resource_;

@@ -67,8 +67,8 @@ namespace components::operators {
                                                     function_name_,
                                                     std::uint64_t{0});
             auto matches = co_await std::move(rfbnf);
-            const collection_full_name_t pg_proc_coll{"pg_catalog", "main", "pg_proc"};
-            const collection_full_name_t pg_depend_coll{"pg_catalog", "main", "pg_depend"};
+            constexpr components::catalog::oid_t pg_proc_coll   = components::catalog::well_known_oid::pg_proc_table;
+            constexpr components::catalog::oid_t pg_depend_coll = components::catalog::well_known_oid::pg_depend_table;
             for (auto& m : matches) {
                 auto [_d1, d1f] = actor_zeta::send(ctx->disk_address,
                                                     &services::disk::manager_disk_t::delete_pg_catalog_rows,

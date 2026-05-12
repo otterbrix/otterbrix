@@ -12,6 +12,7 @@
 #include <actor-zeta/detail/queue/enqueue_result.hpp>
 
 #include "index_agent_disk.hpp"
+#include <components/catalog/catalog_codes.hpp>
 #include <components/index/index_engine.hpp>
 #include <components/log/log.hpp>
 #include <components/logical_plan/node_create_index.hpp>
@@ -50,53 +51,64 @@ namespace services::index {
         void sync(address_pack pack);
 
         // Collection lifecycle
-        unique_future<void> register_collection(session_id_t session, collection_full_name_t name);
-        unique_future<void> unregister_collection(session_id_t session, collection_full_name_t name);
+        unique_future<void> register_collection(session_id_t session, components::catalog::oid_t table_oid);
+        unique_future<void> unregister_collection(session_id_t session, components::catalog::oid_t table_oid);
 
-        // DML: txn-aware bulk index operations
+        // DML: txn-aware bulk index operations.
+        // Phase 8.D: routing identity is the explicit table_oid param. exec_ctx
+        // still carries the (deprecated) cfn for legacy code; index manager
+        // ignores it. Once exec_ctx grows a table_oid field (Phase 8.B) the
+        // explicit param can be dropped.
         unique_future<void> insert_rows(execution_context_t ctx,
+                                        components::catalog::oid_t table_oid,
                                         std::unique_ptr<components::vector::data_chunk_t> data,
                                         uint64_t start_row_id,
                                         uint64_t count);
         unique_future<void> delete_rows(execution_context_t ctx,
+                                        components::catalog::oid_t table_oid,
                                         std::unique_ptr<components::vector::data_chunk_t> data,
                                         std::pmr::vector<int64_t> row_ids);
         unique_future<void> update_rows(execution_context_t ctx,
+                                        components::catalog::oid_t table_oid,
                                         std::unique_ptr<components::vector::data_chunk_t> old_data,
                                         std::unique_ptr<components::vector::data_chunk_t> new_data,
                                         std::pmr::vector<int64_t> row_ids,
                                         int64_t new_start_row_id);
 
         // MVCC commit/revert/cleanup
-        unique_future<void> commit_insert(execution_context_t ctx, uint64_t commit_id);
-        unique_future<void> commit_delete(execution_context_t ctx, uint64_t commit_id);
-        unique_future<void> revert_insert(execution_context_t ctx);
+        unique_future<void>
+        commit_insert(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id);
+        unique_future<void>
+        commit_delete(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id);
+        unique_future<void> revert_insert(execution_context_t ctx, components::catalog::oid_t table_oid);
         unique_future<void> cleanup_all_versions(session_id_t session, uint64_t lowest_active);
-        unique_future<void> rebuild_indexes(session_id_t session, collection_full_name_t name);
+        unique_future<void> rebuild_indexes(session_id_t session, components::catalog::oid_t table_oid);
 
         // DDL: index management
         unique_future<uint32_t> create_index(session_id_t session,
-                                             collection_full_name_t name,
+                                             components::catalog::oid_t table_oid,
                                              index_name_t index_name,
                                              components::index::keys_base_storage_t keys,
                                              components::logical_plan::index_type type);
-        unique_future<void> drop_index(session_id_t session, collection_full_name_t name, index_name_t index_name);
+        unique_future<void>
+        drop_index(session_id_t session, components::catalog::oid_t table_oid, index_name_t index_name);
 
         // Query (txn-aware)
         unique_future<std::pmr::vector<int64_t>> search(session_id_t session,
-                                                        collection_full_name_t name,
+                                                        components::catalog::oid_t table_oid,
                                                         components::index::keys_base_storage_t keys,
                                                         components::types::logical_value_t value,
                                                         components::expressions::compare_type compare,
                                                         uint64_t start_time,
                                                         uint64_t txn_id);
 
-        unique_future<bool> has_index(session_id_t session, collection_full_name_t name, index_name_t index_name);
+        unique_future<bool>
+        has_index(session_id_t session, components::catalog::oid_t table_oid, index_name_t index_name);
 
         unique_future<void> flush_all_indexes(session_id_t session);
 
         unique_future<std::pmr::vector<components::index::keys_base_storage_t>>
-        get_indexed_keys(session_id_t session, collection_full_name_t name);
+        get_indexed_keys(session_id_t session, components::catalog::oid_t table_oid);
 
         using dispatch_traits = actor_zeta::implements<index_contract,
                                                        &manager_index_t::register_collection,
@@ -124,9 +136,8 @@ namespace services::index {
         std::filesystem::path path_db_;
         std::mutex mutex_;
 
-        // Per-collection in-memory index engines
-        std::pmr::unordered_map<collection_full_name_t, components::index::index_engine_ptr, collection_name_hash>
-            engines_;
+        // Per-collection in-memory index engines (Phase 8.D: keyed by table oid)
+        std::pmr::unordered_map<components::catalog::oid_t, components::index::index_engine_ptr> engines_;
 
         // Per-index disk persistence (child actors)
         std::vector<index_agent_disk_ptr> disk_agents_;

@@ -54,8 +54,8 @@ using vec = std::vector<v>;
         for (auto i = 0ul; i < BIND.size(); ++i) {                                                                     \
             REQUIRE(agg->parameter(core::parameter_id_t(uint16_t(i))) == BIND.at(i));                                  \
         }                                                                                                              \
-        REQUIRE(node->database_name() == "testdatabase");                                                              \
-        REQUIRE(node->collection_name() == "testcollection");                                                          \
+        REQUIRE(node->dbname() == "testdatabase");                                                              \
+        REQUIRE(node->relname() == "testcollection");                                                          \
     }
 
 TEST_CASE("components::sql::select_bind") {
@@ -136,8 +136,8 @@ TEST_CASE("components::sql::insert_bind") {
         binder.bind(2, v(&resource, std::string("inserted")));
         auto result = std::get<result_view>(binder.finalize());
         auto node = result.node;
-        REQUIRE(node->database_name() == "testdatabase");
-        REQUIRE(node->collection_name() == "testcollection");
+        REQUIRE(node->dbname() == "testdatabase");
+        REQUIRE(node->relname() == "testcollection");
 
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
@@ -179,7 +179,7 @@ TEST_CASE("components::sql::insert_bind") {
                                                 .finalize());
         auto node = result.node;
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
-        REQUIRE(node->collection_name() == "testcollection");
+        REQUIRE(node->relname() == "testcollection");
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
         REQUIRE(chunk.size() == 2);

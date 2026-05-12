@@ -11,19 +11,19 @@ namespace components::logical_plan {
     class node_primitive_delete_t final : public node_t {
     public:
         node_primitive_delete_t(std::pmr::memory_resource*  resource,
-                                 collection_full_name_t       catalog_table,
+                                 components::catalog::oid_t   catalog_table_oid,
                                  std::int64_t                 oid_col_idx,
                                  components::catalog::oid_t   target_oid);
 
-        const collection_full_name_t&      catalog_table() const noexcept { return catalog_table_; }
-        std::int64_t                       oid_col_idx()   const noexcept { return oid_col_idx_; }
-        components::catalog::oid_t         target_oid()    const noexcept { return target_oid_; }
+        components::catalog::oid_t         catalog_table_oid() const noexcept { return catalog_table_oid_; }
+        std::int64_t                       oid_col_idx()       const noexcept { return oid_col_idx_; }
+        components::catalog::oid_t         target_oid()        const noexcept { return target_oid_; }
 
     private:
         hash_t      hash_impl()      const override;
         std::string to_string_impl() const override;
 
-        collection_full_name_t     catalog_table_;
+        components::catalog::oid_t catalog_table_oid_;
         std::int64_t               oid_col_idx_;
         components::catalog::oid_t target_oid_;
     };

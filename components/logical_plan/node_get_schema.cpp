@@ -4,7 +4,7 @@ namespace components::logical_plan {
 
     node_get_schema_t::node_get_schema_t(std::pmr::memory_resource* resource,
                                           std::pmr::vector<std::pair<std::string, std::string>> ids)
-        : node_t(resource, node_type::get_schema_t, collection_full_name_t{})
+        : node_t(resource, node_type::get_schema_t)
         , ids_(std::move(ids)) {}
 
     hash_t node_get_schema_t::hash_impl() const { return 0; }

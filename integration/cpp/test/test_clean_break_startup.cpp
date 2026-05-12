@@ -79,12 +79,17 @@ TEST_CASE("integration::clean_break_startup::fresh_install_creates_pg_catalog") 
         fresh_disk fd(dir);
         fd.manager->bootstrap_system_tables_sync();
     }
-    auto sys = std::filesystem::path(dir) / "pg_catalog" / "main";
+    // Phase 8.A migrated the on-disk layout from name-keyed
+    // (pg_catalog/main/<name>/table.otbx) to oid-keyed
+    // (<db_oid>/<tbl_oid>/table.otbx) — system tables live under
+    // well_known_oid::main_database. Count .otbx files under that directory.
+    auto sys = std::filesystem::path(dir) /
+               std::to_string(static_cast<unsigned>(well_known_oid::main_database));
     REQUIRE(std::filesystem::exists(sys));
     size_t count = 0;
-    for (const auto& def : all_system_tables()) {
-        auto otbx = sys / std::string(def.name) / "table.otbx";
-        if (std::filesystem::exists(otbx)) ++count;
+    for (const auto& tbl_dir : std::filesystem::directory_iterator(sys)) {
+        if (!tbl_dir.is_directory()) continue;
+        if (std::filesystem::exists(tbl_dir.path() / "table.otbx")) ++count;
     }
     REQUIRE(count == all_system_tables().size());
     std::filesystem::remove_all(dir);

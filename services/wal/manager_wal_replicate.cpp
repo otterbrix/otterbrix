@@ -29,14 +29,25 @@ namespace services::wal {
         trace(log_, "manager_wal_replicate start, enabled={}", enabled_);
         if (enabled_ && !config_.path.empty()) {
             std::filesystem::create_directories(config_.path);
-            // Discover existing database directories, recover global_id_, create workers.
+            // Phase 8.E: Discover existing database directories (named after database_oid).
+            // Recover global_id_, create workers.
             wal::id_t max_recovered_id = 0;
             for (const auto& entry : std::filesystem::directory_iterator(config_.path)) {
                 if (!entry.is_directory()) {
                     continue;
                 }
-                auto db_name = entry.path().filename().string();
-                trace(log_, "manager_wal_replicate: recovering database '{}'", db_name);
+                auto db_dir_name = entry.path().filename().string();
+                // Parse directory name as database_oid. Skip non-numeric directories
+                // (legacy / unrelated content).
+                components::catalog::oid_t db_oid;
+                try {
+                    db_oid = static_cast<components::catalog::oid_t>(std::stoul(db_dir_name));
+                } catch (...) {
+                    trace(log_, "manager_wal_replicate: skip non-oid directory '{}'", db_dir_name);
+                    continue;
+                }
+                trace(log_, "manager_wal_replicate: recovering database_oid={}",
+                      static_cast<unsigned>(db_oid));
 
                 // Scan segments to find max wal_id (via reader, no actor messaging).
                 for (const auto& seg : std::filesystem::directory_iterator(entry.path())) {
@@ -52,7 +63,7 @@ namespace services::wal {
                     }
                 }
 
-                get_or_create_worker(db_name);
+                get_or_create_worker(db_oid);
             }
             global_id_.store(max_recovered_id, std::memory_order_relaxed);
         }
@@ -155,16 +166,17 @@ namespace services::wal {
     // Worker management
     // -----------------------------------------------------------------------
 
-    wal_worker_t* manager_wal_replicate_t::get_or_create_worker(const std::string& database) {
-        auto it = wal_actors_.find(database);
+    wal_worker_t* manager_wal_replicate_t::get_or_create_worker(components::catalog::oid_t database_oid) {
+        auto it = wal_actors_.find(database_oid);
         if (it != wal_actors_.end()) {
             return it->second.get();
         }
 
-        trace(log_, "manager_wal_replicate: spawning worker for database '{}'", database);
-        auto worker = actor_zeta::spawn<wal_worker_t>(resource_, this, log_, config_, database);
+        trace(log_, "manager_wal_replicate: spawning worker for database_oid={}",
+              static_cast<unsigned>(database_oid));
+        auto worker = actor_zeta::spawn<wal_worker_t>(resource_, this, log_, config_, database_oid);
         auto* ptr = worker.get();
-        wal_actors_.emplace(database, std::move(worker));
+        wal_actors_.emplace(database_oid, std::move(worker));
         return ptr;
     }
 
@@ -180,7 +192,7 @@ namespace services::wal {
 
         // Collect records from ALL workers, merge-sort by wal_id.
         std::vector<record_t> merged;
-        for (auto& [db_name, worker] : wal_actors_) {
+        for (auto& [db_oid, worker] : wal_actors_) {
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(worker->address(),
                                               &wal_worker_t::load,
                                               session,
@@ -208,12 +220,12 @@ namespace services::wal {
     manager_wal_replicate_t::commit_txn(session_id_t session,
                                         uint64_t txn_id,
                                         wal_sync_mode sync_mode,
-                                        std::string database_name) {
+                                        components::catalog::oid_t database_oid) {
         if (!enabled_) {
             co_return wal::id_t{0};
         }
 
-        auto* worker = get_or_create_worker(database_name);
+        auto* worker = get_or_create_worker(database_oid);
         auto wal_id = next_wal_id();
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(worker->address(),
                                           &wal_worker_t::commit_txn,
@@ -258,7 +270,7 @@ namespace services::wal {
         }
 
         // Send to ALL workers.
-        for (auto& [db_name, worker] : wal_actors_) {
+        for (auto& [db_oid, worker] : wal_actors_) {
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(worker->address(),
                                               &wal_worker_t::truncate_before,
                                               session,
@@ -283,7 +295,7 @@ namespace services::wal {
 
         // Take max across all workers.
         wal::id_t max_id = 0;
-        for (auto& [db_name, worker] : wal_actors_) {
+        for (auto& [db_oid, worker] : wal_actors_) {
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(worker->address(),
                                               &wal_worker_t::current_wal_id,
                                               session);
@@ -313,13 +325,17 @@ namespace services::wal {
 
     // -----------------------------------------------------------------------
     // Contract: write_physical_insert
+    //
+    // Phase 8.E: callers pass `table_oid` directly. Worker keying uses
+    // `main_database` — single-worker for all WAL traffic in Phase 8.E. Once
+    // multi-database support arrives the routing key will move to per-table
+    // namespace_oid resolution.
     // -----------------------------------------------------------------------
 
     manager_wal_replicate_t::unique_future<wal::id_t>
     manager_wal_replicate_t::write_physical_insert(
         session_id_t session,
-        std::string database,
-        std::string collection,
+        components::catalog::oid_t table_oid,
         std::unique_ptr<components::vector::data_chunk_t> data_chunk,
         uint64_t row_start,
         uint64_t row_count,
@@ -328,13 +344,13 @@ namespace services::wal {
             co_return wal::id_t{0};
         }
 
-        auto* worker = get_or_create_worker(database);
+        constexpr auto db_oid = components::catalog::well_known_oid::main_database;
+        auto* worker = get_or_create_worker(db_oid);
         auto wal_id = next_wal_id();
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(worker->address(),
                                           &wal_worker_t::write_physical_insert,
                                           session,
-                                          std::move(database),
-                                          std::move(collection),
+                                          table_oid,
                                           std::move(data_chunk),
                                           row_start,
                                           row_count,
@@ -354,8 +370,7 @@ namespace services::wal {
     manager_wal_replicate_t::unique_future<wal::id_t>
     manager_wal_replicate_t::write_physical_delete(
         session_id_t session,
-        std::string database,
-        std::string collection,
+        components::catalog::oid_t table_oid,
         std::pmr::vector<int64_t> row_ids,
         uint64_t count,
         uint64_t txn_id) {
@@ -363,13 +378,13 @@ namespace services::wal {
             co_return wal::id_t{0};
         }
 
-        auto* worker = get_or_create_worker(database);
+        constexpr auto db_oid = components::catalog::well_known_oid::main_database;
+        auto* worker = get_or_create_worker(db_oid);
         auto wal_id = next_wal_id();
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(worker->address(),
                                           &wal_worker_t::write_physical_delete,
                                           session,
-                                          std::move(database),
-                                          std::move(collection),
+                                          table_oid,
                                           std::move(row_ids),
                                           count,
                                           txn_id,
@@ -388,8 +403,7 @@ namespace services::wal {
     manager_wal_replicate_t::unique_future<wal::id_t>
     manager_wal_replicate_t::write_physical_update(
         session_id_t session,
-        std::string database,
-        std::string collection,
+        components::catalog::oid_t table_oid,
         std::pmr::vector<int64_t> row_ids,
         std::unique_ptr<components::vector::data_chunk_t> new_data,
         uint64_t count,
@@ -398,13 +412,13 @@ namespace services::wal {
             co_return wal::id_t{0};
         }
 
-        auto* worker = get_or_create_worker(database);
+        constexpr auto db_oid = components::catalog::well_known_oid::main_database;
+        auto* worker = get_or_create_worker(db_oid);
         auto wal_id = next_wal_id();
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(worker->address(),
                                           &wal_worker_t::write_physical_update,
                                           session,
-                                          std::move(database),
-                                          std::move(collection),
+                                          table_oid,
                                           std::move(row_ids),
                                           std::move(new_data),
                                           count,

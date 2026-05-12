@@ -12,15 +12,24 @@ namespace components::operators {
 
     operator_update::operator_update(std::pmr::memory_resource* resource,
                                      log_t log,
-                                     collection_full_name_t name,
+                                     components::catalog::oid_t table_oid,
                                      std::pmr::vector<expressions::update_expr_ptr> updates,
                                      bool upsert,
                                      expressions::expression_ptr expr)
         : read_write_operator_t(resource, log, operator_type::update)
-        , name_(std::move(name))
+        , table_oid_(table_oid)
         , updates_(std::move(updates))
         , expr_(std::move(expr))
         , upsert_(upsert) {}
+
+    void operator_update::accept_resolved_metadata(resolved_table_metadata_t metadata) {
+        // Phase 13 T15 — see operator_insert for the contract.
+        if (table_oid_ == components::catalog::INVALID_OID &&
+            metadata.table_oid != components::catalog::INVALID_OID) {
+            table_oid_ = metadata.table_oid;
+        }
+        resolved_metadata_ = std::move(metadata);
+    }
 
     void operator_update::on_execute_impl(pipeline::context_t* pipeline_context) {
         // Predicate matching + data prep only — storage I/O is handled by await_async_and_resume.
@@ -124,7 +133,7 @@ namespace components::operators {
             }
         }
 
-        if (output_ && modified_ && modified_->size() > 0 && !name_.empty()) {
+        if (output_ && modified_ && modified_->size() > 0 && table_oid_ != components::catalog::INVALID_OID) {
             async_wait();
         }
     }
@@ -141,7 +150,22 @@ namespace components::operators {
             co_return;
         }
         auto& out_chunk = output_->data_chunk();
-        components::execution_context_t exec_ctx{ctx->session, ctx->txn, name_};
+        components::execution_context_t exec_ctx{ctx->session, ctx->txn, table_oid_};
+
+        // Phase 13 T15 — if a resolver sibling supplied catalog metadata,
+        // compute a chunk_position -> table_position translation. See
+        // operator_insert::await_async_and_resume for the rationale; the
+        // disk path already aligns by alias, this is the wiring hook.
+        if (resolved_metadata_.has_value() && out_chunk.column_count() > 0) {
+            auto translation = build_column_key_translation(*resolved_metadata_, out_chunk);
+            for (std::size_t i = 0; i < translation.size(); ++i) {
+                if (translation[i] < 0 && out_chunk.data[i].type().has_alias()) {
+                    trace(log_,
+                          "operator_update: resolved metadata has no column matching chunk alias '{}'",
+                          std::string(out_chunk.data[i].type().alias()));
+                }
+            }
+        }
 
         // 1. Capture WAL data: row_ids + updated chunk.
         std::pmr::vector<int64_t> wal_row_ids(resource_);
@@ -162,6 +186,7 @@ namespace components::operators {
         auto [_u, uf] = actor_zeta::send(ctx->disk_address,
                                           &services::disk::manager_disk_t::storage_update,
                                           exec_ctx,
+                                          table_oid_,
                                           std::move(row_ids),
                                           std::move(data_copy));
         auto [upd_row_start, upd_row_count] = co_await std::move(uf);
@@ -172,8 +197,7 @@ namespace components::operators {
             auto [_w, wf] = actor_zeta::send(ctx->wal_address,
                                               &services::wal::manager_wal_replicate_t::write_physical_update,
                                               ctx->session,
-                                              std::string(name_.database),
-                                              std::string(name_.collection),
+                                              table_oid_,
                                               std::move(wal_row_ids),
                                               std::move(wal_update_data),
                                               upd_count,
@@ -202,6 +226,7 @@ namespace components::operators {
                 auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
                                                     &services::index::manager_index_t::update_rows,
                                                     exec_ctx,
+                                                    table_oid_,
                                                     std::move(old_data),
                                                     std::move(new_data),
                                                     std::move(idx_ids),
@@ -215,7 +240,7 @@ namespace components::operators {
         ctx->dml_append_row_start = upd_row_start;
         ctx->dml_append_row_count = upd_row_count;
         ctx->dml_delete_txn_id    = ctx->txn.transaction_id;
-        ctx->dml_collection       = name_;
+        ctx->dml_table_oid        = table_oid_;
 
         // output_ already set by on_execute_impl (contains updated rows).
         mark_executed();

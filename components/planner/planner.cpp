@@ -50,7 +50,7 @@ namespace components::planner {
             // Wrap with FK check nodes (outermost = last FK, so checks run innermost-first).
             for (const auto& fk : ins->outgoing_fks()) {
                 auto fk_node = boost::intrusive_ptr(new logical_plan::node_fk_check_t(
-                    r, ins->collection_full_name(), fk));
+                    r, ins->dbname(), ins->relname(), fk));
                 fk_node->append_child(cur);
                 cur = fk_node;
             }
@@ -58,7 +58,7 @@ namespace components::planner {
             // Wrap with NOT NULL / CHECK constraint node.
             if (!ins->not_null_cols().empty() || !ins->check_exprs().empty()) {
                 auto cc = boost::intrusive_ptr(new logical_plan::node_check_constraint_t(
-                    r, ins->collection_full_name(),
+                    r, ins->dbname(), ins->relname(),
                     std::vector<std::string>(ins->not_null_cols()),
                     std::vector<std::pair<std::string, std::string>>(ins->check_exprs())));
                 cc->append_child(cur);
@@ -74,14 +74,14 @@ namespace components::planner {
 
             for (const auto& fk : upd->outgoing_fks()) {
                 auto fk_node = boost::intrusive_ptr(new logical_plan::node_fk_check_t(
-                    r, upd->collection_full_name(), fk));
+                    r, upd->dbname(), upd->relname(), fk));
                 fk_node->append_child(cur);
                 cur = fk_node;
             }
 
             if (!upd->not_null_cols().empty()) {
                 auto cc = boost::intrusive_ptr(new logical_plan::node_check_constraint_t(
-                    r, upd->collection_full_name(),
+                    r, upd->dbname(), upd->relname(),
                     std::vector<std::string>(upd->not_null_cols())));
                 cc->append_child(cur);
                 cur = cc;
@@ -98,7 +98,7 @@ namespace components::planner {
             node_ptr cur = node;
             for (const auto& fk : del->referencing_fks()) {
                 auto cascade = boost::intrusive_ptr(new logical_plan::node_fk_cascade_t(
-                    r, del->collection_full_name(), fk));
+                    r, del->dbname(), del->relname(), fk));
                 cascade->append_child(cur);
                 cur = cascade;
             }
@@ -114,6 +114,18 @@ namespace components::planner {
                 return rewrite_update(r, node);
             case node_type::delete_t:
                 return rewrite_delete(r, node);
+            // Phase 13 T14: catalog_resolve_* nodes are emitted by the SQL
+            // transformer (gated by set_transformer_emit_catalog_resolve) as
+            // leaf sub-plans inside a sequence_t. They carry only identifier
+            // strings — physical_plan_generator lowers them to operator_resolve_*_t
+            // which performs the actual pg_catalog lookup at execute time.
+            // The planner must NOT rewrite, drop, or duplicate them — pass
+            // through unchanged (they have no children to walk).
+            case node_type::catalog_resolve_table_t:
+            case node_type::catalog_resolve_namespace_t:
+            case node_type::catalog_resolve_type_t:
+            case node_type::catalog_resolve_function_t:
+                return node;
             default:
                 for (auto& child : node->children()) {
                     child = walk(r, child);
@@ -128,7 +140,7 @@ namespace components::planner {
                                           node_ptr node,
                                           catalog::oid_batch_t& oid_batch) {
             auto* cd = static_cast<logical_plan::node_create_database_t*>(node.get());
-            const std::string ns_name(cd->database_name());
+            const std::string ns_name(cd->dbname());
             const catalog::oid_t ns_oid = oid_batch.allocate();
 
             auto writes = catalog::build_create_namespace_writes(r, ns_name, ns_oid);
@@ -137,7 +149,7 @@ namespace components::planner {
             for (auto& w : writes) {
                 seq->append_child(boost::intrusive_ptr(
                     new logical_plan::node_primitive_write_t(
-                        r, std::move(w.table), std::move(w.row))));
+                        r, w.table_oid, std::move(w.row))));
             }
             return seq;
         }
@@ -160,16 +172,21 @@ namespace components::planner {
             const char rk = cc->column_definitions().empty()
                                 ? catalog::relkind::computed
                                 : catalog::relkind::regular;
+            // Peek at the next OID before build_create_table_writes consumes it: that's
+            // the table_oid pg_class row will use; mirror it onto the cc node so the
+            // physical_plan_generator can pass it to operator_create_collection_t.
+            const catalog::oid_t table_oid = oid_batch.peek();
             auto writes = catalog::build_create_table_writes(
-                r, cc->collection_full_name(), cc->column_definitions(),
+                r, cc->dbname(), cc->relname(), cc->column_definitions(),
                 cc->is_disk_storage(), ns_oid, oid_batch, rk);
+            cc->set_table_oid(table_oid);
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
             seq->append_child(node);  // child 0: physical storage creation
             for (auto& w : writes) {
                 seq->append_child(boost::intrusive_ptr(
                     new logical_plan::node_primitive_write_t(
-                        r, std::move(w.table), std::move(w.row))));
+                        r, w.table_oid, std::move(w.row))));
             }
             return seq;
         }
@@ -201,7 +218,7 @@ namespace components::planner {
             for (auto& w : writes) {
                 seq->append_child(boost::intrusive_ptr(
                     new logical_plan::node_primitive_write_t(
-                        r, std::move(w.table), std::move(w.row))));
+                        r, w.table_oid, std::move(w.row))));
             }
             return seq;
         }
@@ -218,7 +235,7 @@ namespace components::planner {
 
             auto writes = catalog::build_create_sequence_writes(
                 r,
-                std::string(cs->collection_name()),
+                std::string(cs->seqname()),
                 ns_oid,
                 seq_oid,
                 cs->start(), cs->increment(), cs->min_value(), cs->max_value(),
@@ -228,7 +245,7 @@ namespace components::planner {
             for (auto& w : writes) {
                 seq->append_child(boost::intrusive_ptr(
                     new logical_plan::node_primitive_write_t(
-                        r, std::move(w.table), std::move(w.row))));
+                        r, w.table_oid, std::move(w.row))));
             }
             return seq;
         }
@@ -246,7 +263,7 @@ namespace components::planner {
 
             auto writes = catalog::build_create_view_writes(
                 r,
-                std::string(cv->collection_name()),
+                std::string(cv->viewname()),
                 ns_oid,
                 view_oid,
                 rule_oid,
@@ -256,7 +273,7 @@ namespace components::planner {
             for (auto& w : writes) {
                 seq->append_child(boost::intrusive_ptr(
                     new logical_plan::node_primitive_write_t(
-                        r, std::move(w.table), std::move(w.row))));
+                        r, w.table_oid, std::move(w.row))));
             }
             return seq;
         }
@@ -274,7 +291,7 @@ namespace components::planner {
 
             auto writes = catalog::build_create_macro_writes(
                 r,
-                std::string(cm->collection_name()),
+                std::string(cm->macroname()),
                 ns_oid,
                 macro_oid,
                 rule_oid,
@@ -284,7 +301,7 @@ namespace components::planner {
             for (auto& w : writes) {
                 seq->append_child(boost::intrusive_ptr(
                     new logical_plan::node_primitive_write_t(
-                        r, std::move(w.table), std::move(w.row))));
+                        r, w.table_oid, std::move(w.row))));
             }
             return seq;
         }
@@ -337,13 +354,14 @@ namespace components::planner {
                         field_cols.emplace_back(fname, field);
                     }
                 }
-                const std::string db_name = ct->database_name().empty()
-                                                 ? std::string("public")
-                                                 : std::string(ct->database_name());
-                collection_full_name_t coll{db_name, std::string("main"),
-                                              std::string(ct->type().type_name())};
+                // Phase 9.W: node_create_type_t has no user-typed db name —
+                // namespace is resolved via namespace_oid stamped by enrich.
+                // dbname is irrelevant in builder (namespace_oid is the routing
+                // identity); pass "public" as a label.
+                const std::string db_name = std::string("public");
                 writes = catalog::build_create_table_writes(
-                    r, coll, field_cols, /*is_disk_storage=*/false, target_ns,
+                    r, db_name, std::string(ct->type().type_name()), field_cols,
+                    /*is_disk_storage=*/false, target_ns,
                     oid_batch, catalog::relkind::composite_type);
             } else {
                 // ENUM and other extension types — persisted via pg_type.
@@ -357,7 +375,7 @@ namespace components::planner {
             for (auto& w : writes) {
                 seq->append_child(boost::intrusive_ptr(
                     new logical_plan::node_primitive_write_t(
-                        r, std::move(w.table), std::move(w.row))));
+                        r, w.table_oid, std::move(w.row))));
             }
             return seq;
         }
@@ -399,14 +417,13 @@ namespace components::planner {
                 ns_oid,
                 table_oid,
                 index_oid,
-                ci->column_names(),
                 ci->column_attoids());
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
             for (auto& w : writes) {
                 seq->append_child(boost::intrusive_ptr(
                     new logical_plan::node_primitive_write_t(
-                        r, std::move(w.table), std::move(w.row))));
+                        r, w.table_oid, std::move(w.row))));
             }
             // Backfill marker: the original create_index_t now carries resolved
             // metadata for the physical plan generator. Kept as the *last* child
@@ -430,9 +447,9 @@ namespace components::planner {
             auto* di = static_cast<logical_plan::node_drop_index_t*>(node.get());
             const catalog::oid_t index_oid = di->index_oid();
 
-            const collection_full_name_t pg_idx_coll  {"pg_catalog", "main", "pg_index"};
-            const collection_full_name_t pg_dep_coll  {"pg_catalog", "main", "pg_depend"};
-            const collection_full_name_t pg_class_coll{"pg_catalog", "main", "pg_class"};
+            constexpr catalog::oid_t pg_idx_coll  = catalog::well_known_oid::pg_index_table;
+            constexpr catalog::oid_t pg_dep_coll  = catalog::well_known_oid::pg_depend_table;
+            constexpr catalog::oid_t pg_class_coll = catalog::well_known_oid::pg_class_table;
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
             if (index_oid != catalog::INVALID_OID) {
@@ -544,13 +561,12 @@ namespace components::planner {
             }
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
-            const auto& coll = alter->collection_full_name();
+            const auto& db = alter->dbname();
+            const auto& rel = alter->relname();
             for (const auto& sub : alter->subcommands()) {
                 if (sub.kind == logical_plan::alter_table_kind::add_column) {
                     auto col = sub.column;
-                    // Mirror ddl.cpp: try to resolve UNKNOWN-by-name builtins so the
-                    // operator's atttypid derivation does not see UNKNOWN. Built-in
-                    // resolution is purely synchronous (pg_name_to_logical_type).
+                    // Mirror ddl.cpp: resolve UNKNOWN-by-name builtins.
                     if (col.type().type() == components::types::logical_type::UNKNOWN) {
                         const auto lt = catalog::pg_name_to_logical_type(col.type().type_name());
                         if (lt != components::types::logical_type::UNKNOWN) {
@@ -561,32 +577,20 @@ namespace components::planner {
                         }
                     }
                     seq->append_child(boost::intrusive_ptr(
-                        new logical_plan::node_alter_column_add_t(r, coll, table_oid, std::move(col))));
+                        new logical_plan::node_alter_column_add_t(r, db, rel, table_oid, std::move(col))));
                 } else if (sub.kind == logical_plan::alter_table_kind::rename_column) {
                     seq->append_child(boost::intrusive_ptr(
                         new logical_plan::node_alter_column_rename_t(
-                            r, coll, table_oid, sub.column_name, sub.new_column_name)));
+                            r, db, rel, table_oid, sub.column_name, sub.new_column_name)));
                 } else if (sub.kind == logical_plan::alter_table_kind::drop_column) {
-                    // P7.3: route by relkind. Dynamic-schema tables (relkind='g')
-                    // store columns in pg_computed_column with attrefcount, so
-                    // dropping a column means appending a refcount=0 tombstone via
-                    // operator_computed_field_unregister_t — NOT tombstoning a
-                    // pg_attribute row that does not exist for relkind='g'.
-                    // Static-schema tables (relkind='r') keep the existing path:
-                    // alter_column_drop tombstones pg_attribute and cascades via
-                    // pg_class. namespace_oid is informational only — the drop
-                    // operator does not currently use it. RESTRICT/CASCADE is not
-                    // yet surfaced through the SQL transformer for drop_column
-                    // subcommands, so default to CASCADE — matches the legacy
-                    // ddl.cpp behavior this operator replaces.
                     if (alter->relkind() == catalog::relkind::computed) {
                         seq->append_child(boost::intrusive_ptr(
                             new logical_plan::node_computed_field_unregister_t(
-                                r, coll, table_oid, sub.column_name)));
+                                r, db, rel, table_oid, sub.column_name)));
                     } else {
                         seq->append_child(boost::intrusive_ptr(
                             new logical_plan::node_alter_column_drop_t(
-                                r, coll, table_oid,
+                                r, db, rel, table_oid,
                                 catalog::INVALID_OID,
                                 sub.column_name,
                                 catalog::drop_behavior_t::cascade_)));
@@ -640,6 +644,18 @@ namespace components::planner {
                 return rewrite_drop_macro(r, node);
             case node_type::alter_table_t:
                 return rewrite_alter_table(r, node);
+            // Phase 13 T14: catalog_resolve_* nodes are leaf sub-plans emitted
+            // by the SQL transformer (gated by
+            // set_transformer_emit_catalog_resolve). They appear as siblings
+            // of DDL/DML consumer nodes inside a sequence_t. The DDL walk must
+            // pass them through unchanged — the actual lookup happens in
+            // operator_resolve_*_t at execute time; T15 wires consumer-side
+            // metadata propagation.
+            case node_type::catalog_resolve_table_t:
+            case node_type::catalog_resolve_namespace_t:
+            case node_type::catalog_resolve_type_t:
+            case node_type::catalog_resolve_function_t:
+                return node;
             default:
                 for (auto& child : node->children()) {
                     child = walk_ddl(r, child, oid_batch);

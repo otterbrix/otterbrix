@@ -17,15 +17,9 @@ namespace services::wal {
     // -----------------------------------------------------------------------
     namespace {
 
-        inline void write_le16(char* dst, uint16_t v) { std::memcpy(dst, &v, 2); }
         inline void write_le32(char* dst, uint32_t v) { std::memcpy(dst, &v, 4); }
         inline void write_le64(char* dst, uint64_t v) { std::memcpy(dst, &v, 8); }
 
-        inline uint16_t read_le16(const char* src) {
-            uint16_t v;
-            std::memcpy(&v, src, 2);
-            return v;
-        }
         inline uint32_t read_le32(const char* src) {
             uint32_t v;
             std::memcpy(&v, src, 4);
@@ -44,25 +38,26 @@ namespace services::wal {
         }
 
         // -----------------------------------------------------------------
-        // DML header (common to INSERT/DELETE/UPDATE):
+        // DML header (common to INSERT/DELETE/UPDATE) — Phase 8.E layout:
         //
         //   [size:4]         <- payload_size (bytes between size and trailing crc32)
         //   [last_crc32:4]
         //   [wal_id:8]
         //   [txn_id:8]
         //   [record_type:1]
-        //   [db_len:2]
-        //   [coll_len:2]
+        //   [table_oid:4]      // Phase 8.E — was [db_len:2][coll_len:2] + variable strings
         //   [row_start:8]
         //   [row_count:8]
         //   [payload_size:4]
-        //   [database: db_len]
-        //   [collection: coll_len]
         //   [payload: payload_size bytes]
         //   [crc32:4]
         //
         // "size" counts everything from last_crc32 through payload (inclusive),
         // i.e. everything the CRC covers.
+        //
+        // Header size: 4+8+8+1+4+8+8+4 = 45 bytes (was 45 with db_len:2+coll_len:2;
+        // exact same total since 4 bytes for table_oid replace 2+2 for the lengths
+        // and the variable strings disappear).
         // -----------------------------------------------------------------
 
         static constexpr size_t DML_FIXED_HEADER =
@@ -70,8 +65,7 @@ namespace services::wal {
             + 8  // wal_id
             + 8  // txn_id
             + 1  // record_type
-            + 2  // db_len
-            + 2  // coll_len
+            + 4  // table_oid (was: db_len:2 + coll_len:2)
             + 8  // row_start
             + 8  // row_count
             + 4; // payload_size
@@ -83,18 +77,13 @@ namespace services::wal {
                                  id_t wal_id,
                                  uint64_t txn_id,
                                  wal_record_type rtype,
-                                 const std::string& database,
-                                 const std::string& collection,
+                                 components::catalog::oid_t table_oid,
                                  uint64_t row_start,
                                  uint64_t row_count,
                                  const char* payload,
                                  uint32_t payload_size) {
-            const auto db_len = static_cast<uint16_t>(database.size());
-            const auto coll_len = static_cast<uint16_t>(collection.size());
-
             // "size" = bytes from last_crc32 up to end-of-payload (before trailing crc32)
-            const uint32_t size_field = static_cast<uint32_t>(
-                DML_FIXED_HEADER + db_len + coll_len + payload_size);
+            const uint32_t size_field = static_cast<uint32_t>(DML_FIXED_HEADER + payload_size);
 
             const size_t total = 4 /*size*/ + size_field + 4 /*crc32*/;
             const size_t base = buffer.size();
@@ -116,22 +105,14 @@ namespace services::wal {
             out += 8;
             *reinterpret_cast<uint8_t*>(out) = static_cast<uint8_t>(rtype);
             out += 1;
-            write_le16(out, db_len);
-            out += 2;
-            write_le16(out, coll_len);
-            out += 2;
+            write_le32(out, static_cast<uint32_t>(table_oid));
+            out += 4;
             write_le64(out, row_start);
             out += 8;
             write_le64(out, row_count);
             out += 8;
             write_le32(out, payload_size);
             out += 4;
-
-            // variable-length strings
-            std::memcpy(out, database.data(), db_len);
-            out += db_len;
-            std::memcpy(out, collection.data(), coll_len);
-            out += coll_len;
 
             // payload
             if (payload_size > 0) {
@@ -158,8 +139,7 @@ namespace services::wal {
                           crc32_t last_crc32,
                           id_t wal_id,
                           uint64_t txn_id,
-                          const std::string& database,
-                          const std::string& collection,
+                          components::catalog::oid_t table_oid,
                           const components::vector::data_chunk_t& data_chunk,
                           uint64_t row_start,
                           uint64_t row_count) {
@@ -169,7 +149,7 @@ namespace services::wal {
 
         return write_dml_record(buffer, last_crc32, wal_id, txn_id,
                                 wal_record_type::PHYSICAL_INSERT,
-                                database, collection,
+                                table_oid,
                                 row_start, row_count,
                                 payload_buf.data(),
                                 static_cast<uint32_t>(payload_buf.size()));
@@ -182,8 +162,7 @@ namespace services::wal {
                           crc32_t last_crc32,
                           id_t wal_id,
                           uint64_t txn_id,
-                          const std::string& database,
-                          const std::string& collection,
+                          components::catalog::oid_t table_oid,
                           const int64_t* row_ids,
                           uint64_t count) {
         // Payload = raw int64_t array.
@@ -191,7 +170,7 @@ namespace services::wal {
 
         return write_dml_record(buffer, last_crc32, wal_id, txn_id,
                                 wal_record_type::PHYSICAL_DELETE,
-                                database, collection,
+                                table_oid,
                                 0, count,
                                 reinterpret_cast<const char*>(row_ids),
                                 payload_size);
@@ -205,8 +184,7 @@ namespace services::wal {
                           crc32_t last_crc32,
                           id_t wal_id,
                           uint64_t txn_id,
-                          const std::string& database,
-                          const std::string& collection,
+                          components::catalog::oid_t table_oid,
                           const int64_t* row_ids,
                           const components::vector::data_chunk_t& new_data,
                           uint64_t count) {
@@ -231,7 +209,7 @@ namespace services::wal {
 
         return write_dml_record(buffer, last_crc32, wal_id, txn_id,
                                 wal_record_type::PHYSICAL_UPDATE,
-                                database, collection,
+                                table_oid,
                                 0, count,
                                 payload_buf.data(),
                                 static_cast<uint32_t>(payload_buf.size()));
@@ -346,10 +324,8 @@ namespace services::wal {
             return rec;
         }
 
-        uint16_t db_len = read_le16(ptr);
-        ptr += 2;
-        uint16_t coll_len = read_le16(ptr);
-        ptr += 2;
+        rec.table_oid = static_cast<components::catalog::oid_t>(read_le32(ptr));
+        ptr += 4;
         rec.physical_row_start = read_le64(ptr);
         ptr += 8;
         rec.physical_row_count = read_le64(ptr);
@@ -358,15 +334,10 @@ namespace services::wal {
         ptr += 4;
 
         // Bounds check on variable-length data.
-        if (static_cast<size_t>(DML_FIXED_HEADER + db_len + coll_len + payload_size) != body_size) {
+        if (static_cast<size_t>(DML_FIXED_HEADER + payload_size) != body_size) {
             rec.is_corrupt = true;
             return rec;
         }
-
-        rec.collection_name.database.assign(ptr, db_len);
-        ptr += db_len;
-        rec.collection_name.collection.assign(ptr, coll_len);
-        ptr += coll_len;
 
         const char* payload = ptr;
 

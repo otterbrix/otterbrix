@@ -20,14 +20,14 @@ namespace components::operators {
     class operator_drop_index_t final : public read_write_operator_t {
     public:
         struct catalog_delete_t {
-            collection_full_name_t      catalog_table;
+            components::catalog::oid_t  catalog_table_oid;
             std::int64_t                oid_col_idx;
             components::catalog::oid_t  target_oid;
         };
 
         operator_drop_index_t(std::pmr::memory_resource*       resource,
                                log_t                             log,
-                               collection_full_name_t            collection,
+                               components::catalog::oid_t        table_oid,
                                std::string                       index_name,
                                std::vector<catalog_delete_t>     catalog_deletes);
 
@@ -35,7 +35,7 @@ namespace components::operators {
         void on_execute_impl(pipeline::context_t* ctx) override;
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
-        collection_full_name_t           collection_;
+        components::catalog::oid_t       table_oid_;
         std::string                       index_name_;
         std::vector<catalog_delete_t>    catalog_deletes_;
     };

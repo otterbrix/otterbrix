@@ -23,13 +23,18 @@ wal_test_types(std::pmr::memory_resource* r) {
     return types;
 }
 
+// Phase 8.E: WAL records carry table_oid (4 bytes) instead of (database, collection)
+// strings. Tests pass arbitrary oids to verify the round-trip; production code uses
+// the actual catalog OIDs.
+constexpr components::catalog::oid_t kTestTableOid = 16500;
+
 TEST_CASE("wal_binary::encode_decode_insert") {
     std::pmr::monotonic_buffer_resource resource(1024 * 64);
     auto chunk = gen_data_chunk(10, 0, wal_test_types(&resource), &resource);
 
     buffer_t buffer(&resource);
     encode_insert(buffer, &resource, /*last_crc32=*/0, /*wal_id=*/1, /*txn_id=*/100,
-                  "testdb", "users", chunk, /*row_start=*/0, /*row_count=*/10);
+                  kTestTableOid, chunk, /*row_start=*/0, /*row_count=*/10);
 
     REQUIRE(buffer.size() > 0);
 
@@ -39,8 +44,7 @@ TEST_CASE("wal_binary::encode_decode_insert") {
     REQUIRE(record.id == 1);
     REQUIRE(record.transaction_id == 100);
     REQUIRE(record.record_type == wal_record_type::PHYSICAL_INSERT);
-    REQUIRE(record.collection_name.database == "testdb");
-    REQUIRE(record.collection_name.collection == "users");
+    REQUIRE(record.table_oid == kTestTableOid);
     REQUIRE(record.physical_row_start == 0);
     REQUIRE(record.physical_row_count == 10);
     REQUIRE(record.physical_data != nullptr);
@@ -60,7 +64,7 @@ TEST_CASE("wal_binary::encode_decode_delete") {
 
     buffer_t buffer(&resource);
     encode_delete(buffer, /*last_crc32=*/0, /*wal_id=*/2, /*txn_id=*/101,
-                  "testdb", "users", row_ids.data(), /*count=*/5);
+                  kTestTableOid, row_ids.data(), /*count=*/5);
 
     REQUIRE(buffer.size() > 0);
 
@@ -70,8 +74,7 @@ TEST_CASE("wal_binary::encode_decode_delete") {
     REQUIRE(record.id == 2);
     REQUIRE(record.transaction_id == 101);
     REQUIRE(record.record_type == wal_record_type::PHYSICAL_DELETE);
-    REQUIRE(record.collection_name.database == "testdb");
-    REQUIRE(record.collection_name.collection == "users");
+    REQUIRE(record.table_oid == kTestTableOid);
     REQUIRE(record.physical_row_ids.size() == 5);
 
     for (size_t i = 0; i < row_ids.size(); i++) {
@@ -86,7 +89,7 @@ TEST_CASE("wal_binary::encode_decode_update") {
 
     buffer_t buffer(&resource);
     encode_update(buffer, &resource, /*last_crc32=*/0, /*wal_id=*/3, /*txn_id=*/102,
-                  "testdb", "users", row_ids.data(), new_data, /*count=*/5);
+                  kTestTableOid, row_ids.data(), new_data, /*count=*/5);
 
     REQUIRE(buffer.size() > 0);
 
@@ -96,8 +99,7 @@ TEST_CASE("wal_binary::encode_decode_update") {
     REQUIRE(record.id == 3);
     REQUIRE(record.transaction_id == 102);
     REQUIRE(record.record_type == wal_record_type::PHYSICAL_UPDATE);
-    REQUIRE(record.collection_name.database == "testdb");
-    REQUIRE(record.collection_name.collection == "users");
+    REQUIRE(record.table_oid == kTestTableOid);
     REQUIRE(record.physical_row_ids.size() == 5);
 
     for (size_t i = 0; i < row_ids.size(); i++) {
@@ -138,7 +140,7 @@ TEST_CASE("wal_binary::crc32_corruption") {
 
     buffer_t buffer(&resource);
     encode_insert(buffer, &resource, /*last_crc32=*/0, /*wal_id=*/1, /*txn_id=*/100,
-                  "testdb", "users", chunk, /*row_start=*/0, /*row_count=*/10);
+                  kTestTableOid, chunk, /*row_start=*/0, /*row_count=*/10);
 
     REQUIRE(buffer.size() > 29);
 
@@ -156,7 +158,7 @@ TEST_CASE("wal_binary::truncated_input") {
 
     buffer_t buffer(&resource);
     encode_insert(buffer, &resource, /*last_crc32=*/0, /*wal_id=*/1, /*txn_id=*/100,
-                  "testdb", "users", chunk, /*row_start=*/0, /*row_count=*/10);
+                  kTestTableOid, chunk, /*row_start=*/0, /*row_count=*/10);
 
     // Truncate to half size
     buffer_t truncated(buffer.data(), buffer.size() / 2, &resource);

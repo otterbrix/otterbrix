@@ -6,21 +6,25 @@
 
 namespace components::logical_plan {
 
-    // Planner-emitted FK enforcement node wrapping an INSERT or UPDATE.
-    // Carries one outgoing FK constraint; the operator performs a key lookup
-    // on the parent table at runtime to verify referential integrity.
     class node_fk_check_t final : public node_t {
     public:
-        node_fk_check_t(std::pmr::memory_resource*   resource,
-                        const collection_full_name_t& collection,
-                        catalog::fk_info_t            fk);
+        node_fk_check_t(std::pmr::memory_resource* resource,
+                        std::string dbname,
+                        std::string relname,
+                        catalog::fk_info_t fk);
 
         const catalog::fk_info_t& fk() const noexcept { return fk_; }
 
+        // Phase 9.W/10.D: role-named accessors. FK check operator-feeder identity.
+        const std::string& relname() const noexcept { return relname_; }
+        const std::string& dbname() const noexcept { return dbname_; }
+
     private:
-        hash_t      hash_impl()      const override;
+        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
+        std::string dbname_;
+        std::string relname_;
         catalog::fk_info_t fk_;
     };
 

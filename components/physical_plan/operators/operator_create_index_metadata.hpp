@@ -1,5 +1,6 @@
 #pragma once
 
+#include <components/catalog/catalog_oids.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/vector/data_chunk.hpp>
 
@@ -20,7 +21,7 @@ namespace components::operators {
     // and the backfill phase can be retried/resumed independently.
     class operator_create_index_metadata_t final : public read_write_operator_t {
     public:
-        using catalog_write_t = std::pair<collection_full_name_t, vector::data_chunk_t>;
+        using catalog_write_t = std::pair<components::catalog::oid_t, vector::data_chunk_t>;
 
         operator_create_index_metadata_t(std::pmr::memory_resource* resource,
                                           log_t                      log,

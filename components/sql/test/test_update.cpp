@@ -20,8 +20,8 @@ using namespace components::expressions;
         for (auto i = 0ul; i < PARAMS.size(); ++i) {                                                                   \
             REQUIRE(agg->parameter(core::parameter_id_t(uint16_t(i))) == PARAMS.at(i));                                \
         }                                                                                                              \
-        REQUIRE(node->database_name() == "testdatabase");                                                              \
-        REQUIRE(node->collection_name() == "testcollection");                                                          \
+        REQUIRE(node->dbname() == "testdatabase");                                                              \
+        REQUIRE(node->relname() == "testcollection");                                                          \
         auto updates = static_cast<components::logical_plan::node_update_t&>(*node).updates();                         \
         REQUIRE(updates == FIELDS);                                                                                    \
     }

@@ -21,6 +21,7 @@ namespace components::operators {
         operator_computed_field_unregister_t(std::pmr::memory_resource* resource,
                                               log_t                       log,
                                               components::catalog::oid_t  table_oid,
+                                              components::catalog::oid_t  attoid,
                                               std::string                 column_name);
 
     private:
@@ -28,6 +29,7 @@ namespace components::operators {
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
         components::catalog::oid_t  table_oid_;
+        components::catalog::oid_t  attoid_;
         std::string                 column_name_;
     };
 

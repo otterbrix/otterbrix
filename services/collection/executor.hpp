@@ -1,6 +1,7 @@
 #pragma once
 
 #include <components/base/collection_full_name.hpp>
+#include <components/catalog/catalog_oids.hpp>
 #include <components/compute/function.hpp>
 #include <components/context/pg_catalog_swap.hpp>
 #include <components/logical_plan/node.hpp>
@@ -32,7 +33,7 @@ namespace services::collection::executor {
         // Phase 5b: pg_catalog ranges/tables collected during this execute_plan call.
         // Dispatcher merges these into transaction_t when txn_id != 0.
         std::vector<components::pg_catalog_append_range_t>      pg_catalog_appends;
-        std::set<collection_full_name_t>                        pg_catalog_delete_tables;
+        std::set<components::catalog::oid_t>                    pg_catalog_delete_tables;
     };
 
     using function_result_t = components::compute::function_uid;
@@ -62,16 +63,16 @@ namespace services::collection::executor {
     struct sub_plan_result_t {
         components::cursor::cursor_t_ptr cursor;
         components::operators::operator_write_data_t::updated_types_map_t updates;
-        int64_t                dml_append_row_start{0};
-        uint64_t               dml_append_row_count{0};
-        uint64_t               dml_delete_txn_id{0};
-        collection_full_name_t dml_collection;
+        int64_t                     dml_append_row_start{0};
+        uint64_t                    dml_append_row_count{0};
+        uint64_t                    dml_delete_txn_id{0};
+        components::catalog::oid_t  dml_table_oid{components::catalog::INVALID_OID};
 
         // Phase 5b: pg_catalog swap-info drained from each pipeline::context_t
         // inside execute_sub_plan_. execute_plan moves these into the outer
         // execute_result_t so the dispatcher can push them onto transaction_t.
         std::vector<components::pg_catalog_append_range_t> pg_catalog_appends;
-        std::set<collection_full_name_t>                   pg_catalog_delete_tables;
+        std::set<components::catalog::oid_t>               pg_catalog_delete_tables;
     };
 
     class executor_t final : public actor_zeta::basic_actor<executor_t> {

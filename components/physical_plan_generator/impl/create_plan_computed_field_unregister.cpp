@@ -13,6 +13,7 @@ namespace services::planner::impl {
             context.resource,
             context.log.clone(),
             n->table_oid(),
+            n->attoid(),
             n->column_name()));
     }
 

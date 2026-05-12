@@ -22,9 +22,12 @@ namespace components::logical_plan {
     }
 
     node_join_t::node_join_t(std::pmr::memory_resource* resource,
-                             const collection_full_name_t& collection,
+                             std::string dbname,
+                             std::string relname,
                              join_type type)
-        : node_t(resource, node_type::join_t, collection)
+        : node_t(resource, node_type::join_t)
+        , dbname_(std::move(dbname))
+        , relname_(std::move(relname))
         , type_(type) {}
 
     join_type node_join_t::type() const { return type_; }
@@ -46,8 +49,8 @@ namespace components::logical_plan {
     }
 
     node_join_ptr
-    make_node_join(std::pmr::memory_resource* resource, const collection_full_name_t& collection, join_type type) {
-        return {new node_join_t{resource, collection, type}};
+    make_node_join(std::pmr::memory_resource* resource, std::string dbname, std::string relname, join_type type) {
+        return {new node_join_t{resource, std::move(dbname), std::move(relname), type}};
     }
 
 } // namespace components::logical_plan

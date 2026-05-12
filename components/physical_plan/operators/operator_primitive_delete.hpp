@@ -12,7 +12,7 @@ namespace components::operators {
     public:
         operator_primitive_delete_t(std::pmr::memory_resource*  resource,
                                      log_t                        log,
-                                     collection_full_name_t       catalog_table,
+                                     components::catalog::oid_t   catalog_table_oid,
                                      std::int64_t                 oid_col_idx,
                                      components::catalog::oid_t   target_oid);
 
@@ -20,7 +20,7 @@ namespace components::operators {
         void on_execute_impl(pipeline::context_t* ctx) override;
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
-        collection_full_name_t     catalog_table_;
+        components::catalog::oid_t catalog_table_oid_;
         std::int64_t               oid_col_idx_;
         components::catalog::oid_t target_oid_;
     };

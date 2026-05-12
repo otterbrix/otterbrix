@@ -1,6 +1,5 @@
 #include "operator_vacuum.hpp"
 
-#include <components/base/collection_full_name.hpp>
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/context/context.hpp>
@@ -62,14 +61,11 @@ namespace components::operators {
             co_await std::move(cvf);
         }
 
-        // Step 3: enumerate user relations via pg_class (relkind 'r' or 'g'),
-        // resolve each to a collection_full_name_t through pg_namespace, and
-        // rebuild + repopulate indexes — compact in step 1 invalidates row
-        // positions. pg_class is the authoritative source for user relations.
-        const collection_full_name_t kPgClass    {"pg_catalog", "main", "pg_class"};
-        const collection_full_name_t kPgNamespace{"pg_catalog", "main", "pg_namespace"};
-
-        components::execution_context_t exec_ctx{ctx->session, ctx->txn, kPgClass};
+        // Step 3: enumerate user relations via pg_class (relkind 'r' or 'g')
+        // and rebuild + repopulate indexes — compact in step 1 invalidates row
+        // positions. pg_class is the authoritative source for user relations;
+        // routing is by table_oid only (Phase 10.F dropped the cfn-based path).
+        constexpr catalog::oid_t kPgClass = catalog::well_known_oid::pg_class_table;
 
         std::unique_ptr<components::vector::data_chunk_t> pg_class_rows;
         {
@@ -88,21 +84,15 @@ namespace components::operators {
             co_return;
         }
 
-        // Per-table rebuild loop. We collect (name) pairs first so we don't
-        // hold the data_chunk across more co_awaits than necessary (the chunk
-        // owns its memory_resource — the names need to outlive it).
+        // Per-table rebuild loop. We collect oids first so we don't
+        // hold the data_chunk across more co_awaits than necessary.
         struct user_table_t {
-            collection_full_name_t name;
+            catalog::oid_t table_oid;
         };
         std::vector<user_table_t> user_tables;
         // Collect computing-table OIDs in the same pass so step 5 (the
         // pg_computed_column GC) doesn't have to re-scan pg_class.
         std::vector<catalog::oid_t> computing_table_oids;
-        // Phase 7.5b: parallel oid → collection_full_name_t map for
-        // relkind='g' tables. Step 5b (physical column compaction) needs the
-        // collection name to address the storage; computing_table_oids alone
-        // isn't enough since compact_relkind_g_storage is name-keyed.
-        std::unordered_map<catalog::oid_t, collection_full_name_t> computing_oid_to_name;
 
         for (std::uint64_t i = 0; i < pg_class_rows->size(); ++i) {
             // pg_class columns: 0=oid, 1=relname, 2=relnamespace, 3=relkind, 4=relstoragemode
@@ -116,40 +106,15 @@ namespace components::operators {
                 continue;
             }
 
-            auto name_v = pg_class_rows->value(1, i);
-            auto ns_v   = pg_class_rows->value(2, i);
-            if (name_v.is_null() || ns_v.is_null()) continue;
-            std::string relname{name_v.value<std::string_view>()};
-            const auto relnamespace = static_cast<catalog::oid_t>(ns_v.value<std::uint32_t>());
+            auto oid_v = pg_class_rows->value(0, i);
+            if (oid_v.is_null()) continue;
+            const auto this_oid = static_cast<catalog::oid_t>(oid_v.value<std::uint32_t>());
+            if (this_oid == catalog::INVALID_OID) continue;
 
-            catalog::oid_t this_oid = catalog::INVALID_OID;
             if (relkind == catalog::relkind::computed) {
-                auto oid_v = pg_class_rows->value(0, i);
-                if (!oid_v.is_null()) {
-                    this_oid = static_cast<catalog::oid_t>(oid_v.value<std::uint32_t>());
-                    computing_table_oids.push_back(this_oid);
-                }
+                computing_table_oids.push_back(this_oid);
             }
-
-            // Resolve namespace name. Mirrors the (nspname, "", relname)
-            // convention used by operator_dynamic_cascade_delete and the
-            // index/storage actors.
-            types::logical_value_t nsoid_lv(resource_, relnamespace);
-            auto [_ns, nsf] = actor_zeta::send(
-                ctx->disk_address,
-                &services::disk::manager_disk_t::read_rows_by_key,
-                exec_ctx, kPgNamespace,
-                std::vector<std::string>{"oid"},
-                std::vector<types::logical_value_t>{nsoid_lv});
-            auto ns_rows = co_await std::move(nsf);
-            if (ns_rows.empty() || ns_rows[0].size() < 2) continue;
-            std::string nspname{ns_rows[0][1].value<std::string_view>()};
-
-            collection_full_name_t full_name{nspname, "", std::move(relname)};
-            if (relkind == catalog::relkind::computed && this_oid != catalog::INVALID_OID) {
-                computing_oid_to_name.emplace(this_oid, full_name);
-            }
-            user_tables.push_back({std::move(full_name)});
+            user_tables.push_back({this_oid});
         }
 
         // Step 4: for each user table, rebuild its in-memory index then
@@ -162,7 +127,7 @@ namespace components::operators {
                     ctx->index_address,
                     &services::index::manager_index_t::rebuild_indexes,
                     ctx->session,
-                    tbl.name);
+                    tbl.table_oid);
                 co_await std::move(rbf);
             }
 
@@ -172,7 +137,7 @@ namespace components::operators {
                     ctx->disk_address,
                     &services::disk::manager_disk_t::storage_total_rows,
                     ctx->session,
-                    tbl.name);
+                    tbl.table_oid);
                 total = co_await std::move(trf);
             }
             if (total == 0) continue;
@@ -183,7 +148,7 @@ namespace components::operators {
                     ctx->disk_address,
                     &services::disk::manager_disk_t::storage_scan_segment,
                     ctx->session,
-                    tbl.name,
+                    tbl.table_oid,
                     std::int64_t{0},
                     total);
                 scan_data = co_await std::move(ssf);
@@ -191,11 +156,12 @@ namespace components::operators {
             if (!scan_data) continue;
 
             const auto count = scan_data->size();
-            components::execution_context_t ix_ctx{ctx->session, ctx->txn, tbl.name};
+            components::execution_context_t ix_ctx{ctx->session, ctx->txn, tbl.table_oid};
             auto [_ir, irf] = actor_zeta::send(
                 ctx->index_address,
                 &services::index::manager_index_t::insert_rows,
                 ix_ctx,
+                tbl.table_oid,
                 std::move(scan_data),
                 std::uint64_t{0},
                 count);
@@ -256,13 +222,12 @@ namespace components::operators {
         // accept this for now — a heuristic to skip compaction for "recently
         // touched" columns can come later.
         if (!computing_table_oids.empty()) {
-            const collection_full_name_t kPgComputedColumn{
-                "pg_catalog", "main", "pg_computed_column"};
-            components::execution_context_t cc_ctx{ctx->session, ctx->txn, kPgComputedColumn};
+            constexpr catalog::oid_t kPgComputedColumn = catalog::well_known_oid::pg_computed_column_table;
+            components::execution_context_t cc_ctx{ctx->session, ctx->txn, {}};
 
             for (const auto table_oid : computing_table_oids) {
-                // pg_computed_column layout: 0=relid 1=attoid 2=attname
-                // 3=atttypid 4=attversion 5=attrefcount.
+                // pg_computed_column layout (Phase 11.F-B): 0=relid 1=attoid
+                // 2=attname 3=atttypid 4=atttypspec 5=attversion 6=attrefcount.
                 types::logical_value_t toid_lv(resource_, table_oid);
                 auto [_cc, ccf] = actor_zeta::send(
                     ctx->disk_address,
@@ -275,9 +240,9 @@ namespace components::operators {
                 std::vector<catalog::oid_t> dead_attoids;
                 dead_attoids.reserve(cc_rows.size());
                 for (const auto& row : cc_rows) {
-                    if (row.size() < 6) continue;
-                    if (row[1].is_null() || row[5].is_null()) continue;
-                    const auto rc = row[5].value<std::int64_t>();
+                    if (row.size() < 7) continue;
+                    if (row[1].is_null() || row[6].is_null()) continue;
+                    const auto rc = row[6].value<std::int64_t>();
                     if (rc > 0) continue;
                     dead_attoids.push_back(
                         static_cast<catalog::oid_t>(row[1].value<std::uint32_t>()));
@@ -306,15 +271,15 @@ namespace components::operators {
                 };
                 std::map<std::string, std::vector<version_row_t>> grouped;
                 for (const auto& row : cc_rows) {
-                    if (row.size() < 6) continue;
-                    if (row[1].is_null() || row[2].is_null() || row[4].is_null() ||
-                        row[5].is_null()) {
+                    if (row.size() < 7) continue;
+                    if (row[1].is_null() || row[2].is_null() || row[5].is_null() ||
+                        row[6].is_null()) {
                         continue;
                     }
                     // Skip rows already queued for deletion as tombstones.
-                    if (row[5].value<std::int64_t>() <= 0) continue;
+                    if (row[6].value<std::int64_t>() <= 0) continue;
                     auto attname = row[2].value<std::string_view>();
-                    auto attversion = row[4].value<std::int64_t>();
+                    auto attversion = row[5].value<std::int64_t>();
                     auto attoid = static_cast<catalog::oid_t>(
                         row[1].value<std::uint32_t>());
                     grouped[std::string(attname)].push_back({attoid, attversion});
@@ -350,8 +315,7 @@ namespace components::operators {
                 // We re-read instead of reusing cc_rows because cc_rows was
                 // taken BEFORE the deletes; row[5]>0 there can include rows
                 // whose live counterparts were just version-GC'd.
-                auto oid_to_name_it = computing_oid_to_name.find(table_oid);
-                if (oid_to_name_it != computing_oid_to_name.end()) {
+                {
                     types::logical_value_t toid_lv2(resource_, table_oid);
                     auto [_cc2, ccf2] = actor_zeta::send(
                         ctx->disk_address,
@@ -363,9 +327,9 @@ namespace components::operators {
 
                     std::set<std::string> live_attnames;
                     for (const auto& row : live_cc) {
-                        if (row.size() < 6) continue;
-                        if (row[2].is_null() || row[5].is_null()) continue;
-                        if (row[5].value<std::int64_t>() <= 0) continue;
+                        if (row.size() < 7) continue;
+                        if (row[2].is_null() || row[6].is_null()) continue;
+                        if (row[6].value<std::int64_t>() <= 0) continue;
                         live_attnames.emplace(
                             std::string(row[2].value<std::string_view>()));
                     }
@@ -374,7 +338,7 @@ namespace components::operators {
                         ctx->disk_address,
                         &services::disk::manager_disk_t::compact_relkind_g_storage,
                         cc_ctx,
-                        oid_to_name_it->second,
+                        table_oid,
                         std::move(live_attnames));
                     (void) co_await std::move(dcf);
                 }

@@ -9,34 +9,45 @@ namespace components::logical_plan {
 
     class node_drop_collection_t final : public node_t {
     public:
-        explicit node_drop_collection_t(std::pmr::memory_resource* resource, const collection_full_name_t& collection);
-
-        // Resolved OIDs + behavior — populated by enrich_logical_plan before the
-        // planner runs. The planner consumes table_oid when rewriting this node
-        // into a node_dynamic_cascade_delete_t (Phase 2 #49); namespace_oid is
-        // kept for symmetry with create_collection_t and any future caller that
-        // needs the parent namespace. Default behavior is CASCADE, matching the
-        // legacy ddl.cpp BFS that always used cascade_.
-        components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
-        void set_table_oid(components::catalog::oid_t oid) noexcept { table_oid_ = oid; }
+        // Phase 10.D: ctor takes role-named strings instead of cfn struct.
+        // schemaname/uuid are SQL parser display fields (verified by
+        // sql/test/test_create_drop.cpp); routing uses table_oid stamped by enrich.
+        explicit node_drop_collection_t(std::pmr::memory_resource* resource,
+                                        std::string dbname,
+                                        std::string relname,
+                                        std::string schemaname = {},
+                                        std::string uuid = {});
 
         components::catalog::oid_t namespace_oid() const noexcept { return namespace_oid_; }
         void set_namespace_oid(components::catalog::oid_t oid) noexcept { namespace_oid_ = oid; }
 
         components::catalog::drop_behavior_t behavior() const noexcept { return behavior_; }
-        void set_behavior(components::catalog::drop_behavior_t b) noexcept { behavior_ = b; }
+
+        // Phase 9.W/10.D: role-named accessors. DROP TABLE user-typed identifiers; routing
+        // uses table_oid()/namespace_oid() stamped by enrich.
+        const std::string& relname() const noexcept { return relname_; }
+        const std::string& dbname() const noexcept { return dbname_; }
+        // Parser-display only — verified by sql/test/test_create_drop.cpp.
+        const std::string& schemaname() const noexcept { return schemaname_; }
+        const std::string& uuid() const noexcept { return uuid_; }
 
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
-        components::catalog::oid_t table_oid_{components::catalog::INVALID_OID};
+        std::string dbname_;
+        std::string relname_;
+        std::string schemaname_;
+        std::string uuid_;
         components::catalog::oid_t namespace_oid_{components::catalog::INVALID_OID};
         components::catalog::drop_behavior_t behavior_{components::catalog::drop_behavior_t::cascade_};
     };
 
     using node_drop_collection_ptr = boost::intrusive_ptr<node_drop_collection_t>;
     node_drop_collection_ptr make_node_drop_collection(std::pmr::memory_resource* resource,
-                                                       const collection_full_name_t& collection);
+                                                       std::string dbname,
+                                                       std::string relname,
+                                                       std::string schemaname = {},
+                                                       std::string uuid = {});
 
 } // namespace components::logical_plan

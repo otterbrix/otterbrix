@@ -11,11 +11,20 @@ namespace components::operators {
 
     operator_delete::operator_delete(std::pmr::memory_resource* resource,
                                      log_t log,
-                                     collection_full_name_t name,
+                                     components::catalog::oid_t table_oid,
                                      expressions::expression_ptr expr)
         : read_write_operator_t(resource, log, operator_type::remove)
-        , name_(std::move(name))
+        , table_oid_(table_oid)
         , expression_(std::move(expr)) {}
+
+    void operator_delete::accept_resolved_metadata(resolved_table_metadata_t metadata) {
+        // Phase 13 T15 — see operator_insert for the contract.
+        if (table_oid_ == components::catalog::INVALID_OID &&
+            metadata.table_oid != components::catalog::INVALID_OID) {
+            table_oid_ = metadata.table_oid;
+        }
+        resolved_metadata_ = std::move(metadata);
+    }
 
     void operator_delete::on_execute_impl(pipeline::context_t* pipeline_context) {
         // Predicate matching only — table.delete_rows() is now handled by
@@ -92,7 +101,7 @@ namespace components::operators {
             }
         }
 
-        if (modified_ && modified_->size() > 0 && !name_.empty()) {
+        if (modified_ && modified_->size() > 0 && table_oid_ != components::catalog::INVALID_OID) {
             async_wait();
         }
     }
@@ -111,7 +120,27 @@ namespace components::operators {
 
         auto& ids = modified_->ids();
         const size_t modified_size = modified_->size();
-        components::execution_context_t exec_ctx{ctx->session, ctx->txn, name_};
+        components::execution_context_t exec_ctx{ctx->session, ctx->txn, table_oid_};
+
+        // Phase 13 T15 — when a resolver sibling supplied catalog metadata,
+        // build a translation against the scan-output chunk to surface any
+        // alias/schema drift. operator_delete only ships row ids to the disk
+        // actor (no per-column data), so the translation itself isn't fed
+        // downstream — this is purely a diagnostic + wiring hook for future
+        // metadata-aware delete paths (e.g. index-only deletes).
+        if (resolved_metadata_.has_value() && left_ && left_->output()) {
+            auto& scan_chunk = left_->output()->data_chunk();
+            if (scan_chunk.column_count() > 0) {
+                auto translation = build_column_key_translation(*resolved_metadata_, scan_chunk);
+                for (std::size_t i = 0; i < translation.size(); ++i) {
+                    if (translation[i] < 0 && scan_chunk.data[i].type().has_alias()) {
+                        trace(log_,
+                              "operator_delete: resolved metadata has no column matching scan alias '{}'",
+                              std::string(scan_chunk.data[i].type().alias()));
+                    }
+                }
+            }
+        }
 
         // 1. Capture WAL row IDs.
         std::pmr::vector<int64_t> wal_row_ids(resource_);
@@ -128,6 +157,7 @@ namespace components::operators {
         auto [_d, df] = actor_zeta::send(ctx->disk_address,
                                           &services::disk::manager_disk_t::storage_delete_rows,
                                           exec_ctx,
+                                          table_oid_,
                                           std::move(row_ids),
                                           static_cast<uint64_t>(modified_size));
         co_await std::move(df);
@@ -138,8 +168,7 @@ namespace components::operators {
             auto [_w, wf] = actor_zeta::send(ctx->wal_address,
                                               &services::wal::manager_wal_replicate_t::write_physical_delete,
                                               ctx->session,
-                                              std::string(name_.database),
-                                              std::string(name_.collection),
+                                              table_oid_,
                                               std::move(wal_row_ids),
                                               count,
                                               ctx->txn.transaction_id);
@@ -165,6 +194,7 @@ namespace components::operators {
                 auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
                                                     &services::index::manager_index_t::delete_rows,
                                                     exec_ctx,
+                                                    table_oid_,
                                                     std::move(idx_data),
                                                     std::move(idx_ids));
                 co_await std::move(ixf);
@@ -173,13 +203,13 @@ namespace components::operators {
 
         // 5. Record swap-info on context.
         ctx->dml_delete_txn_id = ctx->txn.transaction_id;
-        ctx->dml_collection = name_;
+        ctx->dml_table_oid = table_oid_;
 
         // 6. Build result chunk (need types from storage).
         auto [_t, tf] = actor_zeta::send(ctx->disk_address,
                                           &services::disk::manager_disk_t::storage_types,
                                           ctx->session,
-                                          name_);
+                                          table_oid_);
         auto types = co_await std::move(tf);
         data_chunk_t chunk(resource_, types, modified_size);
         chunk.set_cardinality(modified_size);

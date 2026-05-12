@@ -3,6 +3,7 @@
 #include <memory_resource>
 #include <string>
 
+#include <components/catalog/catalog_oids.hpp>
 #include <services/wal/base.hpp>
 #include <services/wal/record.hpp>
 
@@ -18,6 +19,10 @@ namespace services::wal {
     // Each appends a complete binary WAL record to \p buffer and returns
     // the CRC32 of the freshly written record (which becomes the
     // "last_crc32" for the next record in the chain).
+    //
+    // Phase 8.E: records carry table_oid (4 bytes) instead of (database, collection)
+    // strings (~30 bytes per record). Old WAL files become unreadable — fresh init
+    // required after upgrade.
     // -----------------------------------------------------------------------
 
     crc32_t encode_insert(buffer_t& buffer,
@@ -25,8 +30,7 @@ namespace services::wal {
                           crc32_t last_crc32,
                           id_t wal_id,
                           uint64_t txn_id,
-                          const std::string& database,
-                          const std::string& collection,
+                          components::catalog::oid_t table_oid,
                           const components::vector::data_chunk_t& data_chunk,
                           uint64_t row_start,
                           uint64_t row_count);
@@ -35,8 +39,7 @@ namespace services::wal {
                           crc32_t last_crc32,
                           id_t wal_id,
                           uint64_t txn_id,
-                          const std::string& database,
-                          const std::string& collection,
+                          components::catalog::oid_t table_oid,
                           const int64_t* row_ids,
                           uint64_t count);
 
@@ -45,8 +48,7 @@ namespace services::wal {
                           crc32_t last_crc32,
                           id_t wal_id,
                           uint64_t txn_id,
-                          const std::string& database,
-                          const std::string& collection,
+                          components::catalog::oid_t table_oid,
                           const int64_t* row_ids,
                           const components::vector::data_chunk_t& new_data,
                           uint64_t count);

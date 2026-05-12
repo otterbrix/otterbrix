@@ -4,16 +4,16 @@ namespace services::index {
 
     index_agent_disk_t::index_agent_disk_t(std::pmr::memory_resource* resource,
                                            const path_t& path_db,
-                                           collection_full_name_t collection_name,
+                                           components::catalog::oid_t table_oid,
                                            const index_name_t& index_name,
                                            log_t& log)
         : actor_zeta::basic_actor<index_agent_disk_t>(resource)
         , log_(log.clone())
-        , index_disk_(std::make_unique<index_disk_t>(path_db / collection_name.database / collection_name.collection /
-                                                         index_name,
-                                                     this->resource()))
-        , collection_name_(std::move(collection_name)) {
-        trace(log_, "index_agent_disk::create {}", index_name);
+        , index_disk_(std::make_unique<index_disk_t>(
+              path_db / std::to_string(static_cast<unsigned>(table_oid)) / index_name,
+              this->resource()))
+        , table_oid_(table_oid) {
+        trace(log_, "index_agent_disk::create {} (table_oid={})", index_name, static_cast<unsigned>(table_oid));
     }
 
     index_agent_disk_t::~index_agent_disk_t() { trace(log_, "delete index_agent_disk_t"); }

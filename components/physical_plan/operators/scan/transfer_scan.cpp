@@ -5,14 +5,14 @@
 namespace components::operators {
 
     transfer_scan::transfer_scan(std::pmr::memory_resource* resource,
-                                 collection_full_name_t name,
+                                 components::catalog::oid_t table_oid,
                                  logical_plan::limit_t limit)
         : read_only_operator_t(resource, log_t{}, operator_type::transfer_scan)
-        , name_(std::move(name))
+        , table_oid_(table_oid)
         , limit_(limit) {}
 
     void transfer_scan::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
-        if (name_.empty())
+        if (table_oid_ == components::catalog::INVALID_OID)
             return;
         async_wait();
     }
@@ -22,7 +22,7 @@ namespace components::operators {
         auto [_s, sf] = actor_zeta::send(ctx->disk_address,
                                          &services::disk::manager_disk_t::storage_scan,
                                          ctx->session,
-                                         name_,
+                                         table_oid_,
                                          std::unique_ptr<table::table_filter_t>(nullptr),
                                          limit_val,
                                          ctx->txn);

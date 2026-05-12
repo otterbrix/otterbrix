@@ -8,6 +8,7 @@
 #include <services/wal/wal_sync_mode.hpp>
 #include <services/wal/record.hpp>
 #include <services/wal/base.hpp>
+#include <components/catalog/catalog_oids.hpp>
 #include <components/tests/generaty.hpp>
 #include <components/configuration/configuration.hpp>
 #include <components/log/log.hpp>
@@ -21,18 +22,20 @@ using namespace components::session;
 using namespace components::vector;
 using namespace components::types;
 
+namespace catalog_ns = components::catalog;
+constexpr auto kMainDb = catalog_ns::well_known_oid::main_database;
+constexpr catalog_ns::oid_t kTestTableOid = 16500;
+
 static const std::filesystem::path base_wal_worker_path = "/tmp/otterbrix_test_wal_worker";
 
 // ---------------------------------------------------------------------------
-// Fixture: sets up a scheduler, a manager, and a single wal_worker_t for the
-// given database name.  The manager is needed because wal_worker_t is spawned
-// as a child actor of the manager.
+// Fixture: sets up a scheduler, a manager, and a single wal_worker_t for
+// the main_database.  The manager spawns workers on demand.
+// Phase 8.E: workers keyed by database_oid (single worker for main_database).
 // ---------------------------------------------------------------------------
 struct test_wal_worker {
-    test_wal_worker(const std::filesystem::path& path,
-                    const std::string& database = "testdb")
+    test_wal_worker(const std::filesystem::path& path)
         : path_(path)
-        , database_(database)
         , resource_()
         , log_(initialization_logger("python", "/tmp/docker_logs/"))
         , scheduler_(new actor_zeta::shared_work(3, 1000))
@@ -50,12 +53,10 @@ struct test_wal_worker {
         std::filesystem::remove_all(path_);
     }
 
-    // Helper: send write_physical_insert through the manager which routes to
-    // the per-database worker.
     actor_zeta::unique_future<services::wal::id_t> send_insert(uint64_t txn_id,
                                                  size_t row_count,
                                                  uint64_t row_start = 0,
-                                                 const std::string& collection = "users") {
+                                                 catalog_ns::oid_t table_oid = kTestTableOid) {
         std::pmr::monotonic_buffer_resource arena(1024 * 64);
         auto chunk = gen_data_chunk(row_count, &arena);
         auto chunk_ptr = std::make_unique<data_chunk_t>(std::move(chunk));
@@ -64,8 +65,7 @@ struct test_wal_worker {
             actor_zeta::otterbrix::send(manager_->address(),
                                         &manager_wal_replicate_t::write_physical_insert,
                                         session_id_t::generate_uid(),
-                                        std::string(database_),
-                                        std::string(collection),
+                                        table_oid,
                                         std::move(chunk_ptr),
                                         row_start,
                                         row_count,
@@ -75,14 +75,13 @@ struct test_wal_worker {
 
     actor_zeta::unique_future<services::wal::id_t> send_delete(uint64_t txn_id,
                                                  const std::pmr::vector<int64_t>& row_ids,
-                                                 const std::string& collection = "users") {
+                                                 catalog_ns::oid_t table_oid = kTestTableOid) {
         auto ids_copy = row_ids; // copy for move
         auto [needs_sched, future] =
             actor_zeta::otterbrix::send(manager_->address(),
                                         &manager_wal_replicate_t::write_physical_delete,
                                         session_id_t::generate_uid(),
-                                        std::string(database_),
-                                        std::string(collection),
+                                        table_oid,
                                         std::move(ids_copy),
                                         static_cast<uint64_t>(row_ids.size()),
                                         txn_id);
@@ -92,7 +91,7 @@ struct test_wal_worker {
     actor_zeta::unique_future<services::wal::id_t> send_update(uint64_t txn_id,
                                                   const std::pmr::vector<int64_t>& row_ids,
                                                   size_t row_count,
-                                                  const std::string& collection = "users") {
+                                                  catalog_ns::oid_t table_oid = kTestTableOid) {
         std::pmr::monotonic_buffer_resource arena(1024 * 64);
         auto chunk = gen_data_chunk(row_count, &arena);
         auto chunk_ptr = std::make_unique<data_chunk_t>(std::move(chunk));
@@ -102,8 +101,7 @@ struct test_wal_worker {
             actor_zeta::otterbrix::send(manager_->address(),
                                         &manager_wal_replicate_t::write_physical_update,
                                         session_id_t::generate_uid(),
-                                        std::string(database_),
-                                        std::string(collection),
+                                        table_oid,
                                         std::move(ids_copy),
                                         std::move(chunk_ptr),
                                         static_cast<uint64_t>(row_count),
@@ -119,7 +117,7 @@ struct test_wal_worker {
                                         session_id_t::generate_uid(),
                                         txn_id,
                                         sync_mode,
-                                        std::string(database_));
+                                        kMainDb);
         return std::move(future);
     }
 
@@ -141,7 +139,6 @@ struct test_wal_worker {
     }
 
     std::filesystem::path path_;
-    std::string database_;
     std::pmr::synchronized_pool_resource resource_;
     log_t log_;
     actor_zeta::scheduler_ptr scheduler_;
@@ -178,8 +175,7 @@ TEST_CASE("wal_worker::insert_write_read") {
         if (r.record_type == wal_record_type::PHYSICAL_INSERT) {
             found_insert = true;
             REQUIRE(r.transaction_id == 100);
-            REQUIRE(r.collection_name.database == "testdb");
-            REQUIRE(r.collection_name.collection == "users");
+            REQUIRE(r.table_oid == kTestTableOid);
             REQUIRE(r.physical_row_count == 10);
             REQUIRE(r.physical_data != nullptr);
             REQUIRE(r.physical_data->size() == 10);
@@ -301,8 +297,7 @@ TEST_CASE("wal_worker::corruption_stop") {
                 actor_zeta::otterbrix::send(manager->address(),
                                             &manager_wal_replicate_t::write_physical_insert,
                                             session_id_t::generate_uid(),
-                                            std::string("testdb"),
-                                            std::string("users"),
+                                            kTestTableOid,
                                             std::make_unique<data_chunk_t>(std::move(chunk)),
                                             static_cast<uint64_t>(i * 4),
                                             uint64_t{4},
@@ -315,7 +310,7 @@ TEST_CASE("wal_worker::corruption_stop") {
                                             session_id_t::generate_uid(),
                                             uint64_t{500},
                                             wal_sync_mode::NORMAL,
-                                            std::string("testdb"));
+                                            kMainDb);
         }
 
         scheduler->stop();
@@ -412,8 +407,7 @@ TEST_CASE("wal_worker::crc_chain_startup") {
                 actor_zeta::otterbrix::send(manager->address(),
                                             &manager_wal_replicate_t::write_physical_insert,
                                             session_id_t::generate_uid(),
-                                            std::string("testdb"),
-                                            std::string("users"),
+                                            kTestTableOid,
                                             std::make_unique<data_chunk_t>(std::move(chunk)),
                                             uint64_t{0},
                                             uint64_t{8},
@@ -426,7 +420,7 @@ TEST_CASE("wal_worker::crc_chain_startup") {
                                             session_id_t::generate_uid(),
                                             uint64_t{600},
                                             wal_sync_mode::NORMAL,
-                                            std::string("testdb"));
+                                            kMainDb);
         }
         {
             auto [ns, fut] =
@@ -468,8 +462,7 @@ TEST_CASE("wal_worker::crc_chain_startup") {
             actor_zeta::otterbrix::send(manager->address(),
                                         &manager_wal_replicate_t::write_physical_insert,
                                         session_id_t::generate_uid(),
-                                        std::string("testdb"),
-                                        std::string("users"),
+                                        kTestTableOid,
                                         std::make_unique<data_chunk_t>(gen_data_chunk(3, std::pmr::get_default_resource())),
                                         uint64_t{0},
                                         uint64_t{3},
@@ -513,8 +506,7 @@ TEST_CASE("wal_worker::segment_rotation") {
             actor_zeta::otterbrix::send(manager->address(),
                                         &manager_wal_replicate_t::write_physical_insert,
                                         session_id_t::generate_uid(),
-                                        std::string("testdb"),
-                                        std::string("bulk_table"),
+                                        kTestTableOid,
                                         std::make_unique<data_chunk_t>(std::move(chunk)),
                                         i * 20,
                                         uint64_t{20},
@@ -559,8 +551,7 @@ TEST_CASE("wal_worker::spanning_record") {
             actor_zeta::otterbrix::send(env.manager_->address(),
                                         &manager_wal_replicate_t::write_physical_insert,
                                         session_id_t::generate_uid(),
-                                        std::string("testdb"),
-                                        std::string("big_table"),
+                                        kTestTableOid,
                                         std::move(chunk_ptr),
                                         uint64_t{0},
                                         uint64_t{500},
@@ -614,8 +605,7 @@ TEST_CASE("wal_worker::fsync_full_mode") {
             actor_zeta::otterbrix::send(manager->address(),
                                         &manager_wal_replicate_t::write_physical_insert,
                                         session_id_t::generate_uid(),
-                                        std::string("testdb"),
-                                        std::string("synced"),
+                                        kTestTableOid,
                                         std::make_unique<data_chunk_t>(std::move(chunk)),
                                         uint64_t{0},
                                         uint64_t{10},
@@ -630,7 +620,7 @@ TEST_CASE("wal_worker::fsync_full_mode") {
                                         session_id_t::generate_uid(),
                                         uint64_t{900},
                                         wal_sync_mode::FULL,
-                                        std::string("testdb"));
+                                        kMainDb);
         // commit should succeed
         REQUIRE(fut.valid());
     }
@@ -679,8 +669,7 @@ TEST_CASE("wal_worker::fsync_off_mode") {
             actor_zeta::otterbrix::send(manager->address(),
                                         &manager_wal_replicate_t::write_physical_insert,
                                         session_id_t::generate_uid(),
-                                        std::string("testdb"),
-                                        std::string("unsynced"),
+                                        kTestTableOid,
                                         std::make_unique<data_chunk_t>(std::move(chunk)),
                                         uint64_t{0},
                                         uint64_t{10},
@@ -696,7 +685,7 @@ TEST_CASE("wal_worker::fsync_off_mode") {
                                         session_id_t::generate_uid(),
                                         uint64_t{1000},
                                         wal_sync_mode::OFF,
-                                        std::string("testdb"));
+                                        kMainDb);
         REQUIRE(fut.valid());
     }
 

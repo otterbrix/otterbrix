@@ -10,7 +10,8 @@
 
 #include <core/executor.hpp>
 
-#include <components/base/collection_full_name.hpp>
+#include <components/catalog/catalog_codes.hpp>
+#include <components/catalog/catalog_oids.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>
@@ -32,12 +33,12 @@ namespace services::index {
 
         index_agent_disk_t(std::pmr::memory_resource* resource,
                            const path_t& path_db,
-                           collection_full_name_t collection_name,
+                           components::catalog::oid_t table_oid,
                            const index_name_t& index_name,
                            log_t& log);
         ~index_agent_disk_t();
 
-        const collection_full_name_t& collection_name() const { return collection_name_; }
+        components::catalog::oid_t table_oid() const { return table_oid_; }
         bool is_dropped() const;
 
         unique_future<void> drop(session_id_t session);
@@ -66,7 +67,7 @@ namespace services::index {
     private:
         log_t log_;
         std::unique_ptr<index_disk_t> index_disk_;
-        collection_full_name_t collection_name_;
+        components::catalog::oid_t table_oid_;
         bool is_dropped_{false};
     };
 

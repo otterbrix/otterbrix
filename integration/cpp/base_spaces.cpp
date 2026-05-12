@@ -1,6 +1,7 @@
 #include "base_spaces.hpp"
 #include <actor-zeta.hpp>
 #include <actor-zeta/spawn.hpp>
+#include <components/catalog/catalog_oids.hpp>
 #include <components/logical_plan/node_checkpoint.hpp>
 #include <core/executor.hpp>
 #include <core/file/file_handle.hpp>
@@ -119,21 +120,22 @@ namespace otterbrix {
 
         if (disk_ptr) {
             // Bring up the pg_catalog system tables before any DDL/DML can flow through
-            // the actor pipeline. Disk-on mode: on fresh install, bootstrap creates the 9
-            // .otbx files; on restart, load_system_tables_sync picks them up. Disk-off mode:
-            // bootstrap creates in-memory pg_catalog storages so DDL paths still resolve.
-            const bool disk_persisted = config.disk.on && !config.disk.path.empty();
-            const auto pg_class_otbx =
-                config.disk.path / "pg_catalog" / "main" / "pg_class" / "table.otbx";
-            if (disk_persisted && std::filesystem::exists(pg_class_otbx)) {
-                disk_ptr->load_system_tables_sync();
-                // User storages are NOT pre-loaded here. WAL replay calls
-                // load_storage_for_wal_replay_sync() on demand for each disk-backed table it
-                // encounters, and resolve_table() lazy-loads any table not yet in storages_.
-                // Startup time is O(system-tables) rather than O(all-user-tables).
-            } else {
-                disk_ptr->bootstrap_system_tables_sync();
-            }
+            // the actor pipeline. bootstrap_system_tables_sync is idempotent per-table:
+            // for each well_known system oid, load the existing .otbx if present, else
+            // create a fresh storage. No external existence probe needed — the disk
+            // actor owns the per-table decision.
+            //
+            // User storages are NOT pre-loaded. WAL replay calls
+            // load_storage_for_wal_replay_sync on demand; resolve_table lazy-loads
+            // anything still missing. Startup is O(system-tables).
+            disk_ptr->bootstrap_system_tables_sync();
+            // Phase 11.C: walk config_.path for user-table .otbx files and load each.
+            // Loaded storages bring their .otbx.wal_id sidecar into memory, so the
+            // WAL-replay filter below can correctly skip already-checkpointed
+            // records for user tables (previously the sidecar lived at the wrong
+            // path — under main_database — so peek_from_disk for user tables
+            // always returned 0 and every user record replayed).
+            disk_ptr->load_user_table_storages_sync();
         }
         if (disk_ptr) {
             // Pass WAL address: disk uses this to write pg_catalog WAL records inline from
@@ -147,41 +149,62 @@ namespace otterbrix {
         manager_dispatcher_->init_from_state(std::move(collections));
 
         // Replay physical WAL records directly to storage (before schedulers start). Group
-        // by collection: pg_catalog.* records are replayed first (sequential — small volume,
-        // mutates the
-        // catalog the rest of restore depends on); user-table records run in parallel.
+        // by oid: system-table (oid < FIRST_USER_OID) records are replayed first
+        // (sequential — small volume, mutates the catalog the rest of restore depends on);
+        // user-table records run in parallel.
+        //
+        // Phase 8.E: WAL records carry table_oid directly — no cfn-resolve roundtrip.
         if (disk_ptr && !wal_records.empty()) {
-            std::unordered_map<collection_full_name_t, std::vector<services::wal::record_t*>, collection_name_hash>
-                pg_catalog_by_collection;
-            std::unordered_map<collection_full_name_t, std::vector<services::wal::record_t*>, collection_name_hash>
-                user_by_collection;
+            std::unordered_map<components::catalog::oid_t, std::vector<services::wal::record_t*>>
+                system_by_oid;
+            std::unordered_map<components::catalog::oid_t, std::vector<services::wal::record_t*>>
+                user_by_oid;
+            constexpr components::catalog::oid_t main_db_oid =
+                components::catalog::well_known_oid::main_database;
+            // Phase 8.A made .otbx + sidecar authoritative for *all* checkpointed
+            // tables (system and user alike). Records at or before sidecar.wal_id
+            // are already absorbed into the loaded storage; replaying them would
+            // duplicate catalog rows — bug #160 (P11.B). Tables without a sidecar
+            // (cp_id == 0, never checkpointed) still replay unconditionally.
+            // Cache the per-table sidecar wal_id to avoid one fs read per record.
+            std::unordered_map<components::catalog::oid_t, services::wal::id_t> cp_cache;
+            auto cp_for = [&](components::catalog::oid_t oid) {
+                auto [it, inserted] = cp_cache.try_emplace(oid);
+                if (inserted)
+                    it->second = disk_ptr->peek_checkpoint_wal_id_from_disk(oid, main_db_oid);
+                return it->second;
+            };
             for (auto& record : wal_records) {
                 if (!record.is_physical())
                     continue;
-                if (record.collection_name.database == "pg_catalog") {
-                    pg_catalog_by_collection[record.collection_name].push_back(&record);
+                if (record.table_oid == components::catalog::INVALID_OID) {
+                    continue;
+                }
+                auto cp_id = cp_for(record.table_oid);
+                if (cp_id > services::wal::id_t{0} && record.id <= cp_id) {
+                    continue;
+                }
+                if (record.table_oid < components::catalog::FIRST_USER_OID) {
+                    system_by_oid[record.table_oid].push_back(&record);
                 } else {
-                    // Peek at the .wal_id sidecar without loading the storage.
-                    // Records at or before the checkpoint are already in the .otbx — skip.
-                    auto cp_id = disk_ptr->peek_checkpoint_wal_id_from_disk(record.collection_name);
-                    if (cp_id > services::wal::id_t{0} && record.id <= cp_id) {
-                        continue;
-                    }
-                    user_by_collection[record.collection_name].push_back(&record);
+                    user_by_oid[record.table_oid].push_back(&record);
                 }
             }
 
-            auto replay_one = [disk_ptr](const collection_full_name_t& name,
+            auto replay_one = [disk_ptr](components::catalog::oid_t table_oid,
                                           std::vector<services::wal::record_t*>& records) {
+                constexpr components::catalog::oid_t main_db_oid =
+                    components::catalog::well_known_oid::main_database;
                 for (auto* r : records) {
                     switch (r->record_type) {
                         case services::wal::wal_record_type::PHYSICAL_INSERT:
                             if (r->physical_data) {
-                                if (name.database != "pg_catalog" && !disk_ptr->has_storage(name)) {
-                                    // Try to load disk-backed .otbx first.
-                                    disk_ptr->load_storage_for_wal_replay_sync(name);
-                                    // Still not loaded → in-memory table; create from WAL types.
-                                    if (!disk_ptr->has_storage(name)) {
+                                if (!disk_ptr->has_storage(table_oid)) {
+                                    // Try lazy-load from .otbx; if that fails (table is
+                                    // in-memory or .otbx absent), synthesise an in-memory
+                                    // storage from the WAL chunk's column types.
+                                    disk_ptr->load_storage_for_wal_replay_sync(table_oid, main_db_oid);
+                                    if (!disk_ptr->has_storage(table_oid)) {
                                         auto types = r->physical_data->types();
                                         std::vector<components::table::column_definition_t> cols;
                                         cols.reserve(types.size());
@@ -190,18 +213,20 @@ namespace otterbrix {
                                                 t.has_alias() ? t.alias() : std::string{},
                                                 t);
                                         }
-                                        disk_ptr->create_storage_with_columns_sync(name, std::move(cols));
+                                        disk_ptr->create_storage_with_columns_sync(table_oid, main_db_oid,
+                                                                                    std::move(cols));
                                     }
                                 }
-                                disk_ptr->direct_append_sync(name, *r->physical_data);
+                                disk_ptr->direct_append_sync(table_oid, *r->physical_data);
                             }
                             break;
-                        case services::wal::wal_record_type::PHYSICAL_DELETE:
-                            disk_ptr->direct_delete_sync(name, r->physical_row_ids, r->physical_row_count);
+                        case services::wal::wal_record_type::PHYSICAL_DELETE: {
+                            disk_ptr->direct_delete_sync(table_oid, r->physical_row_ids, r->physical_row_count);
                             break;
+                        }
                         case services::wal::wal_record_type::PHYSICAL_UPDATE:
                             if (r->physical_data) {
-                                disk_ptr->direct_update_sync(name, r->physical_row_ids, *r->physical_data);
+                                disk_ptr->direct_update_sync(table_oid, r->physical_row_ids, *r->physical_data);
                             }
                             break;
                         default:
@@ -210,38 +235,52 @@ namespace otterbrix {
                 }
             };
 
-            // Replay pg_catalog records first (sequential — mutates the catalog
+            // Replay system-table records first (sequential — mutates the catalog
             // that all user-table replays depend on).
-            for (auto& [name, records] : pg_catalog_by_collection) {
-                replay_one(name, records);
+            for (auto& [oid, records] : system_by_oid) {
+                replay_one(oid, records);
             }
 
-            // Replay user collections in parallel.
+            // Phase 11.C: after system replay, pg_class reflects the final
+            // catalog state. Drop user-table replay buckets whose oid is no
+            // longer alive (table was DROPped — its pg_class row is gone and
+            // its .otbx was physically removed by drop_storage). Without this
+            // filter, surviving WAL INSERT records would resurrect a phantom
+            // storage at the dropped oid; if the oid is later recycled by
+            // re-CREATE TABLE, the new schema collides with the phantom and
+            // queries return stale data — disk_drop_table_survives_restart.
+            auto alive_user_oids = disk_ptr->alive_user_oids_sync();
+            for (auto it = user_by_oid.begin(); it != user_by_oid.end();) {
+                if (alive_user_oids.count(it->first) == 0) {
+                    trace(log_,
+                          "spaces::skipping {} WAL records for dropped user oid {}",
+                          it->second.size(),
+                          static_cast<unsigned>(it->first));
+                    it = user_by_oid.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+
+            // Replay user tables in parallel.
             std::vector<std::thread> workers;
-            workers.reserve(user_by_collection.size());
-            for (auto& [name, records] : user_by_collection) {
+            workers.reserve(user_by_oid.size());
+            for (auto& [oid, records] : user_by_oid) {
                 workers.emplace_back(
-                    [&replay_one, &name, &records] { replay_one(name, records); });
+                    [&replay_one, oid, &records] { replay_one(oid, records); });
             }
             for (auto& w : workers) {
                 w.join();
             }
-            // Re-aggregate counts for trace below.
-            std::unordered_map<collection_full_name_t, std::vector<services::wal::record_t*>, collection_name_hash>
-                by_collection;
-            by_collection.reserve(pg_catalog_by_collection.size() + user_by_collection.size());
-            for (auto& kv : pg_catalog_by_collection) by_collection.emplace(std::move(kv));
-            for (auto& kv : user_by_collection) by_collection.emplace(std::move(kv));
 
             uint64_t physical_count = 0;
-            for (auto& [name, records] : by_collection) {
-                physical_count += records.size();
-            }
+            for (auto& [oid, records] : system_by_oid) physical_count += records.size();
+            for (auto& [oid, records] : user_by_oid)   physical_count += records.size();
             if (physical_count > 0) {
                 trace(log_,
-                      "spaces::replayed {} physical WAL records across {} collections in parallel",
+                      "spaces::replayed {} physical WAL records across {} tables in parallel",
                       physical_count,
-                      by_collection.size());
+                      system_by_oid.size() + user_by_oid.size());
             }
         }
 
@@ -266,9 +305,10 @@ namespace otterbrix {
 
             for (auto& index_def : index_definitions) {
                 trace(log_,
-                      "spaces::creating index: {} on {}",
+                      "spaces::creating index: {} on {}.{}",
                       index_def->name(),
-                      index_def->collection_full_name().to_string());
+                      index_def->dbname(),
+                      index_def->relname());
                 auto cursor = wrapper_dispatcher_->execute_plan(session, index_def, nullptr);
                 if (cursor->is_error()) {
                     warn(log_, "spaces::failed to create index {}: {}", index_def->name(), cursor->get_error().what);

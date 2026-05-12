@@ -10,6 +10,7 @@
 #include <services/wal/wal.hpp>
 #include <services/wal/wal_sync_mode.hpp>
 
+#include <components/catalog/catalog_oids.hpp>
 #include <components/configuration/configuration.hpp>
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>
@@ -45,13 +46,13 @@ namespace services::wal {
         void sync(address_pack pack);
         void set_run_fn(run_fn_t fn) { run_fn_ = std::move(fn); }
 
-        // Contract handlers
+        // Contract handlers — Phase 8.E: cfn replaced by table_oid / database_oid.
         unique_future<std::vector<record_t>> load(session_id_t session, wal::id_t wal_id);
 
         unique_future<wal::id_t> commit_txn(session_id_t session,
-                                       uint64_t txn_id,
-                                       wal_sync_mode sync_mode,
-                                       std::string database_name);
+                                            uint64_t txn_id,
+                                            wal_sync_mode sync_mode,
+                                            components::catalog::oid_t database_oid);
 
         unique_future<void> truncate_before(session_id_t session, wal::id_t checkpoint_wal_id);
 
@@ -61,8 +62,7 @@ namespace services::wal {
 
         unique_future<wal::id_t>
         write_physical_insert(session_id_t session,
-                              std::string database,
-                              std::string collection,
+                              components::catalog::oid_t table_oid,
                               std::unique_ptr<components::vector::data_chunk_t> data_chunk,
                               uint64_t row_start,
                               uint64_t row_count,
@@ -70,16 +70,14 @@ namespace services::wal {
 
         unique_future<wal::id_t>
         write_physical_delete(session_id_t session,
-                              std::string database,
-                              std::string collection,
+                              components::catalog::oid_t table_oid,
                               std::pmr::vector<int64_t> row_ids,
                               uint64_t count,
                               uint64_t txn_id);
 
         unique_future<wal::id_t>
         write_physical_update(session_id_t session,
-                              std::string database,
-                              std::string collection,
+                              components::catalog::oid_t table_oid,
                               std::pmr::vector<int64_t> row_ids,
                               std::unique_ptr<components::vector::data_chunk_t> new_data,
                               uint64_t count,
@@ -112,7 +110,11 @@ namespace services::wal {
         std::uintmax_t total_wal_bytes() const noexcept;
 
     private:
-        wal_worker_t* get_or_create_worker(const std::string& database);
+        // Phase 8.E: workers keyed by database_oid (not by string database name).
+        // Phase 8.E uses main_database for all WAL records — single worker model;
+        // multi-database support comes when CREATE DATABASE allocates per-namespace
+        // workers.
+        wal_worker_t* get_or_create_worker(components::catalog::oid_t database_oid);
 
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
@@ -125,7 +127,7 @@ namespace services::wal {
         actor_zeta::address_t manager_disk_;
         actor_zeta::address_t manager_dispatcher_;
 
-        std::unordered_map<std::string, wal_worker_ptr> wal_actors_;
+        std::unordered_map<components::catalog::oid_t, wal_worker_ptr> wal_actors_;
 
         run_fn_t run_fn_{[] { std::this_thread::yield(); }};
         actor_zeta::behavior_t current_behavior_;

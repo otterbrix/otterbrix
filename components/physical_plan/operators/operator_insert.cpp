@@ -8,16 +8,31 @@
 
 namespace components::operators {
 
-    operator_insert::operator_insert(std::pmr::memory_resource* resource, log_t log, collection_full_name_t name)
+    operator_insert::operator_insert(std::pmr::memory_resource* resource,
+                                       log_t log,
+                                       catalog::oid_t table_oid)
         : read_write_operator_t(resource, log, operator_type::insert)
-        , name_(std::move(name)) {}
+        , table_oid_(table_oid) {}
+
+    void operator_insert::accept_resolved_metadata(resolved_table_metadata_t metadata) {
+        // Phase 13 T15 — capture metadata so await_async_and_resume can build
+        // a chunk_position -> table_position translation before storage_append.
+        // Adopt table_oid_ from the resolver when this operator was constructed
+        // without one (oid-only DML routing typically passes the oid through
+        // node_insert, but the resolve-sibling form is the alternative).
+        if (table_oid_ == catalog::INVALID_OID &&
+            metadata.table_oid != catalog::INVALID_OID) {
+            table_oid_ = metadata.table_oid;
+        }
+        resolved_metadata_ = std::move(metadata);
+    }
 
     void operator_insert::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
         if (left_ && left_->output()) {
             output_ = left_->output();
             modified_ = operators::make_operator_write_data(resource());
         }
-        if (output_ && output_->size() > 0 && !name_.empty()) {
+        if (output_ && output_->size() > 0 && table_oid_ != catalog::INVALID_OID) {
             async_wait();
         }
     }
@@ -33,7 +48,25 @@ namespace components::operators {
             co_return;
         }
         auto& out_chunk = output_->data_chunk();
-        components::execution_context_t exec_ctx{ctx->session, ctx->txn, name_};
+        components::execution_context_t exec_ctx{ctx->session, ctx->txn, table_oid_};
+
+        // Phase 13 T15 — when a resolver sibling supplied catalog metadata,
+        // compute a chunk_position -> table_position translation via alias
+        // matching. The disk-actor's storage_append already aligns by alias
+        // (with positional fallback), so the translation is built and stashed
+        // for diagnostics today — the field is the wiring hook for a future
+        // storage_append(...,key_translation) signature change. We log
+        // mismatches at trace level so resolver/data drift is visible.
+        if (resolved_metadata_.has_value() && out_chunk.column_count() > 0) {
+            auto translation = build_column_key_translation(*resolved_metadata_, out_chunk);
+            for (std::size_t i = 0; i < translation.size(); ++i) {
+                if (translation[i] < 0 && out_chunk.data[i].type().has_alias()) {
+                    trace(log_,
+                          "operator_insert: resolved metadata has no column matching chunk alias '{}'",
+                          std::string(out_chunk.data[i].type().alias()));
+                }
+            }
+        }
 
         // 1. Capture WAL data BEFORE storage_append moves the chunk.
         auto wal_data = std::make_unique<data_chunk_t>(resource_, out_chunk.types(), out_chunk.size());
@@ -45,6 +78,7 @@ namespace components::operators {
         auto [_a, af] = actor_zeta::send(ctx->disk_address,
                                           &services::disk::manager_disk_t::storage_append,
                                           exec_ctx,
+                                          table_oid_,
                                           std::move(data_copy));
         auto [start_row, actual_count] = co_await std::move(af);
 
@@ -60,8 +94,7 @@ namespace components::operators {
             auto [_w, wf] = actor_zeta::send(ctx->wal_address,
                                               &services::wal::manager_wal_replicate_t::write_physical_insert,
                                               ctx->session,
-                                              std::string(name_.database),
-                                              std::string(name_.collection),
+                                              table_oid_,
                                               std::move(wal_data),
                                               static_cast<uint64_t>(start_row),
                                               actual_count,
@@ -81,6 +114,7 @@ namespace components::operators {
             auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
                                                 &services::index::manager_index_t::insert_rows,
                                                 exec_ctx,
+                                                table_oid_,
                                                 std::move(idx_data),
                                                 static_cast<uint64_t>(start_row),
                                                 actual_count);
@@ -90,7 +124,7 @@ namespace components::operators {
         // 5. Record swap-info on context for executor's commit-side block.
         ctx->dml_append_row_start = static_cast<int64_t>(start_row);
         ctx->dml_append_row_count = actual_count;
-        ctx->dml_collection = name_;
+        ctx->dml_table_oid = table_oid_;
 
         // 6. Build empty result chunk (output for downstream operators).
         data_chunk_t res_chunk(resource_, {}, actual_count);

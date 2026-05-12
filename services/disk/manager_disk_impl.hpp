@@ -175,21 +175,29 @@ namespace detail {
     using components::catalog::oid_to_builtin_type;
 
     // ---------------------------------------------------------------------------
-    // pg_catalog.main collection name constants
+    // pg_catalog system table OIDs (well-known) — internal aliases.
     // ---------------------------------------------------------------------------
 
-    inline const collection_full_name_t pg_database_name        {"pg_catalog", "main", "pg_database"};
-    inline const collection_full_name_t pg_namespace_name       {"pg_catalog", "main", "pg_namespace"};
-    inline const collection_full_name_t pg_class_name           {"pg_catalog", "main", "pg_class"};
-    inline const collection_full_name_t pg_attribute_name       {"pg_catalog", "main", "pg_attribute"};
-    inline const collection_full_name_t pg_type_name            {"pg_catalog", "main", "pg_type"};
-    inline const collection_full_name_t pg_depend_name          {"pg_catalog", "main", "pg_depend"};
-    inline const collection_full_name_t pg_index_name           {"pg_catalog", "main", "pg_index"};
-    inline const collection_full_name_t pg_proc_name            {"pg_catalog", "main", "pg_proc"};
-    inline const collection_full_name_t pg_constraint_name      {"pg_catalog", "main", "pg_constraint"};
-    inline const collection_full_name_t pg_sequence_name        {"pg_catalog", "main", "pg_sequence"};
-    inline const collection_full_name_t pg_rewrite_name         {"pg_catalog", "main", "pg_rewrite"};
-    inline const collection_full_name_t pg_computed_column_name {"pg_catalog", "main", "pg_computed_column"};
+    namespace wk = components::catalog::well_known_oid;
+    inline constexpr components::catalog::oid_t pg_database_oid        = wk::pg_database_table;
+    inline constexpr components::catalog::oid_t pg_namespace_oid_tbl   = wk::pg_namespace_table;
+    inline constexpr components::catalog::oid_t pg_class_oid           = wk::pg_class_table;
+    inline constexpr components::catalog::oid_t pg_attribute_oid       = wk::pg_attribute_table;
+    inline constexpr components::catalog::oid_t pg_type_oid            = wk::pg_type_table;
+    inline constexpr components::catalog::oid_t pg_depend_oid          = wk::pg_depend_table;
+    inline constexpr components::catalog::oid_t pg_index_oid           = wk::pg_index_table;
+    inline constexpr components::catalog::oid_t pg_proc_oid            = wk::pg_proc_table;
+    inline constexpr components::catalog::oid_t pg_constraint_oid      = wk::pg_constraint_table;
+    inline constexpr components::catalog::oid_t pg_sequence_oid        = wk::pg_sequence_table;
+    inline constexpr components::catalog::oid_t pg_rewrite_oid         = wk::pg_rewrite_table;
+    inline constexpr components::catalog::oid_t pg_computed_column_oid = wk::pg_computed_column_table;
+
+    // ---------------------------------------------------------------------------
+    // Phase 8.E: cfn↔oid bridge helpers (resolve_oid_for_cfn_local /
+    // resolve_cfn_for_oid_local) and lookup_oid_by_cfn were removed once WAL
+    // records started carrying table_oid directly. There is no remaining
+    // cfn-keyed routing path that needs to translate to oid (or back).
+    // ---------------------------------------------------------------------------
 
 } // namespace detail
 

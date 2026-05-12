@@ -1,5 +1,7 @@
 #include "catalog_view.hpp"
 
+#include <components/catalog/catalog_codes.hpp>
+#include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/helpers.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/logical_plan/node_create_constraint.hpp>
@@ -67,7 +69,17 @@ namespace services::dispatcher {
                                 std::string name) {
         const auto key = make_oid_name_key(namespace_oid, name);
         if (auto it = tbl_cache_.find(key); it != tbl_cache_.end()) {
-            co_return &it->second;
+            // Phase 11.F-A: relkind='g' (dynamic schema) tables evolve their
+            // column set across every INSERT (register) and DDL (DROP COLUMN
+            // tombstone). The cache has no invalidation hook, so caching a
+            // relkind='g' entry serves stale columns to subsequent planner /
+            // validate calls — dynamic_schema_drop_column saw 'b' after DROP
+            // because the cached resolved_table_t still listed it. Re-resolve
+            // on every lookup for relkind='g'; relkind='r' regular tables
+            // continue to be cached (schema is static).
+            if (it->second.relkind != components::catalog::relkind::computed) {
+                co_return &it->second;
+            }
         }
         if (disk_address_ == actor_zeta::address_t::empty_address()) {
             co_return nullptr;
@@ -100,7 +112,14 @@ namespace services::dispatcher {
             rc.type.set_alias(rc.attname);
             payload.columns.push_back(std::move(rc));
         }
-        auto [it, inserted] = tbl_cache_.emplace(key, std::move(payload));
+        // Phase 11.F-A: insert_or_assign so the relkind='g' re-resolve path
+        // (cache bypassed above) overwrites the stale cached payload instead
+        // of returning a stale one.
+        auto [it, inserted] = tbl_cache_.insert_or_assign(key, std::move(payload));
+        // Phase 8.F: populate the oid-keyed secondary index. unordered_map
+        // guarantees pointer stability for existing elements, so the cached
+        // pointer remains valid for the lifetime of catalog_view_t.
+        tbl_by_oid_[it->second.oid] = &it->second;
         co_return &it->second;
     }
 
@@ -172,6 +191,14 @@ namespace services::dispatcher {
         return nullptr;
     }
 
+    const resolved_table_t*
+    catalog_view_t::try_get_table_by_oid(components::catalog::oid_t oid) const noexcept {
+        if (auto it = tbl_by_oid_.find(oid); it != tbl_by_oid_.end()) {
+            return it->second;
+        }
+        return nullptr;
+    }
+
     // ── FK snapshot helpers ──────────────────────────────────────────────────────
 
     namespace {
@@ -210,10 +237,10 @@ namespace services::dispatcher {
             return out;
         }
 
-        const collection_full_name_t pg_constraint_coll{"pg_catalog", "main", "pg_constraint"};
-        const collection_full_name_t pg_attribute_coll{"pg_catalog", "main", "pg_attribute"};
-        const collection_full_name_t pg_class_coll{"pg_catalog", "main", "pg_class"};
-        const collection_full_name_t pg_namespace_coll{"pg_catalog", "main", "pg_namespace"};
+        constexpr components::catalog::oid_t pg_constraint_coll = components::catalog::well_known_oid::pg_constraint_table;
+        constexpr components::catalog::oid_t pg_attribute_coll  = components::catalog::well_known_oid::pg_attribute_table;
+        constexpr components::catalog::oid_t pg_class_coll      = components::catalog::well_known_oid::pg_class_table;
+        constexpr components::catalog::oid_t pg_namespace_coll  = components::catalog::well_known_oid::pg_namespace_table;
 
         constexpr uint64_t kClsRelname      = 1;
         constexpr uint64_t kClsRelnamespace = 2;

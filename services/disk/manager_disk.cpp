@@ -71,7 +71,6 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::delete_pg_catalog_rows>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::scan_by_key>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::read_rows_by_key>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::scan_by_table_oid>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::compact_relkind_g_storage>,
         };
 
@@ -405,10 +404,6 @@ namespace services::disk {
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::delete_pg_catalog_rows>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::delete_pg_catalog_rows, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::scan_by_table_oid>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::scan_by_table_oid, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::compact_relkind_g_storage>: {

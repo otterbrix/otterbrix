@@ -5,10 +5,13 @@
 namespace components::logical_plan {
 
     node_create_macro_t::node_create_macro_t(std::pmr::memory_resource* resource,
-                                             const collection_full_name_t& name,
+                                             std::string dbname,
+                                             std::string macroname,
                                              std::vector<std::string> parameters,
                                              std::string body_sql)
-        : node_t(resource, node_type::create_macro_t, name)
+        : node_t(resource, node_type::create_macro_t)
+        , dbname_(std::move(dbname))
+        , macroname_(std::move(macroname))
         , parameters_(std::move(parameters))
         , body_sql_(std::move(body_sql)) {}
 
@@ -16,15 +19,20 @@ namespace components::logical_plan {
 
     std::string node_create_macro_t::to_string_impl() const {
         std::stringstream stream;
-        stream << "$create_macro: " << database_name() << "." << collection_name();
+        stream << "$create_macro: " << dbname_ << "." << macroname_;
         return stream.str();
     }
 
     node_create_macro_ptr make_node_create_macro(std::pmr::memory_resource* resource,
-                                                 const collection_full_name_t& name,
+                                                 std::string dbname,
+                                                 std::string macroname,
                                                  std::vector<std::string> parameters,
                                                  std::string body_sql) {
-        return {new node_create_macro_t{resource, name, std::move(parameters), std::move(body_sql)}};
+        return {new node_create_macro_t{resource,
+                                        std::move(dbname),
+                                        std::move(macroname),
+                                        std::move(parameters),
+                                        std::move(body_sql)}};
     }
 
 } // namespace components::logical_plan

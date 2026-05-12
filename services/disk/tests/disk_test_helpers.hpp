@@ -42,7 +42,7 @@ inline void append_writes(Fx& fx,
                           Writes& writes,
                           std::vector<components::pg_catalog_append_range_t>& appends_out) {
     for (auto& w : writes) {
-        auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, ctx, w.table, std::move(w.row));
+        auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, ctx, w.table_oid, std::move(w.row));
         appends_out.push_back(std::move(rng));
     }
 }
@@ -66,8 +66,7 @@ catalog::oid_t test_create_table(Fx& fx, catalog::oid_t ns_oid, const std::strin
     const catalog::oid_t table_oid = oids[0];
     catalog::oid_batch_t batch;
     batch.oids = std::move(oids);
-    collection_full_name_t coll{"public", "main", name};
-    auto writes = catalog::build_create_table_writes(&fx.resource, coll, cols, false, ns_oid, batch, relkind_char);
+    auto writes = catalog::build_create_table_writes(&fx.resource, std::string("public"), name, cols, false, ns_oid, batch, relkind_char);
     std::vector<components::pg_catalog_append_range_t> appends_local;
     append_writes(fx, auto_ctx(), writes, appends_local);
     fx.invoke(&manager_disk_t::storage_commit_appends, rebuild_ctx(), std::uint64_t{1000}, std::move(appends_local));
@@ -80,8 +79,7 @@ catalog::oid_t test_create_computing_table(Fx& fx, catalog::oid_t ns_oid, const 
     const catalog::oid_t table_oid = oids[0];
     catalog::oid_batch_t batch;
     batch.oids = std::move(oids);
-    collection_full_name_t coll{"public", "main", name};
-    auto writes = catalog::build_create_table_writes(&fx.resource, coll, {}, false, ns_oid, batch,
+    auto writes = catalog::build_create_table_writes(&fx.resource, std::string("public"), name, {}, false, ns_oid, batch,
                                                       catalog::relkind::computed);
     std::vector<components::pg_catalog_append_range_t> appends_local;
     append_writes(fx, auto_ctx(), writes, appends_local);
@@ -98,10 +96,11 @@ catalog::oid_t test_create_index(Fx& fx, catalog::oid_t ns_oid, catalog::oid_t t
     const catalog::oid_t index_oid = oids[0];
     catalog::oid_batch_t batch;
     batch.oids = std::move(oids);
-    auto writes = catalog::build_create_index_writes(&fx.resource, index_name, ns_oid, table_oid, index_oid, col_names, col_attoids);
+    (void)col_names; // Phase 9.G: column_names dropped from build_create_index_writes
+    auto writes = catalog::build_create_index_writes(&fx.resource, index_name, ns_oid, table_oid, index_oid, col_attoids);
     std::vector<components::pg_catalog_append_range_t> appends_local;
     append_writes(fx, auto_ctx(), writes, appends_local);
-    const collection_full_name_t pg_index{"pg_catalog", "main", "pg_index"};
+    constexpr catalog::oid_t pg_index = catalog::well_known_oid::pg_index_table;
     fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_index, std::int64_t{0}, index_oid);
     std::string indkey;
     for (std::size_t i = 0; i < col_attoids.size(); ++i) {
@@ -111,7 +110,7 @@ catalog::oid_t test_create_index(Fx& fx, catalog::oid_t ns_oid, catalog::oid_t t
     auto valid_row = catalog::build_pg_index_row(&fx.resource, index_oid, table_oid, indkey, true);
     auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_index, std::move(valid_row));
     appends_local.push_back(std::move(rng));
-    std::set<collection_full_name_t> deletes_local{pg_index};
+    std::set<catalog::oid_t> deletes_local{pg_index};
     fx.invoke(&manager_disk_t::storage_commit_appends, txn_ctx(), std::uint64_t{1000}, std::move(appends_local));
     fx.invoke(&manager_disk_t::storage_commit_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
     return index_oid;
@@ -217,76 +216,76 @@ catalog::oid_t test_create_constraint(Fx& fx, catalog::oid_t table_oid, const st
 
 template<typename Fx>
 void test_drop_table(Fx& fx, catalog::oid_t table_oid) {
-    const collection_full_name_t pg_class{"pg_catalog", "main", "pg_class"};
-    const collection_full_name_t pg_attr{"pg_catalog", "main", "pg_attribute"};
-    const collection_full_name_t pg_dep{"pg_catalog", "main", "pg_depend"};
+    constexpr catalog::oid_t pg_class = catalog::well_known_oid::pg_class_table;
+    constexpr catalog::oid_t pg_attr  = catalog::well_known_oid::pg_attribute_table;
+    constexpr catalog::oid_t pg_dep   = catalog::well_known_oid::pg_depend_table;
     fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_class, std::int64_t{0}, table_oid);
     fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_attr,  std::int64_t{1}, table_oid);
     fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep,   std::int64_t{1}, table_oid);
     fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep,   std::int64_t{3}, table_oid);
-    std::set<collection_full_name_t> deletes_local{pg_class, pg_attr, pg_dep};
+    std::set<catalog::oid_t> deletes_local{pg_class, pg_attr, pg_dep};
     fx.invoke(&manager_disk_t::storage_commit_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
 }
 
 template<typename Fx>
 void test_drop_namespace(Fx& fx, catalog::oid_t ns_oid) {
-    const collection_full_name_t pg_ns{"pg_catalog", "main", "pg_namespace"};
-    const collection_full_name_t pg_dep{"pg_catalog", "main", "pg_depend"};
+    constexpr catalog::oid_t pg_ns  = catalog::well_known_oid::pg_namespace_table;
+    constexpr catalog::oid_t pg_dep = catalog::well_known_oid::pg_depend_table;
     fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_ns,  std::int64_t{0}, ns_oid);
     fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep, std::int64_t{1}, ns_oid);
     fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep, std::int64_t{3}, ns_oid);
-    std::set<collection_full_name_t> deletes_local{pg_ns, pg_dep};
+    std::set<catalog::oid_t> deletes_local{pg_ns, pg_dep};
     fx.invoke(&manager_disk_t::storage_commit_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
 }
 
 template<typename Fx>
 void test_drop_index(Fx& fx, catalog::oid_t index_oid) {
-    const collection_full_name_t pg_idx{"pg_catalog", "main", "pg_index"};
-    const collection_full_name_t pg_cls{"pg_catalog", "main", "pg_class"};
-    const collection_full_name_t pg_dep{"pg_catalog", "main", "pg_depend"};
+    constexpr catalog::oid_t pg_idx = catalog::well_known_oid::pg_index_table;
+    constexpr catalog::oid_t pg_cls = catalog::well_known_oid::pg_class_table;
+    constexpr catalog::oid_t pg_dep = catalog::well_known_oid::pg_depend_table;
     fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_idx, std::int64_t{0}, index_oid);
     fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_cls, std::int64_t{0}, index_oid);
     fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep, std::int64_t{1}, index_oid);
     fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep, std::int64_t{3}, index_oid);
-    std::set<collection_full_name_t> deletes_local{pg_idx, pg_cls, pg_dep};
+    std::set<catalog::oid_t> deletes_local{pg_idx, pg_cls, pg_dep};
     fx.invoke(&manager_disk_t::storage_commit_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
 }
 
 template<typename Fx>
 void test_drop_sequence(Fx& fx, catalog::oid_t seq_oid) {
-    const collection_full_name_t pg_class{"pg_catalog", "main", "pg_class"};
-    const collection_full_name_t pg_seq {"pg_catalog", "main", "pg_sequence"};
-    const collection_full_name_t pg_dep {"pg_catalog", "main", "pg_depend"};
+    constexpr catalog::oid_t pg_class = catalog::well_known_oid::pg_class_table;
+    constexpr catalog::oid_t pg_seq   = catalog::well_known_oid::pg_sequence_table;
+    constexpr catalog::oid_t pg_dep   = catalog::well_known_oid::pg_depend_table;
     fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_class, std::int64_t{0}, seq_oid);
     fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_seq,   std::int64_t{0}, seq_oid);
     fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep,   std::int64_t{1}, seq_oid);
     fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep,   std::int64_t{3}, seq_oid);
-    std::set<collection_full_name_t> deletes_local{pg_class, pg_seq, pg_dep};
+    std::set<catalog::oid_t> deletes_local{pg_class, pg_seq, pg_dep};
     fx.invoke(&manager_disk_t::storage_commit_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
 }
 
 // pg_rewrite col layout: [0]=oid, [1]=rulename, [2]=ev_class, [3]=ev_type, [4]=ev_action
 template<typename Fx>
 void test_drop_view(Fx& fx, catalog::oid_t view_oid) {
-    const collection_full_name_t pg_class  {"pg_catalog", "main", "pg_class"};
-    const collection_full_name_t pg_rewrite{"pg_catalog", "main", "pg_rewrite"};
-    const collection_full_name_t pg_dep    {"pg_catalog", "main", "pg_depend"};
+    constexpr catalog::oid_t pg_class   = catalog::well_known_oid::pg_class_table;
+    constexpr catalog::oid_t pg_rewrite = catalog::well_known_oid::pg_rewrite_table;
+    constexpr catalog::oid_t pg_dep     = catalog::well_known_oid::pg_depend_table;
     fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_class,   std::int64_t{0}, view_oid);
     fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_rewrite, std::int64_t{2}, view_oid);
     fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep,     std::int64_t{1}, view_oid);
     fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep,     std::int64_t{3}, view_oid);
-    std::set<collection_full_name_t> deletes_local{pg_class, pg_rewrite, pg_dep};
+    std::set<catalog::oid_t> deletes_local{pg_class, pg_rewrite, pg_dep};
     fx.invoke(&manager_disk_t::storage_commit_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
 }
 
 template<typename Fx>
 void test_drop_type(Fx& fx, catalog::oid_t type_oid) {
-    const collection_full_name_t pg_type{"pg_catalog", "main", "pg_type"};
-    const collection_full_name_t pg_dep {"pg_catalog", "main", "pg_depend"};
+    constexpr catalog::oid_t pg_type = catalog::well_known_oid::pg_type_table;
+    constexpr catalog::oid_t pg_dep  = catalog::well_known_oid::pg_depend_table;
     fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_type, std::int64_t{0}, type_oid);
     fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep,  std::int64_t{1}, type_oid);
     fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep,  std::int64_t{3}, type_oid);
-    std::set<collection_full_name_t> deletes_local{pg_type, pg_dep};
+    std::set<catalog::oid_t> deletes_local{pg_type, pg_dep};
     fx.invoke(&manager_disk_t::storage_commit_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
 }
 
@@ -301,7 +300,7 @@ catalog::oid_t test_computed_append_simple(Fx& fx, catalog::oid_t table_oid,
                                             std::int64_t attversion = 1) {
     auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
     const catalog::oid_t attoid = oids[0];
-    const collection_full_name_t pg_cc{"pg_catalog", "main", "pg_computed_column"};
+    constexpr catalog::oid_t pg_cc = catalog::well_known_oid::pg_computed_column_table;
     auto row = catalog::build_pg_computed_column_row(
         &fx.resource, table_oid, attoid, field_name, type_oid, attversion, std::int64_t{1});
     auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_cc, std::move(row));
@@ -321,7 +320,7 @@ template<typename Fx>
 catalog::oid_t test_computed_register(Fx& fx, catalog::oid_t table_oid,
                                        const std::string& field_name,
                                        catalog::oid_t type_oid) {
-    const collection_full_name_t pg_cc{"pg_catalog", "main", "pg_computed_column"};
+    constexpr catalog::oid_t pg_cc = catalog::well_known_oid::pg_computed_column_table;
     components::types::logical_value_t toid_lv(&fx.resource, table_oid);
     components::types::logical_value_t name_lv(&fx.resource, field_name);
     auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, auto_ctx(), pg_cc,
@@ -372,7 +371,7 @@ catalog::oid_t test_computed_register(Fx& fx, catalog::oid_t table_oid,
 template<typename Fx>
 bool test_computed_unregister(Fx& fx, catalog::oid_t table_oid,
                                 const std::string& field_name) {
-    const collection_full_name_t pg_cc{"pg_catalog", "main", "pg_computed_column"};
+    constexpr catalog::oid_t pg_cc = catalog::well_known_oid::pg_computed_column_table;
     components::types::logical_value_t toid_lv(&fx.resource, table_oid);
     components::types::logical_value_t name_lv(&fx.resource, field_name);
     auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, auto_ctx(), pg_cc,
@@ -420,7 +419,7 @@ catalog::oid_t test_add_column(Fx& fx, catalog::oid_t table_oid,
                                 std::int32_t attnum) {
     auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
     const catalog::oid_t attoid = oids[0];
-    const collection_full_name_t pg_attr{"pg_catalog", "main", "pg_attribute"};
+    constexpr catalog::oid_t pg_attr = catalog::well_known_oid::pg_attribute_table;
     std::string col_name(col.name());
     auto row = catalog::build_pg_attribute_row(
         &fx.resource, attoid, table_oid, col_name,

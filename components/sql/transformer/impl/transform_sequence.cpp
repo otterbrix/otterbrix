@@ -6,7 +6,7 @@
 namespace components::sql::transform {
 
     logical_plan::node_ptr transformer::transform_create_sequence(CreateSeqStmt& node) {
-        auto name = rangevar_to_collection(node.sequence);
+        auto qn = rangevar_to_qualified_name(node.sequence);
 
         int64_t start = 1;
         int64_t increment = 1;
@@ -31,7 +31,13 @@ namespace components::sql::transform {
             }
         }
 
-        return logical_plan::make_node_create_sequence(resource_, name, start, increment, min_value, max_value);
+        return logical_plan::make_node_create_sequence(resource_,
+                                                       std::move(qn.dbname),
+                                                       std::move(qn.relname),
+                                                       start,
+                                                       increment,
+                                                       min_value,
+                                                       max_value);
     }
 
 } // namespace components::sql::transform

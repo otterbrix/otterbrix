@@ -1,5 +1,6 @@
 #pragma once
 
+#include <components/catalog/catalog_oids.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/table/column_state.hpp>
@@ -16,11 +17,11 @@ namespace components::operators {
     public:
         full_scan(std::pmr::memory_resource* resource,
                   log_t log,
-                  collection_full_name_t name,
+                  components::catalog::oid_t table_oid,
                   const expressions::compare_expression_ptr& expression,
                   logical_plan::limit_t limit);
 
-        const collection_full_name_t& collection_name() const noexcept { return name_; }
+        components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
         const expressions::compare_expression_ptr& expression() const { return expression_; }
         const logical_plan::limit_t& limit() const { return limit_; }
 
@@ -29,7 +30,7 @@ namespace components::operators {
     private:
         void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
-        collection_full_name_t name_;
+        components::catalog::oid_t table_oid_;
         expressions::compare_expression_ptr expression_;
         const logical_plan::limit_t limit_;
     };

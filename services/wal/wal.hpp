@@ -11,6 +11,7 @@
 #include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/detail/future.hpp>
 
+#include <components/catalog/catalog_oids.hpp>
 #include <components/configuration/configuration.hpp>
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>
@@ -37,7 +38,7 @@ namespace services::wal {
                      manager_wal_replicate_t* manager,
                      log_t& log,
                      configuration::config_wal config,
-                     const std::string& database_name);
+                     components::catalog::oid_t database_oid);
 
         ~wal_worker_t();
 
@@ -61,8 +62,7 @@ namespace services::wal {
         unique_future<wal::id_t> current_wal_id(session_id_t session);
 
         unique_future<wal::id_t> write_physical_insert(session_id_t session,
-                                                       std::string database,
-                                                       std::string collection,
+                                                       components::catalog::oid_t table_oid,
                                                        std::unique_ptr<components::vector::data_chunk_t> data_chunk,
                                                        uint64_t row_start,
                                                        uint64_t row_count,
@@ -70,16 +70,14 @@ namespace services::wal {
                                                        wal::id_t wal_id);
 
         unique_future<wal::id_t> write_physical_delete(session_id_t session,
-                                                       std::string database,
-                                                       std::string collection,
+                                                       components::catalog::oid_t table_oid,
                                                        std::pmr::vector<int64_t> row_ids,
                                                        uint64_t count,
                                                        uint64_t txn_id,
                                                        wal::id_t wal_id);
 
         unique_future<wal::id_t> write_physical_update(session_id_t session,
-                                                       std::string database,
-                                                       std::string collection,
+                                                       components::catalog::oid_t table_oid,
                                                        std::pmr::vector<int64_t> row_ids,
                                                        std::unique_ptr<components::vector::data_chunk_t> new_data,
                                                        uint64_t count,
@@ -111,7 +109,7 @@ namespace services::wal {
 
         /// Parse segment index from filename. Returns (uint32_t)-1 on failure.
         static uint32_t parse_segment_index(const std::filesystem::path& path,
-                                            const std::string& db_name);
+                                            const std::string& db_dir_name);
 
         /// Ensure the page writer is ready; rotate if the current segment is full.
         void ensure_writer();
@@ -121,7 +119,8 @@ namespace services::wal {
         // -----------------------------------------------------------------------
         log_t log_;
         configuration::config_wal config_;
-        std::string database_name_;
+        components::catalog::oid_t database_oid_;
+        std::string database_dir_name_; // numeric string of database_oid_, used as path component
         std::filesystem::path database_dir_;
 
         atomic_id_t id_{0};

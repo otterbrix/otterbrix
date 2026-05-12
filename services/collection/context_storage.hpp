@@ -1,6 +1,6 @@
 #pragma once
 
-#include <components/base/collection_full_name.hpp>
+#include <components/catalog/catalog_oids.hpp>
 #include <components/expressions/key.hpp>
 #include <components/index/forward.hpp>
 #include <components/log/log.hpp>
@@ -12,8 +12,10 @@ namespace services {
     struct context_storage_t {
         std::pmr::memory_resource* resource;
         log_t log;
-        // kept until #76 collections_ retention decision
-        std::unordered_set<collection_full_name_t, collection_name_hash> known_collections;
+        // Phase 8.B: oid-only routing. Plan generators ask "do we know about
+        // this table?" via the resolved table_oid stamped on the logical_plan
+        // node. Wrapper / parser-window paths fall back to the empty set.
+        std::unordered_set<components::catalog::oid_t> known_oids;
         std::pmr::vector<components::index::keys_base_storage_t> indexed_keys;
         const components::logical_plan::storage_parameters* parameters = nullptr;
 
@@ -22,7 +24,9 @@ namespace services {
             , log(std::move(log))
             , indexed_keys(resource) {}
 
-        bool has_collection(const collection_full_name_t& name) const { return known_collections.count(name) > 0; }
+        bool has_table_oid(components::catalog::oid_t oid) const noexcept {
+            return oid != components::catalog::INVALID_OID && known_oids.count(oid) > 0;
+        }
 
         bool has_index_on(const components::expressions::key_t& key) const {
             for (const auto& keys : indexed_keys) {

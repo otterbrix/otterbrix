@@ -8,25 +8,28 @@
 
 namespace components::logical_plan {
 
-    // Checks NOT NULL constraints and CHECK expressions over the incoming chunk.
-    // Emitted by the planner above node_insert / node_update when the target
-    // table has NOT NULL columns or CHECK constraints.
     class node_check_constraint_t final : public node_t {
     public:
-        // check_exprs: vector of (constraint_name, expression_string) pairs loaded from pg_constraint.
-        explicit node_check_constraint_t(std::pmr::memory_resource*                        resource,
-                                          const collection_full_name_t&                     collection,
-                                          std::vector<std::string>                          not_null_columns,
-                                          std::vector<std::pair<std::string, std::string>>  check_exprs = {});
+        explicit node_check_constraint_t(std::pmr::memory_resource* resource,
+                                         std::string dbname,
+                                         std::string relname,
+                                         std::vector<std::string> not_null_columns,
+                                         std::vector<std::pair<std::string, std::string>> check_exprs = {});
 
         const std::vector<std::string>& not_null_columns() const { return not_null_columns_; }
         const std::vector<std::pair<std::string, std::string>>& check_exprs() const { return check_exprs_; }
 
+        // Phase 9.W/10.D: role-named accessors. CHECK constraint applied above DML target.
+        const std::string& relname() const noexcept { return relname_; }
+        const std::string& dbname() const noexcept { return dbname_; }
+
     private:
-        hash_t      hash_impl()      const override;
+        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
-        std::vector<std::string>                         not_null_columns_;
+        std::string dbname_;
+        std::string relname_;
+        std::vector<std::string> not_null_columns_;
         std::vector<std::pair<std::string, std::string>> check_exprs_; // (name, expr)
     };
 

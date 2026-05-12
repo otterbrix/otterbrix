@@ -74,7 +74,7 @@ namespace components::operators {
             if (has_absent || key_values.empty()) continue;
 
             auto [_, fut] = actor_zeta::send(ctx->disk_address,
-                                              &services::disk::manager_disk_t::scan_by_table_oid,
+                                              &services::disk::manager_disk_t::scan_by_key,
                                               exec_ctx,
                                               fk_.parent_table_oid,
                                               std::vector<std::string>(fk_.parent_col_names),

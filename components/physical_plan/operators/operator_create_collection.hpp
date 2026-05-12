@@ -1,5 +1,6 @@
 #pragma once
 
+#include <components/catalog/catalog_oids.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -13,11 +14,12 @@ namespace components::operators {
     // find_waiting_operator loop drives it correctly.
     class operator_create_collection_t final : public read_write_operator_t {
     public:
-        using catalog_write_t = std::pair<collection_full_name_t, vector::data_chunk_t>;
+        using catalog_write_t = std::pair<components::catalog::oid_t, vector::data_chunk_t>;
 
-        operator_create_collection_t(std::pmr::memory_resource*                    resource,
+        operator_create_collection_t(std::pmr::memory_resource*                     resource,
                                       log_t                                          log,
-                                      collection_full_name_t                         collection,
+                                      components::catalog::oid_t                     table_oid,
+                                      components::catalog::oid_t                     database_oid,
                                       std::vector<table::column_definition_t>        columns,
                                       bool                                           is_disk_storage,
                                       std::vector<catalog_write_t>                   catalog_writes);
@@ -26,7 +28,8 @@ namespace components::operators {
         void on_execute_impl(pipeline::context_t* ctx) override;
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
-        collection_full_name_t                  collection_;
+        components::catalog::oid_t              table_oid_;
+        components::catalog::oid_t              database_oid_;
         std::vector<table::column_definition_t> columns_;
         bool                                    is_disk_storage_;
         std::vector<catalog_write_t>            catalog_writes_;

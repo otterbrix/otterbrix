@@ -9,7 +9,7 @@ namespace components::logical_plan {
 
     class node_insert_t final : public node_t {
     public:
-        explicit node_insert_t(std::pmr::memory_resource* resource, const collection_full_name_t& collection);
+        explicit node_insert_t(std::pmr::memory_resource* resource, std::string dbname, std::string relname);
 
         std::pmr::vector<expressions::key_t>& key_translation();
         const std::pmr::vector<expressions::key_t>& key_translation() const;
@@ -25,10 +25,17 @@ namespace components::logical_plan {
         void set_check_exprs(std::vector<std::pair<std::string, std::string>> v) { check_exprs_ = std::move(v); }
         const std::vector<std::pair<std::string, std::string>>& check_exprs() const { return check_exprs_; }
 
+        // Phase 9.W/10.D: role-named accessors. INSERT target table identity at parser stage;
+        // routing in resolved-stage code uses table_oid().
+        const std::string& relname() const noexcept { return relname_; }
+        const std::string& dbname() const noexcept { return dbname_; }
+
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
+        std::string dbname_;
+        std::string relname_;
         std::pmr::vector<expressions::key_t> key_translation_;
 
         std::vector<std::string> not_null_cols_;
@@ -38,18 +45,21 @@ namespace components::logical_plan {
 
     using node_insert_ptr = boost::intrusive_ptr<node_insert_t>;
 
-    node_insert_ptr make_node_insert(std::pmr::memory_resource* resource, const collection_full_name_t& collection);
+    node_insert_ptr make_node_insert(std::pmr::memory_resource* resource, std::string dbname, std::string relname);
 
     node_insert_ptr make_node_insert(std::pmr::memory_resource* resource,
-                                     const collection_full_name_t& collection,
+                                     std::string dbname,
+                                     std::string relname,
                                      const components::vector::data_chunk_t& chunk);
 
     node_insert_ptr make_node_insert(std::pmr::memory_resource* resource,
-                                     const collection_full_name_t& collection,
+                                     std::string dbname,
+                                     std::string relname,
                                      components::vector::data_chunk_t&& chunk);
 
     node_insert_ptr make_node_insert(std::pmr::memory_resource* resource,
-                                     const collection_full_name_t& collection,
+                                     std::string dbname,
+                                     std::string relname,
                                      components::vector::data_chunk_t&& chunk,
                                      std::pmr::vector<expressions::key_t>&& key_translation);
 

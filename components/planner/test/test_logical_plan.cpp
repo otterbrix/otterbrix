@@ -31,7 +31,7 @@ collection_full_name_t get_name() { return {database_name, collection_name}; }
 
 TEST_CASE("components::planner::create_database") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto plan = make_node_create_database(&resource, {database_name, {}});
+    auto plan = make_node_create_database(&resource, std::string{database_name});
     components::planner::planner_t planner;
     auto node = planner.create_plan(&resource, plan);
     REQUIRE(node->to_string() == R"_($create_database: database)_");
@@ -39,7 +39,7 @@ TEST_CASE("components::planner::create_database") {
 
 TEST_CASE("components::planner::drop_database") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto plan = make_node_drop_database(&resource, {database_name, {}});
+    auto plan = make_node_drop_database(&resource, std::string{database_name});
     components::planner::planner_t planner;
     auto node = planner.create_plan(&resource, plan);
     REQUIRE(node->to_string() == R"_($drop_database: database)_");

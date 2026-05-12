@@ -30,12 +30,12 @@ namespace components::operators {
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
         // Step 1: scan pg_attribute for max(attnum) for this table.
-        const collection_full_name_t pg_attr{"pg_catalog", "main", "pg_attribute"};
+        constexpr catalog::oid_t pg_attr_oid = catalog::well_known_oid::pg_attribute_table;
         components::types::logical_value_t toid_lv(resource_, table_oid_);
         auto [_pa, paf] = actor_zeta::send(
             ctx->disk_address,
             &services::disk::manager_disk_t::read_rows_by_key,
-            exec_ctx, pg_attr,
+            exec_ctx, pg_attr_oid,
             std::vector<std::string>{"attrelid"},
             std::vector<components::types::logical_value_t>{toid_lv});
         auto attr_rows = co_await std::move(paf);
@@ -71,7 +71,7 @@ namespace components::operators {
         auto [_w, wf] = actor_zeta::send(
             ctx->disk_address,
             &services::disk::manager_disk_t::append_pg_catalog_row,
-            exec_ctx, pg_attr, std::move(att_row));
+            exec_ctx, pg_attr_oid, std::move(att_row));
         auto rng = co_await std::move(wf);
         if (rng.count > 0) ctx->pg_catalog_appends.push_back(std::move(rng));
 

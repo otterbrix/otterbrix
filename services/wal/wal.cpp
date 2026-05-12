@@ -9,17 +9,19 @@
 namespace services::wal {
 
     // -----------------------------------------------------------------------
-    // Segment file naming
+    // Segment file naming — Phase 8.E
     //
-    //   wal_<database>_000000
-    //   wal_<database>_000001
+    //   wal_<database_oid>_000000
+    //   wal_<database_oid>_000001
     //   ...
+    //
+    // database_oid is rendered as decimal (e.g. "4" for main_database).
     // -----------------------------------------------------------------------
 
-    static std::string segment_filename(const std::string& db_name, uint32_t index) {
+    static std::string segment_filename(const std::string& db_dir_name, uint32_t index) {
         // Format: wal_<db>_NNNNNN
         std::ostringstream oss;
-        oss << "wal_" << db_name << "_";
+        oss << "wal_" << db_dir_name << "_";
         oss.width(6);
         oss.fill('0');
         oss << index;
@@ -34,14 +36,15 @@ namespace services::wal {
                                manager_wal_replicate_t* /*manager*/,
                                log_t& log,
                                configuration::config_wal config,
-                               const std::string& database_name)
+                               components::catalog::oid_t database_oid)
         : actor_zeta::actor::basic_actor<wal_worker_t>(resource)
         , log_(log.clone())
         , config_(std::move(config))
-        , database_name_(database_name)
-        , database_dir_(config_.path / database_name_)
+        , database_oid_(database_oid)
+        , database_dir_name_(std::to_string(static_cast<unsigned>(database_oid)))
+        , database_dir_(config_.path / database_dir_name_)
         , encode_buf_(this->resource()) {
-        trace(log_, "wal_worker::create for database '{}'", database_name_);
+        trace(log_, "wal_worker::create for database_oid={}", static_cast<unsigned>(database_oid_));
 
         // Ensure the database WAL directory exists.
         std::filesystem::create_directories(database_dir_);
@@ -54,7 +57,7 @@ namespace services::wal {
     }
 
     wal_worker_t::~wal_worker_t() {
-        trace(log_, "wal_worker::destroy for database '{}'", database_name_);
+        trace(log_, "wal_worker::destroy for database_oid={}", static_cast<unsigned>(database_oid_));
         // The writer flushes on destruction.
         writer_.reset();
     }
@@ -115,8 +118,7 @@ namespace services::wal {
 
     wal_worker_t::unique_future<wal::id_t>
     wal_worker_t::write_physical_insert(session_id_t /*session*/,
-                                        std::string database,
-                                        std::string collection,
+                                        components::catalog::oid_t table_oid,
                                         std::unique_ptr<components::vector::data_chunk_t> data_chunk,
                                         uint64_t row_start,
                                         uint64_t row_count,
@@ -130,7 +132,7 @@ namespace services::wal {
         encode_buf_.clear();
         last_crc_ = encode_insert(encode_buf_, this->resource(),
                                   last_crc_, wal_id, txn_id,
-                                  database, collection,
+                                  table_oid,
                                   *data_chunk, row_start, row_count);
 
         ensure_writer();
@@ -145,8 +147,7 @@ namespace services::wal {
 
     wal_worker_t::unique_future<wal::id_t>
     wal_worker_t::write_physical_delete(session_id_t /*session*/,
-                                        std::string database,
-                                        std::string collection,
+                                        components::catalog::oid_t table_oid,
                                         std::pmr::vector<int64_t> row_ids,
                                         uint64_t count,
                                         uint64_t txn_id,
@@ -159,7 +160,7 @@ namespace services::wal {
         encode_buf_.clear();
         last_crc_ = encode_delete(encode_buf_,
                                   last_crc_, wal_id, txn_id,
-                                  database, collection,
+                                  table_oid,
                                   row_ids.data(), count);
 
         ensure_writer();
@@ -174,8 +175,7 @@ namespace services::wal {
 
     wal_worker_t::unique_future<wal::id_t>
     wal_worker_t::write_physical_update(session_id_t /*session*/,
-                                        std::string database,
-                                        std::string collection,
+                                        components::catalog::oid_t table_oid,
                                         std::pmr::vector<int64_t> row_ids,
                                         std::unique_ptr<components::vector::data_chunk_t> new_data,
                                         uint64_t count,
@@ -189,7 +189,7 @@ namespace services::wal {
         encode_buf_.clear();
         last_crc_ = encode_update(encode_buf_, this->resource(),
                                   last_crc_, wal_id, txn_id,
-                                  database, collection,
+                                  table_oid,
                                   row_ids.data(), *new_data, count);
 
         ensure_writer();
@@ -356,7 +356,8 @@ namespace services::wal {
     void wal_worker_t::recover_from_disk() {
         auto segments = discover_segments();
         if (segments.empty()) {
-            trace(log_, "wal_worker::recover , no existing segments for '{}'", database_name_);
+            trace(log_, "wal_worker::recover , no existing segments for db_oid={}",
+                  static_cast<unsigned>(database_oid_));
             return;
         }
 
@@ -365,7 +366,7 @@ namespace services::wal {
         uint32_t max_seg_index = 0;
 
         for (const auto& seg_path : segments) {
-            uint32_t seg_idx = parse_segment_index(seg_path, database_name_);
+            uint32_t seg_idx = parse_segment_index(seg_path, database_dir_name_);
             if (seg_idx != static_cast<uint32_t>(-1) && seg_idx > max_seg_index) {
                 max_seg_index = seg_idx;
             }
@@ -406,8 +407,8 @@ namespace services::wal {
         last_crc_ = recovered_crc;
         current_segment_index_ = max_seg_index;
 
-        trace(log_, "wal_worker::recover , database '{}' , max_wal_id : {} , segment_index : {}",
-              database_name_, max_wal_id, current_segment_index_);
+        trace(log_, "wal_worker::recover , db_oid={} , max_wal_id : {} , segment_index : {}",
+              static_cast<unsigned>(database_oid_), max_wal_id, current_segment_index_);
     }
 
     // -----------------------------------------------------------------------
@@ -436,7 +437,7 @@ namespace services::wal {
         auto path = segment_path(current_segment_index_);
         writer_ = std::make_unique<wal_page_writer_t>(
             path,
-            database_name_,
+            database_dir_name_,
             current_segment_index_,
             config_.max_segment_size);
     }
@@ -446,7 +447,7 @@ namespace services::wal {
     // -----------------------------------------------------------------------
 
     std::filesystem::path wal_worker_t::segment_path(uint32_t seg_index) const {
-        return database_dir_ / segment_filename(database_name_, seg_index);
+        return database_dir_ / segment_filename(database_dir_name_, seg_index);
     }
 
     std::vector<std::filesystem::path> wal_worker_t::discover_segments() const {
@@ -456,7 +457,7 @@ namespace services::wal {
             return result;
         }
 
-        std::string prefix = "wal_" + database_name_ + "_";
+        std::string prefix = "wal_" + database_dir_name_ + "_";
 
         for (const auto& entry : std::filesystem::directory_iterator(database_dir_)) {
             if (!entry.is_regular_file()) {
@@ -475,9 +476,9 @@ namespace services::wal {
     }
 
     uint32_t wal_worker_t::parse_segment_index(const std::filesystem::path& path,
-                                                const std::string& db_name) {
+                                                const std::string& db_dir_name) {
         auto fname = path.filename().string();
-        std::string prefix = "wal_" + db_name + "_";
+        std::string prefix = "wal_" + db_dir_name + "_";
         if (fname.size() <= prefix.size() ||
             fname.compare(0, prefix.size(), prefix) != 0) {
             return static_cast<uint32_t>(-1);

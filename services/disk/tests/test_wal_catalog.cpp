@@ -87,8 +87,30 @@ namespace {
         }
     };
 
-    // Count physical records whose collection.database == "pg_catalog" in a fresh
-    // wal_reader scan. Used by tests after the fixture is destroyed.
+    // Phase 8.E: WAL records carry table_oid; pg_catalog tables have well-known oids
+    // (pg_class=11, pg_attribute=12, pg_namespace=10, pg_depend=15, pg_index=17,
+    // pg_proc=14, pg_type=13, pg_constraint=16, pg_sequence=34, pg_rewrite=35,
+    // pg_computed_column=18, pg_database=19). Anything below FIRST_USER_OID is
+    // a system-table record.
+
+    namespace wk = components::catalog::well_known_oid;
+
+    components::catalog::oid_t pg_catalog_oid_for(const std::string& collection) {
+        if (collection == "pg_namespace")        return wk::pg_namespace_table;
+        if (collection == "pg_class")            return wk::pg_class_table;
+        if (collection == "pg_attribute")        return wk::pg_attribute_table;
+        if (collection == "pg_type")             return wk::pg_type_table;
+        if (collection == "pg_proc")             return wk::pg_proc_table;
+        if (collection == "pg_depend")           return wk::pg_depend_table;
+        if (collection == "pg_constraint")       return wk::pg_constraint_table;
+        if (collection == "pg_index")            return wk::pg_index_table;
+        if (collection == "pg_computed_column")  return wk::pg_computed_column_table;
+        if (collection == "pg_database")         return wk::pg_database_table;
+        if (collection == "pg_sequence")         return wk::pg_sequence_table;
+        if (collection == "pg_rewrite")          return wk::pg_rewrite_table;
+        return components::catalog::INVALID_OID;
+    }
+
     std::size_t pg_catalog_physical_count(const std::string& dir) {
         auto log = initialization_logger("python", "/tmp/docker_logs/");
         configuration::config_wal c;
@@ -98,7 +120,9 @@ namespace {
         auto records = reader.read_committed_records(services::wal::id_t{0});
         std::size_t n = 0;
         for (auto& r : records) {
-            if (r.is_physical() && r.collection_name.database == "pg_catalog")
+            if (r.is_physical() &&
+                r.table_oid != components::catalog::INVALID_OID &&
+                r.table_oid < components::catalog::FIRST_USER_OID)
                 ++n;
         }
         return n;
@@ -112,9 +136,9 @@ namespace {
         services::wal::wal_reader_t reader(c, log);
         auto records = reader.read_committed_records(services::wal::id_t{0});
         std::size_t n = 0;
+        const auto target_oid = pg_catalog_oid_for(collection);
         for (auto& r : records) {
-            if (r.is_physical() && r.collection_name.database == "pg_catalog" &&
-                r.collection_name.collection == collection)
+            if (r.is_physical() && r.table_oid == target_oid)
                 ++n;
         }
         return n;
@@ -266,7 +290,7 @@ TEST_CASE("services::disk::wal_catalog::create_function_writes_pg_proc_and_depen
     cleanup_dir(dir);
 }
 
-// 9. All pg_catalog WAL records carry collection_name.database == "pg_catalog" — needed for
+// 9. All pg_catalog WAL records carry table_oid < FIRST_USER_OID — needed for
 //    the WAL replay split (pg_catalog records replayed first, user records second).
 TEST_CASE("services::disk::wal_catalog::all_records_under_pg_catalog_database") {
     auto dir = wal_cat_dir() + "/db_prefix";
@@ -289,8 +313,9 @@ TEST_CASE("services::disk::wal_catalog::all_records_under_pg_catalog_database") 
     for (auto& r : records) {
         if (!r.is_physical())
             continue;
-        // Every physical record we wrote was for a pg_catalog.* collection.
-        REQUIRE(r.collection_name.database == "pg_catalog");
+        // Every physical record we wrote was for a pg_catalog.* collection (oid < FIRST_USER_OID).
+        REQUIRE(r.table_oid != components::catalog::INVALID_OID);
+        REQUIRE(r.table_oid < components::catalog::FIRST_USER_OID);
         seen_any = true;
     }
     REQUIRE(seen_any);

@@ -7,17 +7,20 @@
 namespace components::logical_plan {
 
     node_delete_t::node_delete_t(std::pmr::memory_resource* resource,
-                                 const collection_full_name_t& collection_to,
-                                 const collection_full_name_t& collection_from,
+                                 std::string dbname_to,
+                                 std::string relname_to,
+                                 std::string dbname_from,
+                                 std::string relname_from,
                                  const node_match_ptr& match,
                                  const node_limit_ptr& limit)
-        : node_t(resource, node_type::delete_t, collection_to)
-        , collection_from_(collection_from) {
+        : node_t(resource, node_type::delete_t)
+        , dbname_(std::move(dbname_to))
+        , relname_(std::move(relname_to))
+        , dbname_from_(std::move(dbname_from))
+        , relname_from_(std::move(relname_from)) {
         append_child(match);
         append_child(limit);
     }
-
-    const collection_full_name_t& node_delete_t::collection_from() const { return collection_from_; }
 
     hash_t node_delete_t::hash_impl() const { return 0; }
 
@@ -38,60 +41,75 @@ namespace components::logical_plan {
     }
 
     node_delete_ptr make_node_delete_many(std::pmr::memory_resource* resource,
-                                          const collection_full_name_t& collection,
+                                          std::string dbname,
+                                          std::string relname,
                                           const node_match_ptr& match) {
-        return {new node_delete_t{resource,
-                                  collection,
-                                  {},
-                                  match,
-                                  make_node_limit(resource, collection, limit_t::unlimit())}};
+        auto limit = make_node_limit(resource, dbname, relname, limit_t::unlimit());
+        return {new node_delete_t{resource, std::move(dbname), std::move(relname), {}, {}, match, limit}};
     }
 
     node_delete_ptr make_node_delete_many(std::pmr::memory_resource* resource,
-                                          const collection_full_name_t& collection_to,
-                                          const collection_full_name_t& collection_from,
+                                          std::string dbname_to,
+                                          std::string relname_to,
+                                          std::string dbname_from,
+                                          std::string relname_from,
                                           const node_match_ptr& match) {
+        auto limit = make_node_limit(resource, dbname_to, relname_to, limit_t::unlimit());
         return {new node_delete_t{resource,
-                                  collection_to,
-                                  collection_from,
+                                  std::move(dbname_to),
+                                  std::move(relname_to),
+                                  std::move(dbname_from),
+                                  std::move(relname_from),
                                   match,
-                                  make_node_limit(resource, collection_to, limit_t::unlimit())}};
+                                  limit}};
     }
 
     node_delete_ptr make_node_delete_one(std::pmr::memory_resource* resource,
-                                         const collection_full_name_t& collection,
+                                         std::string dbname,
+                                         std::string relname,
                                          const node_match_ptr& match) {
-        return {new node_delete_t{resource,
-                                  collection,
-                                  {},
-                                  match,
-                                  make_node_limit(resource, collection, limit_t::limit_one())}};
+        auto limit = make_node_limit(resource, dbname, relname, limit_t::limit_one());
+        return {new node_delete_t{resource, std::move(dbname), std::move(relname), {}, {}, match, limit}};
     }
 
     node_delete_ptr make_node_delete_one(std::pmr::memory_resource* resource,
-                                         const collection_full_name_t& collection_to,
-                                         const collection_full_name_t& collection_from,
+                                         std::string dbname_to,
+                                         std::string relname_to,
+                                         std::string dbname_from,
+                                         std::string relname_from,
                                          const node_match_ptr& match) {
+        auto limit = make_node_limit(resource, dbname_to, relname_to, limit_t::limit_one());
         return {new node_delete_t{resource,
-                                  collection_to,
-                                  collection_from,
+                                  std::move(dbname_to),
+                                  std::move(relname_to),
+                                  std::move(dbname_from),
+                                  std::move(relname_from),
                                   match,
-                                  make_node_limit(resource, collection_to, limit_t::limit_one())}};
+                                  limit}};
     }
 
     node_delete_ptr make_node_delete(std::pmr::memory_resource* resource,
-                                     const collection_full_name_t& collection,
+                                     std::string dbname,
+                                     std::string relname,
                                      const node_match_ptr& match,
                                      const node_limit_ptr& limit) {
-        return {new node_delete_t{resource, collection, {}, match, limit}};
+        return {new node_delete_t{resource, std::move(dbname), std::move(relname), {}, {}, match, limit}};
     }
 
     node_delete_ptr make_node_delete(std::pmr::memory_resource* resource,
-                                     const collection_full_name_t& collection_to,
-                                     const collection_full_name_t& collection_from,
+                                     std::string dbname_to,
+                                     std::string relname_to,
+                                     std::string dbname_from,
+                                     std::string relname_from,
                                      const node_match_ptr& match,
                                      const node_limit_ptr& limit) {
-        return {new node_delete_t{resource, collection_to, collection_from, match, limit}};
+        return {new node_delete_t{resource,
+                                  std::move(dbname_to),
+                                  std::move(relname_to),
+                                  std::move(dbname_from),
+                                  std::move(relname_from),
+                                  match,
+                                  limit}};
     }
 
 } // namespace components::logical_plan

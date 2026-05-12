@@ -5,13 +5,13 @@
 namespace components::logical_plan {
 
     node_function_t::node_function_t(std::pmr::memory_resource* resource, std::string&& name)
-        : node_t(resource, node_type::function_t, {})
+        : node_t(resource, node_type::function_t)
         , name_(std::move(name)) {}
 
     node_function_t::node_function_t(std::pmr::memory_resource* resource,
                                      std::string&& name,
                                      std::pmr::vector<expressions::param_storage>&& args)
-        : node_t(resource, node_type::function_t, {})
+        : node_t(resource, node_type::function_t)
         , name_(std::move(name))
         , args_(std::move(args)) {}
 

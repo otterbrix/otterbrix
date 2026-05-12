@@ -1,5 +1,8 @@
 #include <catch2/catch.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
+#include <components/logical_plan/node_create_index.hpp>
+#include <components/logical_plan/node_drop_collection.hpp>
+#include <components/logical_plan/node_drop_index.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/parser/pg_functions.h>
 #include <components/sql/transformer/transformer.hpp>
@@ -70,18 +73,18 @@ TEST_CASE("components::sql::table") {
     SECTION("create with uuid") {
         auto create = raw_parser(&arena_resource, "CREATE TABLE uuid.db_name.schema.table_name()")->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(create)).finalize());
-        auto node = result.node;
+        auto node = static_cast<components::logical_plan::node_create_collection_t*>(result.node.get());
         REQUIRE(node->to_string() == R"_($create_collection: db_name.table_name)_");
-        REQUIRE(node->collection_full_name().unique_identifier == "uuid");
-        REQUIRE(node->collection_full_name().schema == "schema");
+        REQUIRE(node->uuid() == "uuid");
+        REQUIRE(node->schemaname() == "schema");
     }
 
     SECTION("create with schema") {
         auto create = raw_parser(&arena_resource, "CREATE TABLE db_name.schema.table_name()")->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(create)).finalize());
-        auto node = result.node;
+        auto node = static_cast<components::logical_plan::node_create_collection_t*>(result.node.get());
         REQUIRE(node->to_string() == R"_($create_collection: db_name.table_name)_");
-        REQUIRE(node->collection_full_name().schema == "schema");
+        REQUIRE(node->schemaname() == "schema");
     }
 
     TEST_TRANSFORMER_OK("CREATE TABLE db_name.table_name()", R"_($create_collection: db_name.table_name)_");
@@ -90,18 +93,18 @@ TEST_CASE("components::sql::table") {
     SECTION("drop with uuid") {
         auto drop = raw_parser(&arena_resource, "DROP TABLE uuid.db_name.schema.table_name")->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(drop)).finalize());
-        auto node = result.node;
+        auto node = static_cast<components::logical_plan::node_drop_collection_t*>(result.node.get());
         REQUIRE(node->to_string() == R"_($drop_collection: db_name.table_name)_");
-        REQUIRE(node->collection_full_name().unique_identifier == "uuid");
-        REQUIRE(node->collection_full_name().schema == "schema");
+        REQUIRE(node->uuid() == "uuid");
+        REQUIRE(node->schemaname() == "schema");
     }
 
     SECTION("drop with schema") {
         auto drop = raw_parser(&arena_resource, "DROP TABLE db_name.schema.table_name")->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(drop)).finalize());
-        auto node = result.node;
+        auto node = static_cast<components::logical_plan::node_drop_collection_t*>(result.node.get());
         REQUIRE(node->to_string() == R"_($drop_collection: db_name.table_name)_");
-        REQUIRE(node->collection_full_name().schema == "schema");
+        REQUIRE(node->schemaname() == "schema");
     }
 
     TEST_TRANSFORMER_OK("DROP TABLE db_name.table_name", R"_($drop_collection: db_name.table_name)_");
@@ -224,19 +227,19 @@ TEST_CASE("components::sql::index") {
         auto create =
             raw_parser(&arena_resource, "CREATE INDEX some_idx ON uuid.db.schema.table (field);")->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(create)).finalize());
-        auto node = result.node;
+        auto node = static_cast<components::logical_plan::node_create_index_t*>(result.node.get());
         REQUIRE(node->to_string() == R"_($create_index: db.table name:some_idx[ field ] type:single)_");
-        REQUIRE(node->collection_full_name().unique_identifier == "uuid");
-        REQUIRE(node->collection_full_name().schema == "schema");
+        REQUIRE(node->uuid() == "uuid");
+        REQUIRE(node->schemaname() == "schema");
     }
 
     SECTION("create with schema") {
         auto create =
             raw_parser(&arena_resource, "CREATE INDEX some_idx ON db.schema.table (field);")->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(create)).finalize());
-        auto node = result.node;
+        auto node = static_cast<components::logical_plan::node_create_index_t*>(result.node.get());
         REQUIRE(node->to_string() == R"_($create_index: db.table name:some_idx[ field ] type:single)_");
-        REQUIRE(node->collection_full_name().schema == "schema");
+        REQUIRE(node->schemaname() == "schema");
     }
 
     TEST_TRANSFORMER_OK("CREATE INDEX some_idx ON db.table (field);",
@@ -245,18 +248,18 @@ TEST_CASE("components::sql::index") {
     SECTION("drop with uuid") {
         auto drop = raw_parser(&arena_resource, "DROP INDEX uuid.db.schema.table.some_idx")->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(drop)).finalize());
-        auto node = result.node;
+        auto node = static_cast<components::logical_plan::node_drop_index_t*>(result.node.get());
         REQUIRE(node->to_string() == R"_($drop_index: db.table name:some_idx)_");
-        REQUIRE(node->collection_full_name().unique_identifier == "uuid");
-        REQUIRE(node->collection_full_name().schema == "schema");
+        REQUIRE(node->uuid() == "uuid");
+        REQUIRE(node->schemaname() == "schema");
     }
 
     SECTION("drop with schema") {
         auto drop = raw_parser(&arena_resource, "DROP INDEX db.schema.table.some_idx")->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(drop)).finalize());
-        auto node = result.node;
+        auto node = static_cast<components::logical_plan::node_drop_index_t*>(result.node.get());
         REQUIRE(node->to_string() == R"_($drop_index: db.table name:some_idx)_");
-        REQUIRE(node->collection_full_name().schema == "schema");
+        REQUIRE(node->schemaname() == "schema");
     }
 
     TEST_TRANSFORMER_OK("DROP INDEX db.table.some_idx", R"_($drop_index: db.table name:some_idx)_");

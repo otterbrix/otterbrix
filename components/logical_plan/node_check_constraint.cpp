@@ -5,11 +5,14 @@
 namespace components::logical_plan {
 
     node_check_constraint_t::node_check_constraint_t(
-        std::pmr::memory_resource*                        resource,
-        const collection_full_name_t&                     collection,
-        std::vector<std::string>                          not_null_columns,
-        std::vector<std::pair<std::string, std::string>>  check_exprs)
-        : node_t(resource, node_type::check_constraint_t, collection)
+        std::pmr::memory_resource* resource,
+        std::string dbname,
+        std::string relname,
+        std::vector<std::string> not_null_columns,
+        std::vector<std::pair<std::string, std::string>> check_exprs)
+        : node_t(resource, node_type::check_constraint_t)
+        , dbname_(std::move(dbname))
+        , relname_(std::move(relname))
         , not_null_columns_(std::move(not_null_columns))
         , check_exprs_(std::move(check_exprs)) {}
 
@@ -17,7 +20,7 @@ namespace components::logical_plan {
 
     std::string node_check_constraint_t::to_string_impl() const {
         std::ostringstream s;
-        s << "$check_constraint: " << collection_name()
+        s << "$check_constraint: " << relname_
           << " [nn=" << not_null_columns_.size() << "]";
         return s.str();
     }

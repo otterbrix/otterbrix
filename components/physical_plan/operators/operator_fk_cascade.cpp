@@ -59,7 +59,7 @@ namespace components::operators {
             }
 
             auto [_, fut] = actor_zeta::send(ctx->disk_address,
-                                              &services::disk::manager_disk_t::scan_by_table_oid,
+                                              &services::disk::manager_disk_t::scan_by_key,
                                               exec_ctx,
                                               fk_.child_table_oid,
                                               std::vector<std::string>(fk_.child_col_names),
@@ -74,15 +74,10 @@ namespace components::operators {
                 co_return;
 
             case 'c': { // CASCADE — delete child rows via storage_delete_rows
-                // SQL-created tables use database-style keys (rangevar maps schemaname →
-                // database field). fk_.child_schema holds the namespace name; use it as
-                // the database to match the storage key produced by rangevar_to_collection.
-                const collection_full_name_t child_coll{
-                    fk_.child_schema, "", fk_.child_collection_name};
                 // Use txn_id=0 so the delete is committed immediately. The parent
                 // DELETE tracks its own commit; cascade child ops are not tracked by
                 // execute_plan_'s storage_commit_delete, which only covers the parent.
-                execution_context_t del_ctx{ctx->session, {}, child_coll};
+                execution_context_t del_ctx{ctx->session, {}, {}};
 
                 components::vector::vector_t row_ids_vec(resource_,
                                                          types::logical_type::BIGINT,
@@ -93,6 +88,7 @@ namespace components::operators {
                 auto [_d, dfut] = actor_zeta::send(ctx->disk_address,
                                                     &services::disk::manager_disk_t::storage_delete_rows,
                                                     del_ctx,
+                                                    fk_.child_table_oid,
                                                     std::move(row_ids_vec),
                                                     static_cast<uint64_t>(child_ids.size()));
                 co_await std::move(dfut);
@@ -100,9 +96,6 @@ namespace components::operators {
             }
             case 'n': // SET NULL
             case 'd': { // SET DEFAULT
-                // Database-style key (see CASCADE case for rationale).
-                const collection_full_name_t child_coll{
-                    fk_.child_schema, "", fk_.child_collection_name};
                 components::vector::vector_t fetch_ids(resource_,
                                                         types::logical_type::BIGINT,
                                                         child_ids.size());
@@ -112,7 +105,7 @@ namespace components::operators {
                 auto [_f, ffut] = actor_zeta::send(ctx->disk_address,
                                                     &services::disk::manager_disk_t::storage_fetch,
                                                     ctx->session,
-                                                    child_coll,
+                                                    fk_.child_table_oid,
                                                     fetch_ids,
                                                     static_cast<uint64_t>(child_ids.size()));
                 auto fetched = co_await std::move(ffut);
@@ -150,10 +143,11 @@ namespace components::operators {
                 for (std::size_t i = 0; i < child_ids.size(); ++i) {
                     upd_ids.data<int64_t>()[i] = child_ids[i];
                 }
-                execution_context_t upd_ctx{ctx->session, {}, child_coll};
+                execution_context_t upd_ctx{ctx->session, {}, {}};
                 auto [_u, ufut] = actor_zeta::send(ctx->disk_address,
                                                     &services::disk::manager_disk_t::storage_update,
                                                     upd_ctx,
+                                                    fk_.child_table_oid,
                                                     std::move(upd_ids),
                                                     std::move(fetched));
                 co_await std::move(ufut);

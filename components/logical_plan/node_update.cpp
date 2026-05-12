@@ -6,14 +6,19 @@
 namespace components::logical_plan {
 
     node_update_t::node_update_t(std::pmr::memory_resource* resource,
-                                 const collection_full_name_t& collection_to,
-                                 const collection_full_name_t& collection_from,
+                                 std::string dbname_to,
+                                 std::string relname_to,
+                                 std::string dbname_from,
+                                 std::string relname_from,
                                  const node_match_ptr& match,
                                  const node_limit_ptr& limit,
                                  const std::pmr::vector<expressions::update_expr_ptr>& updates,
                                  bool upsert)
-        : node_t(resource, node_type::update_t, collection_to)
-        , collection_from_(collection_from)
+        : node_t(resource, node_type::update_t)
+        , dbname_(std::move(dbname_to))
+        , relname_(std::move(relname_to))
+        , dbname_from_(std::move(dbname_from))
+        , relname_from_(std::move(relname_from))
         , update_expressions_(updates)
         , upsert_(upsert) {
         append_child(match);
@@ -24,16 +29,11 @@ namespace components::logical_plan {
 
     bool node_update_t::upsert() const { return upsert_; }
 
-    const collection_full_name_t& node_update_t::collection_from() const { return collection_from_; }
-
     hash_t node_update_t::hash_impl() const { return 0; }
 
     std::string node_update_t::to_string_impl() const {
         std::stringstream stream;
         stream << "$update: {";
-        // TODO: sort fields in to_json() method for consistent results
-        // phisical field order in document is random, and to_json is too unreliable for testing with multiple fields
-        // stream << update_->to_json() << ", ";
         stream << "$upsert: " << upsert_ << ", ";
         bool is_first = true;
         for (auto child : children()) {
@@ -49,80 +49,109 @@ namespace components::logical_plan {
     }
 
     node_update_ptr make_node_update_many(std::pmr::memory_resource* resource,
-                                          const collection_full_name_t& collection,
+                                          std::string dbname,
+                                          std::string relname,
                                           const node_match_ptr& match,
                                           const std::pmr::vector<expressions::update_expr_ptr>& updates,
                                           bool upsert) {
+        auto limit = make_node_limit(resource, dbname, relname, limit_t::unlimit());
         return {new node_update_t{resource,
-                                  collection,
+                                  std::move(dbname),
+                                  std::move(relname),
+                                  {},
                                   {},
                                   match,
-                                  make_node_limit(resource, collection, limit_t::unlimit()),
+                                  limit,
                                   updates,
                                   upsert}};
     }
 
     node_update_ptr make_node_update_many(std::pmr::memory_resource* resource,
-                                          const collection_full_name_t& collection_to,
-                                          const collection_full_name_t& collection_from,
+                                          std::string dbname_to,
+                                          std::string relname_to,
+                                          std::string dbname_from,
+                                          std::string relname_from,
                                           const node_match_ptr& match,
                                           const std::pmr::vector<expressions::update_expr_ptr>& updates,
                                           bool upsert) {
+        auto limit = make_node_limit(resource, dbname_to, relname_to, limit_t::unlimit());
         return {new node_update_t{resource,
-                                  collection_to,
-                                  collection_from,
+                                  std::move(dbname_to),
+                                  std::move(relname_to),
+                                  std::move(dbname_from),
+                                  std::move(relname_from),
                                   match,
-                                  make_node_limit(resource, collection_to, limit_t::unlimit()),
+                                  limit,
                                   updates,
                                   upsert}};
     }
 
     node_update_ptr make_node_update_one(std::pmr::memory_resource* resource,
-                                         const collection_full_name_t& collection,
+                                         std::string dbname,
+                                         std::string relname,
                                          const node_match_ptr& match,
                                          const std::pmr::vector<expressions::update_expr_ptr>& updates,
                                          bool upsert) {
+        auto limit = make_node_limit(resource, dbname, relname, limit_t::limit_one());
         return {new node_update_t{resource,
-                                  collection,
+                                  std::move(dbname),
+                                  std::move(relname),
+                                  {},
                                   {},
                                   match,
-                                  make_node_limit(resource, collection, limit_t::limit_one()),
+                                  limit,
                                   updates,
                                   upsert}};
     }
 
     node_update_ptr make_node_update_one(std::pmr::memory_resource* resource,
-                                         const collection_full_name_t& collection_to,
-                                         const collection_full_name_t& collection_from,
+                                         std::string dbname_to,
+                                         std::string relname_to,
+                                         std::string dbname_from,
+                                         std::string relname_from,
                                          const node_match_ptr& match,
                                          const std::pmr::vector<expressions::update_expr_ptr>& updates,
                                          bool upsert) {
+        auto limit = make_node_limit(resource, dbname_to, relname_to, limit_t::limit_one());
         return {new node_update_t{resource,
-                                  collection_to,
-                                  collection_from,
+                                  std::move(dbname_to),
+                                  std::move(relname_to),
+                                  std::move(dbname_from),
+                                  std::move(relname_from),
                                   match,
-                                  make_node_limit(resource, collection_to, limit_t::limit_one()),
+                                  limit,
                                   updates,
                                   upsert}};
     }
 
     node_update_ptr make_node_update(std::pmr::memory_resource* resource,
-                                     const collection_full_name_t& collection,
+                                     std::string dbname,
+                                     std::string relname,
                                      const node_match_ptr& match,
                                      const node_limit_ptr& limit,
                                      const std::pmr::vector<expressions::update_expr_ptr>& updates,
                                      bool upsert) {
-        return {new node_update_t{resource, collection, {}, match, limit, updates, upsert}};
+        return {new node_update_t{resource, std::move(dbname), std::move(relname), {}, {}, match, limit, updates, upsert}};
     }
 
     node_update_ptr make_node_update(std::pmr::memory_resource* resource,
-                                     const collection_full_name_t& collection_to,
-                                     const collection_full_name_t& collection_from,
+                                     std::string dbname_to,
+                                     std::string relname_to,
+                                     std::string dbname_from,
+                                     std::string relname_from,
                                      const node_match_ptr& match,
                                      const node_limit_ptr& limit,
                                      const std::pmr::vector<expressions::update_expr_ptr>& updates,
                                      bool upsert) {
-        return {new node_update_t{resource, collection_to, collection_from, match, limit, updates, upsert}};
+        return {new node_update_t{resource,
+                                  std::move(dbname_to),
+                                  std::move(relname_to),
+                                  std::move(dbname_from),
+                                  std::move(relname_from),
+                                  match,
+                                  limit,
+                                  updates,
+                                  upsert}};
     }
 
 } // namespace components::logical_plan

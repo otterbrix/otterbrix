@@ -191,6 +191,28 @@ namespace components::vector::arrow {
         } else if (format == "vu") {
             return std::make_unique<arrow_type>(types::logical_type::STRING_LITERAL,
                                                 std::make_unique<arrow_string_info>(arrow_variable_size_type::VIEW));
+        } else if (format == "tdD") {
+            return std::make_unique<arrow_type>(types::logical_type::DATE,
+                                                std::make_unique<arrow_date_time_info>(arrow_date_time_type::DAYS));
+        } else if (format == "tdm") {
+            return std::make_unique<arrow_type>(
+                types::logical_type::DATE,
+                std::make_unique<arrow_date_time_info>(arrow_date_time_type::MILLISECONDS));
+        } else if (format == "tts") {
+            return std::make_unique<arrow_type>(types::logical_type::TIME,
+                                                std::make_unique<arrow_date_time_info>(arrow_date_time_type::SECONDS));
+        } else if (format == "ttm") {
+            return std::make_unique<arrow_type>(
+                types::logical_type::TIME,
+                std::make_unique<arrow_date_time_info>(arrow_date_time_type::MILLISECONDS));
+        } else if (format == "ttu") {
+            return std::make_unique<arrow_type>(
+                types::logical_type::TIME,
+                std::make_unique<arrow_date_time_info>(arrow_date_time_type::MICROSECONDS));
+        } else if (format == "ttn") {
+            return std::make_unique<arrow_type>(
+                types::logical_type::TIME,
+                std::make_unique<arrow_date_time_info>(arrow_date_time_type::NANOSECONDS));
         } else if (format == "tDs") {
             return std::make_unique<arrow_type>(types::logical_type::INTERVAL,
                                                 std::make_unique<arrow_date_time_info>(arrow_date_time_type::SECONDS));
@@ -230,8 +252,29 @@ namespace components::vector::arrow {
             auto fixed_size = static_cast<size_t>(std::stoi(parameters));
             auto type_info = std::make_unique<arrow_string_info>(fixed_size);
             return std::make_unique<arrow_type>(types::logical_type::BLOB, std::move(type_info));
-        } else if (format[0] == 't' && format[1] == 's') {
-            throw std::runtime_error(" Timestamp precision of not accepted");
+        } else if (format.size() >= 3 && format[0] == 't' && format[1] == 's') {
+            arrow_date_time_type prec;
+            switch (format[2]) {
+                case 's':
+                    prec = arrow_date_time_type::SECONDS;
+                    break;
+                case 'm':
+                    prec = arrow_date_time_type::MILLISECONDS;
+                    break;
+                case 'u':
+                    prec = arrow_date_time_type::MICROSECONDS;
+                    break;
+                case 'n':
+                    prec = arrow_date_time_type::NANOSECONDS;
+                    break;
+                default:
+                    throw std::runtime_error("Unknown timestamp precision in Arrow format: " + format);
+            }
+            // "tsX:" with empty timezone → TIMESTAMP; "tsX:UTC" or similar → TIMESTAMP_TZ
+            bool has_tz = format.size() > 4 && format[3] == ':' && !format.substr(4).empty();
+            auto logical =
+                has_tz ? types::logical_type::TIMESTAMP_TZ : types::logical_type::TIMESTAMP;
+            return std::make_unique<arrow_type>(logical, std::make_unique<arrow_date_time_info>(prec));
         }
         return nullptr;
     }

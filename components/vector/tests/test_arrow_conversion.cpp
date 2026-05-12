@@ -4,6 +4,7 @@
 
 #include <components/vector/arrow/arrow_appender.hpp>
 #include <components/vector/arrow/arrow_converter.hpp>
+#include <core/date/date_types.hpp>
 
 using namespace components::vector::arrow;
 using namespace components::vector;
@@ -240,4 +241,58 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
         }
         schema.release(&schema);
     }
+}
+
+TEST_CASE("components::vector::data_chunk_to_arrow::datetime") {
+    constexpr size_t chunk_size = 64;
+    using namespace core::date;
+
+    auto resource = std::pmr::synchronized_pool_resource();
+    std::pmr::vector<complex_logical_type> types(&resource);
+
+    types.emplace_back(logical_type::DATE, "date_col");
+    types.emplace_back(logical_type::TIME, "time_col");
+    types.emplace_back(logical_type::TIMESTAMP, "ts_col");
+    types.emplace_back(logical_type::TIMESTAMP_TZ, "tstz_col");
+    types.emplace_back(logical_type::INTERVAL, "interval_col");
+
+    data_chunk_t chunk(&resource, types, chunk_size);
+    chunk.set_cardinality(chunk_size);
+
+    for (size_t i = 0; i < chunk_size; i++) {
+        chunk.set_value(0, i, logical_value_t{&resource, date_t{days{static_cast<int32_t>(i) - 100}}});
+        chunk.set_value(1,
+                        i,
+                        logical_value_t{&resource,
+                                        core::date::time_t{microseconds{static_cast<int64_t>(i) * 1000000LL}}});
+        chunk.set_value(2,
+                        i,
+                        logical_value_t{&resource,
+                                        timestamp_t{microseconds{static_cast<int64_t>(i) * 1000000LL - 86400000000LL}}});
+        chunk.set_value(3,
+                        i,
+                        logical_value_t{&resource,
+                                        timestamptz_t{microseconds{static_cast<int64_t>(i) * 1000000LL}}});
+        chunk.set_value(4,
+                        i,
+                        logical_value_t{&resource,
+                                        interval_t{microseconds{static_cast<int64_t>(i) * 1000LL},
+                                                   days{static_cast<int32_t>(i)},
+                                                   months{static_cast<int32_t>(i % 12)}}});
+    }
+
+    ArrowSchema schema;
+    ArrowArray arrow_array;
+    to_arrow_schema(&schema, types);
+    to_arrow_array(chunk, &arrow_array);
+    auto res = data_chunk_from_arrow(&resource, &arrow_array, schema_from_arrow(&schema));
+
+    REQUIRE(chunk.column_count() == res.column_count());
+    REQUIRE(chunk.size() == res.size());
+    for (size_t i = 0; i < chunk.column_count(); i++) {
+        for (size_t j = 0; j < chunk.size(); j++) {
+            REQUIRE(chunk.value(i, j) == res.value(i, j));
+        }
+    }
+    schema.release(&schema);
 }

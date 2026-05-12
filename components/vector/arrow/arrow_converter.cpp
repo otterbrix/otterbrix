@@ -136,6 +136,25 @@ namespace components::vector::arrow {
                 child.format = root_holder.owned_type_names.back().get();
                 break;
             }
+            case logical_type::DATE:
+                child.format = "tdD";
+                break;
+            case logical_type::TIME:
+                child.format = "ttu";
+                break;
+            case logical_type::TIMESTAMP: {
+                root_holder.owned_type_names.push_back(add_name("tsu:"));
+                child.format = root_holder.owned_type_names.back().get();
+                break;
+            }
+            case logical_type::TIMESTAMP_TZ: {
+                root_holder.owned_type_names.push_back(add_name("tsu:UTC"));
+                child.format = root_holder.owned_type_names.back().get();
+                break;
+            }
+            case logical_type::INTERVAL:
+                child.format = "tin";
+                break;
             case logical_type::NA: {
                 child.format = "n";
                 break;

@@ -1,8 +1,17 @@
-# План — финальные 5 failing тестов
+# План — финальные failing тесты
 
-> **State (2026-05-13)**: 69/74 (93.2%). Все архитектурные коммиты сессии стабильны
-> (`16da88a` → `fca8eed`). Этот документ — план как добить оставшиеся 5, с
-> приоритетом, scope estimates и lldb-проверенными корнями.
+> **State (2026-05-13)**: 70/74 (94.6%) — Group 4 закрыта в `0312190`.
+> Все архитектурные коммиты сессии стабильны (`16da88a` → `0312190`).
+> Этот документ — план как добить оставшиеся 4, с приоритетом, scope
+> estimates и lldb-проверенными корнями.
+
+## Status
+
+- ✅ **Group 4** (`test_collection::insert`) — closed via `0312190`.
+  Test updated к PostgreSQL DEFAULT semantics.
+- ⏳ **Group 3** (`test_collection::sql::index`) — next.
+- ⏳ **Group 1** (`dynamic_schema_drop_column` + `drop_then_readd`).
+- ⏳ **Group 2** (`dynamic_schema_union`).
 
 ## Текущее состояние
 

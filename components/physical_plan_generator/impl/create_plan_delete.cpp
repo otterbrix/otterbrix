@@ -48,6 +48,11 @@ namespace services::planner::impl {
                                                                                              limit)),
                                    create_plan_data(node_raw_data));
             } else {
+                // Phase 13 Step 3: read the USING-side table_oid from the
+                // node (enrich_logical_plan stamps it via the same plan-tree
+                // resolve path as the primary table). INVALID_OID would scan
+                // an empty storage and silently drop the join condition.
+                const auto using_oid = node_delete->table_oid_from();
                 plan->set_children(boost::intrusive_ptr(new components::operators::full_scan(context.resource,
                                                                                              context.log.clone(),
                                                                                              table_oid,
@@ -55,7 +60,7 @@ namespace services::planner::impl {
                                                                                              limit)),
                                    boost::intrusive_ptr(new components::operators::full_scan(context.resource,
                                                                                              context.log.clone(),
-                                                                                             components::catalog::INVALID_OID,
+                                                                                             using_oid,
                                                                                              nullptr,
                                                                                              limit)));
             }

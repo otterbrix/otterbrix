@@ -2,6 +2,7 @@
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/context/context.hpp>
+#include <components/logical_plan/node_catalog_resolve_namespace.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -24,6 +25,15 @@ namespace components::operators {
         // pipeline drives this operator via await_async_and_resume.
         : read_write_operator_t(resource, std::move(log), operator_type::resolve_namespace)
         , name_(std::move(name)) {}
+
+    operator_resolve_namespace_t::operator_resolve_namespace_t(
+        std::pmr::memory_resource*                                  resource,
+        log_t                                                        log,
+        std::string                                                  name,
+        components::logical_plan::node_catalog_resolve_namespace_t* target_node)
+        : read_write_operator_t(resource, std::move(log), operator_type::resolve_namespace)
+        , name_(std::move(name))
+        , target_node_(target_node) {}
 
     void operator_resolve_namespace_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
         // All work is async (single pg_namespace read). Defer to
@@ -76,6 +86,12 @@ namespace components::operators {
             types::logical_value_t oid_lv(resource_, oid_val);
             out_chunk.set_cardinality(1);
             out_chunk.set_value(0, 0, oid_lv);
+            // Phase 13 Step 3: stamp the resolved oid onto the logical-plan node
+            // so the dispatcher's Pass 2 (validate / enrich / planner) can read
+            // it via plan_resolve_index_t without an async catalog_view shortcut.
+            if (target_node_) {
+                target_node_->set_namespace_oid(oid_val);
+            }
         } else {
             out_chunk.set_cardinality(0);
         }

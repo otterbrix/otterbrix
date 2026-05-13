@@ -2171,6 +2171,29 @@ namespace services::dispatcher {
             case node_type::drop_index_t:
                 // nothing to check here
                 break;
+            case node_type::sequence_t: {
+                // Phase 13: the SQL transformer wraps DML/DDL in
+                //   sequence_t(catalog_resolve_*…, consumer)
+                // (gated by set_transformer_emit_catalog_resolve). The catalog
+                // resolve children are leaves that don't carry a schema, so
+                // we descend to the last non-catalog_resolve_* child — the
+                // real consumer (insert_t/update_t/aggregate_t/...).
+                auto is_catalog_resolve = [](node_type t) {
+                    return t == node_type::catalog_resolve_namespace_t ||
+                           t == node_type::catalog_resolve_table_t ||
+                           t == node_type::catalog_resolve_type_t ||
+                           t == node_type::catalog_resolve_function_t;
+                };
+                for (auto it = node->children().rbegin();
+                     it != node->children().rend(); ++it) {
+                    if (!*it) continue;
+                    if (!is_catalog_resolve((*it)->type())) {
+                        return validate_schema_sync(resource, view, it->get(), parameters);
+                    }
+                }
+                // All children are catalog_resolve_* — no consumer, empty schema.
+                break;
+            }
             default:
                 // TODO: add check to validate schema, if assert is triggered
                 assert(false);

@@ -3,6 +3,7 @@
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/context/context.hpp>
+#include <components/logical_plan/node_catalog_resolve_table.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -33,6 +34,18 @@ namespace components::operators {
         , table_oid_(catalog::INVALID_OID)
         , input_namespace_oid_(namespace_oid)
         , relname_(std::move(relname)) {}
+
+    operator_resolve_table_t::operator_resolve_table_t(
+        std::pmr::memory_resource*                              resource,
+        log_t                                                    log,
+        catalog::oid_t                                           namespace_oid,
+        std::string                                              relname,
+        components::logical_plan::node_catalog_resolve_table_t* target_node)
+        : read_write_operator_t(resource, std::move(log), operator_type::resolve_table)
+        , table_oid_(catalog::INVALID_OID)
+        , input_namespace_oid_(namespace_oid)
+        , relname_(std::move(relname))
+        , target_node_(target_node) {}
 
     void operator_resolve_table_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
         // All catalog reads are async: defer to await_async_and_resume so the
@@ -128,6 +141,16 @@ namespace components::operators {
                     relkind_ = catalog::relkind::regular;
                 }
             }
+        }
+
+        // Phase 13 Step 3: stamp resolved oids onto the logical-plan node so
+        // the dispatcher's Pass 2 (validate / enrich / planner) reads them
+        // via plan_resolve_index_t without an async catalog_view shortcut.
+        // Stamped unconditionally (even when !found_) so callers can detect
+        // "name did not resolve" by checking node->table_oid() == INVALID_OID.
+        if (target_node_) {
+            target_node_->set_namespace_oid(namespace_oid_);
+            target_node_->set_table_oid(table_oid_);
         }
 
         if (!found_) {

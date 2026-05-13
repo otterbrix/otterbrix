@@ -3,6 +3,12 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 
+#include <string>
+
+namespace components::logical_plan {
+    class node_catalog_resolve_table_t;
+} // namespace components::logical_plan
+
 namespace components::operators {
 
     // Phase 13 T1 — operator-pipeline replacement for the dedicated
@@ -49,6 +55,16 @@ namespace components::operators {
                                   components::catalog::oid_t    namespace_oid,
                                   std::string                   relname);
 
+        // Phase 13 Step 3: back-pointer form. After resolving, the operator
+        // stamps namespace_oid + table_oid onto target_node so the dispatcher's
+        // Pass 2 (validate / enrich) can read it via plan_resolve_index_t
+        // without an async catalog_view shortcut.
+        operator_resolve_table_t(std::pmr::memory_resource*   resource,
+                                  log_t                         log,
+                                  components::catalog::oid_t    namespace_oid,
+                                  std::string                   relname,
+                                  components::logical_plan::node_catalog_resolve_table_t* target_node);
+
         // Accessors for downstream callers. resolved_found() is false when
         // pg_class has no row matching the inputs; the other accessors hold
         // their default-init values in that case.
@@ -71,6 +87,7 @@ namespace components::operators {
         bool                          found_{false};
         char                          relkind_{0};
         components::catalog::oid_t    namespace_oid_{components::catalog::INVALID_OID};
+        components::logical_plan::node_catalog_resolve_table_t* target_node_{nullptr};
     };
 
 } // namespace components::operators

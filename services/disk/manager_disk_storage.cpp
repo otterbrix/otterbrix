@@ -311,7 +311,23 @@ namespace services::disk {
         }
 
         // 1b. Dynamic schema growth for IN_MEMORY storages.
-        if (s->has_schema() && data->column_count() > 0) {
+        //
+        // Trigger only when chunk and table differ in width — that covers
+        // both "fewer columns than the table, with a new alias" (relkind='g'
+        // partial INSERT introducing a fresh column) and "more columns than
+        // the table" (truly new attribute). When `chunk.column_count() ==
+        // table.column_count()`, an alias mismatch is the "rename / type
+        // conversion" pattern (e.g. INSERT with column "count_but_integer"
+        // into a table whose column is "count") and the column-expansion
+        // loop's positional fallback handles it. Without this gate, the
+        // renamed column would be dynamic-added, the table would grow to
+        // N+1 columns, positional_fallback would then evaluate
+        // `data.count != table.count` and refuse to fill the original
+        // (now-unfilled) column — producing a NOT NULL violation on the
+        // original. test_collection::insert::"insert with conversions"
+        // exercises this exact path.
+        if (s->has_schema() && data->column_count() > 0 &&
+            data->column_count() != s->columns().size()) {
             auto it = storages_.find(table_oid);
             if (it != storages_.end() && it->second->table_storage.mode() == storage_mode_t::IN_MEMORY) {
                 std::vector<components::table::column_definition_t> new_columns;

@@ -9,6 +9,19 @@ use sqlx_core::transaction::TransactionManager;
 use crate::connection::OtterbrixConnection;
 use crate::database::Otterbrix;
 
+/// SQLx [`TransactionManager`] for the [`Otterbrix`](crate::Otterbrix) database.
+///
+/// **Otterbrix has no transactional API.** All three lifecycle methods —
+/// `begin`, `commit`, `rollback` — return
+/// [`Error::Protocol`](sqlx_core::error::Error::Protocol) with the message
+/// `"transactions are not supported by otterbrix"` (or `"invalid
+/// transaction state for otterbrix"` for `commit`/`rollback`).
+/// `start_rollback` is a no-op and `get_transaction_depth` always returns `0`.
+///
+/// As a result, calling [`Connection::begin`](sqlx_core::connection::Connection::begin)
+/// on an [`OtterbrixConnection`](crate::OtterbrixConnection) is a hard
+/// error rather than a silent no-op. Code that depends on transactional
+/// rollback semantics will not run unmodified against this driver.
 #[derive(Debug)]
 pub struct OtterbrixTransactionManager;
 

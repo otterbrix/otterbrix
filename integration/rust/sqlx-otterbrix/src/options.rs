@@ -11,6 +11,39 @@ use sqlx_core::Url;
 
 use crate::connection::OtterbrixConnection;
 
+/// Connection options for the [`Otterbrix`](crate::Otterbrix) SQLx driver.
+///
+/// `OtterbrixConnectOptions` is the [`ConnectOptions`] implementation used
+/// by SQLx to open an [`OtterbrixConnection`]. The options carry the
+/// underlying [`otterbrix::Config`], the filesystem base path used to build
+/// it, and SQLx's standard [`LogSettings`].
+///
+/// # URL syntax
+///
+/// The driver registers the `otterbrix` URL scheme. The path component of
+/// the URL is the base directory where the engine stores its log, WAL and
+/// data segments:
+///
+/// ```text
+/// otterbrix:///var/lib/myapp
+/// otterbrix://./relative/dir
+/// ```
+///
+/// All three forms `otterbrix://<path>`, `otterbrix:<path>` and a bare
+/// path (no scheme) are accepted by [`FromStr`]; [`from_url`](ConnectOptions::from_url)
+/// requires the explicit `otterbrix` scheme.
+///
+/// # Examples
+///
+/// ```no_run
+/// use sqlx_core::connection::ConnectOptions;
+/// use sqlx_otterbrix::OtterbrixConnectOptions;
+///
+/// # async fn run() -> Result<(), sqlx_core::error::Error> {
+/// let opts = OtterbrixConnectOptions::new("./data");
+/// let _conn = opts.connect().await?;
+/// # Ok(()) }
+/// ```
 #[derive(Clone)]
 pub struct OtterbrixConnectOptions {
     pub(crate) config: Config,
@@ -20,6 +53,12 @@ pub struct OtterbrixConnectOptions {
 }
 
 impl OtterbrixConnectOptions {
+    /// Builds options from a base storage directory using
+    /// [`Config::new`]'s defaults (no WAL, no on-disk segments).
+    ///
+    /// Suitable for examples and tests; for durable databases use
+    /// [`OtterbrixConnectOptions::from_config`] with a builder-configured
+    /// [`Config`].
     #[must_use]
     pub fn new(base: impl AsRef<std::path::Path>) -> Self {
         let base = base.as_ref().to_path_buf();
@@ -30,6 +69,8 @@ impl OtterbrixConnectOptions {
         }
     }
 
+    /// Builds options from a fully formed [`Config`] and a separate
+    /// `storage_dir` used for diagnostic display and URL round-tripping.
     #[must_use]
     pub fn from_config(config: Config, storage_dir: impl AsRef<std::path::Path>) -> Self {
         Self {
@@ -39,11 +80,14 @@ impl OtterbrixConnectOptions {
         }
     }
 
+    /// Returns a shared reference to the underlying [`Config`].
     #[must_use]
     pub fn config(&self) -> &Config {
         &self.config
     }
 
+    /// Returns a mutable reference to the underlying [`Config`], allowing
+    /// in-place tweaks before [`connect`](ConnectOptions::connect).
     pub fn config_mut(&mut self) -> &mut Config {
         &mut self.config
     }

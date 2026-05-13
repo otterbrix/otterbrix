@@ -1,3 +1,9 @@
+//! Conversion glue between SQLx and Otterbrix.
+//!
+//! All items in this module are `pub(crate)` and considered implementation
+//! details; the public surface of the crate goes through the SQLx trait
+//! implementations defined in sibling modules.
+
 use otterbrix::{
     Cursor, LogicalType, SqlParam, SqlParamValue, Value as ObValue, LOGICAL_TYPE_BIGINT,
     LOGICAL_TYPE_BOOLEAN, LOGICAL_TYPE_DOUBLE, LOGICAL_TYPE_FLOAT, LOGICAL_TYPE_INTEGER,
@@ -16,6 +22,12 @@ use sqlx_core::error::Error;
 use sqlx_core::ext::ustr::UStr;
 use sqlx_core::HashMap;
 
+/// Maps an [`otterbrix::Error`] to the corresponding [`sqlx_core::error::Error`].
+///
+/// Engine query errors are wrapped in [`OtterbrixDbError`] and surface as
+/// `Error::Database`; structural failures (`NullPointer`, `TypeMismatch`)
+/// become `Error::Protocol`; invalid paths become `Error::Configuration`.
+/// The original `Display` text is preserved in every variant.
 pub(crate) fn map_otterbrix_error(err: otterbrix::Error) -> Error {
     let msg = err.to_string();
     match err {
@@ -28,9 +40,13 @@ pub(crate) fn map_otterbrix_error(err: otterbrix::Error) -> Error {
     }
 }
 
-/// Maps `?` placeholders to `$1`, `$2`, … (skips `?` inside string literals), matching
-/// [`seaorm-otterbrix`].
-pub fn rewrite_placeholders(sql: &str) -> String {
+/// Rewrites SQLx-style `?` placeholders to engine-style `$1`, `$2`, ...
+///
+/// Skips `?` inside single-quoted string literals and double-quoted
+/// identifiers, and respects the standard SQL doubled-quote escape (`''`).
+/// Existing `$N` placeholders pass through untouched. Mirrors the
+/// implementation in `seaorm-otterbrix` and shares the same behaviour.
+pub(crate) fn rewrite_placeholders(sql: &str) -> String {
     let mut out = String::with_capacity(sql.len() + 8);
     let mut in_single = false;
     let mut in_double = false;
@@ -56,6 +72,10 @@ pub fn rewrite_placeholders(sql: &str) -> String {
     out
 }
 
+/// Counts `?` placeholders in `sql` using the same skipping rules as
+/// [`rewrite_placeholders`]. Used to populate the placeholder count of
+/// [`OtterbrixStatement`](crate::OtterbrixStatement) without performing
+/// the rewrite.
 pub(crate) fn count_placeholders(sql: &str) -> usize {
     let mut in_single = false;
     let mut in_double = false;
@@ -71,6 +91,8 @@ pub(crate) fn count_placeholders(sql: &str) -> usize {
     n
 }
 
+/// Converts a slice of [`OtterbrixArgumentValue`]s into Otterbrix
+/// [`SqlParam`]s with 1-based indices.
 pub(crate) fn arguments_to_params<'a>(
     args: &'a [OtterbrixArgumentValue<'a>],
 ) -> Result<Vec<SqlParam<'a>>, Error> {
@@ -93,6 +115,8 @@ pub(crate) fn arguments_to_params<'a>(
         .collect()
 }
 
+/// Picks the matching [`OtterbrixTypeInfo`] for an Otterbrix logical type.
+/// Falls back to `text` for unknown / `NA` / absent types.
 fn logical_to_type_info(lt: Option<LogicalType>) -> OtterbrixTypeInfo {
     match lt {
         None | Some(LOGICAL_TYPE_NA) => OtterbrixTypeInfo::text(),
@@ -111,6 +135,13 @@ fn logical_to_type_info(lt: Option<LogicalType>) -> OtterbrixTypeInfo {
     }
 }
 
+/// Walks an Otterbrix [`Cursor`] and produces a vector of
+/// [`OtterbrixRow`]s plus the row-count (used as `rows_affected` for DML).
+///
+/// If the result set has duplicate column names, the function falls back to
+/// positional `"00000000"`-style keys for every column of that result;
+/// otherwise real column names are used. Column ordinals always reflect
+/// declaration order.
 pub(crate) fn materialize_cursor(cursor: &Cursor<'_>) -> Result<(Vec<OtterbrixRow>, u64), Error> {
     let column_count = cursor.column_count().max(0) as usize;
     let row_count = cursor.size().max(0) as usize;

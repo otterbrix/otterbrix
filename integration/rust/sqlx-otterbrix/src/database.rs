@@ -5,7 +5,25 @@ use crate::{
 };
 use sqlx_core::database::Database;
 
-/// Otterbrix SQLx driver marker type.
+/// Marker type identifying the Otterbrix SQLx driver.
+///
+/// `Otterbrix` is a zero-sized type that implements
+/// [`sqlx_core::database::Database`] and is used as the type parameter for
+/// every SQLx call:
+///
+/// ```no_run
+/// # use sqlx_otterbrix::{Otterbrix, OtterbrixConnectOptions, OtterbrixConnection};
+/// # use sqlx_core::connection::Connection;
+/// # async fn run() -> Result<(), sqlx_core::error::Error> {
+/// # let mut conn = OtterbrixConnection::connect_with(
+/// #     &OtterbrixConnectOptions::new(".")).await?;
+/// let _q = sqlx_core::query::query::<Otterbrix>("SELECT 1").execute(&mut conn).await?;
+/// # Ok(()) }
+/// ```
+///
+/// The driver registers a single URL scheme, `otterbrix://`, used by
+/// [`Connection::connect`](sqlx_core::connection::Connection::connect)
+/// and [`OtterbrixConnectOptions::from_url`](crate::OtterbrixConnectOptions).
 #[derive(Debug)]
 pub struct Otterbrix;
 

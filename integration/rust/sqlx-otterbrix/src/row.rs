@@ -9,6 +9,17 @@ use crate::column::OtterbrixColumn;
 use crate::database::Otterbrix;
 use crate::value::{OtterbrixValue, OtterbrixValueRef};
 
+/// Single row of a result set, indexable by column name or ordinal.
+///
+/// `OtterbrixRow` is the [`Row`](sqlx_core::row::Row) implementation of the
+/// [`Otterbrix`](crate::Otterbrix) database. Cells are decoded on demand via
+/// [`Row::try_get`](sqlx_core::row::Row::try_get), which dispatches to the
+/// matching [`Decode`](sqlx_core::decode::Decode) implementation.
+///
+/// When a result set has duplicate column names (e.g. a `JOIN` between two
+/// tables that both contain `id`) the driver switches to **positional keys**
+/// of the form `"00000000"`, `"00000001"`, ... — column names always remain
+/// addressable by ordinal index regardless.
 #[derive(Debug)]
 pub struct OtterbrixRow {
     pub(crate) values: Box<[OtterbrixValue]>,

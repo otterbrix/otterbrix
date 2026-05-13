@@ -4,9 +4,21 @@ use std::fmt::{self, Display, Formatter};
 
 use sqlx_core::error::{DatabaseError, ErrorKind};
 
+/// SQLx [`DatabaseError`] implementation for Otterbrix engine errors.
+///
+/// Wraps the integer error code and human-readable message produced by the
+/// C++ engine (see [`otterbrix::Error::Query`]). Returned through
+/// [`sqlx::Error::Database`](sqlx_core::error::Error::Database); use
+/// `Box<dyn DatabaseError>::try_downcast_ref::<OtterbrixDbError>()` if you
+/// need the raw `code`.
+///
+/// The `Display` text is `otterbrix core query error (code <N>): <msg>`,
+/// matching the prefix convention used elsewhere in this driver.
 #[derive(Debug)]
 pub struct OtterbrixDbError {
+    /// Engine-level numeric error code (always non-zero for a real error).
     pub code: i32,
+    /// Human-readable message produced by the engine.
     pub message: String,
 }
 

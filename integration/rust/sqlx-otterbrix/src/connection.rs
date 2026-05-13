@@ -12,6 +12,27 @@ use sqlx_core::transaction::Transaction;
 use crate::database::Otterbrix;
 use crate::options::OtterbrixConnectOptions;
 
+/// Live SQLx connection to an embedded Otterbrix engine.
+///
+/// `OtterbrixConnection` is the [`Connection`] implementation of the
+/// [`Otterbrix`](crate::Otterbrix) database. Construct it via SQLx's
+/// standard entry points — [`Connection::connect`] (with an
+/// `otterbrix:///path` URL) or
+/// [`Connection::connect_with`] (with an [`OtterbrixConnectOptions`]).
+///
+/// # Concurrency
+///
+/// Internally the connection holds an `Arc<parking_lot::Mutex<otterbrix::Database>>`,
+/// so cloning it would share the same engine instance. SQLx itself does not
+/// require `Clone` for connections, and this type does not implement it.
+/// Every call into the engine runs on a Tokio blocking thread via
+/// [`tokio::task::spawn_blocking`], guarded by the Rust-side mutex.
+///
+/// # Lifecycle
+///
+/// `close` and `close_hard` are no-ops — the engine is shut down when the
+/// connection is dropped. `ping` always succeeds. `begin` returns an error
+/// (see [`OtterbrixTransactionManager`](crate::OtterbrixTransactionManager)).
 pub struct OtterbrixConnection {
     pub(crate) inner: Arc<Mutex<ObDatabase>>,
     pub(crate) log_settings: LogSettings,

@@ -13,6 +13,19 @@ use crate::column::OtterbrixColumn;
 use crate::database::Otterbrix;
 use crate::r#type::OtterbrixTypeInfo;
 
+/// Prepared statement handle.
+///
+/// `OtterbrixStatement` is the [`Statement`](sqlx_core::statement::Statement)
+/// implementation of the [`Otterbrix`](crate::Otterbrix) database. The
+/// engine itself does not expose a separate prepare step — the driver
+/// returns a lightweight handle that records the parameter count and is
+/// re-executed by SQLx on each call.
+///
+/// Because the engine cannot describe results without executing the
+/// statement, [`columns`](sqlx_core::statement::Statement::columns) and the
+/// associated column names are always empty, and
+/// [`parameters`](sqlx_core::statement::Statement::parameters) returns the
+/// `?`-placeholder count rather than concrete type information.
 #[derive(Debug, Clone)]
 pub struct OtterbrixStatement<'q> {
     pub(crate) sql: Cow<'q, str>,

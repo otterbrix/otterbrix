@@ -6,6 +6,14 @@ use sqlx_core::value::{Value as SqlxValue, ValueRef};
 use crate::database::Otterbrix;
 use crate::r#type::OtterbrixTypeInfo;
 
+/// Owned cell value produced by the Otterbrix engine.
+///
+/// `OtterbrixValue` is the [`Value`](sqlx_core::value::Value) implementation
+/// of the [`Otterbrix`](crate::Otterbrix) database: it carries the raw
+/// [`otterbrix::Value`] together with its inferred
+/// [`OtterbrixTypeInfo`]. Decoding into a Rust type happens through the
+/// standard SQLx [`Decode`](sqlx_core::decode::Decode) trait —
+/// `row.try_get::<i64, _>("id")` and similar.
 #[derive(Debug, Clone)]
 pub struct OtterbrixValue {
     pub(crate) raw: ObValue,
@@ -28,6 +36,12 @@ impl SqlxValue for OtterbrixValue {
     }
 }
 
+/// Borrowed reference to an [`OtterbrixValue`].
+///
+/// `OtterbrixValueRef` is the [`ValueRef`](sqlx_core::value::ValueRef)
+/// implementation of the [`Otterbrix`](crate::Otterbrix) database. It
+/// is the value type that [`Decode`](sqlx_core::decode::Decode) implementations
+/// receive; users normally do not construct it directly.
 #[derive(Clone)]
 pub struct OtterbrixValueRef<'r> {
     inner: &'r OtterbrixValue,

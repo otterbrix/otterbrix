@@ -1,3 +1,20 @@
+//! [`Executor`] implementation for [`OtterbrixConnection`].
+//!
+//! Each query goes through [`tokio::task::spawn_blocking`] so that the
+//! synchronous Otterbrix C facade does not block the async runtime; the
+//! resulting cursor is materialised eagerly into a vector of
+//! [`OtterbrixRow`]s.
+//!
+//! Two methods are intentional stubs because the engine does not expose the
+//! corresponding capability:
+//!
+//! - [`Executor::prepare_with`] returns an empty
+//!   [`OtterbrixStatement`] with a placeholder count derived from the SQL
+//!   text — column metadata is not available without executing the statement.
+//! - [`Executor::describe`] returns
+//!   [`Error::Protocol`](sqlx_core::error::Error::Protocol) — the engine has
+//!   no `DESCRIBE`-style API, so SQLx offline macros are unsupported.
+
 use std::sync::Arc;
 
 use futures_core::future::BoxFuture;
@@ -21,6 +38,9 @@ use crate::row::OtterbrixRow;
 use crate::statement::OtterbrixStatement;
 use crate::OtterbrixConnection;
 
+/// Synchronous body of a query: rewrites placeholders, takes the
+/// per-database mutex, dispatches `execute` / `execute_with_params`, and
+/// materialises the cursor. Always called from `spawn_blocking`.
 fn run_sql(
     db: &Arc<Mutex<ObDatabase>>,
     sql: &str,

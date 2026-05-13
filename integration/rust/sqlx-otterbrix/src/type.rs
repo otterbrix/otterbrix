@@ -5,6 +5,7 @@ use std::str::FromStr;
 use sqlx_core::error::BoxDynError;
 use sqlx_core::type_info::TypeInfo;
 
+/// Internal representation of [`OtterbrixTypeInfo`].
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub(crate) enum OtterbrixKind {
     Null,
@@ -15,31 +16,56 @@ pub(crate) enum OtterbrixKind {
     Text,
 }
 
-/// Logical SQL type tag reported by Otterbrix for encode/decode compatibility checks.
+/// Logical SQL type reported by Otterbrix for encode/decode compatibility checks.
+///
+/// `OtterbrixTypeInfo` is the [`TypeInfo`] implementation of the
+/// [`Otterbrix`](crate::Otterbrix) database. Each variant maps onto a family
+/// of engine logical types — for example `Integer` covers `tinyint` through
+/// `bigint`, `Unsigned` covers `utinyint` through `ubigint`, and `Float`
+/// covers both `float` and `double`. Numeric variants are mutually
+/// [`type_compatible`](TypeInfo::type_compatible) so that lossless widening
+/// (`i32` → `BIGINT`, `u32` → `UBIGINT`, `i32` → `DOUBLE`) is accepted.
+///
+/// Construct via [`FromStr`]:
+///
+/// ```
+/// # use std::str::FromStr;
+/// use sqlx_otterbrix::OtterbrixTypeInfo;
+/// assert_eq!(
+///     OtterbrixTypeInfo::from_str("bigint").unwrap().to_string(),
+///     "BIGINT"
+/// );
+/// ```
 #[derive(Debug, Clone)]
 pub struct OtterbrixTypeInfo(pub(crate) OtterbrixKind);
 
 impl OtterbrixTypeInfo {
+    /// Constructs the type info for SQL `NULL`.
     pub(crate) fn null() -> Self {
         OtterbrixTypeInfo(OtterbrixKind::Null)
     }
 
+    /// Constructs the type info for `BOOLEAN`.
     pub(crate) fn bool() -> Self {
         OtterbrixTypeInfo(OtterbrixKind::Bool)
     }
 
+    /// Constructs the type info for any signed integer column.
     pub(crate) fn integer() -> Self {
         OtterbrixTypeInfo(OtterbrixKind::Integer)
     }
 
+    /// Constructs the type info for any unsigned integer column.
     pub(crate) fn unsigned() -> Self {
         OtterbrixTypeInfo(OtterbrixKind::Unsigned)
     }
 
+    /// Constructs the type info for `FLOAT` or `DOUBLE`.
     pub(crate) fn float() -> Self {
         OtterbrixTypeInfo(OtterbrixKind::Float)
     }
 
+    /// Constructs the type info for `STRING` / `TEXT` columns.
     pub(crate) fn text() -> Self {
         OtterbrixTypeInfo(OtterbrixKind::Text)
     }

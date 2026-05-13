@@ -37,6 +37,44 @@ namespace components::storage {
             scan(output, filter, limit);
         }
 
+        // Scan only a subset of columns. Caller is expected to have constructed `output`
+        // as a sparse data_chunk_t with placeholder vectors for columns outside projected_cols.
+        // Default implementation falls back to full scan.
+        virtual void scan_projected(vector::data_chunk_t& output,
+                                    const table::table_filter_t* filter,
+                                    int limit,
+                                    const std::vector<size_t>& /*projected_cols*/) {
+            scan(output, filter, limit);
+        }
+        virtual void scan_projected(vector::data_chunk_t& output,
+                                    const table::table_filter_t* filter,
+                                    int limit,
+                                    const std::vector<size_t>& projected_cols,
+                                    table::transaction_data /*txn*/) {
+            scan_projected(output, filter, limit, projected_cols);
+        }
+
+        // Batched scan: emit one ≤DEFAULT_VECTOR_CAPACITY chunk per scan vector directly,
+        // avoiding the accumulate-then-split round-trip. `projected_cols == nullptr` means
+        // scan all columns; otherwise sparse projection.
+        // Default implementation: do a regular scan into one chunk; subclasses can override.
+        virtual void scan_batched(std::pmr::vector<vector::data_chunk_t>& batches,
+                                  const table::table_filter_t* filter,
+                                  int64_t limit,
+                                  const std::vector<size_t>* projected_cols,
+                                  table::transaction_data txn) {
+            auto t = types();
+            vector::data_chunk_t one(resource(), t);
+            if (projected_cols) {
+                scan_projected(one, filter, static_cast<int>(limit), *projected_cols, txn);
+            } else {
+                scan(one, filter, limit, txn);
+            }
+            if (one.size() > 0) {
+                batches.push_back(std::move(one));
+            }
+        }
+
         virtual void fetch(vector::data_chunk_t& output, const vector::vector_t& row_ids, uint64_t count) = 0;
 
         virtual void scan_segment(int64_t start,

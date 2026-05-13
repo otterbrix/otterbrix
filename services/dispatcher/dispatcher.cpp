@@ -330,7 +330,14 @@ namespace services::dispatcher {
             default: {
                 error = validate_types(resource(), catalog_, logic_plan.get());
                 if (!error.contains_error()) {
-                    error = validate_schema(resource(), catalog_, logic_plan.get(), params->parameters()).error();
+                    auto schema_res = validate_schema(resource(), catalog_, logic_plan.get(), params->parameters());
+                    if (schema_res.has_error()) {
+                        error = schema_res.error();
+                    } else {
+                        // Post-validate optimization pass: column pruning, etc.
+                        // Runs here because it needs paths resolved by the schema validator.
+                        logic_plan = components::planner::post_validate_optimize(resource(), logic_plan, &catalog_);
+                    }
                 }
             }
         }
@@ -413,16 +420,18 @@ namespace services::dispatcher {
                                                                coll,
                                                                int64_t{0},
                                                                total);
-                            auto scan_data = co_await std::move(ssf);
-                            if (scan_data) {
-                                auto count = scan_data->size();
-                                auto [_ir, irf] = actor_zeta::send(
-                                    index_address_,
-                                    &index::manager_index_t::insert_rows,
-                                    index::execution_context_t{session, txn_data, catalog_.timezone_offset(), coll},
-                                    std::move(scan_data),
-                                    uint64_t{0},
-                                    count);
+                            auto scan_chunks = co_await std::move(ssf);
+                            uint64_t count = 0;
+                            for (const auto& c : scan_chunks) {
+                                count += c.size();
+                            }
+                            if (count > 0) {
+                                auto [_ir, irf] = actor_zeta::send(index_address_,
+                                                                   &index::manager_index_t::insert_rows,
+                                                                   index::execution_context_t{session, txn_data, coll},
+                                                                   std::move(scan_chunks),
+                                                                   uint64_t{0},
+                                                                   count);
                                 co_await std::move(irf);
                             }
                         }
@@ -445,7 +454,8 @@ namespace services::dispatcher {
                     // Dynamic schema: expand schema and rename column aliases to physical names
                     auto& children = logic_plan->children();
                     if (!children.empty() && children.front()->type() == node_type::data_t) {
-                        auto data_node = boost::static_pointer_cast<node_data_t>(children.front());
+                        auto data_node =
+                            boost::static_pointer_cast<node_data_t>(children.front());
                         auto& chunk = data_node->data_chunk();
                         auto& schema = catalog_.get_computing_table_schema(id);
                         uint64_t row_count = chunk.size();
@@ -457,10 +467,11 @@ namespace services::dispatcher {
 
                             std::pmr::string pmr_field(field_name.c_str(), resource());
                             if (!schema.has_type(pmr_field, field_type)) {
-                                components::table::column_definition_t col_def(std::string(field_name),
-                                                                               field_type,
-                                                                               false,
-                                                                               std::nullopt);
+                                components::table::column_definition_t col_def(
+                                    std::string(field_name),
+                                    field_type,
+                                    false,
+                                    std::nullopt);
                                 auto [_ac, acf] = actor_zeta::send(disk_address_,
                                                                    &disk::manager_disk_t::storage_add_column,
                                                                    session,
@@ -477,7 +488,8 @@ namespace services::dispatcher {
                             col.set_type_alias(std::string(field_name));
 
                             // Track for computed_schema refcount update after successful INSERT
-                            update_result_[{std::pmr::string(field_name.c_str(), resource()), field_type}] += row_count;
+                            update_result_[{std::pmr::string(field_name.c_str(), resource()), field_type}] +=
+                                row_count;
                         }
                     }
                 }

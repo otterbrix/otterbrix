@@ -24,7 +24,8 @@ set(${PROJECT_NAME}_SOURCES
        dispatcher/validate_logical_plan.cpp
 
     # index
-        index/index_disk.cpp
+        index/bitcask_index_disk.cpp
+        index/btree_index_disk.cpp
         index/index_agent_disk.cpp
         index/manager_index.cpp
 

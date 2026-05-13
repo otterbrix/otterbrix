@@ -1,15 +1,19 @@
 project(test_index_service)
 
+add_definitions(-DDEV_MODE)
+
 set(${PROJECT_NAME}_SOURCES
     main.cpp
     test_index_disk.cpp
+    test_bitcask_index_disk.cpp
 )
 
-add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})
+add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})
 
 target_link_libraries(
     ${PROJECT_NAME} PRIVATE
     otterbrix::services
+    otterbrix::index
     otterbrix::test_generaty
 
     absl::int128

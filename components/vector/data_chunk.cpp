@@ -17,6 +17,38 @@ namespace components::vector {
         }
     }
 
+    data_chunk_t::data_chunk_t(std::pmr::memory_resource* resource,
+                               const std::pmr::vector<types::complex_logical_type>& all_types,
+                               const std::vector<size_t>& projected_cols,
+                               uint64_t capacity)
+        : resource_(resource)
+        , capacity_(capacity)
+        , row_ids(resource, types::logical_type::BIGINT, capacity) {
+        // Build a fast lookup: which column indices need real buffers
+        std::vector<bool> needed(all_types.size(), false);
+        for (size_t idx : projected_cols) {
+            if (idx < all_types.size()) {
+                needed[idx] = true;
+            }
+        }
+        data.reserve(all_types.size());
+        for (size_t i = 0; i < all_types.size(); i++) {
+            if (needed[i]) {
+                data.emplace_back(resource_, all_types[i], capacity_);
+            } else {
+                // Placeholder: type info only, no buffer allocation
+                data.emplace_back(resource_, all_types[i], false, false, 0);
+            }
+        }
+    }
+
+    // An unprojected placeholder vector has no data buffer AND no auxiliary buffer.
+    // (ARRAY/STRUCT/LIST real vectors have auxiliary != nullptr even though data_ is null.)
+    // These exist to keep column indices stable when projected_scan skips columns.
+    static bool is_unprojected_placeholder(const vector_t& v) noexcept {
+        return v.data() == nullptr && v.auxiliary() == nullptr;
+    }
+
     uint64_t data_chunk_t::allocation_size() const {
         uint64_t total_size = 0;
         auto cardinality = size();
@@ -135,6 +167,7 @@ namespace components::vector {
         assert(other.size() == 0);
 
         for (uint64_t i = 0; i < column_count(); i++) {
+            if (is_unprojected_placeholder(data[i])) continue;
             assert(other.data[i].get_vector_type() == vector_type::FLAT);
             vector_ops::copy(data[i], other.data[i], size(), offset, 0);
         }
@@ -152,6 +185,7 @@ namespace components::vector {
         assert(source_count <= size());
 
         for (uint64_t i = 0; i < column_count(); i++) {
+            if (is_unprojected_placeholder(data[i])) continue;
             assert(other.data[i].get_vector_type() == vector_type::FLAT);
             vector_ops::copy(data[i], other.data[i], indexing, source_count, offset, 0);
         }
@@ -195,37 +229,6 @@ namespace components::vector {
             this_col.reference(other_col);
         }
         set_cardinality(other.size());
-    }
-
-    void
-    data_chunk_t::append(const data_chunk_t& other, bool resize, indexing_vector_t* indexing, uint64_t indexing_count) {
-        uint64_t new_size = indexing ? size() + indexing_count : size() + other.size();
-        if (other.size() == 0) {
-            return;
-        }
-        if (column_count() != other.column_count()) {
-            throw std::logic_error("Column counts of appending chunk doesn't match!");
-        }
-        if (new_size > capacity_) {
-            if (resize) {
-                auto new_capacity = next_power_of_two(new_size);
-                for (uint64_t i = 0; i < column_count(); i++) {
-                    data[i].resize(size(), new_capacity);
-                }
-                capacity_ = new_capacity;
-            } else {
-                throw std::logic_error("Can't append chunk to other chunk without resizing");
-            }
-        }
-        for (uint64_t i = 0; i < column_count(); i++) {
-            assert(data[i].get_vector_type() == vector_type::FLAT);
-            if (indexing) {
-                vector_ops::copy(other.data[i], data[i], *indexing, indexing_count, 0, size());
-            } else {
-                vector_ops::copy(other.data[i], data[i], other.size(), 0, size());
-            }
-        }
-        set_cardinality(new_size);
     }
 
     void data_chunk_t::flatten() {
@@ -388,7 +391,16 @@ namespace components::vector {
         result.count_ = count;
         result.data.reserve(column_count());
         for (uint64_t c = 0; c < column_count(); c++) {
-            result.data.emplace_back(data[c], offset, count);
+            if (is_unprojected_placeholder(data[c])) {
+                // Preserve placeholder status — slicing nullptr would produce a bogus offset pointer.
+                result.data.emplace_back(resource, data[c].type(), false, false, 0);
+            } else {
+                result.data.emplace_back(data[c], offset, count);
+            }
+        }
+        result.row_ids = vector_t(resource, types::logical_type::BIGINT, count);
+        if (count > 0) {
+            vector::vector_ops::copy(row_ids, result.row_ids, offset + count, offset, 0);
         }
         return result;
     }
@@ -426,6 +438,7 @@ namespace components::vector {
             new_size = is_power_of_two(new_size) ? new_size * 2 : next_power_of_two(new_size);
         }
         for (auto& column : data) {
+            if (is_unprojected_placeholder(column)) continue;
             column.resize(capacity_, new_size);
         }
         row_ids.resize(capacity_, new_size);

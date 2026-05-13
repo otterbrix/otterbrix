@@ -5,6 +5,7 @@
 #include <thread>
 #include <unordered_set>
 
+#include <components/vector/vector_operations.hpp>
 #include <core/executor.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 
@@ -309,6 +310,14 @@ namespace services::disk {
             // Storage data operations
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_scan>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_scan, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_scan_projected>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_scan_projected, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_scan_batched>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_scan_batched, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_fetch>: {
@@ -1045,6 +1054,49 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+    manager_disk_t::storage_scan_projected(session_id_t /*session*/,
+                                           collection_full_name_t name,
+                                           std::unique_ptr<components::table::table_filter_t> filter,
+                                           int64_t limit,
+                                           std::vector<size_t> projected_cols,
+                                           components::table::transaction_data txn) {
+        auto* s = get_storage(name);
+        if (!s) {
+            co_return nullptr;
+        }
+        auto types = s->types();
+        std::unique_ptr<components::vector::data_chunk_t> result;
+        if (projected_cols.empty()) {
+            result = std::make_unique<components::vector::data_chunk_t>(resource(), types);
+            s->scan(*result, filter.get(), limit, txn);
+        } else {
+            result = std::make_unique<components::vector::data_chunk_t>(resource(),
+                                                                        types,
+                                                                        projected_cols,
+                                                                        components::vector::DEFAULT_VECTOR_CAPACITY);
+            s->scan_projected(*result, filter.get(), limit, projected_cols, txn);
+        }
+        co_return std::move(result);
+    }
+
+    manager_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+    manager_disk_t::storage_scan_batched(session_id_t /*session*/,
+                                         collection_full_name_t name,
+                                         std::unique_ptr<components::table::table_filter_t> filter,
+                                         int64_t limit,
+                                         std::vector<size_t> projected_cols,
+                                         components::table::transaction_data txn) {
+        std::pmr::vector<components::vector::data_chunk_t> batches{resource()};
+        auto* s = get_storage(name);
+        if (!s) {
+            co_return std::move(batches);
+        }
+        const std::vector<size_t>* projected_ptr = projected_cols.empty() ? nullptr : &projected_cols;
+        s->scan_batched(batches, filter.get(), limit, projected_ptr, txn);
+        co_return std::move(batches);
+    }
+
+    manager_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
     manager_disk_t::storage_fetch(session_id_t /*session*/,
                                   collection_full_name_t name,
                                   components::vector::vector_t row_ids,
@@ -1060,18 +1112,23 @@ namespace services::disk {
         co_return std::move(result);
     }
 
-    manager_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+    manager_disk_t::unique_future<std::vector<components::vector::data_chunk_t>>
     manager_disk_t::storage_scan_segment(session_id_t /*session*/,
                                          collection_full_name_t name,
                                          int64_t start,
                                          uint64_t count) {
+        std::vector<components::vector::data_chunk_t> result;
         auto* s = get_storage(name);
         if (!s) {
-            co_return nullptr;
+            co_return std::move(result);
         }
-        auto types = s->types();
-        auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types);
-        s->scan_segment(start, count, [&result](components::vector::data_chunk_t& chunk) { result->append(chunk); });
+        auto* res = resource();
+        s->scan_segment(start, count, [&result, res](components::vector::data_chunk_t& chunk) {
+            if (chunk.size() == 0) {
+                return;
+            }
+            result.emplace_back(chunk.partial_copy(res, 0, chunk.size()));
+        });
         co_return std::move(result);
     }
 
@@ -1410,6 +1467,14 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_empty_t::storage_scan, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_disk_empty_t, &manager_disk_empty_t::storage_scan_projected>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_empty_t::storage_scan_projected, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_empty_t, &manager_disk_empty_t::storage_scan_batched>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_empty_t::storage_scan_batched, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_disk_empty_t, &manager_disk_empty_t::storage_fetch>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_empty_t::storage_fetch, msg);
                 break;
@@ -1645,6 +1710,49 @@ namespace services::disk {
     }
 
     manager_disk_empty_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+    manager_disk_empty_t::storage_scan_projected(session_id_t /*session*/,
+                                                 collection_full_name_t name,
+                                                 std::unique_ptr<components::table::table_filter_t> filter,
+                                                 int64_t limit,
+                                                 std::vector<size_t> projected_cols,
+                                                 components::table::transaction_data txn) {
+        auto* s = get_storage(name);
+        if (!s) {
+            co_return nullptr;
+        }
+        auto types = s->types();
+        std::unique_ptr<components::vector::data_chunk_t> result;
+        if (projected_cols.empty()) {
+            result = std::make_unique<components::vector::data_chunk_t>(resource(), types);
+            s->scan(*result, filter.get(), limit, txn);
+        } else {
+            result = std::make_unique<components::vector::data_chunk_t>(resource(),
+                                                                        types,
+                                                                        projected_cols,
+                                                                        components::vector::DEFAULT_VECTOR_CAPACITY);
+            s->scan_projected(*result, filter.get(), limit, projected_cols, txn);
+        }
+        co_return std::move(result);
+    }
+
+    manager_disk_empty_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+    manager_disk_empty_t::storage_scan_batched(session_id_t /*session*/,
+                                               collection_full_name_t name,
+                                               std::unique_ptr<components::table::table_filter_t> filter,
+                                               int64_t limit,
+                                               std::vector<size_t> projected_cols,
+                                               components::table::transaction_data txn) {
+        std::pmr::vector<components::vector::data_chunk_t> batches{resource()};
+        auto* s = get_storage(name);
+        if (!s) {
+            co_return std::move(batches);
+        }
+        const std::vector<size_t>* projected_ptr = projected_cols.empty() ? nullptr : &projected_cols;
+        s->scan_batched(batches, filter.get(), limit, projected_ptr, txn);
+        co_return std::move(batches);
+    }
+
+    manager_disk_empty_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
     manager_disk_empty_t::storage_fetch(session_id_t /*session*/,
                                         collection_full_name_t name,
                                         components::vector::vector_t row_ids,
@@ -1660,18 +1768,23 @@ namespace services::disk {
         co_return std::move(result);
     }
 
-    manager_disk_empty_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+    manager_disk_empty_t::unique_future<std::vector<components::vector::data_chunk_t>>
     manager_disk_empty_t::storage_scan_segment(session_id_t /*session*/,
                                                collection_full_name_t name,
                                                int64_t start,
                                                uint64_t count) {
+        std::vector<components::vector::data_chunk_t> result;
         auto* s = get_storage(name);
         if (!s) {
-            co_return nullptr;
+            co_return std::move(result);
         }
-        auto types = s->types();
-        auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types);
-        s->scan_segment(start, count, [&result](components::vector::data_chunk_t& chunk) { result->append(chunk); });
+        auto* res = resource();
+        s->scan_segment(start, count, [&result, res](components::vector::data_chunk_t& chunk) {
+            if (chunk.size() == 0) {
+                return;
+            }
+            result.emplace_back(chunk.partial_copy(res, 0, chunk.size()));
+        });
         co_return std::move(result);
     }
 

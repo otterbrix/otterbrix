@@ -256,6 +256,13 @@ void benchmark_runner_t::run(const benchmark_configuration_t& config) {
                 std::cerr << "Error loading group " << b->group() << ": " << e.what() << "\n";
             }
         }
+        // Ensure disk state is durable for subsequent --skip-load runs in another process.
+        if (config.disk_on) {
+            auto checkpoint = state.dispatcher->execute_sql(state.session, "CHECKPOINT");
+            if (checkpoint->is_error() && config.verbose) {
+                std::cerr << "CHECKPOINT failed after load-only: " << checkpoint->get_error().what << "\n";
+            }
+        }
         std::cout << "Load-only complete. " << loaded_groups.size() << " groups loaded.\n";
         return;
     }

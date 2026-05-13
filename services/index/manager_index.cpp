@@ -1,6 +1,9 @@
 #include "manager_index.hpp"
 
+#include "bitcask_index_disk.hpp"
+
 #include <actor-zeta/spawn.hpp>
+#include <components/index/hash_single_field_index.hpp>
 #include <components/index/index_engine.hpp>
 #include <components/index/single_field_index.hpp>
 #include <components/serialization/deserializer.hpp>
@@ -90,6 +93,9 @@ namespace services::index {
                                      actor_zeta::scheduler_raw scheduler,
                                      log_t& log,
                                      std::filesystem::path path_db,
+                                     uint64_t bitcask_flush_threshold,
+                                     uint64_t bitcask_segment_record_limit,
+                                     uint64_t btree_flush_threshold,
                                      run_fn_t run_fn)
         : actor_zeta::actor::actor_mixin<manager_index_t>()
         , resource_(resource)
@@ -97,6 +103,9 @@ namespace services::index {
         , run_fn_(std::move(run_fn))
         , log_(log)
         , path_db_(std::move(path_db))
+        , bitcask_flush_threshold_(bitcask_flush_threshold)
+        , bitcask_segment_record_limit_(bitcask_segment_record_limit)
+        , btree_flush_threshold_(btree_flush_threshold)
         , engines_(resource)
         , metafile_indexes_(nullptr)
         , pending_void_(resource) {
@@ -288,39 +297,53 @@ namespace services::index {
                     components::index::make_index<components::index::single_field_index_t>(engine, index_name, keys);
                 break;
             }
+            case components::logical_plan::index_type::hashed: {
+                id_index = components::index::make_index<components::index::hash_single_field_index_t>(
+                    engine, index_name, keys);
+                break;
+            }
             default:
                 trace(log_, "manager_index_t::create_index: unsupported index type");
                 co_return components::index::INDEX_ID_UNDEFINED;
         }
 
         if (id_index != components::index::INDEX_ID_UNDEFINED) {
-            // Load index data from btree (persistent storage)
+            // Load index data from persistent storage
             if (!path_db_.empty()) {
-                auto btree_path = path_db_ / name.database / name.collection / index_name;
-                if (std::filesystem::exists(btree_path / "metadata")) {
+                auto index_path = path_db_ / name.database / name.collection / index_name;
+                auto* idx = components::index::search_index(engine, keys);
+                if (idx) {
                     try {
-                        core::filesystem::local_file_system_t fs;
-                        auto db =
-                            std::make_unique<core::b_plus_tree::btree_t>(resource_, fs, btree_path, item_key_getter);
-                        db->load();
+                        if (type == components::logical_plan::index_type::hashed) {
+                            auto disk_index = bitcask_index_disk_t(
+                                index_path, resource_, bitcask_flush_threshold_, bitcask_segment_record_limit_);
+                            bitcask_index_disk_t::entries_t raw(resource_);
+                            disk_index.load_entries(raw);
+                            for (auto& [key, row_id] : raw) {
+                                idx->insert(key, static_cast<int64_t>(row_id));
+                            }
+                            trace(log_, "create_index: loaded {} entries from bitcask", raw.size());
+                        } else if (std::filesystem::exists(index_path / "metadata")) {
+                            core::filesystem::local_file_system_t fs;
+                            auto db =
+                                std::make_unique<core::b_plus_tree::btree_t>(resource_, fs, index_path, item_key_getter);
+                            db->load();
 
-                        if (db->size() > 0) {
-                            struct pv_entry {
-                                components::types::physical_value key;
-                                int64_t row_id;
-                            };
-                            std::pmr::vector<pv_entry> raw(resource_);
-                            db->full_scan<pv_entry>(&raw, [](void* data, size_t sz) -> pv_entry {
-                                auto item = core::b_plus_tree::btree_t::item_data{
-                                    static_cast<core::b_plus_tree::data_ptr_t>(data),
-                                    static_cast<uint32_t>(sz)};
-                                return {item_key_getter(item),
-                                        static_cast<int64_t>(
-                                            id_getter(item).value<components::types::physical_type::UINT64>())};
-                            });
+                            if (db->size() > 0) {
+                                struct pv_entry {
+                                    components::types::physical_value key;
+                                    int64_t row_id;
+                                };
+                                std::pmr::vector<pv_entry> raw(resource_);
+                                db->full_scan<pv_entry>(&raw, [](void* data, size_t sz) -> pv_entry {
+                                    auto item = core::b_plus_tree::btree_t::item_data{
+                                        static_cast<core::b_plus_tree::data_ptr_t>(data),
+                                        static_cast<uint32_t>(sz)};
+                                    return {item_key_getter(item),
+                                            static_cast<int64_t>(
+                                                id_getter(item).value<components::types::physical_type::UINT64>())};
+                                });
 
-                            auto* idx = components::index::search_index(engine, keys);
-                            if (idx) {
                                 for (auto& e : raw) {
                                     idx->insert(reverse_convert(resource_, e.key), e.row_id, session_tz);
                                 }
@@ -328,7 +351,7 @@ namespace services::index {
                             }
                         }
                     } catch (const std::exception& e) {
-                        trace(log_, "create_index: btree load failed: {}", e.what());
+                        trace(log_, "create_index: persistent load failed: {}", e.what());
                     }
                 }
             }
@@ -336,8 +359,16 @@ namespace services::index {
             // Create disk agent for persistent storage
             if (!path_db_.empty()) {
                 try {
-                    auto agent =
-                        actor_zeta::spawn<index_agent_disk_t>(resource_, path_db_, name, std::string(index_name), log_);
+                    auto agent = actor_zeta::spawn<index_agent_disk_t>(
+                        resource_,
+                        path_db_,
+                        name,
+                        std::string(index_name),
+                        type,
+                        bitcask_flush_threshold_,
+                        bitcask_segment_record_limit_,
+                        btree_flush_threshold_,
+                        log_);
 
                     // Link disk agent with in-memory index
                     auto* idx = components::index::search_index(engine, keys);
@@ -415,10 +446,10 @@ namespace services::index {
 
     manager_index_t::unique_future<void>
     manager_index_t::insert_rows(execution_context_t ctx,
-                                 std::unique_ptr<components::vector::data_chunk_t> data,
+                                 std::vector<components::vector::data_chunk_t> data,
                                  uint64_t start_row_id,
                                  uint64_t count) {
-        if (!data || count == 0)
+        if (count == 0)
             co_return;
 
         auto txn_id = ctx.txn.transaction_id;
@@ -427,8 +458,14 @@ namespace services::index {
             co_return;
 
         auto& engine = it->second;
-        for (uint64_t i = 0; i < count; i++) {
-            engine->insert_row(*data, i, static_cast<int64_t>(start_row_id + i), txn_id, ctx.session_tz);
+        uint64_t global = 0;
+        for (auto& chunk : data) {
+            for (uint64_t i = 0; i < chunk.size() && global < count; ++i, ++global) {
+                engine->insert_row(chunk, i, static_cast<int64_t>(start_row_id + global), txn_id, ctx.session_tz);
+            }
+            if (global >= count) {
+                break;
+            }
         }
         // No disk mirroring — uncommitted entries don't go to disk
 
@@ -437,9 +474,9 @@ namespace services::index {
 
     manager_index_t::unique_future<void>
     manager_index_t::delete_rows(execution_context_t ctx,
-                                 std::unique_ptr<components::vector::data_chunk_t> data,
+                                 std::vector<components::vector::data_chunk_t> data,
                                  std::pmr::vector<int64_t> row_ids) {
-        if (!data || row_ids.empty())
+        if (row_ids.empty())
             co_return;
 
         auto txn_id = ctx.txn.transaction_id;
@@ -448,8 +485,14 @@ namespace services::index {
             co_return;
 
         auto& engine = it->second;
-        for (size_t i = 0; i < row_ids.size(); i++) {
-            engine->mark_delete_row(*data, i, row_ids[i], txn_id, ctx.session_tz);
+        size_t global = 0;
+        for (auto& chunk : data) {
+            for (uint64_t i = 0; i < chunk.size() && global < row_ids.size(); ++i, ++global) {
+                engine->mark_delete_row(chunk, i, row_ids[global], txn_id, ctx.session_tz);
+            }
+            if (global >= row_ids.size()) {
+                break;
+            }
         }
         // No disk mirroring — uncommitted deletes don't go to disk
 
@@ -458,11 +501,11 @@ namespace services::index {
 
     manager_index_t::unique_future<void>
     manager_index_t::update_rows(execution_context_t ctx,
-                                 std::unique_ptr<components::vector::data_chunk_t> old_data,
-                                 std::unique_ptr<components::vector::data_chunk_t> new_data,
+                                 std::vector<components::vector::data_chunk_t> old_data,
+                                 std::vector<components::vector::data_chunk_t> new_data,
                                  std::pmr::vector<int64_t> row_ids,
                                  int64_t new_start_row_id) {
-        if (!old_data || !new_data || row_ids.empty())
+        if (row_ids.empty())
             co_return;
 
         auto txn_id = ctx.txn.transaction_id;
@@ -472,14 +515,26 @@ namespace services::index {
 
         auto& engine = it->second;
 
-        // Mark old entries as deleted
-        for (size_t i = 0; i < row_ids.size(); i++) {
-            engine->mark_delete_row(*old_data, i, row_ids[i], txn_id, ctx.session_tz);
-        }
-
-        // Insert new entries
-        for (size_t i = 0; i < row_ids.size(); i++) {
-            engine->insert_row(*new_data, i, new_start_row_id + static_cast<int64_t>(i), txn_id, ctx.session_tz);
+        // Iterate both old_data and new_data in parallel with independent chunk cursors.
+        // row_ids[g] names the old row at global index g; new_start_row_id + g names the new row.
+        size_t old_ci = 0, old_ri = 0;
+        size_t new_ci = 0, new_ri = 0;
+        for (size_t g = 0; g < row_ids.size(); ++g) {
+            while (old_ci < old_data.size() && old_ri >= old_data[old_ci].size()) {
+                ++old_ci;
+                old_ri = 0;
+            }
+            while (new_ci < new_data.size() && new_ri >= new_data[new_ci].size()) {
+                ++new_ci;
+                new_ri = 0;
+            }
+            if (old_ci >= old_data.size() || new_ci >= new_data.size()) {
+                break;
+            }
+            engine->mark_delete_row(old_data[old_ci], old_ri, row_ids[g], txn_id, ctx.session_tz);
+            engine->insert_row(new_data[new_ci], new_ri, new_start_row_id + static_cast<int64_t>(g), txn_id, ctx.session_tz);
+            ++old_ri;
+            ++new_ri;
         }
 
         co_return;

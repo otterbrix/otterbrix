@@ -49,138 +49,184 @@ namespace components::operators {
 
     void operator_update::on_execute_impl(pipeline::context_t* pipeline_context) {
         if (left_ && left_->output() && right_ && right_->output()) {
-            auto& chunk_left = left_->output()->data_chunk();
-            auto& chunk_right = right_->output()->data_chunk();
-            auto types_left = chunk_left.types();
-            auto types_right = chunk_right.types();
+            auto* resource = left_->output()->resource();
+            const auto& left_chunks = left_->output()->chunks();
+            const auto& right_chunks = right_->output()->chunks();
 
-            if (chunk_left.empty() && chunk_right.empty()) {
+            std::pmr::vector<types::complex_logical_type> types_left(resource);
+            std::pmr::vector<types::complex_logical_type> types_right(resource);
+            if (!left_chunks.empty()) {
+                types_left = left_chunks.front().types();
+            }
+            if (!right_chunks.empty()) {
+                types_right = right_chunks.front().types();
+            }
+
+            const uint64_t left_size = left_->output()->size();
+            const uint64_t right_size = right_->output()->size();
+
+            if (left_size == 0 && right_size == 0) {
                 if (upsert_) {
-                    output_ = operators::make_operator_data(resource(), types_left);
-                    modified_ = operators::make_operator_write_data(resource());
-                    no_modified_ = operators::make_operator_write_data(resource());
+                    output_ = operators::make_operator_data(resource, types_left);
                     auto& out_chunk = output_->data_chunk();
-                    // Build an empty right-side chunk with matching type layout
-                    auto right_placeholder = operators::make_operator_data(resource(), types_right);
-                    apply_updates(resource(),
-                                  updates_,
-                                  out_chunk,
-                                  right_placeholder->data_chunk(),
-                                  0,
-                                  pipeline_context->parameters,
-                                  pipeline_context->session_tz,
-                                  modified_,
-                                  no_modified_);
+                    // upsert path: synthesise a row by running update exprs against an empty context.
+                    vector::data_chunk_t empty_left(resource, types_left);
+                    vector::data_chunk_t empty_right(resource, types_right);
+                    for (const auto& expr : updates_) {
+                        expr->execute(empty_left, empty_right, 0, 0, &pipeline_context->parameters,
+                                                                        pipeline_context->session_tz);
+                    }
+                    (void)out_chunk;
+                    modified_ = operators::make_operator_write_data(resource);
                 }
             } else {
-                output_ = operators::make_operator_data(left_->output()->resource(), types_left);
-                modified_ = operators::make_operator_write_data(resource());
-                no_modified_ = operators::make_operator_write_data(resource());
-                auto& out_chunk = output_->data_chunk();
+                modified_ = operators::make_operator_write_data(resource);
+                no_modified_ = operators::make_operator_write_data(resource);
 
-                // Build ordered right-side chunk so both chunks are row-aligned after matching.
-                auto right_ordered = operators::make_operator_data(resource(), types_right);
-                auto& right_ordered_chunk = right_ordered->data_chunk();
-
-                auto predicate = expr_ ? predicates::create_predicate(left_->output()->resource(),
+                auto predicate = expr_ ? predicates::create_predicate(resource,
                                                                       pipeline_context->function_registry,
                                                                       expr_,
                                                                       types_left,
                                                                       types_right,
                                                                       &pipeline_context->parameters,
-                                                                      pipeline_context->session_tz)
-                                       : predicates::create_all_true_predicate(left_->output()->resource());
+                                                                        pipeline_context->session_tz)
+                                       : predicates::create_all_true_predicate(resource);
 
-                uint64_t match_count = 0;
-                for (size_t i = 0; i < chunk_left.size(); i++) {
-                    auto results =
-                        predicates::batch_check_1vN(predicate, chunk_left, chunk_right, i, chunk_right.size());
-                    if (results.has_error()) {
-                        set_error(results.error());
-                        return;
+                chunks_vector_t out_chunks(resource);
+                out_chunks.reserve(left_chunks.size());
+
+                for (auto& chunk_left : left_chunks) {
+                    if (chunk_left.size() == 0) {
+                        continue;
                     }
-                    for (size_t j = 0; j < chunk_right.size(); j++) {
-                        if (results.value()[j]) {
-                            out_chunk.row_ids.data<int64_t>()[match_count] = chunk_left.row_ids.data<int64_t>()[i];
-                            for (size_t k = 0; k < chunk_left.column_count(); k++) {
-                                vector::vector_ops::copy(chunk_left.data[k], out_chunk.data[k], i + 1, i, match_count);
+                    vector::data_chunk_t out_chunk(resource, types_left, chunk_left.size());
+                    size_t index = 0;
+                    for (size_t i = 0; i < chunk_left.size(); ++i) {
+                        for (const auto& chunk_right : right_chunks) {
+                            if (chunk_right.size() == 0) {
+                                continue;
                             }
-                            for (size_t k = 0; k < chunk_right.column_count(); k++) {
-                                vector::vector_ops::copy(chunk_right.data[k],
-                                                         right_ordered_chunk.data[k],
-                                                         j + 1,
-                                                         j,
-                                                         match_count);
+                            auto results =
+                                predicates::batch_check_1vN(predicate, chunk_left, chunk_right, i, chunk_right.size());
+                            if (results.has_error()) {
+                                set_error(results.error());
+                                return;
                             }
-                            vector::validate_chunk_capacity(out_chunk, match_count + 1);
-                            vector::validate_chunk_capacity(right_ordered_chunk, ++match_count);
+                            for (size_t j = 0; j < chunk_right.size(); ++j) {
+                                if (!results.value()[j]) {
+                                    continue;
+                                }
+                                out_chunk.row_ids.data<int64_t>()[index] = chunk_left.row_ids.data<int64_t>()[i];
+                                for (size_t k = 0; k < chunk_left.column_count(); ++k) {
+                                    vector::vector_ops::copy(chunk_left.data[k],
+                                                             out_chunk.data[k],
+                                                             i + 1,
+                                                             i,
+                                                             index);
+                                }
+                                bool modified = false;
+                                for (const auto& expr : updates_) {
+                                    modified |= expr->execute(out_chunk,
+                                                              chunk_right,
+                                                              index,
+                                                              j,
+                                                              &pipeline_context->parameters);
+                                }
+                                if (modified) {
+                                    modified_->append(index);
+                                } else {
+                                    no_modified_->append(index);
+                                }
+                                vector::validate_chunk_capacity(out_chunk, ++index);
+                            }
                         }
                     }
+                    out_chunk.set_cardinality(index);
+                    if (index > 0) {
+                        out_chunks.emplace_back(std::move(out_chunk));
+                    }
                 }
-                out_chunk.set_cardinality(match_count);
-                right_ordered_chunk.set_cardinality(match_count);
-
-                apply_updates(resource(),
-                              updates_,
-                              out_chunk,
-                              right_ordered_chunk,
-                              match_count,
-                              pipeline_context->parameters,
-                              pipeline_context->session_tz,
-                              modified_,
-                              no_modified_);
+                if (out_chunks.empty()) {
+                    output_ = operators::make_operator_data(resource, types_left, 0);
+                } else {
+                    output_ = operators::make_operator_data(resource, std::move(out_chunks));
+                }
             }
         } else if (left_ && left_->output()) {
+            auto* resource = left_->output()->resource();
+            const auto& in_chunks = left_->output()->chunks();
+            std::pmr::vector<types::complex_logical_type> types(resource);
+            if (!in_chunks.empty()) {
+                types = in_chunks.front().types();
+            }
+
             if (left_->output()->size() == 0) {
                 if (upsert_) {
-                    output_ = operators::make_operator_data(resource(), left_->output()->data_chunk().types());
-                    modified_ = operators::make_operator_write_data(resource());
-                    no_modified_ = operators::make_operator_write_data(resource());
+                    output_ = operators::make_operator_data(resource, types);
                 }
             } else {
-                auto& chunk = left_->output()->data_chunk();
-                auto types = chunk.types();
-                output_ = operators::make_operator_data(left_->output()->resource(), types);
-                modified_ = operators::make_operator_write_data(resource());
-                no_modified_ = operators::make_operator_write_data(resource());
-                auto& out_chunk = output_->data_chunk();
+                modified_ = operators::make_operator_write_data(resource);
+                no_modified_ = operators::make_operator_write_data(resource);
 
-                auto predicate = expr_ ? predicates::create_predicate(left_->output()->resource(),
+                auto predicate = expr_ ? predicates::create_predicate(resource,
                                                                       pipeline_context->function_registry,
                                                                       expr_,
                                                                       types,
                                                                       types,
                                                                       &pipeline_context->parameters,
-                                                                      pipeline_context->session_tz)
-                                       : predicates::create_all_true_predicate(left_->output()->resource());
+                                                                        pipeline_context->session_tz)
+                                       : predicates::create_all_true_predicate(resource);
 
-                uint64_t match_count = 0;
-                for (size_t i = 0; i < chunk.size(); i++) {
-                    auto res = predicate->check(chunk, i);
-                    if (!res.has_error() && res.value()) {
+                chunks_vector_t out_chunks(resource);
+                out_chunks.reserve(in_chunks.size());
+
+                for (auto& chunk : in_chunks) {
+                    if (chunk.size() == 0) {
+                        continue;
+                    }
+                    vector::data_chunk_t out_chunk(resource, types, chunk.size());
+                    size_t index = 0;
+                    for (size_t i = 0; i < chunk.size(); ++i) {
+                        auto res = predicate->check(chunk, i);
+                        if (res.has_error()) {
+                            set_error(res.error());
+                            return;
+                        }
+                        if (!res.value()) {
+                            continue;
+                        }
                         if (chunk.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
-                            out_chunk.row_ids.data<int64_t>()[match_count] =
+                            out_chunk.row_ids.data<int64_t>()[index] =
                                 static_cast<int64_t>(chunk.data.front().indexing().get_index(i));
                         } else {
-                            out_chunk.row_ids.data<int64_t>()[match_count] = chunk.row_ids.data<int64_t>()[i];
+                            out_chunk.row_ids.data<int64_t>()[index] = chunk.row_ids.data<int64_t>()[i];
                         }
-                        for (size_t j = 0; j < chunk.column_count(); j++) {
-                            vector::vector_ops::copy(chunk.data[j], out_chunk.data[j], i + 1, i, match_count);
+                        for (size_t k = 0; k < chunk.column_count(); ++k) {
+                            vector::vector_ops::copy(chunk.data[k], out_chunk.data[k], i + 1, i, index);
                         }
-                        vector::validate_chunk_capacity(out_chunk, ++match_count);
+                        bool modified = false;
+                        for (const auto& expr : updates_) {
+                            modified |=
+                                expr->execute(out_chunk, out_chunk, index, index, &pipeline_context->parameters,
+                                                                        pipeline_context->session_tz);
+                        }
+                        if (modified) {
+                            modified_->append(index);
+                        } else {
+                            no_modified_->append(index);
+                        }
+                        vector::validate_chunk_capacity(out_chunk, ++index);
+                    }
+                    out_chunk.set_cardinality(index);
+                    if (index > 0) {
+                        out_chunks.emplace_back(std::move(out_chunk));
                     }
                 }
-                out_chunk.set_cardinality(match_count);
-
-                apply_updates(resource(),
-                              updates_,
-                              out_chunk,
-                              out_chunk,
-                              match_count,
-                              pipeline_context->parameters,
-                              pipeline_context->session_tz,
-                              modified_,
-                              no_modified_);
+                if (out_chunks.empty()) {
+                    output_ = operators::make_operator_data(resource, types, 0);
+                } else {
+                    output_ = operators::make_operator_data(resource, std::move(out_chunks));
+                }
             }
         }
 

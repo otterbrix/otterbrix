@@ -4,6 +4,7 @@
 #include <components/expressions/scalar_expression.hpp>
 #include <components/physical_plan/operators/arithmetic_eval.hpp>
 #include <components/physical_plan/operators/operator_batch.hpp>
+#include <unordered_set>
 
 namespace {
     using namespace components;
@@ -93,20 +94,15 @@ namespace {
     void apply_distinct(std::pmr::memory_resource* resource,
                         vector::data_chunk_t& c,
                         const std::pmr::vector<types::complex_logical_type>& types) {
-        if (c.size() == 0 || c.column_count() == 0) {
-            return;
-        }
+        struct lv_hash {
+            size_t operator()(const types::logical_value_t& v) const noexcept { return v.hash(); }
+        };
+        std::unordered_set<types::logical_value_t, lv_hash, std::equal_to<>> seen;
+        seen.reserve(c.size());
         std::pmr::vector<uint64_t> unique_indices(resource);
         unique_indices.reserve(c.size());
         for (uint64_t row = 0; row < c.size(); row++) {
-            bool dup = false;
-            for (auto idx : unique_indices) {
-                if (c.data[0].value(row) == c.data[0].value(idx)) {
-                    dup = true;
-                    break;
-                }
-            }
-            if (!dup) {
+            if (seen.insert(c.data[0].value(row)).second) {
                 unique_indices.push_back(row);
             }
         }
@@ -170,11 +166,11 @@ namespace components::operators::aggregate {
 
     core::result_wrapper_t<compute::datum_t>
     operator_func_t::aggregate_batch_impl(pipeline::context_t* pipeline_context) {
-        auto* batch = static_cast<operator_batch_t*>(left_.get());
+        auto& batch_chunks = left_->output()->chunks();
         std::vector<vector::data_chunk_t> arg_chunks;
-        arg_chunks.reserve(batch->chunks().size());
+        arg_chunks.reserve(batch_chunks.size());
 
-        for (auto& chunk : batch->chunks()) {
+        for (auto& chunk : batch_chunks) {
             std::vector<vector::vector_t> computed_vecs;
             if (!compute_expression_args(resource_, args_, chunk, *this, pipeline_context, computed_vecs)) {
                 // error already set — return empty

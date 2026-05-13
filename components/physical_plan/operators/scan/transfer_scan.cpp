@@ -11,6 +11,15 @@ namespace components::operators {
         , name_(std::move(name))
         , limit_(limit) {}
 
+    transfer_scan::transfer_scan(std::pmr::memory_resource* resource,
+                                 collection_full_name_t name,
+                                 logical_plan::limit_t limit,
+                                 std::vector<size_t> projected_cols)
+        : read_only_operator_t(resource, log_t{}, operator_type::transfer_scan)
+        , name_(std::move(name))
+        , limit_(limit)
+        , projected_cols_(std::move(projected_cols)) {}
+
     void transfer_scan::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
         if (name_.empty())
             return;
@@ -22,26 +31,34 @@ namespace components::operators {
         int64_t limit_val = limit_.limit();
         int64_t scan_limit = (limit_val < 0) ? limit_val : limit_val + offset_val;
         auto [_s, sf] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::storage_scan,
+                                         &services::disk::manager_disk_t::storage_scan_batched,
                                          ctx->session,
                                          name_,
                                          std::unique_ptr<table::table_filter_t>(nullptr),
                                          scan_limit,
+                                         projected_cols_,
                                          ctx->txn);
-        auto data = co_await std::move(sf);
+        auto batches = co_await std::move(sf);
 
-        if (data) {
-            if (offset_val > 0 && static_cast<uint64_t>(offset_val) < data->size()) {
-                *data = data->partial_copy(resource_,
-                                           static_cast<uint64_t>(offset_val),
-                                           data->size() - static_cast<uint64_t>(offset_val));
-            } else if (offset_val > 0) {
-                data->set_cardinality(0);
+        if (offset_val > 0) {
+            uint64_t remaining = static_cast<uint64_t>(offset_val);
+            size_t skip_count = 0;
+            for (; skip_count < batches.size() && remaining > 0; ++skip_count) {
+                auto sz = batches[skip_count].size();
+                if (sz <= remaining) {
+                    remaining -= sz;
+                    continue;
+                }
+                batches[skip_count] = batches[skip_count].partial_copy(resource_, remaining, sz - remaining);
+                remaining = 0;
+                break;
             }
-            output_ = make_operator_data(resource_, std::move(*data));
-        } else {
-            output_ = make_operator_data(resource_, std::pmr::vector<types::complex_logical_type>{resource_});
+            if (skip_count > 0) {
+                batches.erase(batches.begin(), batches.begin() + static_cast<std::ptrdiff_t>(skip_count));
+            }
         }
+
+        output_ = make_operator_data(resource_, std::move(batches));
         mark_executed();
         co_return;
     }

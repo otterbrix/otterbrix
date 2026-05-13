@@ -44,7 +44,7 @@ namespace components::table {
         void set_null_count(uint64_t count) { null_count_ = count; }
 
         void merge(const base_statistics_t& other);
-        void update(const vector::vector_t& vec, uint64_t count);
+        void update(vector::vector_t& vec, uint64_t count);
 
         void serialize(storage::metadata_writer_t& writer) const;
         static base_statistics_t deserialize(std::pmr::memory_resource* resource, storage::metadata_reader_t& reader);

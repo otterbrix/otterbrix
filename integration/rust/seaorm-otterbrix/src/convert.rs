@@ -1,3 +1,11 @@
+//! Type conversion glue between SeaORM and Otterbrix.
+//!
+//! All functions here are `pub(crate)` and considered implementation details
+//! of [`OtterbrixProxy`](crate::OtterbrixProxy). The single exception is
+//! [`positional_proxy_column_key`], which is part of the public API because
+//! callers may need it to extract values from a [`ProxyRow`] when the result
+//! set has duplicate column names.
+
 use std::collections::{BTreeMap, HashMap};
 
 use otterbrix::{
@@ -8,9 +16,18 @@ use otterbrix::{
 };
 use sea_orm::{sea_query::Value as SeaValue, DbErr, ProxyRow, RuntimeErr, Statement, Values};
 
+/// Width (in characters) of zero-padded positional column keys used by
+/// [`positional_proxy_column_key`]. Must be wide enough to keep keys
+/// lexicographically ordered for any plausible column count.
 const POSITIONAL_KEY_WIDTH: usize = 8;
 
-pub fn map_otterbrix_error(err: ObError) -> DbErr {
+/// Maps an [`otterbrix::Error`] to the corresponding SeaORM [`DbErr`] variant.
+///
+/// Engine-level errors (`Query`, `NullPointer`) become `DbErr::Exec` /
+/// `DbErr::Conn`, type-mismatch errors become `DbErr::Type`, invalid paths
+/// become `DbErr::Conn`. The `Display` text of the original error is
+/// preserved verbatim inside the wrapping variant.
+pub(crate) fn map_otterbrix_error(err: ObError) -> DbErr {
     let msg = err.to_string();
     match err {
         ObError::Query { .. } => DbErr::Exec(RuntimeErr::Internal(msg)),
@@ -20,7 +37,15 @@ pub fn map_otterbrix_error(err: ObError) -> DbErr {
     }
 }
 
-pub fn sea_value_to_param<'a>(index: i32, value: &'a SeaValue) -> Result<SqlParam<'a>, DbErr> {
+/// Converts a single SeaORM [`SeaValue`] into an Otterbrix [`SqlParam`].
+///
+/// Numeric subtypes are widened to `Int64`/`UInt64`/`Double`. Returns
+/// `DbErr::Type` for SeaORM variants that have no representation in
+/// Otterbrix (e.g. `Bytes`, `Json`).
+pub(crate) fn sea_value_to_param<'a>(
+    index: i32,
+    value: &'a SeaValue,
+) -> Result<SqlParam<'a>, DbErr> {
     let v = match value {
         SeaValue::Bool(Some(b)) => SqlParamValue::Bool(*b),
 
@@ -61,7 +86,9 @@ pub fn sea_value_to_param<'a>(index: i32, value: &'a SeaValue) -> Result<SqlPara
     Ok(SqlParam { index, value: v })
 }
 
-pub fn statement_params<'a>(values: &'a Values) -> Result<Vec<SqlParam<'a>>, DbErr> {
+/// Converts SeaORM positional [`Values`] into a vector of Otterbrix
+/// [`SqlParam`]s, assigning 1-based indices.
+pub(crate) fn statement_params<'a>(values: &'a Values) -> Result<Vec<SqlParam<'a>>, DbErr> {
     values
         .0
         .iter()
@@ -70,7 +97,12 @@ pub fn statement_params<'a>(values: &'a Values) -> Result<Vec<SqlParam<'a>>, DbE
         .collect()
 }
 
-pub fn cursor_value_to_sea(value: ObValue, column_type: Option<LogicalType>) -> SeaValue {
+/// Converts an Otterbrix [`ObValue`] into a SeaORM [`SeaValue`].
+///
+/// For `ObValue::Null` the matching null variant is selected based on the
+/// column's logical type (see [`null_for_type`]); for non-null values the
+/// most general SeaORM subtype is used (`BigInt`/`BigUnsigned`/`Double`).
+pub(crate) fn cursor_value_to_sea(value: ObValue, column_type: Option<LogicalType>) -> SeaValue {
     match value {
         ObValue::Null => null_for_type(column_type),
         ObValue::Bool(b) => SeaValue::Bool(Some(b)),
@@ -81,6 +113,9 @@ pub fn cursor_value_to_sea(value: ObValue, column_type: Option<LogicalType>) -> 
     }
 }
 
+/// Picks the matching `SeaValue::*(None)` variant for a given Otterbrix
+/// logical column type. Falls back to `SeaValue::String(None)` for unknown
+/// or absent types.
 fn null_for_type(column_type: Option<LogicalType>) -> SeaValue {
     match column_type {
         Some(LOGICAL_TYPE_BOOLEAN) => SeaValue::Bool(None),
@@ -99,12 +134,35 @@ fn null_for_type(column_type: Option<LogicalType>) -> SeaValue {
     }
 }
 
+/// Builds the positional key string used by [`OtterbrixProxy`](crate::OtterbrixProxy)
+/// when a result set has duplicate column names.
+///
+/// SeaORM's [`ProxyRow`] indexes columns by name, but a `JOIN` between two
+/// tables that both contain an `id` column produces a row whose two cells
+/// would map to the same key and overwrite each other. To avoid that, the
+/// proxy detects duplicates at result-set construction time and switches to
+/// **positional keys** for *every* column of that result: the i-th column is
+/// stored under the key `positional_proxy_column_key(i)` instead of its real
+/// name. The keys are zero-padded so that lexicographic ordering matches the
+/// numeric column order.
+///
+/// Use this function to read individual cells out of such a `ProxyRow`, e.g.
+/// `row.try_get("", &positional_proxy_column_key(0))`.
+///
+/// The exact key format (`"00000000"`, `"00000001"`, ...) is part of the
+/// public contract, so cleaning it up later would be a breaking change.
 #[must_use]
 pub fn positional_proxy_column_key(index: usize) -> String {
     format!("{index:0width$}", width = POSITIONAL_KEY_WIDTH)
 }
 
-pub fn cursor_to_proxy_rows(cursor: &Cursor<'_>) -> Vec<ProxyRow> {
+/// Walks a [`Cursor`] and produces a vector of SeaORM [`ProxyRow`]s.
+///
+/// If two or more columns of the result set share the same name, the
+/// function falls back to **positional keys** (see
+/// [`positional_proxy_column_key`]) for every column of that result; otherwise
+/// real column names are used.
+pub(crate) fn cursor_to_proxy_rows(cursor: &Cursor<'_>) -> Vec<ProxyRow> {
     let column_count = cursor.column_count();
     let row_count = cursor.size();
 
@@ -139,11 +197,19 @@ pub fn cursor_to_proxy_rows(cursor: &Cursor<'_>) -> Vec<ProxyRow> {
     rows
 }
 
-pub fn split_statement(statement: Statement) -> (String, Option<Values>) {
+/// Splits a SeaORM [`Statement`] into its raw SQL text and optional bound values.
+pub(crate) fn split_statement(statement: Statement) -> (String, Option<Values>) {
     (statement.sql, statement.values)
 }
 
-pub fn rewrite_placeholders(sql: &str) -> String {
+/// Rewrites SQL placeholder syntax from `?` (used by SeaORM's MySQL/SQLite
+/// backends) to `$N` (accepted by Otterbrix).
+///
+/// The rewrite respects single-quoted string literals, double-quoted
+/// identifiers and the standard SQL doubled-quote escape (`''`). `?`
+/// inside such regions is preserved verbatim. Existing `$N` placeholders
+/// are left untouched.
+pub(crate) fn rewrite_placeholders(sql: &str) -> String {
     let mut out = String::with_capacity(sql.len() + 8);
     let mut in_single = false;
     let mut in_double = false;

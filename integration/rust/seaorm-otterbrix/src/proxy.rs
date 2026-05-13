@@ -1,3 +1,5 @@
+//! SeaORM proxy backend implementation.
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -10,18 +12,73 @@ use crate::convert::{
     statement_params,
 };
 
+/// SeaORM proxy backend backed by an [`otterbrix::Database`].
+///
+/// `OtterbrixProxy` implements [`ProxyDatabaseTrait`], which lets
+/// `sea-orm`'s `Database::connect_proxy` route every query through the
+/// Otterbrix engine. Internally each call is forwarded to
+/// [`otterbrix::Database::execute`] or
+/// [`otterbrix::Database::execute_with_params`] on a blocking thread (via
+/// [`tokio::task::spawn_blocking`]).
+///
+/// # Concurrency
+///
+/// `OtterbrixProxy` is `Clone + Send + Sync`. Internally it owns
+/// [`Arc<parking_lot::Mutex<Database>>`][parking_lot::Mutex] — multiple
+/// clones share the same database, and access is serialised through the
+/// Rust-side mutex (the C engine itself also serialises calls through its
+/// own per-instance mutex, so this is a defence in depth).
+///
+/// # Limitations
+///
+/// - **Transactions are not supported.** Otterbrix exposes no transactional
+///   API, so `begin` / `commit` / `rollback` log a warning and return without
+///   error (proxy no-op). `start_rollback` is also a no-op. This matches
+///   `sea-orm`'s `ProxyDatabaseTrait` contract for backends without
+///   transactions.
+/// - **`last_insert_id` is always `0`.** Otterbrix does not return generated
+///   identifiers; only `rows_affected` is populated.
+///
+/// # Example
+///
+/// ```no_run
+/// use std::sync::Arc;
+/// use otterbrix::{Config, Database};
+/// use sea_orm::{DatabaseConnection, DbBackend, ProxyDatabaseTrait};
+/// use seaorm_otterbrix::OtterbrixProxy;
+///
+/// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+/// let db = Database::open(Config::new("./data"))?;
+/// db.create_database("app")?;
+/// db.create_collection("app", "t")?;
+///
+/// let proxy: Arc<Box<dyn ProxyDatabaseTrait>> = Arc::new(Box::new(OtterbrixProxy::new(db)));
+/// let conn: DatabaseConnection =
+///     sea_orm::Database::connect_proxy(DbBackend::Sqlite, proxy).await?;
+/// # Ok(()) }
+/// ```
 #[derive(Clone)]
 pub struct OtterbrixProxy {
     db: Arc<Mutex<Database>>,
 }
 
 impl OtterbrixProxy {
+    /// Wraps an owned [`Database`] into a fresh proxy.
+    ///
+    /// The proxy takes ownership of `db` and stores it inside an `Arc<Mutex<_>>`.
+    /// Use [`OtterbrixProxy::from_arc`] instead if you already share a database
+    /// with other components.
     pub fn new(db: Database) -> Self {
         Self {
             db: Arc::new(Mutex::new(db)),
         }
     }
 
+    /// Builds a proxy from an externally managed `Arc<Mutex<Database>>`.
+    ///
+    /// Useful when the same database needs to be reachable both directly
+    /// (for DDL / setup) and through SeaORM (for the application layer).
+    /// All clones of the resulting proxy share the same lock.
     pub fn from_arc(db: Arc<Mutex<Database>>) -> Self {
         Self { db }
     }

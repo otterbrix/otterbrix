@@ -261,18 +261,17 @@ TEST_CASE("components::vector::data_chunk_to_arrow::datetime") {
 
     for (size_t i = 0; i < chunk_size; i++) {
         chunk.set_value(0, i, logical_value_t{&resource, date_t{days{static_cast<int32_t>(i) - 100}}});
-        chunk.set_value(1,
-                        i,
-                        logical_value_t{&resource,
-                                        core::date::time_t{microseconds{static_cast<int64_t>(i) * 1000000LL}}});
-        chunk.set_value(2,
-                        i,
-                        logical_value_t{&resource,
-                                        timestamp_t{microseconds{static_cast<int64_t>(i) * 1000000LL - 86400000000LL}}});
+        chunk.set_value(
+            1,
+            i,
+            logical_value_t{&resource, core::date::time_t{microseconds{static_cast<int64_t>(i) * 1000000LL}}});
+        chunk.set_value(
+            2,
+            i,
+            logical_value_t{&resource, timestamp_t{microseconds{static_cast<int64_t>(i) * 1000000LL - 86400000000LL}}});
         chunk.set_value(3,
                         i,
-                        logical_value_t{&resource,
-                                        timestamptz_t{microseconds{static_cast<int64_t>(i) * 1000000LL}}});
+                        logical_value_t{&resource, timestamptz_t{microseconds{static_cast<int64_t>(i) * 1000000LL}}});
         chunk.set_value(4,
                         i,
                         logical_value_t{&resource,

@@ -16,7 +16,7 @@ namespace components::sql::transform {
             }
             return logical_plan::index_type::single;
         }
-    }
+    } // namespace
 
     logical_plan::node_ptr transformer::transform_create_index(IndexStmt& node) {
         if (!(node.relation && node.relation->relname && node.relation->catalogname && node.idxname)) {

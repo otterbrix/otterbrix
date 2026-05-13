@@ -137,12 +137,13 @@ namespace services::collection::executor {
                         count += c.size();
                     }
                     if (count > 0) {
-                        auto [_ir, irf] = actor_zeta::send(index_address_,
-                                                           &index::manager_index_t::insert_rows,
-                                                           index::execution_context_t{session, txn, coll_name},
-                                                           std::move(scan_chunks),
-                                                           uint64_t{0},
-                                                           count);
+                        auto [_ir, irf] = actor_zeta::send(
+                            index_address_,
+                            &index::manager_index_t::insert_rows,
+                            index::execution_context_t{session, txn, context_storage.session_timezone, coll_name},
+                            std::move(scan_chunks),
+                            uint64_t{0},
+                            count);
                         co_await std::move(irf);
                     }
                 }

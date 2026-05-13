@@ -264,18 +264,15 @@ namespace components::operators {
             }
             for (auto& chunk : in_chunks) {
                 for (auto& comp : computed_columns_) {
-                    auto result_vec = evaluate_arithmetic(resource_,
-                                                          comp.op,
-                                                          comp.operands,
-                                                          chunk,
-                                                          pipeline_context->parameters);
+                    auto result_vec =
+                        evaluate_arithmetic(resource_, comp.op, comp.operands, chunk, pipeline_context->parameters);
                     if (result_vec.has_error()) {
                         set_error(result_vec.error());
                         return;
                     } else if (result_vec.value().type().type() == types::logical_type::NA) {
-                        set_error(core::error_t(
-                            core::error_code_t::physical_plan_error,
-                            std::pmr::string{"unknown error during evaluate_arithmetic", resource_}));
+                        set_error(
+                            core::error_t(core::error_code_t::physical_plan_error,
+                                          std::pmr::string{"unknown error during evaluate_arithmetic", resource_}));
                         return;
                     }
                     result_vec.value().set_type_alias(std::string(comp.alias));
@@ -287,8 +284,7 @@ namespace components::operators {
             if (!computed_columns_.empty()) {
                 for (size_t ci = 0; ci < computed_columns_.size(); ci++) {
                     if (computed_columns_[ci].resolved_key_index != SIZE_MAX) {
-                        keys_[computed_columns_[ci].resolved_key_index].full_path.emplace_back(
-                            first_computed_col + ci);
+                        keys_[computed_columns_[ci].resolved_key_index].full_path.emplace_back(first_computed_col + ci);
                     }
                 }
             }
@@ -296,8 +292,7 @@ namespace components::operators {
             // Phase 2: Group by keys, or treat entire input as one group when there are no keys.
             if (keys_.empty()) {
                 size_t total = 0;
-                for (const auto& c : in_chunks)
-                    total += c.size();
+                for (const auto& c : in_chunks) total += c.size();
                 std::pmr::vector<row_ref_t> all_refs(resource_);
                 all_refs.reserve(total);
                 for (uint32_t ci = 0; ci < in_chunks.size(); ++ci) {
@@ -432,8 +427,7 @@ namespace components::operators {
                     if (it != group_index_.end()) {
                         for (size_t idx : it->second) {
                             if (keys_match(chunk, key_col_indices, row_idx, group_keys_[idx])) {
-                                row_refs_per_group_[idx].emplace_back(chunk_idx,
-                                                                      static_cast<uint32_t>(row_idx));
+                                row_refs_per_group_[idx].emplace_back(chunk_idx, static_cast<uint32_t>(row_idx));
                                 is_new = false;
                                 break;
                             }
@@ -475,8 +469,7 @@ namespace components::operators {
                     if (it != group_index_.end()) {
                         for (size_t idx : it->second) {
                             if (key_vals == group_keys_[idx]) {
-                                row_refs_per_group_[idx].emplace_back(chunk_idx,
-                                                                      static_cast<uint32_t>(row_idx));
+                                row_refs_per_group_[idx].emplace_back(chunk_idx, static_cast<uint32_t>(row_idx));
                                 is_new = false;
                                 break;
                             }
@@ -501,8 +494,7 @@ namespace components::operators {
         size_t key_count = num_groups > 0 ? group_keys_[0].size() : 0;
 
         size_t total_rows = 0;
-        for (const auto& c : in_chunks)
-            total_rows += c.size();
+        for (const auto& c : in_chunks) total_rows += c.size();
 
         // Try vectorized path: check if all aggregators are builtin with simple column args
         bool can_vectorize = num_groups > 0 && total_rows > 0;
@@ -632,8 +624,8 @@ namespace components::operators {
         return calc_aggregate_values_fallback(pipeline_context, in_chunks);
     }
 
-    vector::data_chunk_t
-    operator_group_t::calc_aggregate_values_fallback(pipeline::context_t* pipeline_context, chunks_vector_t& in_chunks) {
+    vector::data_chunk_t operator_group_t::calc_aggregate_values_fallback(pipeline::context_t* pipeline_context,
+                                                                          chunks_vector_t& in_chunks) {
         size_t num_groups = group_keys_.size();
         size_t key_count = num_groups > 0 ? group_keys_[0].size() : 0;
 
@@ -678,13 +670,9 @@ namespace components::operators {
                 }
 
                 for (size_t c = 0; c < col_count; ++c) {
-                    if (is_placeholder(src.data[c])) continue;
-                    vector::vector_ops::copy(src.data[c],
-                                             grp.data[c],
-                                             indexing,
-                                             span_len,
-                                             0,
-                                             span_start);
+                    if (is_placeholder(src.data[c]))
+                        continue;
+                    vector::vector_ops::copy(src.data[c], grp.data[c], indexing, span_len, 0, span_start);
                 }
                 vector::vector_ops::copy(src.row_ids, grp.row_ids, indexing, span_len, 0, span_start);
             }

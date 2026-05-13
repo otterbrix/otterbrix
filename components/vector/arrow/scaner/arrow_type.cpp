@@ -272,8 +272,7 @@ namespace components::vector::arrow {
             }
             // "tsX:" with empty timezone → TIMESTAMP; "tsX:UTC" or similar → TIMESTAMP_TZ
             bool has_tz = format.size() > 4 && format[3] == ':' && !format.substr(4).empty();
-            auto logical =
-                has_tz ? types::logical_type::TIMESTAMP_TZ : types::logical_type::TIMESTAMP;
+            auto logical = has_tz ? types::logical_type::TIMESTAMP_TZ : types::logical_type::TIMESTAMP;
             return std::make_unique<arrow_type>(logical, std::make_unique<arrow_date_time_info>(prec));
         }
         return nullptr;

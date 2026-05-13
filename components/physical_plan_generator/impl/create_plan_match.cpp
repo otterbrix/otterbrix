@@ -161,7 +161,11 @@ namespace services::planner::impl {
                     new components::operators::transfer_scan(nullptr, node->collection_full_name(), limit));
             }
         } else {
-            return create_plan_match_(context, node->collection_full_name(), node->expressions()[0], limit, projected_cols);
+            return create_plan_match_(context,
+                                      node->collection_full_name(),
+                                      node->expressions()[0],
+                                      limit,
+                                      projected_cols);
         }
     }
 

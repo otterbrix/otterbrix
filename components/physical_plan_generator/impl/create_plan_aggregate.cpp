@@ -89,8 +89,11 @@ namespace services::planner::impl {
             }
         } else {
             executor = match_op ? std::move(match_op)
-                                : static_cast<components::operators::operator_ptr>(boost::intrusive_ptr(
-                                      new components::operators::transfer_scan(plan_resource, coll_name, scan_limit, projected_cols)));
+                                : static_cast<components::operators::operator_ptr>(
+                                      boost::intrusive_ptr(new components::operators::transfer_scan(plan_resource,
+                                                                                                    coll_name,
+                                                                                                    scan_limit,
+                                                                                                    projected_cols)));
         }
         if (group_op) {
             group_op->set_children(std::move(executor));

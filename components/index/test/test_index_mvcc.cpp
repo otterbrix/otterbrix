@@ -177,29 +177,29 @@ TEST_CASE("hash_single_field_index:txn_insert_search") {
     uint64_t txn2 = TRANSACTION_ID_START + 2;
 
     components::types::logical_value_t val42(&resource, int64_t(42));
-    index.insert(val42, int64_t(0), txn1);
+    index.insert(val42, int64_t(0), txn1, {});
 
     SECTION("visible to own transaction") {
-        auto result = index.search(compare_type::eq, val42, txn1 - 1, txn1);
+        auto result = index.search(compare_type::eq, val42, txn1 - 1, txn1, {});
         REQUIRE(result.size() == 1);
         REQUIRE(result[0] == 0);
     }
 
     SECTION("not visible to other transaction") {
-        auto result = index.search(compare_type::eq, val42, txn1 - 1, txn2);
+        auto result = index.search(compare_type::eq, val42, txn1 - 1, txn2, {});
         REQUIRE(result.empty());
     }
 
     SECTION("visible after commit") {
         index.commit_insert(txn1, 10);
-        auto result = index.search(compare_type::eq, val42, 15, txn2);
+        auto result = index.search(compare_type::eq, val42, 15, txn2, {});
         REQUIRE(result.size() == 1);
         REQUIRE(result[0] == 0);
     }
 
     SECTION("gone after revert") {
         index.revert_insert(txn1);
-        auto result = index.search(compare_type::eq, val42, txn1 - 1, txn1);
+        auto result = index.search(compare_type::eq, val42, txn1 - 1, txn1, {});
         REQUIRE(result.empty());
     }
 }
@@ -215,20 +215,20 @@ TEST_CASE("hash_single_field_index:full_lifecycle") {
 
     components::types::logical_value_t val42(&resource, int64_t(42));
 
-    index.insert(val42, int64_t(0), txn1);
+    index.insert(val42, int64_t(0), txn1, {});
     index.commit_insert(txn1, commit1);
 
-    auto result = index.search(compare_type::eq, val42, commit1 + 1, txn2);
+    auto result = index.search(compare_type::eq, val42, commit1 + 1, txn2, {});
     REQUIRE(result.size() == 1);
 
-    index.mark_delete(val42, int64_t(0), txn2);
+    index.mark_delete(val42, int64_t(0), txn2, {});
     index.commit_delete(txn2, commit2);
 
-    result = index.search(compare_type::eq, val42, commit2 + 1, TRANSACTION_ID_START + 3);
+    result = index.search(compare_type::eq, val42, commit2 + 1, TRANSACTION_ID_START + 3, {});
     REQUIRE(result.empty());
 
     index.cleanup_versions(commit2 + 1);
-    result = index.search(compare_type::eq, val42);
+    result = index.search(compare_type::eq, val42, {});
     REQUIRE(result.empty());
 }
 

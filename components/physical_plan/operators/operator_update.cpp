@@ -68,15 +68,17 @@ namespace components::operators {
             if (left_size == 0 && right_size == 0) {
                 if (upsert_) {
                     output_ = operators::make_operator_data(resource, types_left);
-                    auto& out_chunk = output_->data_chunk();
                     // upsert path: synthesise a row by running update exprs against an empty context.
                     vector::data_chunk_t empty_left(resource, types_left);
                     vector::data_chunk_t empty_right(resource, types_right);
                     for (const auto& expr : updates_) {
-                        expr->execute(empty_left, empty_right, 0, 0, &pipeline_context->parameters,
-                                                                        pipeline_context->session_tz);
+                        expr->execute(resource,
+                                      empty_left,
+                                      empty_right,
+                                      0,
+                                      &pipeline_context->parameters,
+                                      pipeline_context->session_tz);
                     }
-                    (void)out_chunk;
                     modified_ = operators::make_operator_write_data(resource);
                 }
             } else {
@@ -89,7 +91,7 @@ namespace components::operators {
                                                                       types_left,
                                                                       types_right,
                                                                       &pipeline_context->parameters,
-                                                                        pipeline_context->session_tz)
+                                                                      pipeline_context->session_tz)
                                        : predicates::create_all_true_predicate(resource);
 
                 chunks_vector_t out_chunks(resource);
@@ -100,6 +102,7 @@ namespace components::operators {
                         continue;
                     }
                     vector::data_chunk_t out_chunk(resource, types_left, chunk_left.size());
+                    vector::data_chunk_t right_chunk(resource, types_right, chunk_left.size());
                     size_t index = 0;
                     for (size_t i = 0; i < chunk_left.size(); ++i) {
                         for (const auto& chunk_right : right_chunks) {
@@ -118,31 +121,29 @@ namespace components::operators {
                                 }
                                 out_chunk.row_ids.data<int64_t>()[index] = chunk_left.row_ids.data<int64_t>()[i];
                                 for (size_t k = 0; k < chunk_left.column_count(); ++k) {
-                                    vector::vector_ops::copy(chunk_left.data[k],
-                                                             out_chunk.data[k],
-                                                             i + 1,
-                                                             i,
-                                                             index);
+                                    vector::vector_ops::copy(chunk_left.data[k], out_chunk.data[k], i + 1, i, index);
                                 }
-                                bool modified = false;
-                                for (const auto& expr : updates_) {
-                                    modified |= expr->execute(out_chunk,
-                                                              chunk_right,
-                                                              index,
-                                                              j,
-                                                              &pipeline_context->parameters);
+                                for (size_t k = 0; k < chunk_right.column_count(); ++k) {
+                                    vector::vector_ops::copy(chunk_right.data[k], right_chunk.data[k], j + 1, j, index);
                                 }
-                                if (modified) {
-                                    modified_->append(index);
-                                } else {
-                                    no_modified_->append(index);
-                                }
-                                vector::validate_chunk_capacity(out_chunk, ++index);
+                                ++index;
+                                vector::validate_chunk_capacity(out_chunk, index);
+                                vector::validate_chunk_capacity(right_chunk, index);
                             }
                         }
                     }
                     out_chunk.set_cardinality(index);
+                    right_chunk.set_cardinality(index);
                     if (index > 0) {
+                        apply_updates(resource,
+                                      updates_,
+                                      out_chunk,
+                                      right_chunk,
+                                      index,
+                                      pipeline_context->parameters,
+                                      pipeline_context->session_tz,
+                                      modified_,
+                                      no_modified_);
                         out_chunks.emplace_back(std::move(out_chunk));
                     }
                 }
@@ -174,7 +175,7 @@ namespace components::operators {
                                                                       types,
                                                                       types,
                                                                       &pipeline_context->parameters,
-                                                                        pipeline_context->session_tz)
+                                                                      pipeline_context->session_tz)
                                        : predicates::create_all_true_predicate(resource);
 
                 chunks_vector_t out_chunks(resource);
@@ -204,21 +205,19 @@ namespace components::operators {
                         for (size_t k = 0; k < chunk.column_count(); ++k) {
                             vector::vector_ops::copy(chunk.data[k], out_chunk.data[k], i + 1, i, index);
                         }
-                        bool modified = false;
-                        for (const auto& expr : updates_) {
-                            modified |=
-                                expr->execute(out_chunk, out_chunk, index, index, &pipeline_context->parameters,
-                                                                        pipeline_context->session_tz);
-                        }
-                        if (modified) {
-                            modified_->append(index);
-                        } else {
-                            no_modified_->append(index);
-                        }
                         vector::validate_chunk_capacity(out_chunk, ++index);
                     }
                     out_chunk.set_cardinality(index);
                     if (index > 0) {
+                        apply_updates(resource,
+                                      updates_,
+                                      out_chunk,
+                                      out_chunk,
+                                      index,
+                                      pipeline_context->parameters,
+                                      pipeline_context->session_tz,
+                                      modified_,
+                                      no_modified_);
                         out_chunks.emplace_back(std::move(out_chunk));
                     }
                 }

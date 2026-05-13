@@ -751,7 +751,8 @@ namespace components::vector::arrow::scaner {
             case types::logical_type::DATE: {
                 static constexpr int32_t EPOCH_DAYS = 10957;
                 auto& info = arrow_type.get_type_info<arrow_date_time_info>();
-                auto eff = get_effective_offset(array, static_cast<int64_t>(parent_offset), chunk_offset, nested_offset);
+                auto eff =
+                    get_effective_offset(array, static_cast<int64_t>(parent_offset), chunk_offset, nested_offset);
                 switch (info.date_time_type()) {
                     case arrow_date_time_type::DAYS: {
                         auto src = arrow_buffer_data<int32_t>(array, 1) + eff;
@@ -776,7 +777,8 @@ namespace components::vector::arrow::scaner {
             }
             case types::logical_type::TIME: {
                 auto& info = arrow_type.get_type_info<arrow_date_time_info>();
-                auto eff = get_effective_offset(array, static_cast<int64_t>(parent_offset), chunk_offset, nested_offset);
+                auto eff =
+                    get_effective_offset(array, static_cast<int64_t>(parent_offset), chunk_offset, nested_offset);
                 switch (info.date_time_type()) {
                     case arrow_date_time_type::MICROSECONDS: {
                         direct_conversion(vector, array, chunk_offset, nested_offset, parent_offset);
@@ -815,7 +817,8 @@ namespace components::vector::arrow::scaner {
             case types::logical_type::TIMESTAMP_TZ: {
                 static constexpr int64_t EPOCH_US = 946684800000000LL;
                 auto& info = arrow_type.get_type_info<arrow_date_time_info>();
-                auto eff = get_effective_offset(array, static_cast<int64_t>(parent_offset), chunk_offset, nested_offset);
+                auto eff =
+                    get_effective_offset(array, static_cast<int64_t>(parent_offset), chunk_offset, nested_offset);
                 auto tgt = vector.data<int64_t>();
                 switch (info.date_time_type()) {
                     case arrow_date_time_type::MICROSECONDS: {
@@ -853,7 +856,8 @@ namespace components::vector::arrow::scaner {
             }
             case types::logical_type::INTERVAL: {
                 auto& info = arrow_type.get_type_info<arrow_date_time_info>();
-                auto eff = get_effective_offset(array, static_cast<int64_t>(parent_offset), chunk_offset, nested_offset);
+                auto eff =
+                    get_effective_offset(array, static_cast<int64_t>(parent_offset), chunk_offset, nested_offset);
                 auto& children = vector.entries();
                 assert(children.size() == 3);
                 auto us_dst = children[0]->data<int64_t>();
@@ -861,7 +865,11 @@ namespace components::vector::arrow::scaner {
                 auto month_dst = children[2]->data<int32_t>();
                 switch (info.date_time_type()) {
                     case arrow_date_time_type::MONTH_DAY_NANO: {
-                        struct arrow_mdn_t { int32_t months; int32_t days; int64_t nanos; };
+                        struct arrow_mdn_t {
+                            int32_t months;
+                            int32_t days;
+                            int64_t nanos;
+                        };
                         auto src = arrow_buffer_data<arrow_mdn_t>(array, 1) + eff;
                         for (size_t row = 0; row < size; row++) {
                             us_dst[row] = src[row].nanos / 1000;

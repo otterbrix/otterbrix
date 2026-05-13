@@ -30,25 +30,30 @@ namespace components::planner::optimizer {
             using expressions::expression_group;
             if (std::holds_alternative<KeyT>(p)) {
                 const auto& key = std::get<KeyT>(p);
-                if (key.path().empty()) return true;
+                if (key.path().empty())
+                    return true;
                 size_t idx = key.path()[0];
-                if (idx == SIZE_MAX) return false; // wildcard — disable projection
+                if (idx == SIZE_MAX)
+                    return false; // wildcard — disable projection
                 cols.push_back(idx);
                 return true;
             }
             if (std::holds_alternative<expressions::expression_ptr>(p)) {
                 const auto& sub = std::get<expressions::expression_ptr>(p);
-                if (!sub) return true;
+                if (!sub)
+                    return true;
                 if (sub->group() == expression_group::scalar) {
                     const auto* se = static_cast<const SExpr*>(sub.get());
                     // scalar's own key (if any)
                     if (!se->key().path().empty()) {
                         size_t idx = se->key().path()[0];
-                        if (idx == SIZE_MAX) return false;
+                        if (idx == SIZE_MAX)
+                            return false;
                         cols.push_back(idx);
                     }
                     for (const auto& sp : se->params()) {
-                        if (!collect_cols_from_param(sp, cols)) return false;
+                        if (!collect_cols_from_param(sp, cols))
+                            return false;
                     }
                     return true;
                 }
@@ -59,14 +64,16 @@ namespace components::planner::optimizer {
                 if (sub->group() == expression_group::function) {
                     const auto* fe = static_cast<const FExpr*>(sub.get());
                     for (const auto& arg : fe->args()) {
-                        if (!collect_cols_from_param(arg, cols)) return false;
+                        if (!collect_cols_from_param(arg, cols))
+                            return false;
                     }
                     return true;
                 }
                 if (sub->group() == expression_group::aggregate) {
                     const auto* ae = static_cast<const AExpr*>(sub.get());
                     for (const auto& ap : ae->params()) {
-                        if (!collect_cols_from_param(ap, cols)) return false;
+                        if (!collect_cols_from_param(ap, cols))
+                            return false;
                     }
                     return true;
                 }
@@ -75,11 +82,13 @@ namespace components::planner::optimizer {
         }
 
         bool collect_cols_from_compare(const expressions::compare_expression_ptr& expr, std::vector<size_t>& cols) {
-            if (!expr) return true;
+            if (!expr)
+                return true;
             if (expressions::is_union_compare_condition(expr->type())) {
                 for (const auto& child : expr->children()) {
                     expressions::param_storage p{child};
-                    if (!collect_cols_from_param(p, cols)) return false;
+                    if (!collect_cols_from_param(p, cols))
+                        return false;
                 }
                 return true;
             }
@@ -90,29 +99,35 @@ namespace components::planner::optimizer {
         bool collect_cols_from_node(const logical_plan::node_ptr& node, std::vector<size_t>& cols) {
             using expressions::expression_group;
             for (const auto& expr : node->expressions()) {
-                if (!expr) continue;
+                if (!expr)
+                    continue;
                 if (expr->group() == expression_group::scalar) {
                     const auto* se = static_cast<const SExpr*>(expr.get());
                     if (!se->key().path().empty()) {
                         size_t idx = se->key().path()[0];
-                        if (idx == SIZE_MAX) return false;
+                        if (idx == SIZE_MAX)
+                            return false;
                         cols.push_back(idx);
                     }
                     for (const auto& p : se->params()) {
-                        if (!collect_cols_from_param(p, cols)) return false;
+                        if (!collect_cols_from_param(p, cols))
+                            return false;
                     }
                 } else if (expr->group() == expression_group::aggregate) {
                     const auto* ae = static_cast<const AExpr*>(expr.get());
                     for (const auto& p : ae->params()) {
-                        if (!collect_cols_from_param(p, cols)) return false;
+                        if (!collect_cols_from_param(p, cols))
+                            return false;
                     }
                 } else if (expr->group() == expression_group::compare) {
                     const auto& ce = reinterpret_cast<const expressions::compare_expression_ptr&>(expr);
-                    if (!collect_cols_from_compare(ce, cols)) return false;
+                    if (!collect_cols_from_compare(ce, cols))
+                        return false;
                 } else if (expr->group() == expression_group::function) {
                     const auto* fe = static_cast<const FExpr*>(expr.get());
                     for (const auto& arg : fe->args()) {
-                        if (!collect_cols_from_param(arg, cols)) return false;
+                        if (!collect_cols_from_param(arg, cols))
+                            return false;
                     }
                 }
             }
@@ -128,9 +143,11 @@ namespace components::planner::optimizer {
         // Resolve the output column count for a node's source (table or upstream operator).
         // Returns 0 if unknown (in which case JOIN projection pushdown is disabled for that node).
         size_t resolve_column_count(const logical_plan::node_ptr& node, const catalog::catalog* catalog) {
-            if (!node) return 0;
+            if (!node)
+                return 0;
             if (node->type() == logical_plan::node_type::aggregate_t) {
-                if (!catalog) return 0;
+                if (!catalog)
+                    return 0;
                 catalog::table_id id(node->resource(), node->collection_full_name());
                 if (catalog->table_exists(id)) {
                     return catalog->get_table_schema(id).columns().size();
@@ -185,7 +202,8 @@ namespace components::planner::optimizer {
             // side's schema (not the joined schema) — so we dispatch by side here.
             std::function<bool(const expressions::expression_ptr&)> walk;
             walk = [&](const expressions::expression_ptr& expr) -> bool {
-                if (!expr) return true;
+                if (!expr)
+                    return true;
                 // Only compare expressions contribute to JOIN ON conditions we can project
                 // safely. Anything else (function, scalar arithmetic) references columns
                 // transitively — bail out.
@@ -195,7 +213,8 @@ namespace components::planner::optimizer {
                 const auto& ce = reinterpret_cast<const expressions::compare_expression_ptr&>(expr);
                 if (expressions::is_union_compare_condition(ce->type())) {
                     for (const auto& child : ce->children()) {
-                        if (!walk(child)) return false;
+                        if (!walk(child))
+                            return false;
                     }
                     return true;
                 }
@@ -204,15 +223,23 @@ namespace components::planner::optimizer {
                         // Sub-expression in JOIN leaf — bail out.
                         return false;
                     }
-                    if (!std::holds_alternative<KeyT>(side)) return true;
+                    if (!std::holds_alternative<KeyT>(side))
+                        return true;
                     const auto& key = std::get<KeyT>(side);
-                    if (key.path().empty()) return true;
+                    if (key.path().empty())
+                        return true;
                     size_t idx = key.path()[0];
-                    if (idx == SIZE_MAX) return false;
+                    if (idx == SIZE_MAX)
+                        return false;
                     switch (key.side()) {
-                        case expressions::side_t::left:  left_projected.push_back(idx);  break;
-                        case expressions::side_t::right: right_projected.push_back(idx); break;
-                        default: return false;
+                        case expressions::side_t::left:
+                            left_projected.push_back(idx);
+                            break;
+                        case expressions::side_t::right:
+                            right_projected.push_back(idx);
+                            break;
+                        default:
+                            return false;
                     }
                     return true;
                 };
@@ -220,7 +247,10 @@ namespace components::planner::optimizer {
             };
 
             for (const auto& expr : join_node->expressions()) {
-                if (!walk(expr)) { can_split = false; break; }
+                if (!walk(expr)) {
+                    can_split = false;
+                    break;
+                }
             }
             if (can_split) {
                 normalize(left_projected);
@@ -294,11 +324,13 @@ namespace components::planner::optimizer {
             }
 
             if (can_project && group_child) {
-                if (!collect_cols_from_node(group_child, raw_cols)) can_project = false;
+                if (!collect_cols_from_node(group_child, raw_cols))
+                    can_project = false;
             }
             if (can_project && match_child) {
                 for (const auto& expr : match_child->expressions()) {
-                    if (!expr) continue;
+                    if (!expr)
+                        continue;
                     if (expr->group() != expressions::expression_group::compare) {
                         // Function / scalar expressions at the top level of WHERE — we don't
                         // yet enumerate all columns referenced transitively by arbitrary
@@ -307,7 +339,10 @@ namespace components::planner::optimizer {
                         break;
                     }
                     const auto& ce = reinterpret_cast<const expressions::compare_expression_ptr&>(expr);
-                    if (!collect_cols_from_compare(ce, raw_cols)) { can_project = false; break; }
+                    if (!collect_cols_from_compare(ce, raw_cols)) {
+                        can_project = false;
+                        break;
+                    }
                 }
             }
 
@@ -319,7 +354,8 @@ namespace components::planner::optimizer {
             // Recurse into non-trivial children (join or nested aggregate).
             if (data_child) {
                 if (data_child->type() == logical_plan::node_type::join_t) {
-                    const auto& projected = static_cast<const logical_plan::node_aggregate_t*>(agg_node.get())->projected_cols();
+                    const auto& projected =
+                        static_cast<const logical_plan::node_aggregate_t*>(agg_node.get())->projected_cols();
                     process_join(data_child, projected, catalog);
                 } else if (data_child->type() == logical_plan::node_type::aggregate_t) {
                     // Nested subquery — it independently computes its own projection
@@ -332,7 +368,8 @@ namespace components::planner::optimizer {
     } // namespace
 
     void prune_columns(const logical_plan::node_ptr& root, const catalog::catalog* catalog) {
-        if (!root) return;
+        if (!root)
+            return;
         // BFS over the whole plan, processing every aggregate_t we encounter.
         std::vector<logical_plan::node_ptr> stack{root};
         while (!stack.empty()) {

@@ -16,17 +16,15 @@ namespace services::index {
         : actor_zeta::basic_actor<index_agent_disk_t>(resource)
         , log_(log.clone())
         , index_disk_(type == components::logical_plan::index_type::hashed
-                          ? std::unique_ptr<index_disk_t>(
-                                std::make_unique<bitcask_index_disk_t>(path_db / collection_name.database /
-                                                                           collection_name.collection / index_name,
-                                                                       this->resource(),
-                                                                       bitcask_flush_threshold,
-                                                                       bitcask_segment_record_limit))
-                          : std::unique_ptr<index_disk_t>(
-                                std::make_unique<btree_index_disk_t>(path_db / collection_name.database /
-                                                                         collection_name.collection / index_name,
-                                                                     this->resource(),
-                                                                     btree_flush_threshold)))
+                          ? std::unique_ptr<index_disk_t>(std::make_unique<bitcask_index_disk_t>(
+                                path_db / collection_name.database / collection_name.collection / index_name,
+                                this->resource(),
+                                bitcask_flush_threshold,
+                                bitcask_segment_record_limit))
+                          : std::unique_ptr<index_disk_t>(std::make_unique<btree_index_disk_t>(
+                                path_db / collection_name.database / collection_name.collection / index_name,
+                                this->resource(),
+                                btree_flush_threshold)))
         , collection_name_(std::move(collection_name)) {
         trace(log_, "index_agent_disk::create {}", index_name);
     }

@@ -414,12 +414,10 @@ namespace components::table {
                 state.valid_indexing = indexing;
             }
             auto* row_ids_data = result.row_ids.data<int64_t>();
-            const int64_t row_id_base =
-                static_cast<int64_t>(state.vector_index * vector::DEFAULT_VECTOR_CAPACITY);
+            const int64_t row_id_base = static_cast<int64_t>(state.vector_index * vector::DEFAULT_VECTOR_CAPACITY);
             const uint64_t write_start = result.size();
             for (uint64_t i = 0; i < count; i++) {
-                row_ids_data[write_start + i] =
-                    row_id_base + static_cast<int64_t>(state.valid_indexing.get_index(i));
+                row_ids_data[write_start + i] = row_id_base + static_cast<int64_t>(state.valid_indexing.get_index(i));
             }
             result.set_cardinality(result.size() + count);
             state.vector_index++;

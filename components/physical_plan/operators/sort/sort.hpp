@@ -45,12 +45,11 @@ namespace components::sort {
         // Does not use cached k.vec pointers; resolves col_path on each side per comparison.
         // Returns <0 if (a,ra) should sort before (b,rb), >0 if after, 0 if equal under the
         // configured sort keys and orders.
-        int compare_cross(const vector::data_chunk_t& a, size_t row_a,
-                          const vector::data_chunk_t& b, size_t row_b) const;
+        int
+        compare_cross(const vector::data_chunk_t& a, size_t row_a, const vector::data_chunk_t& b, size_t row_b) const;
 
     private:
-        static int compare_raw(const vector::vector_t& va, size_t a,
-                               const vector::vector_t& vb, size_t b);
+        static int compare_raw(const vector::vector_t& va, size_t a, const vector::vector_t& vb, size_t b);
 
         std::vector<sort_key> keys_;
         const vector::data_chunk_t* chunk_ = nullptr;

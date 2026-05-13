@@ -298,8 +298,9 @@ namespace services::index {
                 break;
             }
             case components::logical_plan::index_type::hashed: {
-                id_index = components::index::make_index<components::index::hash_single_field_index_t>(
-                    engine, index_name, keys);
+                id_index = components::index::make_index<components::index::hash_single_field_index_t>(engine,
+                                                                                                       index_name,
+                                                                                                       keys);
                 break;
             }
             default:
@@ -315,18 +316,22 @@ namespace services::index {
                 if (idx) {
                     try {
                         if (type == components::logical_plan::index_type::hashed) {
-                            auto disk_index = bitcask_index_disk_t(
-                                index_path, resource_, bitcask_flush_threshold_, bitcask_segment_record_limit_);
+                            auto disk_index = bitcask_index_disk_t(index_path,
+                                                                   resource_,
+                                                                   bitcask_flush_threshold_,
+                                                                   bitcask_segment_record_limit_);
                             bitcask_index_disk_t::entries_t raw(resource_);
                             disk_index.load_entries(raw);
                             for (auto& [key, row_id] : raw) {
-                                idx->insert(key, static_cast<int64_t>(row_id));
+                                idx->insert(key, static_cast<int64_t>(row_id), session_tz);
                             }
                             trace(log_, "create_index: loaded {} entries from bitcask", raw.size());
                         } else if (std::filesystem::exists(index_path / "metadata")) {
                             core::filesystem::local_file_system_t fs;
-                            auto db =
-                                std::make_unique<core::b_plus_tree::btree_t>(resource_, fs, index_path, item_key_getter);
+                            auto db = std::make_unique<core::b_plus_tree::btree_t>(resource_,
+                                                                                   fs,
+                                                                                   index_path,
+                                                                                   item_key_getter);
                             db->load();
 
                             if (db->size() > 0) {
@@ -359,16 +364,15 @@ namespace services::index {
             // Create disk agent for persistent storage
             if (!path_db_.empty()) {
                 try {
-                    auto agent = actor_zeta::spawn<index_agent_disk_t>(
-                        resource_,
-                        path_db_,
-                        name,
-                        std::string(index_name),
-                        type,
-                        bitcask_flush_threshold_,
-                        bitcask_segment_record_limit_,
-                        btree_flush_threshold_,
-                        log_);
+                    auto agent = actor_zeta::spawn<index_agent_disk_t>(resource_,
+                                                                       path_db_,
+                                                                       name,
+                                                                       std::string(index_name),
+                                                                       type,
+                                                                       bitcask_flush_threshold_,
+                                                                       bitcask_segment_record_limit_,
+                                                                       btree_flush_threshold_,
+                                                                       log_);
 
                     // Link disk agent with in-memory index
                     auto* idx = components::index::search_index(engine, keys);
@@ -532,7 +536,11 @@ namespace services::index {
                 break;
             }
             engine->mark_delete_row(old_data[old_ci], old_ri, row_ids[g], txn_id, ctx.session_tz);
-            engine->insert_row(new_data[new_ci], new_ri, new_start_row_id + static_cast<int64_t>(g), txn_id, ctx.session_tz);
+            engine->insert_row(new_data[new_ci],
+                               new_ri,
+                               new_start_row_id + static_cast<int64_t>(g),
+                               txn_id,
+                               ctx.session_tz);
             ++old_ri;
             ++new_ri;
         }

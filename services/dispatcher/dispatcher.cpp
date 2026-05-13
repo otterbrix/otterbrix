@@ -717,7 +717,22 @@ namespace services::dispatcher {
             case node_type::drop_view_t:
             case node_type::create_macro_t:
             case node_type::drop_macro_t:
+                break;
             case node_type::alter_table_t:
+                // M3 (2026-05-13): warm catalog_view's tbl_cache_ for the
+                // ALTER target so enrich_plan can probe via sync
+                // try_get_table_by_oid (after the planner's rewrite into
+                // sequence_t with computed_field_unregister_t / etc.). The
+                // default-branch prewalk (validate_types/validate_schema)
+                // doesn't run for ALTER, so we pre-load explicitly — same
+                // pattern as create_constraint_t below.
+                if (!id.get_namespace().empty()) {
+                    auto* ns_e = view.try_get_namespace(std::string_view(id.get_namespace().front()));
+                    if (!ns_e) ns_e = co_await view.get_namespace(ctx, std::string(id.get_namespace().front()));
+                    if (ns_e) {
+                        co_await view.get_table(ctx, ns_e->oid, std::string(id.table_name()));
+                    }
+                }
                 break;
             case node_type::create_constraint_t: {
                 // Pre-load the target table so enrich_plan can resolve attoids from

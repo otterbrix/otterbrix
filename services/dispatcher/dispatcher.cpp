@@ -1057,7 +1057,18 @@ namespace services::dispatcher {
                 // case means rewrite_alter_table bailed out because table_oid was
                 // not resolved by enrich (table not found); return no-op success
                 // and let the validate/enrich layer surface a hard error.
-                exec_result = {make_cursor(resource(), operation_status_t::success), {}};
+                //
+                // Phase 13 Step 2: this switch now routes by `original_type`,
+                // so we still see alter_table_t here even AFTER the planner has
+                // rewritten the plan into sequence_t. Distinguish the genuine
+                // bailout (logic_plan->type() still alter_table_t) from the
+                // already-rewritten case (logic_plan is sequence_t) — the
+                // latter must run through the executor like every other DDL.
+                if (logic_plan->type() == node_type::alter_table_t) {
+                    exec_result = {make_cursor(resource(), operation_status_t::success), {}};
+                } else {
+                    exec_result = co_await execute_plan_impl(session, logic_plan, params->take_parameters(), txn_data);
+                }
                 break;
             }
             default:

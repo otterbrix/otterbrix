@@ -224,15 +224,20 @@ TEST_CASE("integration::cpp::test_wal_pool::multiple_collections_routing") {
     }
 
     INFO("verify both WAL segment files have data") {
-        // New WAL creates per-database directories with segments inside
-        auto database_wal_directory = config.wal.path / "testdatabase";
-        REQUIRE(std::filesystem::exists(database_wal_directory));
+        // WAL creates per-database directories named by database OID (stable
+        // across renames) — see wal_worker_t ctor in services/wal/wal.cpp.
+        // Scan every subdirectory under the root for a wal_* segment file.
+        REQUIRE(std::filesystem::exists(config.wal.path));
         bool found_wal_segment = false;
-        for (const auto& entry : std::filesystem::directory_iterator(database_wal_directory)) {
-            if (entry.is_regular_file() && entry.path().filename().string().find("wal_") == 0) {
-                found_wal_segment = true;
-                break;
+        for (const auto& db_entry : std::filesystem::directory_iterator(config.wal.path)) {
+            if (!db_entry.is_directory()) continue;
+            for (const auto& entry : std::filesystem::directory_iterator(db_entry.path())) {
+                if (entry.is_regular_file() && entry.path().filename().string().find("wal_") == 0) {
+                    found_wal_segment = true;
+                    break;
+                }
             }
+            if (found_wal_segment) break;
         }
         REQUIRE(found_wal_segment);
     }

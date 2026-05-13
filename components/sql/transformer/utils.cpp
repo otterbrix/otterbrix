@@ -634,54 +634,20 @@ namespace components::sql::transform {
         }
     }
 
-    // -- Phase 13 T13: catalog-resolve emission toggle and wrap helpers ---------
+    // -- Phase 13 (T13 finalized 2026-05-13): catalog-resolve wrap helpers --
     //
-    // Global toggle. Defaults to false: emitting catalog_resolve_*_t at parse
-    // time changes the root of the logical plan to sequence_t, which is not
-    // yet supported by dispatcher.cpp::execute_plan (it captures
-    // `original_type = plan->type()` and routes on the captured value before
-    // the planner has rewritten anything; see lines 264..387 in dispatcher.cpp).
-    // The wrap helpers below honour this flag so the plumbing is in place but
-    // inert; a downstream patch can flip the default after dispatcher routing
-    // learns to peer through the wrapper.
-    namespace {
-        // M2b diagnosis (2026-05-13): T13 flipped on, identified 3 root
-        // causes, FIXED:
-        //   1. find_effective_dml_type didn't skip catalog_resolve_* prefix
-        //      → is_dml=false → no begin_transaction → INSERT invisible
-        //      Fixed in executor.cpp (skip catalog_resolve_* in sequence_t).
-        //   2. create_plan_sequence put resolve operators in operator_insert's
-        //      left_ chain → insert read metadata chunk instead of VALUES
-        //      → storage_append wrong shape → 0 rows inserted.
-        //      Fixed in create_plan_sequence.cpp (skip catalog_resolve_*
-        //      when sibling consumer present).
-        //   3. dispatcher's relkind='g' wrap iterated logic_plan->children()
-        //      to find data_t — but data_t lives inside the wrapped
-        //      consumer, not as sibling of resolve_*.
-        //      Fixed (use effective_root_node).
-        // Remaining 24 regressions after these fixes (dynamic_schema_* mostly)
-        // still need investigation — likely deeper register propagation or
-        // similar second-order issues. Reverted to false to keep suite green
-        // (113/113) while next session diagnoses.
-        std::atomic<bool> g_emit_catalog_resolve_enabled{false};
-    } // namespace
-
-    bool transformer_emit_catalog_resolve_enabled() noexcept {
-        return g_emit_catalog_resolve_enabled.load(std::memory_order_relaxed);
-    }
-
-    void set_transformer_emit_catalog_resolve(bool enabled) noexcept {
-        g_emit_catalog_resolve_enabled.store(enabled, std::memory_order_relaxed);
-    }
+    // Toggle removed — wrapping is unconditional now that all downstream
+    // pipeline stages (dispatcher Pass 1, create_plan_sequence skip,
+    // find_effective_dml_type, limit lookup, relkind='g' detection) properly
+    // descend through the `sequence_t(catalog_resolve_*, ..., consumer)`
+    // shape. See commit history for the four root-cause fixes that closed
+    // the regression suite (M2b diagnosis rounds 1 and 2).
 
     logical_plan::node_ptr maybe_wrap_with_catalog_resolve_table(
         std::pmr::memory_resource* resource,
         const std::string& dbname,
         const std::string& relname,
         logical_plan::node_ptr main_node) {
-        if (!transformer_emit_catalog_resolve_enabled()) {
-            return main_node;
-        }
         if (!main_node) {
             return main_node;
         }
@@ -705,9 +671,6 @@ namespace components::sql::transform {
         std::pmr::memory_resource* resource,
         const std::string& dbname,
         logical_plan::node_ptr main_node) {
-        if (!transformer_emit_catalog_resolve_enabled()) {
-            return main_node;
-        }
         if (!main_node) {
             return main_node;
         }

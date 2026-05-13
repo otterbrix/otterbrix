@@ -190,8 +190,30 @@ namespace services::collection::executor {
             trace(log_, "executor::execute_plan: began txn {}", txn_data.transaction_id);
         }
 
+        // Phase 13 (T13 emit catalog_resolve_*): with the transformer
+        // wrap, logical_plan may be sequence_t(catalog_resolve_*, ...,
+        // <consumer>). The limit_t node lives as a child of the consumer,
+        // not on the wrapping sequence_t. Search via find_effective_dml_type
+        // first (already understands resolve prefix), then fall back to
+        // iterating the raw children for non-DML / pre-T13 plans.
         auto limit = components::logical_plan::limit_t::unlimit();
-        for (const auto& child : logical_plan->children()) {
+        auto* limit_lookup_node = logical_plan.get();
+        if (limit_lookup_node && limit_lookup_node->type() == components::logical_plan::node_type::sequence_t) {
+            // Find first non-resolve child as the limit-carrying consumer.
+            auto is_catalog_resolve = [](components::logical_plan::node_type t) {
+                return t == components::logical_plan::node_type::catalog_resolve_namespace_t ||
+                       t == components::logical_plan::node_type::catalog_resolve_table_t ||
+                       t == components::logical_plan::node_type::catalog_resolve_type_t ||
+                       t == components::logical_plan::node_type::catalog_resolve_function_t;
+            };
+            for (const auto& c : limit_lookup_node->children()) {
+                if (c && !is_catalog_resolve(c->type())) {
+                    limit_lookup_node = c.get();
+                    break;
+                }
+            }
+        }
+        for (const auto& child : limit_lookup_node->children()) {
             if (child->type() == components::logical_plan::node_type::limit_t) {
                 limit = static_cast<components::logical_plan::node_limit_t*>(child.get())->limit();
             }

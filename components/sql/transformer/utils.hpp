@@ -188,35 +188,19 @@ namespace components::sql::transform {
 
     // Phase 13 T13 — transformer catalog-resolve emission.
     //
-    // The transformer is allowed to wrap a main DML/DDL `node_ptr` in a
-    // `sequence_t(catalog_resolve_*_t..., main_node)` so the planner can later
-    // treat catalog resolution as a first-class dep in the pipeline (instead of
-    // routing through the existing catalog_view_t side-channel). The wrap is
-    // gated by `transformer_emit_catalog_resolve_enabled()` so the integration
-    // can land without disturbing dispatcher routing — which still relies on
-    // `plan->type()` being the original DML/DDL discriminant at the entrypoint
-    // (services/dispatcher/dispatcher.cpp captures `original_type = plan->type()`
-    // before the planner has a chance to rewrite anything; if we wrapped at
-    // transform time the root would always be sequence_t and every
-    // `original_type == node_type::insert_t` check would miss).
-    //
-    // The hooks below are wired into each transform_* path so that flipping
-    // the toggle is the only thing needed to start exercising the new pipeline.
-    // Per-call wrap behavior is documented at each emission site.
-
-    // Returns the current emission toggle. Defaults to false (disabled).
-    // TODO(P13 T13): once enrich_logical_plan + dispatcher.cpp learn to descend
-    // through a transformer-emitted sequence_t(catalog_resolve_*, main_node)
-    // wrapper, flip the default to true via a follow-up patch.
-    bool transformer_emit_catalog_resolve_enabled() noexcept;
-    void set_transformer_emit_catalog_resolve(bool enabled) noexcept;
+    // The transformer wraps a main DML/DDL `node_ptr` in
+    // `sequence_t(catalog_resolve_*_t..., main_node)` so the planner can
+    // treat catalog resolution as a first-class pipeline dependency
+    // (instead of routing through the catalog_view_t side-channel).
+    // Phase 13 (2026-05-13): wrap is unconditional — the previous
+    // `transformer_emit_catalog_resolve_enabled()` toggle was removed
+    // after the dispatcher/executor/planner cascade learned to descend
+    // through the sequence_t wrapper.
 
     // Wrap `main_node` (an INSERT/SELECT/UPDATE/DELETE-style consumer that
     // targets a specific (dbname, relname)) in
     //   sequence_t(catalog_resolve_namespace_t, catalog_resolve_table_t, main_node)
-    // when the toggle is enabled. Otherwise returns `main_node` unchanged so
-    // existing dispatcher/enrich routing is preserved. Empty dbname/relname
-    // skips the corresponding resolve node.
+    // Empty dbname/relname skips the corresponding resolve node.
     logical_plan::node_ptr maybe_wrap_with_catalog_resolve_table(
         std::pmr::memory_resource* resource,
         const std::string& dbname,

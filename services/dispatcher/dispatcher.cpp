@@ -364,21 +364,16 @@ namespace services::dispatcher {
         // operator_resolve_*_t back-pointer constructor stamps
         // namespace_oid / table_oid on the corresponding logical nodes;
         // subsequent validate (via scoped_plan_resolve_index_t) and enrich
-        // (M2a will plumb the same hook) read OIDs from plan tree instead
-        // of via async catalog_view side-channel.
+        // (via enrich_resolve_idx_t) read OIDs from plan tree instead of
+        // via the async catalog_view side-channel.
         //
-        // Dormant at T13=off: transformer_emit_catalog_resolve_enabled()
-        // is false, so the parser never emits the
-        // sequence_t(resolve_*, consumer) shape and this block short-
-        // circuits at the outer guard. No behavioural change for any
-        // existing flow until M2 flips the toggle.
-        //
-        // Previous prototype lived inside execute_plan_impl (PIPE post-
-        // validate); validate then saw INVALID_OID and unconditionally
-        // fell through to async catalog_view. M1 places Pass 1 here so
-        // the stamping happens BEFORE validate.
-        if (components::sql::transform::transformer_emit_catalog_resolve_enabled() &&
-            logic_plan->type() == node_type::sequence_t) {
+        // The wrap shape is sequence_t(catalog_resolve_*, ..., <consumer>)
+        // and emission is unconditional in the transformer (toggle removed
+        // 2026-05-13 after all four root causes were diagnosed and fixed).
+        // For plans that aren't sequence_t (or whose first child isn't a
+        // catalog_resolve_*), the block short-circuits with no behavioural
+        // change.
+        if (logic_plan->type() == node_type::sequence_t) {
             auto& kids = logic_plan->children();
             auto is_resolve = [](node_type t) {
                 return t == node_type::catalog_resolve_namespace_t ||
@@ -844,7 +839,18 @@ namespace services::dispatcher {
             disk_address_ != actor_zeta::address_t::empty_address()) {
             components::catalog::oid_t resolved_tbl_oid = components::catalog::INVALID_OID;
             bool is_computing = false;
-            auto enriched_oid = logic_plan->table_oid();
+            // Phase 13 (T13=on): logic_plan may be sequence_t(catalog_resolve_*,
+            // ..., insert_t). The table_oid lives on the insert_t consumer,
+            // not on the wrapping sequence_t or the resolve_* prefix
+            // children. Descend via effective_root_node to reach the real
+            // INSERT before reading table_oid; otherwise enriched_oid stays
+            // INVALID and is_computing falsely returns false, skipping the
+            // register wrap for relkind='g' tables (pg_computed_column never
+            // gets populated → SELECT * sees no columns).
+            auto* effective_insert_node = effective_root_node(logic_plan.get());
+            auto enriched_oid = effective_insert_node
+                ? effective_insert_node->table_oid()
+                : logic_plan->table_oid();
             if (enriched_oid == components::catalog::INVALID_OID && !logic_plan->children().empty()) {
                 enriched_oid = logic_plan->children().front()->table_oid();
             }

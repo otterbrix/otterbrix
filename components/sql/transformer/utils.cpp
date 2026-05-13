@@ -645,16 +645,21 @@ namespace components::sql::transform {
     // inert; a downstream patch can flip the default after dispatcher routing
     // learns to peer through the wrapper.
     namespace {
-        // M2b (2026-05-13): flipped to true. Combined with M1 (Pass 1
-        // PRE-validate in dispatcher) and the existing
-        // enrich_resolve_idx_t plumbing in enrich_logical_plan.cpp, the
-        // catalog_resolve_*_t wrap now flows end-to-end:
-        //   parser → transformer emits sequence_t(resolve_*, consumer)
-        //   → Pass 1 stamps OIDs on resolve nodes
-        //   → validate/enrich probe stamped OIDs via plan_resolve_index_t
-        //     / enrich_resolve_idx_t (fallback to view.get_* still
-        //     present for safety, removed in M3/M5).
-        std::atomic<bool> g_emit_catalog_resolve_enabled{true};
+        // M2b (2026-05-13): attempted flip to true, REVERTED.
+        // Combined with M1 (Pass 1 PRE-validate) — INSERT regressed
+        // (test_collection_sql line 46: cur->size() != 100). Symptom
+        // matches the legacy prototype "test_collection insert returned
+        // 6/50 rows" — Pass 1 executor invocation contaminates session
+        // state that operator_insert's main-flow execution depends on.
+        // M1's Pass 1 design assumed begin_transaction idempotency was
+        // sufficient; root cause likely a different shared state (chunk
+        // visibility / pool routing / parameter binding).
+        //
+        // Action required before re-flip: lldb-probe one failing INSERT
+        // to identify which state leaks. Once root identified, Pass 1
+        // mitigation (separate session OR inline-resolve OR state
+        // isolation) can land along with the flip.
+        std::atomic<bool> g_emit_catalog_resolve_enabled{false};
     } // namespace
 
     bool transformer_emit_catalog_resolve_enabled() noexcept {

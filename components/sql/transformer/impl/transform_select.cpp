@@ -139,6 +139,17 @@ namespace components::sql::transform {
                 auto range_func = *pg_ptr_cast<RangeFunction>(from_first);
                 names.left_alias = construct_alias(range_func.alias);
                 agg->append_child(transform_function(range_func, names, params));
+            } else {
+                // Unhandled FROM type (e.g. T_RangeSubselect for
+                // `(SELECT ...) AS sub` derived tables). Without this guard
+                // `agg` stays null and the next agg->dbname() at line ~147
+                // hits the intrusive_ptr assert (px != 0) → SIGABRT.
+                // dynamic_schema_subquery pins this; the test accepts a clean
+                // is_success()=false (WARN branch) until derived-table
+                // subqueries are wired through the planner.
+                throw std::runtime_error(
+                    "FROM clause type not supported by the SQL transformer: "
+                    + std::string{node_tag_to_string(nodeTag(from_first))});
             }
         } else {
             agg = logical_plan::make_node_aggregate(resource_, std::string{}, std::string{});

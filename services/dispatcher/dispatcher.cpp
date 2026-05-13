@@ -424,6 +424,12 @@ namespace services::dispatcher {
                 // enrich reads (which still take `ctx`) see the same MVCC
                 // snapshot the resolves saw.
                 ctx = components::execution_context_t{session, pass1_txn, ctx.table_oid};
+                // Note: resolves stay in plan tree so validate/enrich's
+                // gather walks find them. create_plan_sequence skips
+                // catalog_resolve_*_t children when building the executor's
+                // left-chain (they have already run in Pass 1; putting
+                // them in operator_insert.left_ would corrupt insert's
+                // data input — see create_plan_sequence.cpp note).
             }
         }
         // Build table_id from the plan's role-named accessors. Each derived
@@ -860,20 +866,29 @@ namespace services::dispatcher {
             // (each vector_t::type() carries the field name as alias).
             if (is_computing) {
                 std::vector<components::table::column_definition_t> registered_cols;
-                for (const auto& child : logic_plan->children()) {
-                    if (child->type() != components::logical_plan::node_type::data_t) {
-                        continue;
+                // Phase 13 (T13=on): logic_plan may be
+                // sequence_t(catalog_resolve_*, ..., insert_t). The data_t
+                // chunk we need lives inside the insert_t consumer, not as
+                // a sibling of the wrapping sequence_t. Descend through
+                // effective_root_node to reach the real INSERT before
+                // iterating its children.
+                auto* effective_insert = effective_root_node(logic_plan.get());
+                if (effective_insert) {
+                    for (const auto& child : effective_insert->children()) {
+                        if (!child || child->type() != components::logical_plan::node_type::data_t) {
+                            continue;
+                        }
+                        auto* data_node =
+                            static_cast<const components::logical_plan::node_data_t*>(child.get());
+                        const auto& chunk = data_node->data_chunk();
+                        registered_cols.reserve(chunk.column_count());
+                        for (size_t i = 0; i < chunk.column_count(); ++i) {
+                            const auto& type = chunk.data[i].type();
+                            assert(type.has_alias());
+                            registered_cols.emplace_back(type.alias(), type);
+                        }
+                        break;
                     }
-                    auto* data_node =
-                        static_cast<const components::logical_plan::node_data_t*>(child.get());
-                    const auto& chunk = data_node->data_chunk();
-                    registered_cols.reserve(chunk.column_count());
-                    for (size_t i = 0; i < chunk.column_count(); ++i) {
-                        const auto& type = chunk.data[i].type();
-                        assert(type.has_alias());
-                        registered_cols.emplace_back(type.alias(), type);
-                    }
-                    break;
                 }
 
                 auto* insert_node = static_cast<node_insert_t*>(effective_root_node(logic_plan.get()));

@@ -645,20 +645,24 @@ namespace components::sql::transform {
     // inert; a downstream patch can flip the default after dispatcher routing
     // learns to peer through the wrapper.
     namespace {
-        // M2b (2026-05-13): attempted flip to true, REVERTED.
-        // Combined with M1 (Pass 1 PRE-validate) — INSERT regressed
-        // (test_collection_sql line 46: cur->size() != 100). Symptom
-        // matches the legacy prototype "test_collection insert returned
-        // 6/50 rows" — Pass 1 executor invocation contaminates session
-        // state that operator_insert's main-flow execution depends on.
-        // M1's Pass 1 design assumed begin_transaction idempotency was
-        // sufficient; root cause likely a different shared state (chunk
-        // visibility / pool routing / parameter binding).
-        //
-        // Action required before re-flip: lldb-probe one failing INSERT
-        // to identify which state leaks. Once root identified, Pass 1
-        // mitigation (separate session OR inline-resolve OR state
-        // isolation) can land along with the flip.
+        // M2b diagnosis (2026-05-13): T13 flipped on, identified 3 root
+        // causes, FIXED:
+        //   1. find_effective_dml_type didn't skip catalog_resolve_* prefix
+        //      → is_dml=false → no begin_transaction → INSERT invisible
+        //      Fixed in executor.cpp (skip catalog_resolve_* in sequence_t).
+        //   2. create_plan_sequence put resolve operators in operator_insert's
+        //      left_ chain → insert read metadata chunk instead of VALUES
+        //      → storage_append wrong shape → 0 rows inserted.
+        //      Fixed in create_plan_sequence.cpp (skip catalog_resolve_*
+        //      when sibling consumer present).
+        //   3. dispatcher's relkind='g' wrap iterated logic_plan->children()
+        //      to find data_t — but data_t lives inside the wrapped
+        //      consumer, not as sibling of resolve_*.
+        //      Fixed (use effective_root_node).
+        // Remaining 24 regressions after these fixes (dynamic_schema_* mostly)
+        // still need investigation — likely deeper register propagation or
+        // similar second-order issues. Reverted to false to keep suite green
+        // (113/113) while next session diagnoses.
         std::atomic<bool> g_emit_catalog_resolve_enabled{false};
     } // namespace
 

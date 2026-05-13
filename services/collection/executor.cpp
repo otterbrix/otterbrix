@@ -17,6 +17,10 @@
 #include <components/logical_plan/node_create_sequence.hpp>
 #include <components/logical_plan/node_create_type.hpp>
 #include <components/logical_plan/node_create_view.hpp>
+#include <components/logical_plan/node_catalog_resolve_function.hpp>
+#include <components/logical_plan/node_catalog_resolve_namespace.hpp>
+#include <components/logical_plan/node_catalog_resolve_table.hpp>
+#include <components/logical_plan/node_catalog_resolve_type.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/param_storage.hpp>
 // operator_{insert,delete,update}.hpp no longer included — Phase 5 moved
@@ -39,13 +43,26 @@ namespace {
 // a relkind='g' (computing/dynamic-schema) table — e.g. sequence_t(insert,
 // computed_field_register) once P7.2 lands. Recurse through that wrapper so
 // the executor still recognizes the plan as DML and runs the
-// begin_transaction / commit-side pg_catalog swap path. Restricted to
-// sequence_t whose first child is a DML node (insert/update/delete) so DDL
-// sequence_t plans (CREATE COLLECTION etc.) keep their existing dml=false
-// treatment.
+// begin_transaction / commit-side pg_catalog swap path.
+//
+// Phase 13 (M2b diagnosis 2026-05-13): T13=on, the transformer wraps DML
+// into `sequence_t(catalog_resolve_namespace_t, catalog_resolve_table_t,
+// <dml_consumer>)`. The legacy form (DML as first child) only worked for
+// Phase 7.x's `sequence_t(insert, computed_field_register)`. We now also
+// skip catalog_resolve_* prefix children and probe the FIRST non-resolve
+// child for the DML test. Without this, is_dml=false → no
+// begin_transaction → operator_insert writes invisible at commit (cursor
+// reports 0 rows on subsequent SELECT). Symptom matched the legacy
+// prototype "6/50 rows" regression — true root cause is is_dml gating.
 components::logical_plan::node_type find_effective_dml_type(
     const components::logical_plan::node_ptr& plan) {
     using namespace components::logical_plan;
+    auto is_catalog_resolve = [](node_type t) {
+        return t == node_type::catalog_resolve_namespace_t ||
+               t == node_type::catalog_resolve_table_t ||
+               t == node_type::catalog_resolve_type_t ||
+               t == node_type::catalog_resolve_function_t;
+    };
     auto* n = plan.get();
     while (n) {
         switch (n->type()) {
@@ -55,16 +72,26 @@ components::logical_plan::node_type find_effective_dml_type(
                 continue;
             }
             return n->type();
-        case node_type::sequence_t:
-            if (!n->children().empty()) {
-                const auto first = n->children().front()->type();
-                if (first == node_type::insert_t || first == node_type::update_t ||
-                    first == node_type::delete_t) {
-                    n = n->children().front().get();
-                    continue;
-                }
+        case node_type::sequence_t: {
+            if (n->children().empty()) return n->type();
+            // Skip catalog_resolve_* prefix children — they are
+            // metadata-stamping leaves emitted by the transformer wrap;
+            // the DML consumer is the first non-resolve child.
+            const auto& kids = n->children();
+            std::size_t i = 0;
+            while (i < kids.size() && kids[i] && is_catalog_resolve(kids[i]->type())) {
+                ++i;
+            }
+            if (i >= kids.size() || !kids[i]) return n->type();
+            const auto consumer_type = kids[i]->type();
+            if (consumer_type == node_type::insert_t ||
+                consumer_type == node_type::update_t ||
+                consumer_type == node_type::delete_t) {
+                n = kids[i].get();
+                continue;
             }
             return n->type();
+        }
         default:
             return n->type();
         }

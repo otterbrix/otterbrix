@@ -249,7 +249,10 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 auto cur = partial_insert(table_collection_name_value_defaults);
                 REQUIRE(cur->is_success());
                 REQUIRE(cur->size() == kNumInserts);
-                // column[1] will be filled with 100 nulls
+                // column[1] will be filled with 100 default values (PostgreSQL
+                // semantic: DEFAULT applies for omitted columns regardless of
+                // nullability — see test_persistence::disk_partial_insert and
+                // docs/remaining-5-tests-plan.md "Group 4 / Plan").
             }
             {
                 auto cur = select_all(table_collection_name_value_defaults);
@@ -258,8 +261,9 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 for (size_t i = 0; i < kNumInserts * 3; i++) {
                     REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
                 }
+                auto val = types::logical_value_t{dispatcher->resource(), cur->chunk_data().data[1].type()};
                 for (size_t i = kNumInserts * 3; i < kNumInserts * 4; i++) {
-                    REQUIRE(cur->chunk_data().data[1].is_null(i));
+                    REQUIRE(cur->chunk_data().value(1, i) == val);
                 }
             }
         }
@@ -367,7 +371,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 auto cur = reversed_partial_insert(table_collection_name_value_defaults);
                 REQUIRE(cur->is_success());
                 REQUIRE(cur->size() == kNumInserts);
-                // column[1] will be filled with 100 nulls
+                // column[1] gets default value for omitted (PostgreSQL semantic).
             }
             {
                 auto cur = select_all(table_collection_name_value_defaults);
@@ -376,8 +380,9 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 for (size_t i = 0; i < kNumInserts * 3; i++) {
                     REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
                 }
+                auto val = types::logical_value_t{dispatcher->resource(), cur->chunk_data().data[1].type()};
                 for (size_t i = kNumInserts * 3; i < kNumInserts * 5; i++) {
-                    REQUIRE(cur->chunk_data().data[1].is_null(i));
+                    REQUIRE(cur->chunk_data().value(1, i) == val);
                 }
             }
         }

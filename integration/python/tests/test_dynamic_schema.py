@@ -76,8 +76,16 @@ def test_dynamic_schema_basic_flow(docs_table):
     c.close()
 
 
-def test_dynamic_schema_null_for_absent(docs_table):
-    """A row missing a field must surface as None when accessed by name."""
+def test_dynamic_schema_default_for_absent(docs_table):
+    """A row missing a field surfaces as the column's type default.
+
+    PostgreSQL semantics (formalised in the C++ test_collection::insert
+    suite): an INSERT that omits a column gets the column's DEFAULT,
+    not NULL. For relkind='g' (dynamic schema), column 'b' inferred
+    from the second row's type (text) has the empty string '' as its
+    default. The earlier row, which never wrote 'b', surfaces with
+    that default on SELECT.
+    """
     table = docs_table
 
     c = client.execute(
@@ -100,9 +108,8 @@ def test_dynamic_schema_null_for_absent(docs_table):
     assert len(c) == 2
 
     c.next()
-    # First row was inserted without 'b' — must be None for dynamic-schema unions.
     assert c['a'] == 1
-    assert c['b'] is None
+    assert c['b'] == ''
 
     c.next()
     assert c['a'] == 2

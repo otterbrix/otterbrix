@@ -1011,6 +1011,7 @@ name = "otterbrix"
 version = "0.1.0"
 dependencies = [
  "otterbrix-sys",
+ "tempfile",
 ]
 
 [[package]]

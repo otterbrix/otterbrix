@@ -81,10 +81,13 @@
 //!
 //! # Build requirements
 //!
-//! At compile time, the [`otterbrix-sys`](https://crates.io/crates/otterbrix-sys)
-//! transitive dependency requires `OTTERBRIX_LIB_DIR` and
-//! `OTTERBRIX_INCLUDE_DIR` to be set. At run time, the dynamic linker must be
-//! able to find `libotterbrix.so` (typically via `LD_LIBRARY_PATH`).
+//! This crate transitively links against `libotterbrix.so` from the upstream
+//! Otterbrix C++ build. By default,
+//! [`otterbrix-sys`](https://crates.io/crates/otterbrix-sys) resolves both
+//! the header and the shared object under `<repo>/build/integration/c`, and
+//! `build.rs` embeds an `rpath` so the linker can locate the library at run
+//! time without `LD_LIBRARY_PATH`. Set `OTTERBRIX_LIB_DIR` and/or
+//! `OTTERBRIX_INCLUDE_DIR` to override the default search path.
 
 mod config;
 mod cursor;

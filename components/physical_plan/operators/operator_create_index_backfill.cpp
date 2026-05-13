@@ -80,6 +80,22 @@ namespace components::operators {
                                                         uint64_t{0},
                                                         count);
                     co_await std::move(irf);
+                    // Group 3 fix: insert_rows tags index entries with the
+                    // current txn_id but leaves them PENDING. They become
+                    // visible only after commit_insert is called with the
+                    // commit_id. The executor's post-pipeline commit block
+                    // (executor.cpp:215-232) fires commit_insert when
+                    // dml_append_row_count > 0 && dml_table_oid set — record
+                    // those here so backfilled index entries get committed
+                    // alongside the CREATE INDEX txn. Reusing
+                    // dml_append_row_count also drives storage_commit_append
+                    // (executor.cpp:217-224): that re-commits the already-
+                    // committed data rows to the CREATE INDEX commit_id, which
+                    // is harmless when no concurrent reader sits between the
+                    // INSERT and the CREATE INDEX commits (typical case).
+                    ctx->dml_append_row_start = 0;
+                    ctx->dml_append_row_count = count;
+                    ctx->dml_table_oid = table_oid_;
                 }
             }
         }

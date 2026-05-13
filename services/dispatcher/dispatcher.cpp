@@ -1174,6 +1174,36 @@ namespace services::dispatcher {
                                                               swap_ctx, commit_id, std::move(swap_deletes));
                             co_await std::move(df);
                         }
+                        // Group 3: CREATE INDEX's backfill operator
+                        // (operator_create_index_backfill_t) calls
+                        // manager_index_t::insert_rows but leaves entries
+                        // PENDING — pending_inserts_ keyed on the DDL txn_id.
+                        // The executor's commit_insert hook (executor.cpp:226-
+                        // 231) only fires when is_dml=true, which CREATE INDEX
+                        // is not. Drive commit_insert here so the backfilled
+                        // index entries flip from insert_id=txn_id to
+                        // insert_id=commit_id and become visible to subsequent
+                        // SELECT through index_scan. The table_oid is read off
+                        // the planner's rewritten sequence (last child = the
+                        // original create_index_t carrying the resolved oid).
+                        if (original_type == node_type::create_index_t &&
+                            index_address_ != actor_zeta::address_t::empty_address()) {
+                            auto* root_after_plan = effective_root_node(logic_plan.get());
+                            components::catalog::oid_t indexed_tbl_oid = components::catalog::INVALID_OID;
+                            if (root_after_plan && !root_after_plan->children().empty()) {
+                                auto* back = root_after_plan->children().back().get();
+                                if (back && back->type() == node_type::create_index_t) {
+                                    auto* ci = static_cast<const node_create_index_t*>(back);
+                                    indexed_tbl_oid = ci->table_oid();
+                                }
+                            }
+                            if (indexed_tbl_oid != components::catalog::INVALID_OID) {
+                                auto [_ci, cif] = actor_zeta::send(index_address_,
+                                                                    &index::manager_index_t::commit_insert,
+                                                                    swap_ctx, indexed_tbl_oid, commit_id);
+                                co_await std::move(cif);
+                            }
+                        }
                     }
                 }
                 // Update routing map: for create_collection_t logic_plan is sequence_t whose

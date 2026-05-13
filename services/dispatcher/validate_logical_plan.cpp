@@ -2144,16 +2144,23 @@ namespace services::dispatcher {
                 named_schema table_schema{resource};
                 auto* tbl_idx = view.try_get_table(impl::ns_oid_for(view, id),
                                                     std::string_view(id.table_name()));
-                if (tbl_idx && tbl_idx->relkind == 'g') {
+                // Phase 7 / Group 3: previously rejected ALL relkind='g'. Relax
+                // to "reject only when no columns are registered yet" — once
+                // at least one INSERT has populated pg_computed_column, attoids
+                // are stable (P7.2 register path mints fresh attoids only for
+                // new / type-evolved columns). Subsequent type evolution
+                // bumping attoids on an indexed column is the caller's
+                // responsibility (no automatic index rebuild today, see
+                // docs/phase7-deferred-items.md §7.6). docs/groups-1-2-3-design.md
+                // Group 3 Part A.
+                if (tbl_idx && tbl_idx->relkind == 'g' && tbl_idx->columns.empty()) {
                     return schema_result<named_schema>{
                         resource,
                         components::cursor::error_t{
                             error_code_t::index_create_fail,
-                            "CREATE INDEX is not supported on dynamic-schema (relkind='g') tables. "
-                            "Indexes require stable column attoids; dynamic-schema columns may evolve "
-                            "their attoid via type evolution. Convert the table to static schema first "
-                            "(reserved for future ALTER TABLE SET STATIC, see docs/phase7-deferred-items.md "
-                            "section 7.6)."}};
+                            "CREATE INDEX requires at least one column registered on the table; "
+                            "INSERT data first to register a schema on this dynamic-schema "
+                            "(relkind='g') table."}};
                 } else if (tbl_idx) {
                     for (const auto& column : tbl_idx->columns) {
                         table_schema.emplace_back(type_from_t{idx_node->relname(), column.type});

@@ -57,6 +57,7 @@
 #include <components/physical_plan_generator/create_plan.hpp>
 #include <components/planner/optimizer.hpp>
 #include <components/planner/planner.hpp>
+#include <components/sql/transformer/utils.hpp>
 
 #include "enrich_logical_plan.hpp"
 
@@ -358,14 +359,73 @@ namespace services::dispatcher {
         // Optimizer: constant folding, etc.
         logic_plan = components::planner::optimize(resource(), logic_plan, nullptr, params.get());
 
-        // Phase 13 Step 3 (deferred): auto-wrap + Pass 1 prototype lived here.
-        // Reverted because Pass 1's executor re-entry interacted badly with
-        // the operator_insert pipeline (test_collection insert returned 6/50
-        // rows). The operator_resolve_*_t back-pointer plumbing remains in
-        // place (will activate once the executor re-entry is reshaped). For
-        // now, enrich stamps table_oid via the existing in-memory catalog
-        // cache (sync try_get_* only — no NEW async actor sends are added by
-        // this session).
+        // Phase 13 M1: Pass 1 — execute catalog_resolve_*_t front children
+        // of the transformer's sequence_t wrap BEFORE validate. The
+        // operator_resolve_*_t back-pointer constructor stamps
+        // namespace_oid / table_oid on the corresponding logical nodes;
+        // subsequent validate (via scoped_plan_resolve_index_t) and enrich
+        // (M2a will plumb the same hook) read OIDs from plan tree instead
+        // of via async catalog_view side-channel.
+        //
+        // Dormant at T13=off: transformer_emit_catalog_resolve_enabled()
+        // is false, so the parser never emits the
+        // sequence_t(resolve_*, consumer) shape and this block short-
+        // circuits at the outer guard. No behavioural change for any
+        // existing flow until M2 flips the toggle.
+        //
+        // Previous prototype lived inside execute_plan_impl (PIPE post-
+        // validate); validate then saw INVALID_OID and unconditionally
+        // fell through to async catalog_view. M1 places Pass 1 here so
+        // the stamping happens BEFORE validate.
+        if (components::sql::transform::transformer_emit_catalog_resolve_enabled() &&
+            logic_plan->type() == node_type::sequence_t) {
+            auto& kids = logic_plan->children();
+            auto is_resolve = [](node_type t) {
+                return t == node_type::catalog_resolve_namespace_t ||
+                       t == node_type::catalog_resolve_table_t ||
+                       t == node_type::catalog_resolve_type_t ||
+                       t == node_type::catalog_resolve_function_t;
+            };
+            std::size_t resolve_count = 0;
+            while (resolve_count < kids.size() && kids[resolve_count] &&
+                   is_resolve(kids[resolve_count]->type())) {
+                ++resolve_count;
+            }
+            if (resolve_count > 0) {
+                // begin_transaction is idempotent per session (returns the
+                // existing active txn or starts one); the later
+                // begin_transaction at line ~1031 reuses this same txn.
+                // Required because operator_resolve_*_t reads pg_catalog
+                // tables (pg_class, pg_namespace, ...) which need MVCC
+                // visibility against the active txn.
+                auto pass1_txn = txn_manager_.begin_transaction(session).data();
+                // Build the Pass 1 sub-plan as a sequence_t containing the
+                // resolve front children. operator_resolve_*_t carries a
+                // raw pointer to the logical node — those are the SAME
+                // node objects shared with the parent's sequence_t, so
+                // OIDs stamped during Pass 1 become visible to the parent
+                // plan's validate/enrich pass that follows.
+                auto pass1_root = boost::intrusive_ptr<components::logical_plan::node_t>(
+                    new components::logical_plan::node_sequence_t(resource()));
+                for (std::size_t i = 0; i < resolve_count; ++i) {
+                    pass1_root->append_child(kids[i]);
+                }
+                auto pass1_params = make_parameter_node(resource());
+                auto pass1_result = co_await execute_plan_impl(
+                    session, pass1_root, pass1_params->take_parameters(), pass1_txn);
+                if (pass1_result.cursor->is_error()) {
+                    trace(log_,
+                          "manager_dispatcher_t::execute_plan: Pass 1 "
+                          "resolve failed: {}",
+                          pass1_result.cursor->get_error().what);
+                    co_return std::move(pass1_result.cursor);
+                }
+                // Propagate the established txn into ctx so validate /
+                // enrich reads (which still take `ctx`) see the same MVCC
+                // snapshot the resolves saw.
+                ctx = components::execution_context_t{session, pass1_txn, ctx.table_oid};
+            }
+        }
         // Build table_id from the plan's role-named accessors. Each derived
         // node owns a (db, rel)-shaped pair; nodes that don't (create_type_t,
         // drop_type_t, wrappers) yield empty identifiers — same outcome as

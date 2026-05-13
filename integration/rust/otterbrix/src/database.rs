@@ -3,6 +3,7 @@ use crate::cursor::Cursor;
 use crate::error::{Error, Result};
 use crate::utils::{make_sv, string_from_c};
 use std::fmt;
+use std::marker::PhantomData;
 use std::path::Path;
 
 #[derive(Debug, Clone)]
@@ -100,7 +101,7 @@ impl fmt::Debug for Database {
     }
 }
 
-fn cursor_or_error(ptr: otterbrix_sys::cursor_ptr) -> Result<Cursor> {
+fn cursor_or_error<'db>(ptr: otterbrix_sys::cursor_ptr) -> Result<Cursor<'db>> {
     if ptr.is_null() {
         return Err(Error::NullPointer);
     }
@@ -113,7 +114,10 @@ fn cursor_or_error(ptr: otterbrix_sys::cursor_ptr) -> Result<Cursor> {
             message,
         });
     }
-    Ok(Cursor { ptr })
+    Ok(Cursor {
+        ptr,
+        _db: PhantomData,
+    })
 }
 
 fn path_to_str(path: &Path) -> Result<&str> {
@@ -146,12 +150,12 @@ impl Database {
         Ok(Database { ptr })
     }
 
-    pub fn execute(&self, sql: &str) -> Result<Cursor> {
+    pub fn execute(&self, sql: &str) -> Result<Cursor<'_>> {
         let ptr = unsafe { otterbrix_sys::execute_sql(self.ptr, make_sv(sql)) };
         cursor_or_error(ptr)
     }
 
-    pub fn execute_with_params(&self, sql: &str, params: &[SqlParam<'_>]) -> Result<Cursor> {
+    pub fn execute_with_params(&self, sql: &str, params: &[SqlParam<'_>]) -> Result<Cursor<'_>> {
         let raw = raw_sql_params(params);
         let ptr = unsafe {
             otterbrix_sys::execute_sql_params(self.ptr, make_sv(sql), raw.as_ptr(), raw.len())
@@ -159,24 +163,24 @@ impl Database {
         cursor_or_error(ptr)
     }
 
-    pub fn create_database(&self, name: &str) -> Result<Cursor> {
+    pub fn create_database(&self, name: &str) -> Result<Cursor<'_>> {
         let ptr = unsafe { otterbrix_sys::create_database(self.ptr, make_sv(name)) };
         cursor_or_error(ptr)
     }
 
-    pub fn create_collection(&self, database: &str, collection: &str) -> Result<Cursor> {
+    pub fn create_collection(&self, database: &str, collection: &str) -> Result<Cursor<'_>> {
         let ptr = unsafe {
             otterbrix_sys::create_collection(self.ptr, make_sv(database), make_sv(collection))
         };
         cursor_or_error(ptr)
     }
 
-    pub fn drop_database(&self, name: &str) -> Result<Cursor> {
+    pub fn drop_database(&self, name: &str) -> Result<Cursor<'_>> {
         let ptr = unsafe { otterbrix_sys::drop_database(self.ptr, make_sv(name)) };
         cursor_or_error(ptr)
     }
 
-    pub fn drop_collection(&self, database: &str, collection: &str) -> Result<Cursor> {
+    pub fn drop_collection(&self, database: &str, collection: &str) -> Result<Cursor<'_>> {
         let ptr = unsafe {
             otterbrix_sys::drop_collection(self.ptr, make_sv(database), make_sv(collection))
         };

@@ -16,9 +16,10 @@ async fn insert_reports_inserted_count() -> Result<(), sqlx::Error> {
     create_app_db(&mut t.conn).await;
     create_table(&mut t).await;
 
-    let res = sqlx::query::<Otterbrix>("INSERT INTO app.t (k, v) VALUES (1, 10), (2, 20), (3, 30);")
-        .execute(&mut t.conn)
-        .await?;
+    let res =
+        sqlx::query::<Otterbrix>("INSERT INTO app.t (k, v) VALUES (1, 10), (2, 20), (3, 30);")
+            .execute(&mut t.conn)
+            .await?;
     assert_eq!(res.rows_affected(), 3);
     Ok(())
 }

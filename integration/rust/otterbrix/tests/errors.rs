@@ -25,8 +25,7 @@ fn query_error_carries_code_and_message() {
 
     let err = db
         .execute("SELECT * FROM db.nonexistent;")
-        .err()
-        .expect("query against missing table must error");
+        .expect_err("query against missing table must error");
     match err {
         Error::Query { code, message } => {
             assert_ne!(code, 0, "expected non-zero error code, got {code}");
@@ -62,8 +61,5 @@ fn drop_nonexistent_collection_returns_error() {
 fn drop_nonexistent_database_returns_error() {
     let db = common::open_test_db();
     let res = db.drop_database("never_created");
-    assert!(
-        res.is_err(),
-        "dropping a missing database must return Err"
-    );
+    assert!(res.is_err(), "dropping a missing database must return Err");
 }

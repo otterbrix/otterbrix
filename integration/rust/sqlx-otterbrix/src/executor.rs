@@ -137,7 +137,7 @@ impl<'c> Executor<'c> for &'c mut OtterbrixConnection {
         'c: 'e,
     {
         Box::pin(future::ready(Err(Error::protocol(
-            "DESCRIBE / offline macros are not supported for Otterbrix",
+            "DESCRIBE / offline macros are not supported by otterbrix",
         ))))
     }
 }

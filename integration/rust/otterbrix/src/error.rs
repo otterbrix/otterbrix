@@ -17,11 +17,13 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::NullPointer => write!(f, "otterbrix returned null pointer"),
-            Error::Query { code, message } => write!(f, "query error (code {code}): {message}"),
-            Error::InvalidPath(path) => write!(f, "invalid path: {path}"),
+            Error::NullPointer => write!(f, "otterbrix core returned null pointer"),
+            Error::Query { code, message } => {
+                write!(f, "otterbrix core query error (code {code}): {message}")
+            }
+            Error::InvalidPath(path) => write!(f, "otterbrix invalid path: {path}"),
             Error::TypeMismatch { expected, got } => {
-                write!(f, "type mismatch: expected {expected}, got {got}")
+                write!(f, "otterbrix type mismatch: expected {expected}, got {got}")
             }
         }
     }

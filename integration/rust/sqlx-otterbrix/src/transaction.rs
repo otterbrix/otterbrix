@@ -20,19 +20,19 @@ impl TransactionManager for OtterbrixTransactionManager {
         _statement: Option<Cow<'static, str>>,
     ) -> BoxFuture<'conn, Result<(), Error>> {
         Box::pin(future::ready(Err(Error::protocol(
-            "transactions are not supported by the Otterbrix driver",
+            "transactions are not supported by otterbrix",
         ))))
     }
 
     fn commit(_conn: &mut OtterbrixConnection) -> BoxFuture<'_, Result<(), Error>> {
         Box::pin(future::ready(Err(Error::protocol(
-            "invalid transaction state for Otterbrix",
+            "invalid transaction state for otterbrix",
         ))))
     }
 
     fn rollback(_conn: &mut OtterbrixConnection) -> BoxFuture<'_, Result<(), Error>> {
         Box::pin(future::ready(Err(Error::protocol(
-            "invalid transaction state for Otterbrix",
+            "invalid transaction state for otterbrix",
         ))))
     }
 

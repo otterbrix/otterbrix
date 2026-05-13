@@ -27,6 +27,8 @@ fn count_rows(db: &Database, table: &str) -> i64 {
 fn parallel_inserts_through_arc_mutex_yield_full_count() {
     let db = open_test_db();
     ddl_setup(&db);
+    db.execute("INSERT INTO app.t (k, v) VALUES (-1, -1);")
+        .expect("seed");
     let db = Arc::new(Mutex::new(db));
 
     const THREADS: i64 = 4;
@@ -61,7 +63,7 @@ fn parallel_inserts_through_arc_mutex_yield_full_count() {
     }
 
     let guard = db.lock().expect("lock db");
-    assert_eq!(count_rows(&guard, "app.t"), THREADS * PER_THREAD);
+    assert_eq!(count_rows(&guard, "app.t"), THREADS * PER_THREAD + 1);
 }
 
 #[test]
@@ -109,6 +111,8 @@ fn parallel_selects_through_arc_mutex_dont_corrupt() {
 fn mixed_read_write_workload_through_arc_mutex() {
     let db = open_test_db();
     ddl_setup(&db);
+    db.execute("INSERT INTO app.t (k, v) VALUES (-1, -1);")
+        .expect("seed");
     let db = Arc::new(Mutex::new(db));
 
     const WRITERS: i64 = 2;
@@ -124,7 +128,10 @@ fn mixed_read_write_workload_through_arc_mutex() {
                 let k = tid * PER_WRITER + i + 10_000;
                 let guard = db.lock().expect("lock");
                 guard
-                    .execute(&format!("INSERT INTO app.t (k, v) VALUES ({k}, {});", k * 2))
+                    .execute(&format!(
+                        "INSERT INTO app.t (k, v) VALUES ({k}, {});",
+                        k * 2
+                    ))
                     .expect("insert");
             }
         }));
@@ -134,9 +141,7 @@ fn mixed_read_write_workload_through_arc_mutex() {
         handles.push(thread::spawn(move || {
             for _ in 0..READS_PER_READER {
                 let guard = db.lock().expect("lock");
-                let cursor = guard
-                    .execute("SELECT COUNT(k) FROM app.t;")
-                    .expect("count");
+                let cursor = guard.execute("SELECT COUNT(k) FROM app.t;").expect("count");
                 assert_eq!(cursor.size(), 1);
             }
         }));
@@ -146,7 +151,7 @@ fn mixed_read_write_workload_through_arc_mutex() {
     }
 
     let guard = db.lock().expect("lock");
-    assert_eq!(count_rows(&guard, "app.t"), WRITERS * PER_WRITER);
+    assert_eq!(count_rows(&guard, "app.t"), WRITERS * PER_WRITER + 1);
 }
 
 #[test]

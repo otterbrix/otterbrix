@@ -168,10 +168,7 @@ mod tests {
         let url: Url = "otterbrix://".parse().expect("url");
         let err = OtterbrixConnectOptions::from_url(&url).expect_err("must reject");
         let msg = err.to_string();
-        assert!(
-            msg.contains("filesystem base path"),
-            "msg = {msg}"
-        );
+        assert!(msg.contains("filesystem base path"), "msg = {msg}");
     }
 
     #[test]

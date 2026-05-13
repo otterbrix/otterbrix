@@ -1,6 +1,7 @@
 use crate::utils::{make_sv, string_from_c};
 use crate::value::Value;
 use std::fmt;
+use std::marker::PhantomData;
 
 pub type LogicalType = i32;
 
@@ -18,11 +19,12 @@ pub const LOGICAL_TYPE_UINTEGER: LogicalType = 29;
 pub const LOGICAL_TYPE_UBIGINT: LogicalType = 30;
 pub const LOGICAL_TYPE_STRING_LITERAL: LogicalType = 35;
 
-pub struct Cursor {
+pub struct Cursor<'db> {
     pub(crate) ptr: otterbrix_sys::cursor_ptr,
+    pub(crate) _db: PhantomData<&'db ()>,
 }
 
-impl Cursor {
+impl<'db> Cursor<'db> {
     pub fn size(&self) -> i32 {
         unsafe { otterbrix_sys::cursor_size(self.ptr) }
     }
@@ -63,7 +65,7 @@ impl Cursor {
         Value::from_raw(ptr)
     }
 
-    pub fn rows(&self) -> Rows<'_> {
+    pub fn rows(&self) -> Rows<'_, 'db> {
         Rows {
             cursor: self,
             index: 0,
@@ -72,7 +74,7 @@ impl Cursor {
     }
 }
 
-impl fmt::Debug for Cursor {
+impl fmt::Debug for Cursor<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Cursor")
             .field("size", &self.size())
@@ -81,20 +83,20 @@ impl fmt::Debug for Cursor {
     }
 }
 
-impl Drop for Cursor {
+impl Drop for Cursor<'_> {
     fn drop(&mut self) {
         unsafe { otterbrix_sys::release_cursor(self.ptr) };
     }
 }
 
-unsafe impl Send for Cursor {}
+unsafe impl Send for Cursor<'_> {}
 
-pub struct Row<'a> {
-    cursor: &'a Cursor,
+pub struct Row<'a, 'db> {
+    cursor: &'a Cursor<'db>,
     index: i32,
 }
 
-impl<'a> Row<'a> {
+impl<'a, 'db> Row<'a, 'db> {
     pub fn index(&self) -> i32 {
         self.index
     }
@@ -108,20 +110,20 @@ impl<'a> Row<'a> {
     }
 }
 
-impl fmt::Debug for Row<'_> {
+impl fmt::Debug for Row<'_, '_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Row").field("index", &self.index).finish()
     }
 }
 
-pub struct Rows<'a> {
-    cursor: &'a Cursor,
+pub struct Rows<'a, 'db> {
+    cursor: &'a Cursor<'db>,
     index: i32,
     total: i32,
 }
 
-impl<'a> Iterator for Rows<'a> {
-    type Item = Row<'a>;
+impl<'a, 'db> Iterator for Rows<'a, 'db> {
+    type Item = Row<'a, 'db>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.index >= self.total {
@@ -141,4 +143,4 @@ impl<'a> Iterator for Rows<'a> {
     }
 }
 
-impl ExactSizeIterator for Rows<'_> {}
+impl ExactSizeIterator for Rows<'_, '_> {}

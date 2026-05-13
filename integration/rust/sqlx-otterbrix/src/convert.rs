@@ -17,19 +17,14 @@ use sqlx_core::ext::ustr::UStr;
 use sqlx_core::HashMap;
 
 pub(crate) fn map_otterbrix_error(err: otterbrix::Error) -> Error {
+    let msg = err.to_string();
     match err {
         otterbrix::Error::Query { code, message } => {
             Error::Database(Box::new(OtterbrixDbError { code, message }))
         }
-        otterbrix::Error::NullPointer => {
-            Error::Protocol("otterbrix returned a null pointer from the native API".to_owned())
-        }
-        otterbrix::Error::InvalidPath(path) => {
-            Error::Configuration(format!("otterbrix invalid path: {path}").into())
-        }
-        otterbrix::Error::TypeMismatch { expected, got } => Error::Protocol(format!(
-            "otterbrix type mismatch: expected {expected}, got {got}"
-        )),
+        otterbrix::Error::NullPointer => Error::Protocol(msg),
+        otterbrix::Error::InvalidPath(_) => Error::Configuration(msg.into()),
+        otterbrix::Error::TypeMismatch { .. } => Error::Protocol(msg),
     }
 }
 
@@ -116,7 +111,7 @@ fn logical_to_type_info(lt: Option<LogicalType>) -> OtterbrixTypeInfo {
     }
 }
 
-pub(crate) fn materialize_cursor(cursor: &Cursor) -> Result<(Vec<OtterbrixRow>, u64), Error> {
+pub(crate) fn materialize_cursor(cursor: &Cursor<'_>) -> Result<(Vec<OtterbrixRow>, u64), Error> {
     let column_count = cursor.column_count().max(0) as usize;
     let row_count = cursor.size().max(0) as usize;
 

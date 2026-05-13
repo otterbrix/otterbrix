@@ -39,8 +39,7 @@ fn map_join_error(err: tokio::task::JoinError) -> DbErr {
     )))
 }
 
-const TX_UNSUPPORTED_LOG: &str =
-    "User transactions are not supported on Otterbrix (proxy no-op).";
+const TX_UNSUPPORTED_LOG: &str = "transactions are not supported by otterbrix (proxy no-op)";
 
 async fn run_blocking_with_cursor<F, R>(
     db: &Arc<Mutex<Database>>,
@@ -48,7 +47,7 @@ async fn run_blocking_with_cursor<F, R>(
     finish: F,
 ) -> Result<R, DbErr>
 where
-    F: FnOnce(Cursor) -> R + Send + 'static,
+    F: for<'db> FnOnce(Cursor<'db>) -> R + Send + 'static,
     R: Send + 'static,
 {
     let db = Arc::clone(db);
@@ -73,10 +72,7 @@ where
 #[async_trait]
 impl ProxyDatabaseTrait for OtterbrixProxy {
     async fn query(&self, statement: Statement) -> Result<Vec<ProxyRow>, DbErr> {
-        run_blocking_with_cursor(&self.db, statement, |cursor| {
-            cursor_to_proxy_rows(&cursor)
-        })
-        .await
+        run_blocking_with_cursor(&self.db, statement, |cursor| cursor_to_proxy_rows(&cursor)).await
     }
 
     async fn execute(&self, statement: Statement) -> Result<ProxyExecResult, DbErr> {

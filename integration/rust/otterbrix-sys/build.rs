@@ -20,10 +20,10 @@ fn main() {
         .clang_arg("-std=c++20")
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .generate()
-        .expect("Unable to generate bindings");
+        .expect("failed to generate otterbrix bindings");
 
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
     bindings
         .write_to_file(out_path.join("bindings.rs"))
-        .expect("Couldn't write bindings!");
+        .expect("failed to write otterbrix bindings");
 }

@@ -23,8 +23,7 @@ async fn open_proxy_with_two_tables() -> sea_orm::DatabaseConnection {
     db.execute("INSERT INTO app.t2 (id, label) VALUES (1, 'a'), (2, 'b');")
         .expect("seed t2");
 
-    let proxy: Arc<Box<dyn ProxyDatabaseTrait>> =
-        Arc::new(Box::new(OtterbrixProxy::new(db)));
+    let proxy: Arc<Box<dyn ProxyDatabaseTrait>> = Arc::new(Box::new(OtterbrixProxy::new(db)));
     sea_orm::Database::connect_proxy(DbBackend::Sqlite, proxy)
         .await
         .expect("connect proxy")

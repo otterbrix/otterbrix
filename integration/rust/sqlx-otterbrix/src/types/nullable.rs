@@ -11,10 +11,7 @@ impl<'q, T> Encode<'q, Otterbrix> for Option<T>
 where
     T: Encode<'q, Otterbrix> + Type<Otterbrix> + 'q,
 {
-    fn encode_by_ref(
-        &self,
-        buf: &mut OtterbrixArgumentBuffer<'q>,
-    ) -> Result<IsNull, BoxDynError> {
+    fn encode_by_ref(&self, buf: &mut OtterbrixArgumentBuffer<'q>) -> Result<IsNull, BoxDynError> {
         match self {
             None => Ok(IsNull::Yes),
             Some(v) => v.encode_by_ref(buf),

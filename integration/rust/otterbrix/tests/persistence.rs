@@ -46,16 +46,17 @@ fn data_persists_across_reopen() {
         .expect("insert");
     }
 
-    let db = Database::open(persistent_config(&dir)).expect("second open on same dir");
-    let cur = db
-        .execute("SELECT id, name FROM p.t;")
-        .expect("select after reopen");
-    assert_eq!(cur.size(), 1, "row count must persist across reopen");
-    let id: i64 = cur.get_value_by_name(0, "id").get().expect("id");
-    let name: String = cur.get_value_by_name(0, "name").get().expect("name");
-    assert_eq!(id, 1);
-    assert_eq!(name, "alice");
+    {
+        let db = Database::open(persistent_config(&dir)).expect("second open on same dir");
+        let cur = db
+            .execute("SELECT id, name FROM p.t;")
+            .expect("select after reopen");
+        assert_eq!(cur.size(), 1, "row count must persist across reopen");
+        let id: i64 = cur.get_value_by_name(0, "id").get().expect("id");
+        let name: String = cur.get_value_by_name(0, "name").get().expect("name");
+        assert_eq!(id, 1);
+        assert_eq!(name, "alice");
+    }
 
-    drop(db);
     let _ = std::fs::remove_dir_all(&dir);
 }

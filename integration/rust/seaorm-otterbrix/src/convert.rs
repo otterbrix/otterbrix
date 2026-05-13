@@ -11,19 +11,12 @@ use sea_orm::{sea_query::Value as SeaValue, DbErr, ProxyRow, RuntimeErr, Stateme
 const POSITIONAL_KEY_WIDTH: usize = 8;
 
 pub fn map_otterbrix_error(err: ObError) -> DbErr {
+    let msg = err.to_string();
     match err {
-        ObError::Query { code, message } => DbErr::Exec(RuntimeErr::Internal(format!(
-            "otterbrix[{code}]: {message}"
-        ))),
-        ObError::NullPointer => DbErr::Conn(RuntimeErr::Internal(
-            "otterbrix returned null pointer".into(),
-        )),
-        ObError::InvalidPath(path) => DbErr::Conn(RuntimeErr::Internal(format!(
-            "otterbrix invalid path: {path}"
-        ))),
-        ObError::TypeMismatch { expected, got } => DbErr::Type(format!(
-            "otterbrix type mismatch: expected {expected}, got {got}"
-        )),
+        ObError::Query { .. } => DbErr::Exec(RuntimeErr::Internal(msg)),
+        ObError::NullPointer => DbErr::Conn(RuntimeErr::Internal(msg)),
+        ObError::InvalidPath(_) => DbErr::Conn(RuntimeErr::Internal(msg)),
+        ObError::TypeMismatch { .. } => DbErr::Type(msg),
     }
 }
 
@@ -60,7 +53,7 @@ pub fn sea_value_to_param<'a>(index: i32, value: &'a SeaValue) -> Result<SqlPara
 
         other => {
             return Err(DbErr::Type(format!(
-                "unsupported sea_orm parameter type: {other:?}"
+                "otterbrix cannot encode sea_orm parameter type: {other:?}"
             )))
         }
     };
@@ -111,7 +104,7 @@ pub fn positional_proxy_column_key(index: usize) -> String {
     format!("{index:0width$}", width = POSITIONAL_KEY_WIDTH)
 }
 
-pub fn cursor_to_proxy_rows(cursor: &Cursor) -> Vec<ProxyRow> {
+pub fn cursor_to_proxy_rows(cursor: &Cursor<'_>) -> Vec<ProxyRow> {
     let column_count = cursor.column_count();
     let row_count = cursor.size();
 
@@ -285,28 +278,43 @@ mod error_mapping_tests {
 mod null_for_type_tests {
     use super::null_for_type;
     use otterbrix::{
-        LOGICAL_TYPE_BIGINT, LOGICAL_TYPE_BOOLEAN, LOGICAL_TYPE_DOUBLE, LOGICAL_TYPE_FLOAT,
-        LOGICAL_TYPE_INTEGER, LOGICAL_TYPE_SMALLINT, LOGICAL_TYPE_STRING_LITERAL,
-        LOGICAL_TYPE_TINYINT, LOGICAL_TYPE_UBIGINT, LOGICAL_TYPE_UINTEGER,
-        LOGICAL_TYPE_USMALLINT, LOGICAL_TYPE_UTINYINT,
+        LogicalType, LOGICAL_TYPE_BIGINT, LOGICAL_TYPE_BOOLEAN, LOGICAL_TYPE_DOUBLE,
+        LOGICAL_TYPE_FLOAT, LOGICAL_TYPE_INTEGER, LOGICAL_TYPE_SMALLINT,
+        LOGICAL_TYPE_STRING_LITERAL, LOGICAL_TYPE_TINYINT, LOGICAL_TYPE_UBIGINT,
+        LOGICAL_TYPE_UINTEGER, LOGICAL_TYPE_USMALLINT, LOGICAL_TYPE_UTINYINT,
     };
     use sea_orm::sea_query::Value as SeaValue;
 
     #[test]
     fn maps_known_logical_types_to_matching_null_variants() {
-        let cases: &[(_, fn(&SeaValue) -> bool)] = &[
+        type NullCase = (LogicalType, fn(&SeaValue) -> bool);
+        let cases: &[NullCase] = &[
             (LOGICAL_TYPE_BOOLEAN, |v| matches!(v, SeaValue::Bool(None))),
-            (LOGICAL_TYPE_TINYINT, |v| matches!(v, SeaValue::TinyInt(None))),
-            (LOGICAL_TYPE_SMALLINT, |v| matches!(v, SeaValue::SmallInt(None))),
+            (LOGICAL_TYPE_TINYINT, |v| {
+                matches!(v, SeaValue::TinyInt(None))
+            }),
+            (LOGICAL_TYPE_SMALLINT, |v| {
+                matches!(v, SeaValue::SmallInt(None))
+            }),
             (LOGICAL_TYPE_INTEGER, |v| matches!(v, SeaValue::Int(None))),
             (LOGICAL_TYPE_BIGINT, |v| matches!(v, SeaValue::BigInt(None))),
-            (LOGICAL_TYPE_UTINYINT, |v| matches!(v, SeaValue::TinyUnsigned(None))),
-            (LOGICAL_TYPE_USMALLINT, |v| matches!(v, SeaValue::SmallUnsigned(None))),
-            (LOGICAL_TYPE_UINTEGER, |v| matches!(v, SeaValue::Unsigned(None))),
-            (LOGICAL_TYPE_UBIGINT, |v| matches!(v, SeaValue::BigUnsigned(None))),
+            (LOGICAL_TYPE_UTINYINT, |v| {
+                matches!(v, SeaValue::TinyUnsigned(None))
+            }),
+            (LOGICAL_TYPE_USMALLINT, |v| {
+                matches!(v, SeaValue::SmallUnsigned(None))
+            }),
+            (LOGICAL_TYPE_UINTEGER, |v| {
+                matches!(v, SeaValue::Unsigned(None))
+            }),
+            (LOGICAL_TYPE_UBIGINT, |v| {
+                matches!(v, SeaValue::BigUnsigned(None))
+            }),
             (LOGICAL_TYPE_FLOAT, |v| matches!(v, SeaValue::Float(None))),
             (LOGICAL_TYPE_DOUBLE, |v| matches!(v, SeaValue::Double(None))),
-            (LOGICAL_TYPE_STRING_LITERAL, |v| matches!(v, SeaValue::String(None))),
+            (LOGICAL_TYPE_STRING_LITERAL, |v| {
+                matches!(v, SeaValue::String(None))
+            }),
         ];
         for (lt, predicate) in cases {
             let v = null_for_type(Some(*lt));
@@ -331,11 +339,12 @@ mod sea_value_to_param_tests {
     use otterbrix::SqlParamValue;
     use sea_orm::{sea_query::Value as SeaValue, DbErr};
 
-    fn extract(value: SeaValue) -> SqlParamValue<'static> {
-        let owned: &'static SeaValue = Box::leak(Box::new(value));
-        sea_value_to_param(1, owned)
-            .expect("param conversion succeeds")
-            .value
+    fn check<F>(value: SeaValue, f: F)
+    where
+        F: FnOnce(&SqlParamValue<'_>),
+    {
+        let param = sea_value_to_param(1, &value).expect("param conversion succeeds");
+        f(&param.value);
     }
 
     #[test]
@@ -355,51 +364,48 @@ mod sea_value_to_param_tests {
             SeaValue::String(None),
         ];
         for v in nulls {
-            assert!(
-                matches!(extract(v.clone()), SqlParamValue::Null),
-                "expected SqlParamValue::Null for {v:?}"
-            );
+            let label = format!("{v:?}");
+            check(v, |p| {
+                assert!(
+                    matches!(p, SqlParamValue::Null),
+                    "expected SqlParamValue::Null for {label}"
+                )
+            });
         }
     }
 
     #[test]
     fn signed_integers_widen_to_int64() {
-        assert!(matches!(
-            extract(SeaValue::TinyInt(Some(-5))),
-            SqlParamValue::Int64(-5)
-        ));
-        assert!(matches!(
-            extract(SeaValue::SmallInt(Some(-1234))),
-            SqlParamValue::Int64(-1234)
-        ));
-        assert!(matches!(
-            extract(SeaValue::Int(Some(-99))),
-            SqlParamValue::Int64(-99)
-        ));
-        assert!(matches!(
-            extract(SeaValue::BigInt(Some(i64::MIN))),
-            SqlParamValue::Int64(i64::MIN)
-        ));
+        check(SeaValue::TinyInt(Some(-5)), |p| {
+            assert!(matches!(p, SqlParamValue::Int64(-5)))
+        });
+        check(SeaValue::SmallInt(Some(-1234)), |p| {
+            assert!(matches!(p, SqlParamValue::Int64(-1234)))
+        });
+        check(SeaValue::Int(Some(-99)), |p| {
+            assert!(matches!(p, SqlParamValue::Int64(-99)))
+        });
+        check(SeaValue::BigInt(Some(i64::MIN)), |p| {
+            assert!(matches!(p, SqlParamValue::Int64(v) if *v == i64::MIN))
+        });
     }
 
     #[test]
     fn unsigned_integers_widen_to_uint64() {
-        assert!(matches!(
-            extract(SeaValue::TinyUnsigned(Some(7))),
-            SqlParamValue::UInt64(7)
-        ));
-        assert!(matches!(
-            extract(SeaValue::BigUnsigned(Some(u64::MAX))),
-            SqlParamValue::UInt64(u64::MAX)
-        ));
+        check(SeaValue::TinyUnsigned(Some(7)), |p| {
+            assert!(matches!(p, SqlParamValue::UInt64(7)))
+        });
+        check(SeaValue::BigUnsigned(Some(u64::MAX)), |p| {
+            assert!(matches!(p, SqlParamValue::UInt64(v) if *v == u64::MAX))
+        });
     }
 
     #[test]
     fn float_widens_to_double() {
-        match extract(SeaValue::Float(Some(1.5))) {
+        check(SeaValue::Float(Some(1.5)), |p| match p {
             SqlParamValue::Double(v) => assert!((v - 1.5).abs() < 1e-6),
             other => panic!("expected Double, got {other:?}"),
-        }
+        });
     }
 
     #[test]

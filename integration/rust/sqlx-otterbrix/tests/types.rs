@@ -55,17 +55,15 @@ async fn round_trip_narrow_signed_integers() -> Result<(), sqlx::Error> {
         .execute(&mut t.conn)
         .await?;
 
-    sqlx::query::<Otterbrix>(
-        "INSERT INTO app.narrow (k, v) VALUES (?, ?), (?, ?), (?, ?);",
-    )
-    .bind(1_i64)
-    .bind(127_i8)
-    .bind(2_i64)
-    .bind(32767_i16)
-    .bind(3_i64)
-    .bind(-2147483648_i32)
-    .execute(&mut t.conn)
-    .await?;
+    sqlx::query::<Otterbrix>("INSERT INTO app.narrow (k, v) VALUES (?, ?), (?, ?), (?, ?);")
+        .bind(1_i64)
+        .bind(127_i8)
+        .bind(2_i64)
+        .bind(32767_i16)
+        .bind(3_i64)
+        .bind(-2147483648_i32)
+        .execute(&mut t.conn)
+        .await?;
 
     let row = sqlx::query::<Otterbrix>("SELECT v FROM app.narrow WHERE k = ?")
         .bind(1_i64)

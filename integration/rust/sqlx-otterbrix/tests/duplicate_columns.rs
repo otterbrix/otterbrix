@@ -40,7 +40,10 @@ async fn join_with_duplicate_id_uses_positional_keys() -> Result<(), sqlx::Error
     assert_ne!(r0_a, r1_a);
 
     let by_name = rows[0].try_get::<i64, _>("id");
-    assert!(by_name.is_err(), "duplicate name 'id' must not be resolvable");
+    assert!(
+        by_name.is_err(),
+        "duplicate name 'id' must not be resolvable"
+    );
 
     Ok(())
 }

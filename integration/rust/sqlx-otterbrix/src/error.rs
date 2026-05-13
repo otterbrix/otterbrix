@@ -14,7 +14,7 @@ impl Display for OtterbrixDbError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "otterbrix[{code}]: {msg}",
+            "otterbrix core query error (code {code}): {msg}",
             code = self.code,
             msg = self.message
         )

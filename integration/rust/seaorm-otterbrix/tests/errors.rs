@@ -6,13 +6,12 @@ use sea_orm::{sea_query::Value as SeaValue, ConnectionTrait, DbBackend, DbErr, S
 async fn null_bigint_parameter_is_not_rejected_by_adapter() {
     let conn = common::open_test_proxy().await;
 
-    conn
-        .execute(Statement::from_string(
-            DbBackend::Postgres,
-            "CREATE TABLE app.nullbind (name string, value bigint);".to_string(),
-        ))
-        .await
-        .expect("create table");
+    conn.execute(Statement::from_string(
+        DbBackend::Postgres,
+        "CREATE TABLE app.nullbind (name string, value bigint);".to_string(),
+    ))
+    .await
+    .expect("create table");
 
     let stmt = Statement::from_sql_and_values(
         DbBackend::Postgres,

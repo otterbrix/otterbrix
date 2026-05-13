@@ -11,7 +11,10 @@ async fn begin_returns_protocol_error_with_explanatory_message() {
 
     let err = t.conn.begin().await.unwrap_err();
     let msg = format!("{err}");
-    assert!(msg.contains("transactions are not supported"), "msg = {msg}");
+    assert!(
+        msg.contains("transactions are not supported"),
+        "msg = {msg}"
+    );
 }
 
 #[tokio::test]
@@ -37,8 +40,8 @@ async fn shrink_buffers_does_not_panic() {
 }
 
 #[tokio::test]
-async fn execute_invalid_dml_returns_database_error_then_connection_remains_usable()
--> Result<(), sqlx::Error> {
+async fn execute_invalid_dml_returns_database_error_then_connection_remains_usable(
+) -> Result<(), sqlx::Error> {
     let mut t = open_test_conn().await;
     create_app_db(&mut t.conn).await;
     sqlx::query::<Otterbrix>("CREATE TABLE app.k (k bigint);")

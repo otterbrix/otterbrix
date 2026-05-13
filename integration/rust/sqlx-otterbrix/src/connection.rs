@@ -43,7 +43,7 @@ impl Connection for OtterbrixConnection {
     fn begin(&mut self) -> BoxFuture<'_, Result<Transaction<'_, Otterbrix>, Error>> {
         Box::pin(async move {
             Err(Error::protocol(
-                "transactions are not supported by the Otterbrix driver",
+                "transactions are not supported by otterbrix",
             ))
         })
     }

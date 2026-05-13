@@ -7,6 +7,13 @@ use sea_orm::{ConnectionTrait, DbBackend, FromQueryResult, Statement};
 async fn concurrent_inserts_through_cloned_connection() {
     let conn = common::open_test_proxy().await;
 
+    conn.execute(Statement::from_string(
+        DbBackend::Postgres,
+        "INSERT INTO app.t (id, name) VALUES (-1, 'seed');".to_string(),
+    ))
+    .await
+    .expect("seed");
+
     const TASKS: i64 = 4;
     const PER_TASK: i64 = 50;
 
@@ -32,12 +39,9 @@ async fn concurrent_inserts_through_cloned_connection() {
         h.await.expect("task");
     }
 
-    let stmt = Statement::from_string(
-        DbBackend::Postgres,
-        "SELECT id FROM app.t;".to_string(),
-    );
+    let stmt = Statement::from_string(DbBackend::Postgres, "SELECT id FROM app.t;".to_string());
     let rows = conn.query_all(stmt).await.expect("select all");
-    assert_eq!(rows.len() as i64, TASKS * PER_TASK);
+    assert_eq!(rows.len() as i64, TASKS * PER_TASK + 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -86,6 +90,13 @@ async fn concurrent_reads_through_cloned_connection() {
 async fn mixed_writes_and_reads_through_cloned_connection() {
     let conn = common::open_test_proxy().await;
 
+    conn.execute(Statement::from_string(
+        DbBackend::Postgres,
+        "INSERT INTO app.t (id, name) VALUES (0, 'seed');".to_string(),
+    ))
+    .await
+    .expect("seed");
+
     const WRITERS: i64 = 2;
     const READERS: i64 = 2;
     const PER_WRITER: i64 = 50;
@@ -125,10 +136,7 @@ async fn mixed_writes_and_reads_through_cloned_connection() {
         h.await.expect("task");
     }
 
-    let stmt = Statement::from_string(
-        DbBackend::Postgres,
-        "SELECT id FROM app.t;".to_string(),
-    );
+    let stmt = Statement::from_string(DbBackend::Postgres, "SELECT id FROM app.t;".to_string());
     let rows = conn.query_all(stmt).await.expect("select all");
-    assert_eq!(rows.len() as i64, WRITERS * PER_WRITER);
+    assert_eq!(rows.len() as i64, WRITERS * PER_WRITER + 1);
 }

@@ -45,7 +45,10 @@ async fn decoding_string_into_i64_yields_column_decode_error() -> Result<(), sql
         .await?;
     let res: Result<i64, _> = row.try_get("v");
     let err = res.expect_err("must fail");
-    assert!(matches!(err, sqlx::Error::ColumnDecode { .. }), "got {err:?}");
+    assert!(
+        matches!(err, sqlx::Error::ColumnDecode { .. }),
+        "got {err:?}"
+    );
     Ok(())
 }
 
@@ -66,6 +69,9 @@ async fn decoding_null_into_non_optional_yields_column_decode_error() -> Result<
         .await?;
     let res: Result<i64, _> = row.try_get("v");
     let err = res.expect_err("must fail");
-    assert!(matches!(err, sqlx::Error::ColumnDecode { .. }), "got {err:?}");
+    assert!(
+        matches!(err, sqlx::Error::ColumnDecode { .. }),
+        "got {err:?}"
+    );
     Ok(())
 }

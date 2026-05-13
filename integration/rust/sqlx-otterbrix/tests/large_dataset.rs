@@ -27,7 +27,9 @@ async fn bulk_insert_and_full_select() -> Result<(), sqlx::Error> {
             sql.push_str(&format!("({i}, {})", i * 4));
         }
         sql.push(';');
-        let result = sqlx::query::<Otterbrix>(&sql).execute(&mut test.conn).await?;
+        let result = sqlx::query::<Otterbrix>(&sql)
+            .execute(&mut test.conn)
+            .await?;
         assert_eq!(result.rows_affected(), (end - k) as u64);
         k = end;
     }

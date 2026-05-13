@@ -170,8 +170,7 @@ fn missing_param_is_error() {
             "INSERT INTO db.t (id, name) VALUES ($1, $2);",
             &[p(1, SqlParamValue::Int64(1))],
         )
-        .err()
-        .expect("missing $2 must return error");
+        .expect_err("missing $2 must return error");
     let msg = format!("{err}");
     assert!(
         msg.to_lowercase().contains("not all"),
@@ -190,8 +189,7 @@ fn unknown_param_index_is_error() {
             "INSERT INTO db.t (id) VALUES ($1);",
             &[p(99, SqlParamValue::Int64(1))],
         )
-        .err()
-        .expect("binding non-existing $99 must return error");
+        .expect_err("binding non-existing $99 must return error");
     let msg = format!("{err}");
     assert!(!msg.is_empty());
 }
@@ -207,8 +205,7 @@ fn zero_param_index_is_error() {
             "INSERT INTO db.t (id) VALUES ($1);",
             &[p(0, SqlParamValue::Int64(1))],
         )
-        .err()
-        .expect("zero index must be rejected");
+        .expect_err("zero index must be rejected");
     let msg = format!("{err}");
     assert!(msg.contains(">= 1"), "unexpected error message: {msg}");
 }

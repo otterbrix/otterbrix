@@ -34,7 +34,11 @@ async fn independent_connections_in_parallel_tasks() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn shared_connection_through_arc_mutex() {
-    let test = setup_with_table().await;
+    let mut test = setup_with_table().await;
+    sqlx::query::<Otterbrix>("INSERT INTO app.t (k, v) VALUES (-1, -1);")
+        .execute(&mut test.conn)
+        .await
+        .expect("seed");
     let _dir = test._dir;
     let conn = Arc::new(Mutex::new(test.conn));
 
@@ -66,7 +70,7 @@ async fn shared_connection_through_arc_mutex() {
         .fetch_all(&mut *guard)
         .await
         .expect("select");
-    assert_eq!(rows.len() as i64, TASKS * PER_TASK);
+    assert_eq!(rows.len() as i64, TASKS * PER_TASK + 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

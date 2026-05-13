@@ -2,7 +2,7 @@ mod common;
 
 use otterbrix::{SqlParam, SqlParamValue};
 
-fn p<'a>(index: i32, value: SqlParamValue<'a>) -> SqlParam<'a> {
+fn p(index: i32, value: SqlParamValue<'_>) -> SqlParam<'_> {
     SqlParam { index, value }
 }
 

@@ -44,8 +44,8 @@ macro_rules! impl_int_encode {
     };
 }
 
-fn decode_int_like<'r, T: TryFrom<i64> + TryFrom<u64>>(
-    value: OtterbrixValueRef<'r>,
+fn decode_int_like<T: TryFrom<i64> + TryFrom<u64>>(
+    value: OtterbrixValueRef<'_>,
 ) -> Result<T, BoxDynError> {
     match value.as_ob() {
         ObValue::Int(i) => T::try_from(*i).map_err(|_| int_conv_err()),
@@ -102,8 +102,8 @@ macro_rules! impl_uint_encode {
     };
 }
 
-fn decode_uint_like<'r, T: TryFrom<u64> + TryFrom<i64>>(
-    value: OtterbrixValueRef<'r>,
+fn decode_uint_like<T: TryFrom<u64> + TryFrom<i64>>(
+    value: OtterbrixValueRef<'_>,
 ) -> Result<T, BoxDynError> {
     match value.as_ob() {
         ObValue::UInt(u) => T::try_from(*u).map_err(|_| int_conv_err()),

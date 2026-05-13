@@ -42,10 +42,7 @@ pub(crate) fn map_otterbrix_error(err: ObError) -> DbErr {
 /// Numeric subtypes are widened to `Int64`/`UInt64`/`Double`. Returns
 /// `DbErr::Type` for SeaORM variants that have no representation in
 /// Otterbrix (e.g. `Bytes`, `Json`).
-pub(crate) fn sea_value_to_param<'a>(
-    index: i32,
-    value: &'a SeaValue,
-) -> Result<SqlParam<'a>, DbErr> {
+pub(crate) fn sea_value_to_param(index: i32, value: &SeaValue) -> Result<SqlParam<'_>, DbErr> {
     let v = match value {
         SeaValue::Bool(Some(b)) => SqlParamValue::Bool(*b),
 
@@ -88,7 +85,7 @@ pub(crate) fn sea_value_to_param<'a>(
 
 /// Converts SeaORM positional [`Values`] into a vector of Otterbrix
 /// [`SqlParam`]s, assigning 1-based indices.
-pub(crate) fn statement_params<'a>(values: &'a Values) -> Result<Vec<SqlParam<'a>>, DbErr> {
+pub(crate) fn statement_params(values: &Values) -> Result<Vec<SqlParam<'_>>, DbErr> {
     values
         .0
         .iter()

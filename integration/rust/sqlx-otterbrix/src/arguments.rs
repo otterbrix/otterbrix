@@ -36,7 +36,7 @@ pub enum OtterbrixArgumentValue<'q> {
     Str(Cow<'q, str>),
 }
 
-impl<'q> OtterbrixArgumentValue<'q> {
+impl OtterbrixArgumentValue<'_> {
     pub(crate) fn into_static(self) -> OtterbrixArgumentValue<'static> {
         match self {
             OtterbrixArgumentValue::Null => OtterbrixArgumentValue::Null,
@@ -62,7 +62,7 @@ pub struct OtterbrixArguments<'q> {
     pub(crate) values: Vec<OtterbrixArgumentValue<'q>>,
 }
 
-impl<'q> OtterbrixArguments<'q> {
+impl OtterbrixArguments<'_> {
     pub(crate) fn into_static(self) -> OtterbrixArguments<'static> {
         OtterbrixArguments {
             values: self.values.into_iter().map(|v| v.into_static()).collect(),

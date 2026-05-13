@@ -161,7 +161,7 @@ pub struct Row<'a, 'db> {
     index: i32,
 }
 
-impl<'a, 'db> Row<'a, 'db> {
+impl Row<'_, '_> {
     /// Zero-based index of this row within the cursor.
     pub fn index(&self) -> i32 {
         self.index

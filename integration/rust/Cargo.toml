@@ -6,3 +6,6 @@ members = [
     "sqlx-otterbrix",
 ]
 resolver = "2"
+
+[workspace.package]
+rust-version = "1.86"

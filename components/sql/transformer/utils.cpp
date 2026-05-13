@@ -645,7 +645,16 @@ namespace components::sql::transform {
     // inert; a downstream patch can flip the default after dispatcher routing
     // learns to peer through the wrapper.
     namespace {
-        std::atomic<bool> g_emit_catalog_resolve_enabled{false};
+        // M2b (2026-05-13): flipped to true. Combined with M1 (Pass 1
+        // PRE-validate in dispatcher) and the existing
+        // enrich_resolve_idx_t plumbing in enrich_logical_plan.cpp, the
+        // catalog_resolve_*_t wrap now flows end-to-end:
+        //   parser → transformer emits sequence_t(resolve_*, consumer)
+        //   → Pass 1 stamps OIDs on resolve nodes
+        //   → validate/enrich probe stamped OIDs via plan_resolve_index_t
+        //     / enrich_resolve_idx_t (fallback to view.get_* still
+        //     present for safety, removed in M3/M5).
+        std::atomic<bool> g_emit_catalog_resolve_enabled{true};
     } // namespace
 
     bool transformer_emit_catalog_resolve_enabled() noexcept {

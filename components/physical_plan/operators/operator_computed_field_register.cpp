@@ -174,7 +174,14 @@ namespace components::operators {
             }
             const catalog::oid_t attoid = oid_batch[0];
 
-            const std::int64_t new_version = is_new ? std::int64_t{0} : (max_version + 1);
+            // Always bump above the existing max — version=0 only when no prior
+            // rows exist. Re-register after a tombstone (is_new=true via
+            // latest_refcount<=0 branch) MUST write a version higher than the
+            // tombstone, otherwise readers picking max(attversion) per attname
+            // pick the tombstone (rc<=0) instead of the new live row, and the
+            // column appears dropped even though it was re-inserted.
+            // dynamic_schema_re_add_after_drop pins this.
+            const std::int64_t new_version = (max_version < 0) ? std::int64_t{0} : (max_version + 1);
 
             auto cc_row = catalog::build_pg_computed_column_row(
                 resource_,

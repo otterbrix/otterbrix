@@ -50,10 +50,12 @@ namespace components::operators {
         // Phase 9.B: routing by attoid (pre-stamped by enrich_logical_plan).
         // INVALID_OID means the resolver couldn't find a live computed column —
         // treat as idempotent no-op (matches the prior attname-scan miss).
-        if (attoid_ == catalog::INVALID_OID) {
-            mark_executed();
-            co_return;
-        }
+        // Group 1: planner creates this operator directly from ALTER's
+        // sub-clause without an enrich pass (planner.cpp:585-598), so
+        // attoid_ is INVALID by default. Fall through to the
+        // pg_computed_column scan below and match by attname instead of
+        // attoid (the pre-existing attoid path remains a fast path for
+        // callers that do stamp it).
 
         // Step 1: scan pg_computed_column rows for this relid (table is small
         // per-table, perf OK), filter by attoid in-callback. Cannot read by
@@ -79,7 +81,14 @@ namespace components::operators {
             if (row.size() < 7) continue;
             if (row[1].is_null() || row[5].is_null() || row[6].is_null()) continue;
             const auto row_attoid = static_cast<catalog::oid_t>(row[1].value<std::uint32_t>());
-            if (row_attoid != attoid_) continue;
+            // Match by attoid when enrich stamped it; otherwise fall back to
+            // matching by attname (column_name_).
+            if (attoid_ != catalog::INVALID_OID) {
+                if (row_attoid != attoid_) continue;
+            } else {
+                if (row[2].is_null()) continue;
+                if (row[2].value<std::string_view>() != column_name_) continue;
+            }
             const auto v  = row[5].value<std::int64_t>();
             const auto rc = row[6].value<std::int64_t>();
             if (rc <= 0) continue;

@@ -105,6 +105,44 @@ Three unknowns to verify with lldb + fprintf(stderr) traces:
 
 ## Group 1 — `dynamic_schema_drop_column` family
 
+> **Status (2026-05-13)**: attempted transfer_scan inline filter via
+> `read_rows_by_key`. lldb-probe revealed deeper MVCC issue:
+>
+> ```
+> [TS] table_oid=16385 col_count=3        (storage has a, b, c physically)
+> [TS] relkind='g' pc_rows=1              (pg_class scan ok)
+> [TS] cc_rows=3                          (pg_computed_column has 3 rows)
+> [TS] latest.size=3 live_names.size=3
+> [TS]   a ver=0 rc=1
+> [TS]   b ver=0 rc=1                     (LIVE! tombstone NOT visible)
+> [TS]   c ver=0 rc=1
+> ```
+>
+> After `ALTER DROP COLUMN b`, `operator_computed_field_unregister_t`
+> writes a tombstone row (ver=max+1, rc=0) via `append_pg_catalog_row`
+> → `ctx->pg_catalog_appends` → dispatcher's `storage_commit_appends`.
+> The tombstone IS persisted, but `manager_disk_t::read_rows_by_key`
+> on `pg_computed_column` filtered by `relid==table_oid` from a
+> fresh SELECT txn sees only the 3 original ver=0 rows, NOT the
+> ver=1 tombstone.
+>
+> **Two possibilities** (lldb-probe required to pinpoint):
+> 1. Tombstone's `commit_id` is higher than SELECT's `start_time` —
+>    SELECT can't see it (MVCC isolation).
+> 2. `storage_commit_appends` for ALTER's tombstone didn't fire
+>    or didn't update the row's MVCC tag correctly.
+>
+> Implication: Path B (in-operator filter via pg_computed_column scan)
+> can't see the tombstone either. The fix must either:
+> - Use `manager_disk_t::resolve_table`-style sync `inline_scan`
+>   (sees ALL physical rows, not MVCC-filtered).
+> - OR fix the underlying MVCC visibility of pg_computed_column
+>   tombstones from subsequent txns.
+>
+> This is beyond Group 1's documented scope. Defer to follow-up
+> session with focused MVCC investigation.
+
+
 ### Current state
 
 - After `ALTER TABLE … DROP COLUMN b`, `transform_select.cpp:204-207`

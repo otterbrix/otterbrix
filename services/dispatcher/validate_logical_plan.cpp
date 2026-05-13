@@ -1,6 +1,7 @@
 #include "validate_logical_plan.hpp"
 
 #include "catalog_view.hpp"
+#include "plan_resolve_index.hpp"
 #include "expressions/function_expression.hpp"
 #include "expressions/update_expression.hpp"
 #include "logical_plan/node_create_index.hpp"
@@ -69,203 +70,15 @@ namespace services::dispatcher {
     using namespace components::catalog;
 
     namespace impl {
-        // Phase 13 T16: metadata-aware path for catalog lookups.
-        // ---------------------------------------------------------------------
-        // When the transformer emits node_catalog_resolve_* leaf nodes (gated
-        // by toggle g_emit_catalog_resolve_enabled, OFF by default in T16),
-        // those nodes carry the OID(s) stamped by enrich_logical_plan. We
-        // collect them into an index keyed by name and probe it before falling
-        // back to the catalog_view_t actor-send path.
+        // Phase 13 T16 / M2a (2026-05-13): plan_resolve_index_t + helpers
+        // moved to services/dispatcher/plan_resolve_index.hpp so
+        // enrich_logical_plan.cpp can use the same probe-then-fallback
+        // pattern. The struct/RAII/walker definitions below are now in
+        // the header — the local declarations were removed.
         //
-        // T16 only wires the namespace_oid lookup (the dominant fallback site
-        // inside validate_types_sync / validate_schema_sync). Type / function
-        // OID lookups are placeholders for T17+; we collect them so they are
-        // observable in the to_string dump and so the counters reveal that
-        // gating is wired end-to-end.
-        //
-        // T20 removes the view fallback once all DML paths emit resolves.
-        struct plan_resolve_index_t {
-            // Namespace name -> ns_oid (from node_catalog_resolve_namespace_t
-            // AND from node_catalog_resolve_table_t::namespace_oid()).
-            std::unordered_map<std::string, components::catalog::oid_t> ns_by_dbname;
-            // "dbname|relname" -> namespace_oid (from resolve_table nodes).
-            // The table_oid itself is not carried on resolve_table — only the
-            // namespace it belongs to — so we use this to short-circuit
-            // ns_oid_for(view, table_id) without the try_get_namespace probe.
-            std::unordered_map<std::string, components::catalog::oid_t> tbl_ns_by_qname;
-            // "dbname|typename" -> type_oid (from resolve_type nodes).
-            // Reserved for T17; today the validate path uses try_get_type by
-            // (ns_oid, name) and these would short-circuit the name probe.
-            std::unordered_map<std::string, components::catalog::oid_t> type_oid_by_qname;
-            // "dbname|fnname" -> fn_oid (from resolve_function nodes).
-            // Reserved for T17.
-            std::unordered_map<std::string, components::catalog::oid_t> fn_oid_by_qname;
-
-            bool empty() const noexcept {
-                return ns_by_dbname.empty() && tbl_ns_by_qname.empty() &&
-                       type_oid_by_qname.empty() && fn_oid_by_qname.empty();
-            }
-        };
-
-        // Telemetry: count how often the plan-tree probe beats / falls through
-        // to the catalog_view fallback. Visible to T20 to gate the deletion
-        // of catalog_view methods (a non-zero miss after the toggle is ON
-        // means a transformer site still hasn't been migrated). atomic so
-        // concurrent validates do not race; relaxed because the values are
-        // observability-only and never consumed by control flow.
-        inline std::atomic<std::size_t>& plan_resolve_ns_hit_counter() {
-            static std::atomic<std::size_t> v{0};
-            return v;
-        }
-        inline std::atomic<std::size_t>& plan_resolve_ns_miss_counter() {
-            static std::atomic<std::size_t> v{0};
-            return v;
-        }
-
-        // File-private active-index pointer. Set via scoped_plan_resolve_index_t
-        // at the top of validate_types_sync / validate_schema_sync; queried by
-        // ns_oid_for and check_*_exists. nullptr means "no T16 path active —
-        // use catalog_view fallback only".
-        inline const plan_resolve_index_t*& active_plan_resolve_index() {
-            thread_local const plan_resolve_index_t* p = nullptr;
-            return p;
-        }
-
-        // RAII setter. Stacks (saves the prior value on entry, restores it on
-        // exit) so nested validates from tests or future composite plans see
-        // the inner index without leaking it past the inner call.
-        struct scoped_plan_resolve_index_t {
-            scoped_plan_resolve_index_t(const plan_resolve_index_t* idx) noexcept
-                : prev_(active_plan_resolve_index()) {
-                active_plan_resolve_index() = idx;
-            }
-            ~scoped_plan_resolve_index_t() noexcept {
-                active_plan_resolve_index() = prev_;
-            }
-            scoped_plan_resolve_index_t(const scoped_plan_resolve_index_t&) = delete;
-            scoped_plan_resolve_index_t& operator=(const scoped_plan_resolve_index_t&) = delete;
-        private:
-            const plan_resolve_index_t* prev_;
-        };
-
-        // Walk plan tree once; collect every node_catalog_resolve_* leaf and
-        // populate the index. Resolve-leaves whose oid is still INVALID_OID
-        // (enrich_logical_plan did not stamp them — name did not resolve) are
-        // skipped — we only emit hits for genuinely-resolved entries so the
-        // caller's `if (oid != INVALID_OID)` test stays a single check.
-        inline void gather_plan_resolve_index(components::logical_plan::node_t* root,
-                                              plan_resolve_index_t& out) {
-            using namespace components::logical_plan;
-            if (!root) return;
-            std::queue<node_t*> q;
-            q.push(root);
-            while (!q.empty()) {
-                auto* n = q.front();
-                q.pop();
-                switch (n->type()) {
-                    case node_type::catalog_resolve_namespace_t: {
-                        auto* rn = static_cast<node_catalog_resolve_namespace_t*>(n);
-                        if (rn->namespace_oid() != components::catalog::INVALID_OID) {
-                            out.ns_by_dbname[rn->dbname()] = rn->namespace_oid();
-                        }
-                        break;
-                    }
-                    case node_type::catalog_resolve_table_t: {
-                        auto* rt = static_cast<node_catalog_resolve_table_t*>(n);
-                        if (rt->namespace_oid() != components::catalog::INVALID_OID) {
-                            // Stamp the dbname mapping too — saves a separate
-                            // resolve_namespace_t lookup at the same site.
-                            out.ns_by_dbname[rt->dbname()] = rt->namespace_oid();
-                            std::string key;
-                            key.reserve(rt->dbname().size() + 1 + rt->relname().size());
-                            key.append(rt->dbname()).push_back('|');
-                            key.append(rt->relname());
-                            out.tbl_ns_by_qname[std::move(key)] = rt->namespace_oid();
-                        }
-                        break;
-                    }
-                    case node_type::catalog_resolve_type_t: {
-                        auto* tr = static_cast<node_catalog_resolve_type_t*>(n);
-                        if (tr->type_oid() != components::catalog::INVALID_OID) {
-                            std::string key;
-                            key.reserve(tr->dbname().size() + 1 + tr->type_name().size());
-                            key.append(tr->dbname()).push_back('|');
-                            key.append(tr->type_name());
-                            out.type_oid_by_qname[std::move(key)] = tr->type_oid();
-                        }
-                        break;
-                    }
-                    case node_type::catalog_resolve_function_t: {
-                        auto* fr = static_cast<node_catalog_resolve_function_t*>(n);
-                        if (fr->function_oid() != components::catalog::INVALID_OID) {
-                            std::string key;
-                            key.reserve(fr->dbname().size() + 1 + fr->function_name().size());
-                            key.append(fr->dbname()).push_back('|');
-                            key.append(fr->function_name());
-                            out.fn_oid_by_qname[std::move(key)] = fr->function_oid();
-                        }
-                        break;
-                    }
-                    default:
-                        break;
-                }
-                for (const auto& c : n->children()) {
-                    if (c) q.push(c.get());
-                }
-            }
-        }
-
-        // V4 helpers. ns_oid_for resolves the namespace_oid for a table_id by looking up
-        // the cached resolved_namespace_t. Returns INVALID_OID if not in cache.
-        //
-        // T16: probe active_plan_resolve_index() first; on miss fall back to
-        // view.try_get_namespace. The counter bump is a free no-op when the
-        // index is empty (active_plan_resolve_index() == nullptr); but once
-        // the transformer toggle is flipped (T17+) it reveals the residual
-        // sites that still need migrating before T20 deletion.
-        inline components::catalog::oid_t ns_oid_for(const services::dispatcher::catalog_view_t& view,
-                                                      const components::catalog::table_id& id) {
-            auto& ns = id.get_namespace();
-            if (ns.empty()) return components::catalog::INVALID_OID;
-            if (auto* idx = active_plan_resolve_index(); idx) {
-                // Probe by (dbname, relname) first — most specific entry —
-                // then by dbname alone. Both maps key std::string; id.get_namespace()
-                // is std::pmr::vector<std::pmr::string>, so build std::string copies.
-                std::string ns_key(ns.front().data(), ns.front().size());
-                std::string qkey;
-                qkey.reserve(ns_key.size() + 1 + id.table_name().size());
-                qkey.append(ns_key).push_back('|');
-                qkey.append(id.table_name().data(), id.table_name().size());
-                if (auto it = idx->tbl_ns_by_qname.find(qkey); it != idx->tbl_ns_by_qname.end()) {
-                    plan_resolve_ns_hit_counter().fetch_add(1, std::memory_order_relaxed);
-                    return it->second;
-                }
-                if (auto it = idx->ns_by_dbname.find(ns_key); it != idx->ns_by_dbname.end()) {
-                    plan_resolve_ns_hit_counter().fetch_add(1, std::memory_order_relaxed);
-                    return it->second;
-                }
-                plan_resolve_ns_miss_counter().fetch_add(1, std::memory_order_relaxed);
-            }
-            auto* n = view.try_get_namespace(std::string_view(ns.front()));
-            return n ? n->oid : components::catalog::INVALID_OID;
-        }
-
-        // Variant for sites that have only a dbname (no relname yet) — used by
-        // check_namespace_exists. Same probe-then-fallback shape as ns_oid_for.
-        inline components::catalog::oid_t ns_oid_for_dbname(const services::dispatcher::catalog_view_t& view,
-                                                             std::string_view dbname) {
-            if (dbname.empty()) return components::catalog::INVALID_OID;
-            if (auto* idx = active_plan_resolve_index(); idx) {
-                if (auto it = idx->ns_by_dbname.find(std::string(dbname));
-                    it != idx->ns_by_dbname.end()) {
-                    plan_resolve_ns_hit_counter().fetch_add(1, std::memory_order_relaxed);
-                    return it->second;
-                }
-                plan_resolve_ns_miss_counter().fetch_add(1, std::memory_order_relaxed);
-            }
-            auto* n = view.try_get_namespace(dbname);
-            return n ? n->oid : components::catalog::INVALID_OID;
-        }
+        // Telemetry counter API and ns_oid_for / ns_oid_for_dbname remain
+        // identical to the original local definitions; the header is
+        // header-only inline so there is no link surprise.
 
         // V4 function lookup helper. Returns (uid, signature) for the matching overload, or
         // {invalid_function_uid, {{}, {}}} if no match found. name_exists set if any function

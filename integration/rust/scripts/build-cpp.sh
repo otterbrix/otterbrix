@@ -33,7 +33,10 @@ cmake .. -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE="./$BUILD_TYPE/generators/conan_toolchain.cmake" \
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
     -DDEV_MODE=ON
-cmake --build . -- -j "$JOBS"
+# Only the C facade (libotterbrix.so) is needed by the Rust crates; building
+# every C++ test target is wasteful and pulls in upstream tests that may not
+# compile cleanly on every host toolchain.
+cmake --build . --target c_otterbrix -- -j "$JOBS"
 
 LIB="$REPO_ROOT/$BUILD_DIR/integration/c/libotterbrix.so"
 [[ -f "$LIB" ]] || {

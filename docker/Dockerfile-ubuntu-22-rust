@@ -41,7 +41,7 @@ WORKDIR /app/build
 RUN cmake .. -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_toolchain.cmake \
     -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON && \
-    cmake --build . --target otterbrix -- -j "$(nproc)"
+    cmake --build . --target c_otterbrix -- -j "$(nproc)"
 
 FROM ubuntu:22.04 AS rust
 

@@ -101,6 +101,19 @@ namespace components::sql::transform {
     }
 
     logical_plan::node_ptr transformer::transform_select(SelectStmt& node, logical_plan::parameter_node_t* params) {
+        // Set operations (UNION / INTERSECT / EXCEPT) are not yet wired
+        // through the transformer. For a SETOP_* node, node.targetList is
+        // null (the column projection lives on the larg / rarg children),
+        // so the for-loop below would dereference null and SIGSEGV. Bail
+        // out cleanly until proper set-operation lowering lands.
+        // dynamic_schema_union sits on this path; lldb pinned the crash to
+        // node.targetList->lst at line 137 here.
+        if (node.op != SETOP_NONE || node.targetList == nullptr) {
+            throw std::runtime_error(
+                "SELECT set operations (UNION / INTERSECT / EXCEPT) are not "
+                "yet supported by the SQL transformer");
+        }
+
         logical_plan::node_aggregate_ptr agg = nullptr;
         logical_plan::node_join_ptr join = nullptr;
         name_collection_t names;

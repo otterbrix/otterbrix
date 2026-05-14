@@ -361,10 +361,15 @@ namespace components::planner {
                 // dbname is irrelevant in builder (namespace_oid is the routing
                 // identity); pass "public" as a label.
                 const std::string db_name = std::string("public");
+                const catalog::oid_t composite_oid = oid_batch.peek();
                 writes = catalog::build_create_table_writes(
                     r, db_name, std::string(ct->type().type_name()), field_cols,
                     /*is_disk_storage=*/false, target_ns,
                     oid_batch, catalog::relkind::composite_type);
+                auto type_writes = catalog::build_create_type_writes(
+                    r, std::string(ct->type().type_name()), target_ns, composite_oid,
+                    components::catalog::encode_type_spec(ct->type()));
+                for (auto& w : type_writes) writes.push_back(std::move(w));
             } else {
                 // ENUM and other extension types — persisted via pg_type.
                 const catalog::oid_t type_oid = oid_batch.allocate();

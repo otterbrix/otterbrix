@@ -339,14 +339,35 @@ namespace services::dispatcher {
         // Optimizer: constant folding, etc.
         logic_plan = components::planner::optimize(resource(), logic_plan, nullptr, params.get());
 
-        // Direct API path (wrapper_dispatcher::execute_plan, create_collection,
-        // find, delete_*, update_*) bypasses the SQL transformer that injects
-        // catalog_resolve_namespace_t / catalog_resolve_table_t front-children.
-        // Validate/enrich consume OIDs through the plan-tree idx, so we must
-        // build the same wrap here when the caller handed us a bare DML/DDL.
-        // Walks the entire plan tree so multi-table consumers (INSERT FROM
-        // SELECT, JOIN, etc.) get resolves for every (db, rel) pair.
-        if (logic_plan->type() != node_type::sequence_t) {
+        // Wrap the plan with catalog_resolve_namespace + catalog_resolve_table
+        // for every (db, rel) pair found in the tree. Validate/enrich consume
+        // OIDs through the plan-tree idx; the SQL transformer only emits
+        // resolves for the outermost target (e.g. INSERT FROM SELECT wraps
+        // CopyTestCollection but not the SELECT source TestCollection), so we
+        // need to top-up missing tables here. For direct-API callers
+        // (wrapper_dispatcher::execute_plan, find, etc.) this builds the full
+        // wrap from scratch. Existing resolves in sequence_t already cover
+        // their (db, rel) tuples — set-based dedup avoids re-emitting them.
+        {
+            // Collect resolves that already exist in the plan tree so we don't
+            // re-emit them. Operates on the immediate front children of
+            // sequence_t (where the transformer puts its resolves); a deeper
+            // walk is unnecessary because Pass 1 only consumes front-children.
+            std::set<std::string> existing_dbs;
+            std::set<std::pair<std::string, std::string>> existing_tbls;
+            if (logic_plan->type() == node_type::sequence_t) {
+                for (const auto& c : logic_plan->children()) {
+                    if (!c) continue;
+                    if (c->type() == node_type::catalog_resolve_namespace_t) {
+                        auto* r = static_cast<const node_catalog_resolve_namespace_t*>(c.get());
+                        existing_dbs.insert(r->dbname());
+                    } else if (c->type() == node_type::catalog_resolve_table_t) {
+                        auto* r = static_cast<const node_catalog_resolve_table_t*>(c.get());
+                        existing_tbls.insert({r->dbname(), r->relname()});
+                        existing_dbs.insert(r->dbname());
+                    }
+                }
+            }
             std::set<std::string> wrap_dbs;
             std::set<std::pair<std::string, std::string>> wrap_tbls;
             auto add_dbrel = [&](std::string db, std::string rel) {
@@ -422,26 +443,44 @@ namespace services::dispatcher {
                 }
                 for (const auto& c : n->children()) stack.push_back(c.get());
             }
+            // Drop resolves already present so we don't duplicate them.
+            for (const auto& db : existing_dbs) wrap_dbs.erase(db);
+            for (const auto& t : existing_tbls) wrap_tbls.erase(t);
             if (!wrap_dbs.empty() || !wrap_tbls.empty()) {
-                auto seq = boost::intrusive_ptr<components::logical_plan::node_t>(
-                    new components::logical_plan::node_sequence_t(resource()));
-                std::set<std::string> resolved_dbs;
+                // Collect new resolves to prepend.
+                std::vector<components::logical_plan::node_ptr> new_resolves;
+                std::set<std::string> resolved_dbs = existing_dbs;
                 for (const auto& db : wrap_dbs) {
-                    seq->append_child(
-                        components::logical_plan::make_node_catalog_resolve_namespace(resource(), db));
-                    resolved_dbs.insert(db);
+                    if (resolved_dbs.insert(db).second) {
+                        new_resolves.push_back(
+                            components::logical_plan::make_node_catalog_resolve_namespace(resource(), db));
+                    }
                 }
                 for (const auto& [db, rel] : wrap_tbls) {
-                    if (!resolved_dbs.count(db)) {
-                        seq->append_child(
+                    if (resolved_dbs.insert(db).second) {
+                        new_resolves.push_back(
                             components::logical_plan::make_node_catalog_resolve_namespace(resource(), db));
-                        resolved_dbs.insert(db);
                     }
-                    seq->append_child(
+                    new_resolves.push_back(
                         components::logical_plan::make_node_catalog_resolve_table(resource(), db, rel));
                 }
-                seq->append_child(std::move(logic_plan));
-                logic_plan = seq;
+                if (logic_plan->type() == node_type::sequence_t) {
+                    // Splice new resolves into existing sequence_t's children at
+                    // the front (Pass 1 only consumes leading resolve_* nodes).
+                    auto& kids = logic_plan->children();
+                    std::vector<components::logical_plan::node_ptr> merged;
+                    merged.reserve(kids.size() + new_resolves.size());
+                    for (auto& r : new_resolves) merged.push_back(std::move(r));
+                    for (auto& c : kids) merged.push_back(std::move(c));
+                    kids.clear();
+                    for (auto& m : merged) kids.push_back(std::move(m));
+                } else {
+                    auto seq = boost::intrusive_ptr<components::logical_plan::node_t>(
+                        new components::logical_plan::node_sequence_t(resource()));
+                    for (auto& r : new_resolves) seq->append_child(std::move(r));
+                    seq->append_child(std::move(logic_plan));
+                    logic_plan = seq;
+                }
             }
         }
 
@@ -707,7 +746,11 @@ namespace services::dispatcher {
                 break;
             }
             case node_type::create_type_t: {
-                auto& n = reinterpret_cast<node_create_type_ptr&>(logic_plan);
+                // Phase 13: logic_plan is sequence_t(catalog_resolve_*..., create_type) —
+                // descend through the wrap to reach the create_type leaf. The previous
+                // reinterpret_cast<node_create_type_ptr&>(logic_plan) treated the
+                // sequence_t bytes as a create_type_t, yielding garbage from n->type().
+                auto* n = static_cast<node_create_type_t*>(effective_root_node(logic_plan.get()));
                 // M4.G.6: collision detection + nested field resolution read
                 // from plan-tree idx (transform_create_type / transform_create_enum_type
                 // M4.G.4/.5 emit resolve_type per UDT name). No view.* preloads.

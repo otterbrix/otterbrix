@@ -386,6 +386,9 @@ namespace components::types {
             return arr_ext->size() == other_arr_ext->size() &&
                    arr_ext->internal_type().is_convertable_to(other_arr_ext->internal_type());
         }
+        if (type_ == logical_type::STRING_LITERAL && other.type_ == logical_type::ENUM) {
+            return true;
+        }
         if (type_ == logical_type::STRUCT && other.type_ == logical_type::STRUCT) {
             const auto* struct_ext = static_cast<const struct_logical_type_extension*>(extension_.get());
             const auto* other_struct_ext = static_cast<const struct_logical_type_extension*>(extension_.get());

@@ -433,6 +433,8 @@ namespace components::types {
                 default:
                     assert(false && "incorrect type for duration conversion");
             }
+        } else if (type_.type() == logical_type::STRING_LITERAL && type.type() == logical_type::ENUM) {
+            return create_enum(resource_, type, *str_ptr());
         } else if (type_.type() == logical_type::STRUCT && type.type() == logical_type::STRUCT) {
             if (type_.child_types().size() != type.child_types().size()) {
                 assert(false && "incorrect type");

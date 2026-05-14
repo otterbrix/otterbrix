@@ -374,7 +374,11 @@ namespace services::dispatcher {
                     }
                     case node_type::delete_t: {
                         auto* d = static_cast<const node_delete_t*>(n);
-                        add_dbrel(d->dbname(), d->relname()); break;
+                        add_dbrel(d->dbname(), d->relname());
+                        if (!d->dbname_from().empty() && !d->relname_from().empty()) {
+                            add_dbrel(d->dbname_from(), d->relname_from());
+                        }
+                        break;
                     }
                     case node_type::aggregate_t: {
                         auto* d = static_cast<const node_aggregate_t*>(n);
@@ -584,7 +588,7 @@ namespace services::dispatcher {
                 }
                 case node_type::drop_index_t: {
                     auto* d = static_cast<const node_drop_index_t*>(n);
-                    return collection_full_name_t{d->dbname(), d->indexname()};
+                    return collection_full_name_t{d->dbname(), d->relname()};
                 }
                 case node_type::drop_macro_t: {
                     auto* d = static_cast<const node_drop_macro_t*>(n);

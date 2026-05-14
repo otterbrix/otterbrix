@@ -921,7 +921,7 @@ namespace services::dispatcher {
                 }
                 case node_type::drop_index_t: {
                     const auto* n = static_cast<const node_drop_index_t*>(node);
-                    return {n->dbname(), n->indexname()};
+                    return {n->dbname(), n->relname()};
                 }
                 case node_type::drop_macro_t:
                     return {static_cast<const node_drop_macro_t*>(node)->dbname(),

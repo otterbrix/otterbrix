@@ -174,7 +174,8 @@ namespace services::planner::impl {
                 return t == node_type::catalog_resolve_namespace_t ||
                        t == node_type::catalog_resolve_table_t ||
                        t == node_type::catalog_resolve_type_t ||
-                       t == node_type::catalog_resolve_function_t;
+                       t == node_type::catalog_resolve_function_t ||
+                       t == node_type::catalog_resolve_constraint_t;
             };
             bool has_non_resolve_child = false;
             for (const auto& child : node->children()) {

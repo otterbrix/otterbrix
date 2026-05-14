@@ -26,6 +26,8 @@ set(SOURCE_${PROJECT_NAME}
         node_catalog_resolve_namespace.cpp
         node_catalog_resolve_type.cpp
         node_catalog_resolve_function.cpp
+        node_catalog_resolve_constraint.cpp
+        node_allocate_oids.cpp
         node_checkpoint.cpp
         node_create_collection.cpp
         node_create_constraint.cpp

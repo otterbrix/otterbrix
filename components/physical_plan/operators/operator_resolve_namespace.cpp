@@ -67,7 +67,7 @@ namespace components::operators {
 
         // pg_namespace schema: [oid (uint32), nspname (string)].
         // Filter on nspname == name_ via the generic read_rows_by_key actor
-        // message — pure storage primitive, no catalog_view shortcut.
+        // message — pure storage primitive.
         types::logical_value_t name_lv(resource_, std::string_view{name_});
         auto [_ns, nsf] = actor_zeta::send(
             ctx->disk_address,
@@ -88,7 +88,7 @@ namespace components::operators {
             out_chunk.set_value(0, 0, oid_lv);
             // Phase 13 Step 3: stamp the resolved oid onto the logical-plan node
             // so the dispatcher's Pass 2 (validate / enrich / planner) can read
-            // it via plan_resolve_index_t without an async catalog_view shortcut.
+            // it via plan_resolve_index_t.
             if (target_node_) {
                 target_node_->set_namespace_oid(oid_val);
             }

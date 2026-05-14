@@ -58,8 +58,7 @@ namespace components::logical_plan {
         dynamic_cascade_delete_t,
         // GET_SCHEMA (Phase 4 #54): self-resolving leaf that returns one
         // complex_logical_type per (database, collection) id by reading
-        // pg_namespace+pg_class+pg_attribute through the operator pipeline
-        // instead of via inline catalog_view_t reads.
+        // pg_namespace+pg_class+pg_attribute through the operator pipeline.
         get_schema_t,
         // REGISTER_UDF / UNREGISTER_UDF (Phase 4 #55): operator-pipeline
         // replacement for inline manager_dispatcher_t::{register,unregister}_udf.
@@ -88,11 +87,17 @@ namespace components::logical_plan {
         // and is replaced by the corresponding operator_resolve_*_t during
         // physical plan generation. Resolves through standard pipeline
         // (logical_plan → planner → optimizer → physical_plan_generator →
-        // executor → disk) — no catalog_view side-channel.
+        // executor → disk).
         catalog_resolve_table_t,
         catalog_resolve_namespace_t,
         catalog_resolve_type_t,
         catalog_resolve_function_t,
+        catalog_resolve_constraint_t,
+        // M4.L: leaf that allocates a batch of OIDs from the disk-side
+        // oid_generator at Pass 1 time. Replaces inline dispatcher calls to
+        // manager_disk_t::allocate_oids_batch — DDL planner reads the
+        // resulting batch via node_allocate_oids_t::oids().
+        allocate_oids_t,
         unused
     };
 

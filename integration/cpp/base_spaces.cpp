@@ -6,6 +6,8 @@
 #include <core/executor.hpp>
 #include <core/file/file_handle.hpp>
 #include <core/file/local_file_system.hpp>
+#include <fmt/format.h>
+#include <fmt/ranges.h>
 #include <memory>
 #include <services/disk/manager_disk.hpp>
 #include <services/dispatcher/dispatcher.hpp>
@@ -309,7 +311,21 @@ namespace otterbrix {
                       index_def->name(),
                       index_def->dbname(),
                       index_def->relname());
-                auto cursor = wrapper_dispatcher_->execute_plan(session, index_def, nullptr);
+                // M4.G.13: synthesize SQL from the WAL-recovered logical
+                // node so the boot path goes through execute_sql (parser →
+                // Pass 1 → validate → planner → executor) instead of
+                // injecting a raw plan node via execute_plan.
+                std::vector<std::string> col_names;
+                col_names.reserve(index_def->keys().size());
+                for (const auto& key : index_def->keys()) {
+                    col_names.push_back(key.as_string());
+                }
+                auto sql = fmt::format("CREATE INDEX {} ON {}.{} ({});",
+                                       index_def->name(),
+                                       index_def->dbname(),
+                                       index_def->relname(),
+                                       fmt::join(col_names, ", "));
+                auto cursor = wrapper_dispatcher_->execute_sql(session, sql);
                 if (cursor->is_error()) {
                     warn(log_, "spaces::failed to create index {}: {}", index_def->name(), cursor->get_error().what);
                 } else {
@@ -328,12 +344,12 @@ namespace otterbrix {
 
     base_otterbrix_t::~base_otterbrix_t() {
         trace(log_, "delete spaces");
-        // Checkpoint all disk tables before shutdown
+        // Checkpoint all disk tables before shutdown.
+        // M4.G.13: migrated execute_plan → execute_sql (CHECKPOINT keyword).
         if (wrapper_dispatcher_) {
             try {
                 auto session = components::session::session_id_t();
-                auto checkpoint_node = components::logical_plan::make_node_checkpoint(&resource);
-                wrapper_dispatcher_->execute_plan(session, checkpoint_node, nullptr);
+                wrapper_dispatcher_->execute_sql(session, "CHECKPOINT;");
                 trace(log_, "delete spaces: checkpoint complete");
             } catch (...) {
                 // Best-effort: don't throw from destructor

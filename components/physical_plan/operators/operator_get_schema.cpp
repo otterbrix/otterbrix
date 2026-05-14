@@ -21,7 +21,6 @@ namespace components::operators {
     namespace {
 
         // Reconstruct a single column type from its pg_attribute row metadata.
-        // Mirrors column_type_from_info() in services/dispatcher/catalog_view.cpp:
         // atttypspec carries the encoded complex tree for STRUCT/ENUM/DECIMAL/
         // ARRAY/UNKNOWN; for built-in scalars atttypspec is empty and atttypid
         // alone reconstructs the type via oid_to_builtin_type.
@@ -124,12 +123,11 @@ namespace components::operators {
             //      the schema (Phase 11.F-B: relid, attoid, attname, atttypid,
             //      atttypspec, attversion, attrefcount). Resolver picks
             //      max(attversion) per attname where attrefcount > 0.
-            //    relkind='r' (static): pg_attribute owns the schema. The
-            //      catalog_view_t cache used by the legacy path materialized
-            //      columns in attnum order. read_rows_by_key returns rows in
-            //      storage order; user inserts attribute rows sequentially during
-            //      CREATE TABLE / ADD COLUMN, so storage order ≈ attnum order.
-            //      Tombstoned rows (attisdropped=true) are filtered.
+            //    relkind='r' (static): pg_attribute owns the schema.
+            //      read_rows_by_key returns rows in storage order; user inserts
+            //      attribute rows sequentially during CREATE TABLE / ADD COLUMN,
+            //      so storage order ≈ attnum order. Tombstoned rows
+            //      (attisdropped=true) are filtered.
             std::vector<types::complex_logical_type> col_types;
             if (relkind == catalog::relkind::computed) {
                 types::logical_value_t toid_lv(resource_, table_oid);

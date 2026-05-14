@@ -9,6 +9,8 @@
 #include <components/table/constraint.hpp>
 #include <components/types/types.hpp>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace components::sql::transform {
     template<class T>
@@ -190,8 +192,7 @@ namespace components::sql::transform {
     //
     // The transformer wraps a main DML/DDL `node_ptr` in
     // `sequence_t(catalog_resolve_*_t..., main_node)` so the planner can
-    // treat catalog resolution as a first-class pipeline dependency
-    // (instead of routing through the catalog_view_t side-channel).
+    // treat catalog resolution as a first-class pipeline dependency.
     // Phase 13 (2026-05-13): wrap is unconditional — the previous
     // `transformer_emit_catalog_resolve_enabled()` toggle was removed
     // after the dispatcher/executor/planner cascade learned to descend
@@ -199,13 +200,20 @@ namespace components::sql::transform {
 
     // Wrap `main_node` (an INSERT/SELECT/UPDATE/DELETE-style consumer that
     // targets a specific (dbname, relname)) in
-    //   sequence_t(catalog_resolve_namespace_t, catalog_resolve_table_t, main_node)
-    // Empty dbname/relname skips the corresponding resolve node.
+    //   sequence_t(catalog_resolve_namespace_t, catalog_resolve_table_t,
+    //              [catalog_resolve_constraint_t,] main_node)
+    // Empty dbname/relname skips the corresponding resolve node. When
+    // `with_constraints` is set, a catalog_resolve_constraint_t with the
+    // matching direction is appended right after the resolve_table (used for
+    // INSERT/UPDATE → outgoing, DELETE → referencing).
+    enum class constraint_resolve_kind { none, outgoing, referencing };
+
     logical_plan::node_ptr maybe_wrap_with_catalog_resolve_table(
         std::pmr::memory_resource* resource,
         const std::string& dbname,
         const std::string& relname,
-        logical_plan::node_ptr main_node);
+        logical_plan::node_ptr main_node,
+        constraint_resolve_kind with_constraints = constraint_resolve_kind::none);
 
     // Wrap `main_node` (a database-scoped DDL — CREATE DATABASE, DROP DATABASE,
     // CREATE TYPE, etc.) in
@@ -214,6 +222,16 @@ namespace components::sql::transform {
     logical_plan::node_ptr maybe_wrap_with_catalog_resolve_namespace(
         std::pmr::memory_resource* resource,
         const std::string& dbname,
+        logical_plan::node_ptr main_node);
+
+    // Multi-target wrap: prepends a catalog_resolve_namespace for every distinct
+    // dbname in `targets`, then a catalog_resolve_table for each (dbname,
+    // relname) pair. Used by DDL transformers that touch multiple tables in a
+    // single statement (CREATE CONSTRAINT FK with ref_table, DROP INDEX with
+    // parent table + index name).
+    logical_plan::node_ptr maybe_wrap_with_catalog_resolve_tables(
+        std::pmr::memory_resource* resource,
+        std::vector<std::pair<std::string, std::string>> targets,
         logical_plan::node_ptr main_node);
 
 } // namespace components::sql::transform

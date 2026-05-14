@@ -12,7 +12,7 @@ namespace components::logical_plan {
     // in a given namespace (database). The operator lookup-walks pg_proc via the
     // catalog pipeline and stamps the resulting pg_proc.oid back onto the node
     // via set_function_oid(). Phase 13 T8: gives the planner a uniform way to
-    // late-bind function references without inlining catalog_view_t reads.
+    // late-bind function references through the catalog pipeline.
     class node_catalog_resolve_function_t final : public node_t {
     public:
         explicit node_catalog_resolve_function_t(std::pmr::memory_resource* resource,

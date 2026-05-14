@@ -173,15 +173,6 @@ namespace services::disk {
         void create_storage_with_columns_sync(components::catalog::oid_t table_oid,
                                               components::catalog::oid_t database_oid,
                                               std::vector<components::table::column_definition_t> columns);
-        // Disk storage: create new or load existing
-        void create_storage_disk_sync(components::catalog::oid_t table_oid,
-                                      components::catalog::oid_t database_oid,
-                                      std::vector<components::table::column_definition_t> columns,
-                                      const std::filesystem::path& otbx_path);
-        void load_storage_disk_sync(components::catalog::oid_t table_oid,
-                                     components::catalog::oid_t database_oid,
-                                     const std::filesystem::path& otbx_path);
-
         // System catalog (pg_*) bootstrap and load. Called from base_spaces during PHASE 1
         // before any actor is spawned. bootstrap creates the 9 .otbx files for the system
         // tables; load picks them up on subsequent starts. Both are idempotent w.r.t. the
@@ -216,7 +207,7 @@ namespace services::disk {
         // Per-item resolve methods. Каждый метод сканирует соответствующую pg_*-таблицу
         // на disk actor thread и возвращает найденный объект (или {found=false}).
         // Параметр since_version сохранён для совместимости с message dispatch (всегда
-        // игнорируется — версионирование удалено вместе с catalog_view-кэшем).
+        // игнорируется — версионирование больше не используется).
         unique_future<resolve_namespace_result_t> resolve_namespace(execution_context_t ctx,
                                                                      std::string name,
                                                                      std::uint64_t since_version);
@@ -252,12 +243,6 @@ namespace services::disk {
         // it). Used by the dispatcher's collections_ rebuild and UDF namespace pick.
         unique_future<std::pmr::vector<std::string>>
         list_namespaces(execution_context_t ctx);
-
-        // Returns (oid, relname) pairs for all relations in the given namespace whose
-        // relkind is a "live storage" type ('r' regular, 'g' computing). Other relkinds
-        // (indexes, sequences, views, macros, composites) are filtered out.
-        unique_future<std::pmr::vector<std::pair<components::catalog::oid_t, std::string>>>
-        list_tables_in_namespace(execution_context_t ctx, components::catalog::oid_t namespace_oid);
 
         // Allocate a batch of fresh OIDs from the disk-local oid_gen_. Called by the
         // dispatcher before invoking planner_t::create_plan for DDL statements, so that
@@ -461,7 +446,6 @@ namespace services::disk {
                                                        &manager_disk_t::resolve_function,
                                                        &manager_disk_t::resolve_function_by_name,
                                                        &manager_disk_t::list_namespaces,
-                                                       &manager_disk_t::list_tables_in_namespace,
                                                        &manager_disk_t::allocate_oids_batch,
                                                        &manager_disk_t::append_pg_catalog_row,
                                                        &manager_disk_t::delete_pg_catalog_rows,
@@ -470,6 +454,16 @@ namespace services::disk {
                                                        &manager_disk_t::compact_relkind_g_storage>;
 
     private:
+        // Disk storage helpers — used only by bootstrap / io / recovery paths
+        // inside services/disk/. Not part of the actor's public interface.
+        void create_storage_disk_sync(components::catalog::oid_t table_oid,
+                                      components::catalog::oid_t database_oid,
+                                      std::vector<components::table::column_definition_t> columns,
+                                      const std::filesystem::path& otbx_path);
+        void load_storage_disk_sync(components::catalog::oid_t table_oid,
+                                     components::catalog::oid_t database_oid,
+                                     const std::filesystem::path& otbx_path);
+
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
         actor_zeta::scheduler_raw scheduler_disk_;

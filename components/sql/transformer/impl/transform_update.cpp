@@ -222,7 +222,10 @@ namespace components::sql::transform {
                                                        false);
         }
         // Phase 13 T13: catalog-resolve wrap for UPDATE target table.
+        // M4.D: emit resolve_constraint(outgoing) so enrich reads FKs from
+        // plan tree (FK info stamped by operator_resolve_constraint_t).
         return maybe_wrap_with_catalog_resolve_table(
-            resource_, names.left_name.dbname, names.left_name.relname, std::move(upd));
+            resource_, names.left_name.dbname, names.left_name.relname, std::move(upd),
+            constraint_resolve_kind::outgoing);
     }
 } // namespace components::sql::transform

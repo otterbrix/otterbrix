@@ -1,7 +1,9 @@
 #include "operator_resolve_table.hpp"
 
+#include <cstdio>
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
 #include <components/logical_plan/node_catalog_resolve_table.hpp>
 #include <components/types/logical_value.hpp>
@@ -145,7 +147,7 @@ namespace components::operators {
 
         // Phase 13 Step 3: stamp resolved oids onto the logical-plan node so
         // the dispatcher's Pass 2 (validate / enrich / planner) reads them
-        // via plan_resolve_index_t without an async catalog_view shortcut.
+        // via plan_resolve_index_t.
         // Stamped unconditionally (even when !found_) so callers can detect
         // "name did not resolve" by checking node->table_oid() == INVALID_OID.
         if (target_node_) {
@@ -164,12 +166,17 @@ namespace components::operators {
         // Per-row metadata accumulated below, then materialized into the
         // output chunk in one pass. Using a flat struct (instead of separate
         // parallel vectors) keeps sort+filter logic simple.
+        // M4.B: extended with attnotnull / atthasdefault / attdefspec so the
+        // full resolved_table_metadata_t can be stamped on the logical node.
         struct out_row_t {
             catalog::oid_t attoid{catalog::INVALID_OID};
             std::string    attname;
             catalog::oid_t atttypid{catalog::INVALID_OID};
             std::string    atttypspec;
             std::int32_t   attnum{0}; // sort key for relkind='r'
+            bool           attnotnull{false};
+            bool           atthasdefault{false};
+            std::string    attdefspec;
         };
         std::vector<out_row_t> rows;
 
@@ -267,8 +274,13 @@ namespace components::operators {
                                  ? catalog::INVALID_OID
                                  : static_cast<catalog::oid_t>(row[3].value<std::uint32_t>());
                 r.attnum = row[4].is_null() ? 0 : row[4].value<std::int32_t>();
+                r.attnotnull    = !row[5].is_null() && row[5].value<bool>();
+                r.atthasdefault = !row[6].is_null() && row[6].value<bool>();
                 if (row.size() > 8 && !row[8].is_null()) {
                     r.atttypspec.assign(row[8].value<std::string_view>());
+                }
+                if (row.size() > 9 && !row[9].is_null()) {
+                    r.attdefspec.assign(row[9].value<std::string_view>());
                 }
                 rows.push_back(std::move(r));
             }
@@ -277,6 +289,48 @@ namespace components::operators {
                        [](const out_row_t& a, const out_row_t& b) {
                            return a.attnum < b.attnum;
                        });
+        }
+
+        // Phase 13 M4.B: also stamp full resolved_table_metadata_t on the
+        // logical resolve node so enrich/validate can read the columns +
+        // not-null / default flags from the plan tree. Built from the same
+        // `rows` we use for the operator output chunk; decoded type derived
+        // from atttypspec or atttypid via the existing catalog helpers.
+        if (target_node_) {
+            std::fprintf(stderr, "[RT] populate md table_oid=%u ns_oid=%u relkind='%c' rows=%zu relname='%s'\n",
+                static_cast<unsigned>(table_oid_),
+                static_cast<unsigned>(namespace_oid_),
+                relkind_ ? relkind_ : '?',
+                rows.size(),
+                relname_.c_str());
+            std::fflush(stderr);
+            components::logical_plan::resolved_table_metadata_t md;
+            md.table_oid     = table_oid_;
+            md.namespace_oid = namespace_oid_;
+            md.relkind       = relkind_;
+            md.name          = relname_;
+            md.columns.reserve(rows.size());
+            for (const auto& r : rows) {
+                components::logical_plan::resolved_column_metadata_t cm;
+                cm.attname       = r.attname;
+                cm.attnum        = r.attnum;
+                cm.attoid        = r.attoid;
+                cm.atttypid      = r.atttypid;
+                cm.attnotnull    = r.attnotnull;
+                cm.atthasdefault = r.atthasdefault;
+                cm.attdefspec    = r.attdefspec;
+                cm.atttypspec    = r.atttypspec;
+                if (!r.atttypspec.empty()) {
+                    cm.type = catalog::decode_type_spec(resource_, r.atttypspec);
+                } else if (r.atttypid != catalog::INVALID_OID) {
+                    cm.type = types::complex_logical_type(catalog::oid_to_builtin_type(r.atttypid));
+                }
+                if (!cm.attname.empty() && !cm.type.has_alias()) {
+                    cm.type.set_alias(cm.attname);
+                }
+                md.columns.push_back(std::move(cm));
+            }
+            target_node_->set_resolved_metadata(std::move(md));
         }
 
         // Step 4: materialize into output chunk. Position is a synthetic

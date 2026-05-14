@@ -17,14 +17,9 @@ namespace components::catalog {
         table_id(std::pmr::memory_resource* resource, table_namespace_t ns, std::pmr::string name);
         table_id(std::pmr::memory_resource* resource, const collection_full_name_t& full_name);
 
-        bool operator==(const table_id& other) const;
-
-        [[nodiscard]] static table_id parse(const std::string& identifier_str, std::pmr::memory_resource* resource);
-        [[nodiscard]] collection_full_name_t collection_full_name() const;
         [[nodiscard]] const table_namespace_t& get_namespace() const;
         [[nodiscard]] const std::pmr::string& table_name() const;
         [[nodiscard]] std::pmr::string to_pmr_string() const;
-        [[nodiscard]] std::string to_string() const;
 
         // pg_class.oid for this table. INVALID_OID until assigned by the CREATE TABLE
         // pipeline (build_create_table_writes / operator_create_collection) —

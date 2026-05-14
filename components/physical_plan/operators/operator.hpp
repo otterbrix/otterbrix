@@ -62,8 +62,8 @@ namespace components::operators {
         vacuum,
         // GET_SCHEMA (Phase 4 #54) — self-resolving leaf operator that returns
         // one complex_logical_type per (database, collection) id by reading
-        // pg_namespace+pg_class+pg_attribute. Replaces inline catalog_view_t
-        // reads in manager_dispatcher_t::get_schema.
+        // pg_namespace+pg_class+pg_attribute. Used by
+        // manager_dispatcher_t::get_schema.
         get_schema,
         // REGISTER_UDF / UNREGISTER_UDF (Phase 4 #55) — operator-pipeline
         // replacements for inline manager_dispatcher_t::{register,unregister}_udf.
@@ -108,18 +108,30 @@ namespace components::operators {
         // RESOLVE_TYPE (Phase 13 T3) — leaf operator that scans pg_type by
         // (typname, typnamespace) and emits the matching row as a single-row
         // data_chunk_t (cols mirror pg_type_columns: oid, typname,
-        // typnamespace, typdefspec). Drives read_rows_by_key only — no
-        // catalog_view shortcut. Composite-type reconstruction (pg_class
-        // relkind='c' fallback) is out-of-scope; that path stays on the
-        // synchronous resolve_type_sync helper until a separate operator
-        // covers it.
+        // typnamespace, typdefspec). Drives read_rows_by_key only.
+        // Composite-type reconstruction (pg_class relkind='c' fallback) is
+        // out-of-scope; that path stays on the synchronous resolve_type_sync
+        // helper until a separate operator covers it.
         resolve_type,
         // RESOLVE_FUNCTION (Phase 13 T4) — leaf operator that scans pg_proc by
         // (proname, pronamespace) and emits matching pg_proc rows as a
         // data_chunk (cols: oid, proname, pronamespace, pronargs, prouid,
         // proargmatchers, prorettype). Mirrors manager_disk_t::resolve_function
         // without the dedicated actor message — drives read_rows_by_key only.
-        resolve_function
+        resolve_function,
+        // RESOLVE_CONSTRAINT (Phase 13 M4.D) — pipeline FK + CHECK constraint
+        // resolution. Reads pg_constraint by (conrelid|confrelid) +
+        // pg_attribute (column-name lookups) + pg_class + pg_namespace
+        // (descendant FK reference resolution). Stamps fks() / check_exprs()
+        // onto the back-pointed logical node so enrich reads them via the
+        // plan_resolve_index.
+        resolve_constraint,
+        // ALLOCATE_OIDS (M4.L) — pipeline replacement for inline
+        // manager_disk_t::allocate_oids_batch from the dispatcher. At Pass 1
+        // execute time, sends one allocate batch request to the disk actor's
+        // oid_generator and stamps the resulting vector on the back-pointed
+        // node so the DDL planner can read it via oids().
+        allocate_oids
     };
 
     inline bool is_scan(operator_type t) {

@@ -13,6 +13,8 @@
 #include "impl/create_plan_abort_transaction.hpp"
 #include "impl/create_plan_computed_field_register.hpp"
 #include "impl/create_plan_computed_field_unregister.hpp"
+#include "impl/create_plan_allocate_oids.hpp"
+#include "impl/create_plan_resolve_constraint.hpp"
 #include "impl/create_plan_resolve_function.hpp"
 #include "impl/create_plan_resolve_namespace.hpp"
 #include "impl/create_plan_resolve_table.hpp"
@@ -106,6 +108,10 @@ namespace services::planner {
                 return impl::create_plan_resolve_table(context, node);
             case node_type::catalog_resolve_type_t:
                 return impl::create_plan_resolve_type(context, node);
+            case node_type::catalog_resolve_constraint_t:
+                return impl::create_plan_resolve_constraint(context, node);
+            case node_type::allocate_oids_t:
+                return impl::create_plan_allocate_oids(context, node);
             default:
                 break;
         }

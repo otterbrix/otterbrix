@@ -34,17 +34,19 @@ int main() {
     }
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->create_collection(s, database_name, collection_name, columns);
+        dispatcher->execute_sql(s,
+            fmt::format("CREATE TABLE {}.{}(count bigint, count_str string, "
+                        "count_double double, count_bool bool, count_array ubigint[5], "
+                        "count_decimal decimal(15,7));",
+                        database_name, collection_name));
     }
 
     // Insert 1000 rows
     constexpr int kRows = 1000;
     {
-        auto chunk = gen_data_chunk(kRows, dispatcher->resource());
-        auto ins =
-            logical_plan::make_node_insert(dispatcher->resource(), database_name, collection_name, std::move(chunk));
         auto s = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_plan(s, ins);
+        auto cur = dispatcher->execute_sql(
+            s, gen_data_chunk_insert_sql(database_name, collection_name, kRows));
         if (!cur->is_success()) {
             std::cerr << "Insert failed\n";
             return 1;

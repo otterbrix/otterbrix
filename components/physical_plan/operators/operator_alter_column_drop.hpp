@@ -23,9 +23,8 @@ namespace components::operators {
     //      append_pg_catalog_row a tombstone with attisdropped=true. This is the
     //      same pattern the legacy ddl.cpp drop_column branch used (Phase 2 #50).
     //
-    // No in-memory schema mutation hook is invoked: the catalog_view refresh that
-    // follows commit picks up the tombstone on the next read. (Mirrors the legacy
-    // ddl.cpp path.)
+    // No in-memory schema mutation hook is invoked: subsequent resolve_table
+    // operator runs pick up the tombstone via pg_attribute reads.
     class operator_alter_column_drop_t final : public read_write_operator_t {
     public:
         operator_alter_column_drop_t(std::pmr::memory_resource*           resource,

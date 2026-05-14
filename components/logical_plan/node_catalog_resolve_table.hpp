@@ -3,17 +3,44 @@
 #include "node.hpp"
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/types/types.hpp>
 
+#include <cstdint>
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace components::logical_plan {
 
+    // Phase 13 M4.A — per-column metadata mirrored from pg_attribute
+    // (relkind='r') or pg_computed_column (relkind='g'), reconstructed at
+    // Pass 1 time by operator_resolve_table_t. Carries the full surface
+    // enrich_plan / validate_schema read via the plan-tree idx.
+    struct resolved_column_metadata_t {
+        std::string attname;
+        types::complex_logical_type type;
+        std::int32_t attnum{0};
+        components::catalog::oid_t attoid{components::catalog::INVALID_OID};
+        components::catalog::oid_t atttypid{components::catalog::INVALID_OID};
+        bool attnotnull{false};
+        bool atthasdefault{false};
+        std::string attdefspec; // serialized default expression
+        std::string atttypspec; // serialized type spec
+    };
+
+    struct resolved_table_metadata_t {
+        components::catalog::oid_t table_oid{components::catalog::INVALID_OID};
+        components::catalog::oid_t namespace_oid{components::catalog::INVALID_OID};
+        char relkind{'r'};
+        std::string name;
+        std::vector<resolved_column_metadata_t> columns;
+    };
+
     // Phase 13 T5: catalog-dependency leaf node carrying "resolve table 'relname'
     // in namespace 'dbname' (or under ns_oid once enriched)". Built by the
-    // transformer for catalog-touching statements that previously inlined
-    // catalog_view_t reads. enrich_logical_plan resolves dbname -> namespace_oid
-    // (pg_namespace.oid) so downstream operators can read pg_class/pg_attribute
-    // through the pipeline rather than via direct catalog access.
+    // transformer for catalog-touching statements. enrich_logical_plan resolves
+    // dbname -> namespace_oid (pg_namespace.oid) so downstream operators can
+    // read pg_class/pg_attribute through the pipeline.
     //
     // The node carries no children/expressions and emits no tuples; it is a
     // pure resolved-dependency marker. namespace_oid() == INVALID_OID prior to
@@ -31,6 +58,16 @@ namespace components::logical_plan {
         components::catalog::oid_t namespace_oid() const noexcept { return namespace_oid_; }
         void set_namespace_oid(components::catalog::oid_t oid) noexcept { namespace_oid_ = oid; }
 
+        // Phase 13 M4.A — full table metadata reconstructed by
+        // operator_resolve_table_t at Pass 1 time. Reset / unset state means
+        // the resolve operator did not find the table (or hasn't run yet).
+        const std::optional<resolved_table_metadata_t>& resolved_metadata() const noexcept {
+            return resolved_metadata_;
+        }
+        void set_resolved_metadata(resolved_table_metadata_t md) {
+            resolved_metadata_ = std::move(md);
+        }
+
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
@@ -38,6 +75,7 @@ namespace components::logical_plan {
         std::string dbname_;
         std::string relname_;
         components::catalog::oid_t namespace_oid_{components::catalog::INVALID_OID};
+        std::optional<resolved_table_metadata_t> resolved_metadata_;
     };
 
     using node_catalog_resolve_table_ptr = boost::intrusive_ptr<node_catalog_resolve_table_t>;

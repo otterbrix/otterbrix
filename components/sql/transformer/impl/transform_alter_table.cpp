@@ -12,21 +12,30 @@ namespace components::sql::transform {
             return logical_plan::make_node_alter_table_drop_column(resource_, std::string{}, std::string{}, std::string{});
         }
         auto qn = rangevar_to_qualified_name(node.relation);
+        const std::string db_for_resolve = qn.dbname;
+        const std::string rel_for_resolve = qn.relname;
         std::string old_name = node.subname ? node.subname : "";
         std::string new_name = node.newname ? node.newname : "";
-        return logical_plan::make_node_alter_table_rename_column(resource_,
-                                                                  std::move(qn.dbname),
-                                                                  std::move(qn.relname),
-                                                                  std::move(old_name),
-                                                                  std::move(new_name));
+        auto n = logical_plan::make_node_alter_table_rename_column(resource_,
+                                                                    std::move(qn.dbname),
+                                                                    std::move(qn.relname),
+                                                                    std::move(old_name),
+                                                                    std::move(new_name));
+        return maybe_wrap_with_catalog_resolve_table(
+            resource_, db_for_resolve, rel_for_resolve, std::move(n));
     }
 
     logical_plan::node_ptr transformer::transform_alter_table(AlterTableStmt& node) {
         auto qn = rangevar_to_qualified_name(node.relation);
         const std::string& db = qn.dbname;
         const std::string& rel = qn.relname;
+        // Helper: every return path below targets (db, rel) — wrap once.
+        auto wrap_primary = [&](logical_plan::node_ptr n) {
+            return maybe_wrap_with_catalog_resolve_table(resource_, db, rel, std::move(n));
+        };
         if (!node.cmds || node.cmds->lst.empty()) {
-            return logical_plan::make_node_alter_table_drop_column(resource_, db, rel, std::string{});
+            return wrap_primary(
+                logical_plan::make_node_alter_table_drop_column(resource_, db, rel, std::string{}));
         }
         std::vector<logical_plan::alter_table_subcommand_t> subs;
         subs.reserve(node.cmds->lst.size());
@@ -102,7 +111,20 @@ namespace components::sql::transform {
                         fk_node->set_del_action((da == 'a' || da == 'r' || da == 'c' || da == 'n' || da == 'd') ? da : 'a');
                         const char ua = constr->fk_upd_action;
                         fk_node->set_upd_action((ua == 'a' || ua == 'r' || ua == 'c' || ua == 'n' || ua == 'd') ? ua : 'a');
-                        return fk_node;
+                        // FK requires BOTH the constrained table and the
+                        // referenced table to be resolved at Pass 1 time.
+                        const std::string fk_ref_db = fk_node->ref_dbname();
+                        const std::string fk_ref_rel = fk_node->ref_relname();
+                        std::vector<std::pair<std::string, std::string>> targets;
+                        targets.emplace_back(db, rel);
+                        if (!fk_ref_rel.empty()) {
+                            const std::string& effective_ref_db =
+                                fk_ref_db.empty() ? db : fk_ref_db;
+                            targets.emplace_back(effective_ref_db, fk_ref_rel);
+                        }
+                        return maybe_wrap_with_catalog_resolve_tables(
+                            resource_, std::move(targets),
+                            logical_plan::node_ptr{std::move(fk_node)});
                     }
                     if (constr->contype == CONSTR_CHECK && constr->raw_expr) {
                         std::string expr_text = deparse_check_expr(constr->raw_expr);
@@ -112,7 +134,7 @@ namespace components::sql::transform {
                                 resource_, db, rel, std::move(con_name),
                                 logical_plan::constraint_kind::check);
                             check_node->set_check_expr(std::move(expr_text));
-                            return check_node;
+                            return wrap_primary(logical_plan::node_ptr{std::move(check_node)});
                         }
                         throw parser_exception_t{
                             "CHECK constraint expression contains unsupported constructs; "
@@ -127,24 +149,26 @@ namespace components::sql::transform {
             }
         }
         if (subs.empty()) {
-            return logical_plan::make_node_alter_table_drop_column(resource_, db, rel, std::string{});
+            return wrap_primary(
+                logical_plan::make_node_alter_table_drop_column(resource_, db, rel, std::string{}));
         }
         if (subs.size() == 1) {
             auto& s = subs.front();
             switch (s.kind) {
                 case logical_plan::alter_table_kind::add_column:
-                    return logical_plan::make_node_alter_table_add_column(resource_, db, rel, std::move(s.column));
+                    return wrap_primary(logical_plan::make_node_alter_table_add_column(
+                        resource_, db, rel, std::move(s.column)));
                 case logical_plan::alter_table_kind::drop_column:
-                    return logical_plan::make_node_alter_table_drop_column(resource_, db, rel, std::move(s.column_name));
+                    return wrap_primary(logical_plan::make_node_alter_table_drop_column(
+                        resource_, db, rel, std::move(s.column_name)));
                 case logical_plan::alter_table_kind::rename_column:
-                    return logical_plan::make_node_alter_table_rename_column(resource_,
-                                                                              db,
-                                                                              rel,
-                                                                              std::move(s.column_name),
-                                                                              std::move(s.new_column_name));
+                    return wrap_primary(logical_plan::make_node_alter_table_rename_column(
+                        resource_, db, rel, std::move(s.column_name),
+                        std::move(s.new_column_name)));
             }
         }
-        return logical_plan::make_node_alter_table_multi(resource_, db, rel, std::move(subs));
+        return wrap_primary(
+            logical_plan::make_node_alter_table_multi(resource_, db, rel, std::move(subs)));
     }
 
 } // namespace components::sql::transform

@@ -17,8 +17,11 @@ namespace components::sql::transform {
                                               qn.relname,
                                               make_compare_expression(resource_, compare_type::all_true)));
             // Phase 13 T13: tag the target table for catalog resolution.
+            // M4.D: emit resolve_constraint(referencing) so enrich reads
+            // descendant FKs are stamped on the plan tree by Pass 1.
             return maybe_wrap_with_catalog_resolve_table(
-                resource_, qn.dbname, qn.relname, std::move(del));
+                resource_, qn.dbname, qn.relname, std::move(del),
+                constraint_resolve_kind::referencing);
         }
         name_collection_t names;
         names.left_name = rangevar_to_qualified_name(node.relation);
@@ -46,7 +49,9 @@ namespace components::sql::transform {
                                           where_expr));
         // Phase 13 T13: wrap with namespace + table resolve nodes for the primary
         // (LEFT) table; USING-side table is captured inside the node itself.
+        // M4.D: emit resolve_constraint(referencing) for FK cascade enrich.
         return maybe_wrap_with_catalog_resolve_table(
-            resource_, names.left_name.dbname, names.left_name.relname, std::move(del));
+            resource_, names.left_name.dbname, names.left_name.relname, std::move(del),
+            constraint_resolve_kind::referencing);
     }
 } // namespace components::sql::transform

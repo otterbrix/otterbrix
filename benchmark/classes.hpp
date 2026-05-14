@@ -43,11 +43,12 @@ void init_collection(const collection_name_t& collection_name) {
     auto* dispatcher = test_spaces<on_wal, on_disk>::get().dispatcher();
     auto session = otterbrix::session_id_t();
     dispatcher->create_database(session, database_name);
-    auto types = gen_data_chunk(0, dispatcher->resource()).types();
-    dispatcher->create_collection(session, database_name, collection_name, types);
-    auto chunk = gen_data_chunk(size_collection, dispatcher->resource());
-    auto ins = make_node_insert(dispatcher->resource(), {database_name, collection_name}, std::move(chunk));
-    dispatcher->execute_plan(session, ins);
+    dispatcher->execute_sql(session,
+        fmt::format("CREATE TABLE {}.{}(count bigint, count_str string, count_double double, "
+                    "count_bool bool, count_array ubigint[5], count_decimal decimal(15,7));",
+                    database_name, collection_name));
+    dispatcher->execute_sql(session,
+        gen_data_chunk_insert_sql(database_name, collection_name, size_collection));
 }
 
 template<bool on_wal, bool on_disk>

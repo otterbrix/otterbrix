@@ -163,8 +163,8 @@ namespace components::operators {
         // Step 2 — feed the closure into catalog::plan_drop. For RESTRICT,
         // plan_drop returns immediately with status=restrict_blocked when a
         // 'n' (normal external) dependency is present. For CASCADE it
-        // computes the topological drop order; cycles surface as
-        // status=cycle_detected with the offending oid.
+        // computes the topological drop order; cycles propagate as
+        // cycle_detected_error to the dispatcher's catch-all.
         const auto plan = catalog::plan_drop(
             seed_classid_, seed_objid_, behavior_,
             [&dep_graph](catalog::oid_t cls, catalog::oid_t oid)
@@ -174,14 +174,12 @@ namespace components::operators {
                                               : std::vector<catalog::dependency_t>{};
             });
 
-        if (plan.status != catalog::ddl_status::ok) {
-            // Surface the blocked/cycle status to the executor. Phase #49
-            // upgrades this to a structured error cursor — for now the
-            // string carries enough info for the dispatcher's catch-all to
-            // map back to make_ddl_error_cursor.
-            std::string msg = (plan.status == catalog::ddl_status::restrict_blocked)
-                ? "DROP RESTRICT: object has dependents (blocking oid "
-                : "DROP CASCADE: pg_depend cycle detected (offending oid ";
+        if (plan.status == catalog::ddl_status::restrict_blocked) {
+            // Surface the blocked status to the executor. Phase #49 upgrades
+            // this to a structured error cursor — for now the string carries
+            // enough info for the dispatcher's catch-all to map back to
+            // make_ddl_error_cursor.
+            std::string msg = "DROP RESTRICT: object has dependents (blocking oid ";
             msg += std::to_string(plan.blocking_oid) + ")";
             set_error(std::move(msg));
             mark_executed();

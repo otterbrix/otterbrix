@@ -21,8 +21,8 @@ namespace services::disk {
     };
 
     // Per-column metadata returned by resolve_table. Mirrors pg_attribute row layout so the
-    // dispatcher (Phase E.2 catalog_view_t) can reconstruct a column_definition_t with full
-    // type info (decoding atttypspec when present, falling back to atttypid → built-in type).
+    // dispatcher can reconstruct a column_definition_t with full type info
+    // (decoding atttypspec when present, falling back to atttypid → built-in type).
     struct column_info_t {
         std::string attname;
         components::catalog::oid_t atttypid{components::catalog::INVALID_OID};

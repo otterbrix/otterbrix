@@ -110,7 +110,8 @@ extern "C" cursor_ptr create_collection(otterbrix_ptr ptr, string_view_t databas
     auto session = otterbrix::session_id_t();
     std::string database(database_name.data, database_name.size);
     std::string collection(collection_name.data, collection_name.size);
-    auto cursor = pod_space->space->dispatcher()->create_collection(session, database, collection);
+    auto cursor = pod_space->space->dispatcher()->execute_sql(
+        session, fmt::format("CREATE TABLE {}.{}();", database, collection));
     auto cursor_storage = std::make_unique<cursor_storage_t>();
     cursor_storage->cursor = cursor;
     cursor_storage->state = state_t::created;

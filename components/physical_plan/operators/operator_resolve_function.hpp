@@ -11,9 +11,9 @@ namespace components::operators {
     // (pronamespace, proname) against pg_proc.
     //
     // Mirrors services::disk::manager_disk_t::resolve_function but lives in
-    // the operator pipeline (no catalog_view shortcut). The operator drives
-    // a read_rows_by_key actor send keyed on {"proname", "pronamespace"} and
-    // materialises matching pg_proc rows into output_.
+    // the operator pipeline. The operator drives a read_rows_by_key actor
+    // send keyed on {"proname", "pronamespace"} and materialises matching
+    // pg_proc rows into output_.
     //
     // Output chunk schema (matches pg_proc column order):
     //   col 0: oid             UINTEGER  — pg_proc.oid (function oid)

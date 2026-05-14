@@ -4,6 +4,7 @@
 #include <components/context/execution_context.hpp>
 #include <components/table/transaction_manager.hpp>
 #include <services/disk/manager_disk.hpp>
+#include <services/wal/manager_wal_replicate.hpp>
 
 namespace components::operators {
 
@@ -20,6 +21,30 @@ namespace components::operators {
 
     actor_zeta::unique_future<void>
     operator_commit_transaction_t::await_async_and_resume(pipeline::context_t* ctx) {
+        // M4.J: in DDL-commit mode, prepend the durability barrier + WAL
+        // commit record (steps 1-2 of the legacy dispatcher inline hook).
+        if (is_ddl_commit_) {
+            if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
+                auto [_f, ff] = actor_zeta::send(
+                    ctx->disk_address,
+                    &services::disk::manager_disk_t::flush,
+                    ctx->session,
+                    services::wal::id_t{0});
+                co_await std::move(ff);
+            }
+            if (ctx->wal_address != actor_zeta::address_t::empty_address() &&
+                txn_id_ != 0) {
+                auto [_c, cf] = actor_zeta::send(
+                    ctx->wal_address,
+                    &services::wal::manager_wal_replicate_t::commit_txn,
+                    ctx->session,
+                    txn_id_,
+                    services::wal::wal_sync_mode::FULL,
+                    database_oid_);
+                co_await std::move(cf);
+            }
+        }
+
         // Phase 5b: snapshot txn_data AND swap-info BEFORE commit() purges the
         // active map; then commit; then dispatch the new batched APIs against
         // the post-swap state.

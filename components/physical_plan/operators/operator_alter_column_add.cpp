@@ -77,7 +77,7 @@ namespace components::operators {
 
         // resolve_table rebuilds columns from pg_attribute on each call, so
         // subsequent statements see the new column. A DML in the same txn
-        // would need a fresh resolve to refresh the catalog_view.
+        // would need a fresh resolve to refresh its plan-tree metadata.
         mark_executed();
     }
 

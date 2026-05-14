@@ -23,7 +23,7 @@ namespace components::operators {
     //      validate_logical_plan lookups (which probe the default registry)
     //      can find it.
     //   4. allocate one OID + write pg_proc + pg_depend rows so the function
-    //      survives restart (catalog_view_t hydrates the registry from pg_proc).
+    //      survives restart (the registry is hydrated from pg_proc at startup).
     //
     // The function_ptr is held as std::shared_ptr (via the logical node) so the
     // operator can fan out copies via get_copy() without consuming the payload.

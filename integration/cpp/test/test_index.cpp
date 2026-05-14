@@ -28,27 +28,19 @@ constexpr int kDocuments = 100;
         }                                                                                                              \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
-            auto types = gen_data_chunk(0, dispatcher->resource()).types();                                            \
-            std::vector<components::table::column_definition_t> columns;                                               \
-            columns.reserve(types.size());                                                                             \
-            for (const auto& type : types) {                                                                           \
-                columns.emplace_back(type.alias(), type);                                                              \
-            }                                                                                                          \
-            dispatcher->create_collection(session, database_name, collection_name, columns);                           \
+            dispatcher->execute_sql(session,                                                                            \
+                fmt::format("CREATE TABLE {}.{}(count bigint, count_str string, "                                       \
+                            "count_double double, count_bool bool, count_array ubigint[5], "                            \
+                            "count_decimal decimal(15,7));",                                                            \
+                            database_name, collection_name));                                                           \
         }                                                                                                              \
     } while (false)
 
 #define FILL_COLLECTION()                                                                                              \
     do {                                                                                                               \
-        auto chunk = gen_data_chunk(kDocuments, dispatcher->resource());                                               \
-        auto ins = components::logical_plan::make_node_insert(dispatcher->resource(),                                  \
-                                                              database_name,                                           \
-                                                              collection_name,                                         \
-                                                              std::move(chunk));                                       \
-        {                                                                                                              \
-            auto session = otterbrix::session_id_t();                                                                  \
-            dispatcher->execute_plan(session, ins);                                                                    \
-        }                                                                                                              \
+        auto session = otterbrix::session_id_t();                                                                      \
+        dispatcher->execute_sql(session,                                                                                \
+            gen_data_chunk_insert_sql(database_name, collection_name, kDocuments));                                     \
     } while (false)
 
 #define CREATE_INDEX(INDEX_NAME, KEY)                                                                                  \
@@ -85,43 +77,26 @@ constexpr int kDocuments = 100;
 #define DROP_INDEX(INDEX_NAME)                                                                                         \
     do {                                                                                                               \
         auto session = otterbrix::session_id_t();                                                                      \
-        auto node = components::logical_plan::make_node_drop_index(dispatcher->resource(),                             \
-                                                                   database_name,                                      \
-                                                                   collection_name,                                    \
-                                                                   INDEX_NAME);                                        \
-        dispatcher->drop_index(session, node);                                                                         \
+        dispatcher->execute_sql(session,                                                                                \
+            fmt::format("DROP INDEX {}.{}.{};", database_name, collection_name, INDEX_NAME));                          \
     } while (false)
 
 #define CHECK_FIND_ALL()                                                                                               \
     do {                                                                                                               \
         auto session = otterbrix::session_id_t();                                                                      \
-        auto plan =                                                                                                    \
-            components::logical_plan::make_node_aggregate(dispatcher->resource(), database_name, collection_name);   \
-        auto c =                                                                                                       \
-            dispatcher->find(session, plan, components::logical_plan::make_parameter_node(dispatcher->resource()));    \
+        auto c = dispatcher->execute_sql(session,                                                                       \
+            fmt::format("SELECT * FROM {}.{};", database_name, collection_name));                                       \
         REQUIRE(c->size() == kDocuments);                                                                              \
     } while (false)
 
-#define CHECK_FIND(KEY, COMPARE, SIDE, VALUE, COUNT)                                                                   \
+#define CHECK_FIND_COUNT_SQL(OP_STR, VALUE_SQL, COUNT)                                                                 \
     do {                                                                                                               \
         auto session = otterbrix::session_id_t();                                                                      \
-        auto plan =                                                                                                    \
-            components::logical_plan::make_node_aggregate(dispatcher->resource(), database_name, collection_name);   \
-        auto expr = components::expressions::make_compare_expression(dispatcher->resource(),                           \
-                                                                     COMPARE,                                          \
-                                                                     key{dispatcher->resource(), KEY, SIDE},           \
-                                                                     id_par{1});                                       \
-        plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),                           \
-                                                                     database_name,                                    \
-                                                                     collection_name,                                  \
-                                                                     std::move(expr)));                                \
-        auto params = components::logical_plan::make_parameter_node(dispatcher->resource());                           \
-        params->add_parameter(id_par{1}, VALUE);                                                                       \
-        auto c = dispatcher->find(session, plan, params);                                                              \
+        auto c = dispatcher->execute_sql(session,                                                                       \
+            fmt::format("SELECT * FROM {}.{} WHERE count {} {};",                                                       \
+                        database_name, collection_name, OP_STR, VALUE_SQL));                                            \
         REQUIRE(c->size() == COUNT);                                                                                   \
     } while (false)
-
-#define CHECK_FIND_COUNT(COMPARE, SIDE, VALUE, COUNT) CHECK_FIND("count", COMPARE, SIDE, VALUE, COUNT)
 
 // Phase 8.A migrated index disk layout from name-keyed
 // (${path}/${db_name}/${coll_name}/${index_name}) to oid-keyed
@@ -164,27 +139,17 @@ TEST_CASE("integration::cpp::test_index::base") {
         CHECK_FIND_ALL();
         do {
             auto session = otterbrix::session_id_t();
-
-            auto plan =
-                components::logical_plan::make_node_aggregate(dispatcher->resource(), database_name, collection_name);
-            auto expr =
-                components::expressions::make_compare_expression(dispatcher->resource(),
-                                                                 compare_type::eq,
-                                                                 key{dispatcher->resource(), "count", side_t::left},
-                                                                 id_par{1});
-            plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(), database_name, collection_name,
-                                                                         std::move(expr)));
-            auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), 10));
-            auto c = dispatcher->find(session, plan, params);
+            auto c = dispatcher->execute_sql(session,
+                fmt::format("SELECT * FROM {}.{} WHERE count = 10;",
+                            database_name, collection_name));
             REQUIRE(c->size() == 1);
         } while (false);
-        CHECK_FIND_COUNT(compare_type::eq, side_t::left, logical_value_t(dispatcher->resource(), 10), 1);
-        CHECK_FIND_COUNT(compare_type::gt, side_t::left, logical_value_t(dispatcher->resource(), 10), 90);
-        CHECK_FIND_COUNT(compare_type::lt, side_t::left, logical_value_t(dispatcher->resource(), 10), 9);
-        CHECK_FIND_COUNT(compare_type::ne, side_t::left, logical_value_t(dispatcher->resource(), 10), 99);
-        CHECK_FIND_COUNT(compare_type::gte, side_t::left, logical_value_t(dispatcher->resource(), 10), 91);
-        CHECK_FIND_COUNT(compare_type::lte, side_t::left, logical_value_t(dispatcher->resource(), 10), 10);
+        CHECK_FIND_COUNT_SQL("=",  "10",  1);
+        CHECK_FIND_COUNT_SQL(">",  "10",  90);
+        CHECK_FIND_COUNT_SQL("<",  "10",  9);
+        CHECK_FIND_COUNT_SQL("!=", "10",  99);
+        CHECK_FIND_COUNT_SQL(">=", "10",  91);
+        CHECK_FIND_COUNT_SQL("<=", "10",  10);
     }
 }
 
@@ -296,12 +261,12 @@ TEST_CASE("integration::cpp::test_index::no_type base check") {
     }
 
     INFO("find") {
-        CHECK_FIND_COUNT(compare_type::eq, side_t::left, 10, 1);
-        CHECK_FIND_COUNT(compare_type::gt, side_t::left, 10, 90);
-        CHECK_FIND_COUNT(compare_type::lt, side_t::left, 10, 9);
-        CHECK_FIND_COUNT(compare_type::ne, side_t::left, 10, 99);
-        CHECK_FIND_COUNT(compare_type::gte, side_t::left, 10, 91);
-        CHECK_FIND_COUNT(compare_type::lte, side_t::left, 10, 10);
+        CHECK_FIND_COUNT_SQL("=",  "10",  1);
+        CHECK_FIND_COUNT_SQL(">",  "10",  90);
+        CHECK_FIND_COUNT_SQL("<",  "10",  9);
+        CHECK_FIND_COUNT_SQL("!=", "10",  99);
+        CHECK_FIND_COUNT_SQL(">=", "10",  91);
+        CHECK_FIND_COUNT_SQL("<=", "10",  10);
     }
 }
 
@@ -321,23 +286,14 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
 
     INFO("verify initial state via index") {
         // count > 50 should match rows 51..100 → 50 rows
-        CHECK_FIND_COUNT(compare_type::gt, side_t::left, logical_value_t(dispatcher->resource(), 50), 50);
+        CHECK_FIND_COUNT_SQL(">", "50", 50);
     }
 
     INFO("delete rows where count > 90") {
         {
             auto session = otterbrix::session_id_t();
-            auto del = components::logical_plan::make_node_delete_many(
-                dispatcher->resource(), database_name, collection_name,
-                components::logical_plan::make_node_match(
-                    dispatcher->resource(), database_name, collection_name,
-                    components::expressions::make_compare_expression(dispatcher->resource(),
-                                                                     compare_type::gt,
-                                                                     key{dispatcher->resource(), "count", side_t::left},
-                                                                     id_par{1})));
-            auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), 90));
-            auto cur = dispatcher->execute_plan(session, del, params);
+            auto cur = dispatcher->execute_sql(session,
+                fmt::format("DELETE FROM {}.{} WHERE count > 90;", database_name, collection_name));
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 10);
         }
@@ -345,28 +301,15 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
 
     INFO("verify index after delete") {
         // count > 50 should now match rows 51..90 → 40 rows
-        CHECK_FIND_COUNT(compare_type::gt, side_t::left, logical_value_t(dispatcher->resource(), 50), 40);
+        CHECK_FIND_COUNT_SQL(">", "50", 40);
     }
 
     INFO("update row where count == 50 to count = 999") {
         {
             auto session = otterbrix::session_id_t();
-            auto match = components::logical_plan::make_node_match(
-                dispatcher->resource(), database_name, collection_name,
-                components::expressions::make_compare_expression(dispatcher->resource(),
-                                                                 compare_type::eq,
-                                                                 key{dispatcher->resource(), "count", side_t::left},
-                                                                 id_par{1}));
-            components::expressions::update_expr_ptr update_expr = new components::expressions::update_expr_set_t(
-                components::expressions::key_t{dispatcher->resource(), "count"});
-            update_expr->left() = new components::expressions::update_expr_get_const_value_t(id_par{2});
-            auto upd = components::logical_plan::make_node_update_many(dispatcher->resource(), database_name, collection_name,
-                                                                       match,
-                                                                       {update_expr});
-            auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), 50));
-            params->add_parameter(id_par{2}, logical_value_t(dispatcher->resource(), 999));
-            auto cur = dispatcher->execute_plan(session, upd, params);
+            auto cur = dispatcher->execute_sql(session,
+                fmt::format("UPDATE {}.{} SET count = 999 WHERE count = 50;",
+                            database_name, collection_name));
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
         }
@@ -374,8 +317,8 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
 
     INFO("verify index after update") {
         // count == 50 should now return 0 rows (was updated to 999)
-        CHECK_FIND_COUNT(compare_type::eq, side_t::left, logical_value_t(dispatcher->resource(), 50), 0);
+        CHECK_FIND_COUNT_SQL("=", "50", 0);
         // count == 999 should return 1 row
-        CHECK_FIND_COUNT(compare_type::eq, side_t::left, logical_value_t(dispatcher->resource(), 999), 1);
+        CHECK_FIND_COUNT_SQL("=", "999", 1);
     }
 }

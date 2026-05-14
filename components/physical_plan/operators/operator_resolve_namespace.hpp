@@ -18,9 +18,8 @@ namespace components::operators {
     //                       the namespace exists; zero rows when it doesn't.
     //
     // The actual storage scan is performed by manager_disk_t::read_rows_by_key
-    // (pure storage primitive — no catalog_view shortcut), so this operator
-    // composes cleanly into pipelines that resolve names without going through
-    // the dispatcher's cached catalog snapshot.
+    // (pure storage primitive), so this operator composes cleanly into
+    // pipelines that resolve names through the catalog pipeline.
     //
     // Phase 13 Step 3 — when constructed with a back-pointer to its logical-plan
     // node, the operator stamps the resolved namespace_oid onto that node so the

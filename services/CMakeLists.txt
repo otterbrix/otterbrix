@@ -20,7 +20,6 @@ set(${PROJECT_NAME}_SOURCES
         disk/manager_disk_storage.cpp
 
     # dispatcher
-       dispatcher/catalog_view.cpp
        dispatcher/dispatcher.cpp
        dispatcher/enrich_logical_plan.cpp
        dispatcher/resolve_type.cpp

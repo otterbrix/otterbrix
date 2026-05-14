@@ -456,42 +456,6 @@ namespace services::disk {
         co_return out;
     }
 
-    manager_disk_t::unique_future<std::pmr::vector<std::pair<components::catalog::oid_t, std::string>>>
-    manager_disk_t::list_tables_in_namespace(execution_context_t /*ctx*/,
-                                              components::catalog::oid_t namespace_oid) {
-        std::pmr::vector<std::pair<components::catalog::oid_t, std::string>> out(resource());
-        auto it = storages_.find(pg_class_oid);
-        if (it == storages_.end()) {
-            co_return out;
-        }
-        std::pmr::synchronized_pool_resource scan_resource;
-        inline_scan(it->second->table_storage.table(), {0, 1, 2, 3}, &scan_resource,
-                    [&](components::vector::data_chunk_t& chunk, uint64_t i) {
-                        auto rel_ns = chunk.value(2, i);
-                        if (rel_ns.is_null())
-                            return true;
-                        if (static_cast<components::catalog::oid_t>(rel_ns.value<std::uint32_t>()) != namespace_oid)
-                            return true;
-                        auto kind_v = chunk.value(3, i);
-                        if (kind_v.is_null())
-                            return true;
-                        auto kind_s = kind_v.value<std::string_view>();
-                        if (kind_s.empty())
-                            return true;
-                        const char relkind = kind_s.front();
-                        if (relkind != catalog::relkind::regular && relkind != catalog::relkind::computed)
-                            return true;
-                        auto oid_v = chunk.value(0, i);
-                        auto name_v = chunk.value(1, i);
-                        if (oid_v.is_null() || name_v.is_null())
-                            return true;
-                        out.emplace_back(static_cast<components::catalog::oid_t>(oid_v.value<std::uint32_t>()),
-                                          std::string(name_v.value<std::string_view>()));
-                        return true;
-                    });
-        co_return out;
-    }
-
     // --- Direct replay methods (synchronous, no MVCC, for physical WAL replay) ---
 
     manager_disk_t::unique_future<std::vector<components::catalog::oid_t>>

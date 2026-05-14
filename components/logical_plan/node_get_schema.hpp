@@ -16,9 +16,9 @@ namespace components::logical_plan {
     // either a `schema` STRUCT, a `latest_types` STRUCT (for relkind='g'
     // computed tables), or logical_type::INVALID.
     //
-    // Phase 4 #54 of the pipeline-unification refactor: replaces the inline
-    // catalog_view_t reads in services/dispatcher/dispatcher.cpp::get_schema
-    // with the same operator infrastructure used for every other plan.
+    // Phase 4 #54 of the pipeline-unification refactor: services/dispatcher/
+    // dispatcher.cpp::get_schema uses the same operator infrastructure as
+    // every other plan.
     class node_get_schema_t final : public node_t {
     public:
         node_get_schema_t(std::pmr::memory_resource* resource,

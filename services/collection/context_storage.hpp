@@ -4,7 +4,9 @@
 #include <components/expressions/key.hpp>
 #include <components/index/forward.hpp>
 #include <components/log/log.hpp>
+#include <components/logical_plan/node_catalog_resolve_table.hpp>
 #include <components/logical_plan/param_storage.hpp>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace services {
@@ -18,6 +20,14 @@ namespace services {
         std::unordered_set<components::catalog::oid_t> known_oids;
         std::pmr::vector<components::index::keys_base_storage_t> indexed_keys;
         const components::logical_plan::storage_parameters* parameters = nullptr;
+        // M7: oid → resolved_table_metadata_t* stamped by Pass 1's
+        // operator_resolve_table_t. Plan generators (transfer_scan in
+        // create_plan_match / create_plan_aggregate) use it to forward live
+        // column names + relkind, avoiding the inline pg_class /
+        // pg_computed_column side-channel that transfer_scan used to do.
+        std::unordered_map<components::catalog::oid_t,
+                           const components::logical_plan::resolved_table_metadata_t*>
+            table_metadata;
 
         context_storage_t(std::pmr::memory_resource* resource, log_t log)
             : resource(resource)
@@ -26,6 +36,12 @@ namespace services {
 
         bool has_table_oid(components::catalog::oid_t oid) const noexcept {
             return oid != components::catalog::INVALID_OID && known_oids.count(oid) > 0;
+        }
+
+        const components::logical_plan::resolved_table_metadata_t*
+        table_metadata_for(components::catalog::oid_t oid) const noexcept {
+            auto it = table_metadata.find(oid);
+            return it != table_metadata.end() ? it->second : nullptr;
         }
 
         bool has_index_on(const components::expressions::key_t& key) const {

@@ -21,8 +21,8 @@
 #include <components/table/row_version_manager.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
-#include <services/disk/ddl_result.hpp>
-#include <services/disk/resolve_result.hpp>
+#include <components/catalog/results/ddl_result.hpp>
+#include <components/catalog/results/resolve_result.hpp>
 #include <services/wal/base.hpp>
 
 namespace services::disk {
@@ -55,8 +55,6 @@ namespace services::disk {
         resolve_function_by_name(execution_context_t ctx, std::string name, std::uint64_t since_version);
         actor_zeta::unique_future<std::pmr::vector<std::string>>
         list_namespaces(execution_context_t ctx);
-        actor_zeta::unique_future<std::pmr::vector<std::pair<components::catalog::oid_t, std::string>>>
-        list_tables_in_namespace(execution_context_t ctx, components::catalog::oid_t namespace_oid);
 
         actor_zeta::unique_future<std::vector<components::catalog::oid_t>>
         allocate_oids_batch(std::size_t count);
@@ -215,7 +213,6 @@ namespace services::disk {
                                                             &disk_contract::resolve_function,
                                                             &disk_contract::resolve_function_by_name,
                                                             &disk_contract::list_namespaces,
-                                                            &disk_contract::list_tables_in_namespace,
                                                             &disk_contract::allocate_oids_batch,
                                                             &disk_contract::append_pg_catalog_row,
                                                             &disk_contract::delete_pg_catalog_rows,

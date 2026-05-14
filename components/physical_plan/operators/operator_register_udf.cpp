@@ -128,7 +128,7 @@ namespace components::operators {
                                        ? std::int64_t{0}
                                        : static_cast<std::int64_t>(uids.front());
             // Encode the first signature's per-arg matchers + output types so
-            // catalog_view_t can reconstruct real signatures across restart.
+            // the function registry can reconstruct real signatures across restart.
             std::string proargmatchers;
             std::string prorettype;
             if (!func_signatures.empty()) {

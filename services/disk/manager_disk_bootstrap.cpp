@@ -7,6 +7,96 @@ namespace services::disk {
     using namespace detail;
 
     namespace {
+        namespace wk = components::catalog::well_known_oid;
+
+        // ----------------------------------------------------------------------
+        // Builtin seed rows for pg_catalog bootstrap.
+        // Previously in components/catalog/builtin_seed.{cpp,hpp}; inlined here
+        // since manager_disk_bootstrap.cpp is the only consumer.
+        // ----------------------------------------------------------------------
+
+        struct ns_seed_row_t {
+            components::catalog::oid_t oid;
+            std::string_view name;
+        };
+        struct type_seed_row_t {
+            components::catalog::oid_t oid;
+            std::string_view name;
+        };
+        struct proc_seed_row_t {
+            components::catalog::oid_t oid;
+            std::string_view name;
+        };
+
+        ns_seed_row_t builtin_database_row() {
+            return {wk::main_database, "main"};
+        }
+
+        std::vector<ns_seed_row_t> builtin_namespace_rows() {
+            return {
+                {wk::pg_catalog_namespace,          "pg_catalog"},
+                {wk::public_namespace,              "public"},
+                {wk::information_schema_namespace,  "information_schema"},
+            };
+        }
+
+        std::vector<type_seed_row_t> builtin_type_rows() {
+            return {
+                // Canonical otterbrix names
+                {wk::boolean_type,   "bool"},
+                {wk::int8_type,      "int1"},
+                {wk::int16_type,     "int16"},
+                {wk::int32_type,     "int32"},
+                {wk::int64_type,     "int64"},
+                {wk::float32_type,   "float32"},
+                {wk::float64_type,   "float64"},
+                {wk::string_type,    "string"},
+                {wk::timestamp_type, "timestamp"},
+                {wk::date_type,      "date"},
+                {wk::time_type,      "time"},
+                {wk::blob_type,      "blob"},
+                {wk::numeric_type,   "numeric"},
+                {wk::uuid_type,      "uuid"},
+                // PostgreSQL internal typnames
+                {wk::int16_type,     "int2"},
+                {wk::int32_type,     "int4"},
+                {wk::int64_type,     "int8"},
+                {wk::int64_type,     "int8_t"},
+                {wk::float32_type,   "float4"},
+                {wk::float64_type,   "float8"},
+                {wk::string_type,    "text"},
+                {wk::string_type,    "varchar"},
+                {wk::string_type,    "bpchar"},
+                {wk::string_type,    "name"},
+                {wk::blob_type,      "bytea"},
+                // SQL-facing user aliases
+                {wk::boolean_type,   "boolean"},
+                {wk::int8_type,      "tinyint"},
+                {wk::int16_type,     "smallint"},
+                {wk::int32_type,     "integer"},
+                {wk::int32_type,     "int"},
+                {wk::int64_type,     "bigint"},
+                {wk::float64_type,   "double"},
+                {wk::float64_type,   "double precision"},
+                {wk::numeric_type,   "decimal"},
+                // Timestamp variants
+                {wk::timestamp_type, "timestamp_sec"},
+                {wk::timestamp_type, "timestamp_ms"},
+                {wk::timestamp_type, "timestamp_us"},
+                {wk::timestamp_type, "timestamp_ns"},
+            };
+        }
+
+        std::vector<proc_seed_row_t> builtin_proc_rows() {
+            return {
+                {wk::fn_count, "count"},
+                {wk::fn_sum,   "sum"},
+                {wk::fn_avg,   "avg"},
+                {wk::fn_min,   "min"},
+                {wk::fn_max,   "max"},
+            };
+        }
+
         // Map system table name (def->name) to its well-known OID.
         // Mirrors the constants in catalog_oids.hpp::well_known_oid::pg_*_table.
         components::catalog::oid_t well_known_oid_for_system_table(std::string_view name) {
@@ -82,7 +172,7 @@ namespace services::disk {
         // from existing .otbx already carry their data from the previous run.
         if (freshly_created.count(pg_database_oid)) {
             if (auto* def = catalog::find_system_table("pg_database")) {
-                const auto db = catalog::builtin_database_row();
+                const auto db = builtin_database_row();
                 auto row = make_row(resource(), def->columns, [&](data_chunk_t& chunk, auto* res) {
                     chunk.set_value(0, 0, lv_oid(res, db.oid));
                     chunk.set_value(1, 0, lv_str(res, std::string(db.name)));
@@ -93,7 +183,7 @@ namespace services::disk {
 
         if (freshly_created.count(pg_namespace_oid_tbl)) {
             if (auto* def = catalog::find_system_table("pg_namespace")) {
-                for (const auto& nrow : catalog::builtin_namespace_rows()) {
+                for (const auto& nrow : builtin_namespace_rows()) {
                     auto row = make_row(resource(), def->columns, [&](data_chunk_t& chunk, auto* res) {
                         chunk.set_value(0, 0, lv_oid(res, nrow.oid));
                         chunk.set_value(1, 0, lv_str(res, std::string(nrow.name)));
@@ -105,7 +195,7 @@ namespace services::disk {
 
         if (freshly_created.count(pg_type_oid)) {
             if (auto* def = catalog::find_system_table("pg_type")) {
-                for (const auto& trow : catalog::builtin_type_rows()) {
+                for (const auto& trow : builtin_type_rows()) {
                     auto row = make_row(resource(), def->columns, [&](data_chunk_t& chunk, auto* res) {
                         chunk.set_value(0, 0, lv_oid(res, trow.oid));
                         chunk.set_value(1, 0, lv_str(res, std::string(trow.name)));
@@ -118,7 +208,7 @@ namespace services::disk {
 
         if (freshly_created.count(pg_proc_oid)) {
             if (auto* def = catalog::find_system_table("pg_proc")) {
-                for (const auto& frow : catalog::builtin_proc_rows()) {
+                for (const auto& frow : builtin_proc_rows()) {
                     auto row = make_row(resource(), def->columns, [&](data_chunk_t& chunk, auto* res) {
                         chunk.set_value(0, 0, lv_oid(res, frow.oid));
                         chunk.set_value(1, 0, lv_str(res, std::string(frow.name)));

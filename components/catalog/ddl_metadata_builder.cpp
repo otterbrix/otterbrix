@@ -1,15 +1,60 @@
 #include "ddl_metadata_builder.hpp"
 
 #include "catalog_codes.hpp"
+#include "dependency_walker.hpp"
 #include "helpers.hpp"
-#include "pg_row_builder.hpp"
 #include "system_table_schemas.hpp"
 
+#include <components/table/column_definition.hpp>
+#include <components/types/logical_value.hpp>
+#include <components/vector/data_chunk.hpp>
+
 #include <cstdint>
+#include <memory_resource>
+#include <string>
+#include <vector>
 
 namespace components::catalog {
 
     namespace {
+
+        // Helpers for building single-row data_chunk_t values for pg_catalog writes.
+        // Previously lived in pg_row_builder.hpp; inlined here since this TU is the
+        // only consumer.
+        inline types::logical_value_t lv_oid(std::pmr::memory_resource* r, oid_t v) {
+            return types::logical_value_t(r, v);
+        }
+        inline types::logical_value_t lv_str(std::pmr::memory_resource* r, std::string v) {
+            return types::logical_value_t(r, std::move(v));
+        }
+        inline types::logical_value_t lv_i32(std::pmr::memory_resource* r, std::int32_t v) {
+            return types::logical_value_t(r, v);
+        }
+        inline types::logical_value_t lv_bool(std::pmr::memory_resource* r, bool v) {
+            return types::logical_value_t(r, v);
+        }
+        inline types::logical_value_t lv_i64(std::pmr::memory_resource* r, std::int64_t v) {
+            return types::logical_value_t(r, v);
+        }
+
+        // Build a single-row data_chunk_t whose schema is derived from `columns`.
+        // `fill` receives (chunk, resource) and must call chunk.set_value(col, 0, lv_*(...)).
+        template<typename FillFn>
+        vector::data_chunk_t make_pg_row(
+            std::pmr::memory_resource*                      resource,
+            const std::vector<table::column_definition_t>&  columns,
+            FillFn&&                                         fill)
+        {
+            std::pmr::vector<types::complex_logical_type> types(resource);
+            types.reserve(columns.size());
+            for (const auto& col : columns) {
+                types.push_back(col.type());
+            }
+            vector::data_chunk_t chunk(resource, types, 1);
+            chunk.set_cardinality(1);
+            fill(chunk, resource);
+            return chunk;
+        }
 
         constexpr oid_t pg_class_full     = well_known_oid::pg_class_table;
         constexpr oid_t pg_attribute_full = well_known_oid::pg_attribute_table;
@@ -376,7 +421,7 @@ namespace components::catalog {
                                              c.set_value(1, 0, lv_oid(r, index_oid));
                                              c.set_value(2, 0, lv_oid(r, well_known_oid::pg_class_table));
                                              c.set_value(3, 0, lv_oid(r, table_oid));
-                                             c.set_value(4, 0, lv_str(r, std::string{"a"}));
+                                             c.set_value(4, 0, lv_str(r, std::string{deptype::auto_dep}));
                                          });
                 result.push_back(make_write(pg_depend_full, std::move(chunk)));
             }

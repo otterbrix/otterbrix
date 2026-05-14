@@ -10,6 +10,7 @@
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/types/types.hpp>
+#include <components/types/user_type_walk.hpp>
 
 #include <functional>
 #include <span>
@@ -21,7 +22,9 @@ namespace components::catalog {
 
 namespace services::dispatcher {
 
-    class catalog_view_t;
+    namespace impl {
+        struct plan_resolve_index_t;
+    }
 
     using column_path = std::pmr::vector<size_t>;
     struct type_from_t {
@@ -57,46 +60,50 @@ namespace services::dispatcher {
         components::cursor::error_t error_;
     };
 
-    // V4 view-based check_*_exists. Use try_get_* (sync probe of cache); caller must ensure the
-    // referenced names are pre-loaded (V4 entry points do this via co_await on miss).
-    // nullptr from try_get_* maps to a not-found error cursor.
+    // M4.G.12 / M4.H: existence checks read from the plan-tree idx supplied
+    // explicitly by the dispatcher (no thread_local). Returns nullptr on
+    // hit, otherwise an error cursor with the standard
+    // "database/collection does not exist" diagnostic.
     components::cursor::cursor_t_ptr check_namespace_exists(std::pmr::memory_resource* resource,
-                                                            const catalog_view_t& view,
+                                                            const impl::plan_resolve_index_t* idx,
                                                             const components::catalog::table_id& id);
     components::cursor::cursor_t_ptr check_collection_exists(std::pmr::memory_resource* resource,
-                                                             const catalog_view_t& view,
+                                                             const impl::plan_resolve_index_t* idx,
                                                              const components::catalog::table_id& id);
-    // Probe `alias` against each namespace in `search_path` (in order). Returns success
-    // on first hit. If `search_path` is empty, falls back to {public, pg_catalog}.
-    // Caller is responsible for pre-loading via co_await view.get_type for each namespace
-    // it intends to search — this function is a sync probe of the cache.
+    // M4.G.9: probe `alias` against the plan-tree idx (impl::type_md_for)
+    // for each dbname in `search_dbnames` in order. Returns success on first
+    // hit. If `search_dbnames` is empty, falls back to {"public", "pg_catalog"}.
+    // The transformer (M4.G.1 / M4.G.4 / M4.G.5) emits resolve_type for every
+    // (dbname, alias) tuple this helper queries.
     components::cursor::cursor_t_ptr
     check_type_exists(std::pmr::memory_resource* resource,
-                       const catalog_view_t& view,
+                       const impl::plan_resolve_index_t* idx,
                        const std::string& alias,
-                       std::span<const components::catalog::oid_t> search_path = {});
+                       std::span<const std::string> search_dbnames = {});
 
-    // Walk a complex_logical_type tree and invoke `visit(name)` for every nested STRUCT,
-    // ENUM, or UNKNOWN node whose type_name() is non-empty. Used by DDL pre-load and by
-    // validate's table-type pre-walk to enumerate every UDT reference (recursively, at
-    // arbitrary depth). Visitor receives a std::string_view; lifetime is the type tree.
-    void walk_user_type_refs(const components::types::complex_logical_type& type,
-                              const std::function<void(std::string_view)>& visit);
+    // Walk a complex_logical_type tree and visit every nested UDT reference.
+    // Moved to components/types/user_type_walk.hpp (M4.G.1) so transformer +
+    // dispatcher + validate share one impl. The using-declaration keeps
+    // existing call sites unchanged.
+    using ::components::types::walk_user_type_refs;
 
-    // V4 entry points — pre-walk the plan AST collecting referenced collections, co_await
-    // catalog_view_t::get_namespace / get_table for each (cache hit = 0 roundtrips, miss =
-    // 1 per missing item), then delegate to the sync internals.
+    // V4 entry points — read referenced catalog metadata from the plan-tree
+    // resolve idx (populated by Pass 1's operator_resolve_*_t), then delegate
+    // to the sync internals. All catalog reads go through the resolve idx.
     //
     // Spec ref: docs/v4-catalog-refactoring.md §5 Phase E.3.
+    //
+    // M4.H: `idx` is supplied by the dispatcher (built once after Pass 1).
+    // Recursive validate_schema_sync calls thread the same pointer through.
     actor_zeta::unique_future<components::cursor::cursor_t_ptr>
     validate_types(std::pmr::memory_resource* resource,
-                   catalog_view_t& view,
                    components::execution_context_t ctx,
+                   const impl::plan_resolve_index_t* idx,
                    components::logical_plan::node_t* node);
     [[nodiscard]] actor_zeta::unique_future<schema_result<named_schema>>
     validate_schema(std::pmr::memory_resource* resource,
-                    catalog_view_t& view,
                     components::execution_context_t ctx,
+                    const impl::plan_resolve_index_t* idx,
                     components::logical_plan::node_t* node,
                     const components::logical_plan::storage_parameters& parameters);
 
@@ -105,17 +112,17 @@ namespace services::dispatcher {
     // actor scheduler when needed.
     components::cursor::cursor_t_ptr
     validate_types_sync(std::pmr::memory_resource* resource,
-                        const catalog_view_t& view,
+                        const impl::plan_resolve_index_t* idx,
                         components::logical_plan::node_t* node);
     schema_result<named_schema>
     validate_schema_sync(std::pmr::memory_resource* resource,
-                         const catalog_view_t& view,
+                         const impl::plan_resolve_index_t* idx,
                          components::logical_plan::node_t* node,
                          const components::logical_plan::storage_parameters& parameters);
 
     // validate_drop_restrict: check that no 'n'-type pg_depend rows block a RESTRICT drop.
-    // fetch_deps is a closure over the pg_depend snapshot (provided by caller from
-    // catalog_view or disk). Returns nullptr on success, error cursor on RESTRICT violation.
+    // fetch_deps is a closure over the pg_depend snapshot (provided by caller from disk).
+    // Returns nullptr on success, error cursor on RESTRICT violation.
     components::cursor::cursor_t_ptr
     validate_drop_restrict(std::pmr::memory_resource*               resource,
                            components::catalog::oid_t               seed_classid,
@@ -125,10 +132,10 @@ namespace services::dispatcher {
     // validate_type_recursion: for CREATE TABLE / CREATE TYPE nodes, detect circular user-
     // defined type references (e.g. STRUCT A { b: B } and STRUCT B { a: A }).
     // Returns nullptr on success, error cursor if a cycle is detected.
-    // view must have the existing user types pre-loaded (via prior co_await get_type calls).
+    // M4.H: `idx` supplies the plan-tree type metadata index.
     components::cursor::cursor_t_ptr
     validate_type_recursion(std::pmr::memory_resource*                      resource,
-                            const catalog_view_t&                           view,
+                            const impl::plan_resolve_index_t*               idx,
                             const components::types::complex_logical_type&  root_type);
 
 } // namespace services::dispatcher

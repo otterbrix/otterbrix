@@ -2,6 +2,7 @@
 
 #include "index_selection_helpers.hpp"
 
+#include <components/catalog/catalog_codes.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/function_expression.hpp>
 #include <components/logical_plan/node_match.hpp>
@@ -138,12 +139,27 @@ namespace services::planner::impl {
                                                           const components::logical_plan::node_ptr& node,
                                                           components::logical_plan::limit_t limit) {
         if (node->expressions().empty()) {
+            // M7: forward the live-columns projection mask for relkind='g' tables.
+            // resolve_table operator (Pass 1) already filtered tombstones, so we
+            // just pass the resulting column-alias list. relkind='r' → empty mask
+            // (transfer_scan skips projection).
+            std::vector<std::string> live_aliases;
+            if (const auto* md = context.table_metadata_for(node->table_oid())) {
+                if (md->relkind == components::catalog::relkind::computed) {
+                    live_aliases.reserve(md->columns.size());
+                    for (const auto& col : md->columns) {
+                        live_aliases.push_back(col.attname);
+                    }
+                }
+            }
             if (context.has_table_oid(node->table_oid())) {
                 return boost::intrusive_ptr(
-                    new components::operators::transfer_scan(context.resource, node->table_oid(), limit));
+                    new components::operators::transfer_scan(
+                        context.resource, node->table_oid(), limit, std::move(live_aliases)));
             } else {
                 return boost::intrusive_ptr(
-                    new components::operators::transfer_scan(nullptr, node->table_oid(), limit));
+                    new components::operators::transfer_scan(
+                        nullptr, node->table_oid(), limit, std::move(live_aliases)));
             }
         } else {
             // Phase 10.F: index_scan no longer takes cfn — pass table_oid only.

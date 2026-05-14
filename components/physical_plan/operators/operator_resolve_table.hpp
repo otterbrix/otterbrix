@@ -13,9 +13,7 @@ namespace components::operators {
 
     // Phase 13 T1 — operator-pipeline replacement for the dedicated
     // manager_disk_t::resolve_table actor message. Self-resolves a table's
-    // column schema via standard disk-actor primitives (read_rows_by_key),
-    // so dispatcher/catalog_view no longer need a side-channel actor message
-    // for resolution.
+    // column schema via standard disk-actor primitives (read_rows_by_key).
     //
     // Inputs: either table_oid (oid in pg_class) OR (namespace_oid, relname).
     // In the name-resolution form the operator first scans pg_class by
@@ -57,8 +55,7 @@ namespace components::operators {
 
         // Phase 13 Step 3: back-pointer form. After resolving, the operator
         // stamps namespace_oid + table_oid onto target_node so the dispatcher's
-        // Pass 2 (validate / enrich) can read it via plan_resolve_index_t
-        // without an async catalog_view shortcut.
+        // Pass 2 (validate / enrich) can read it via plan_resolve_index_t.
         operator_resolve_table_t(std::pmr::memory_resource*   resource,
                                   log_t                         log,
                                   components::catalog::oid_t    namespace_oid,

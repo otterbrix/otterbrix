@@ -1,33 +1,29 @@
 #pragma once
 
-#include "catalog_view.hpp"
-
-#include <components/context/execution_context.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/types/types.hpp>
-
-#include <actor-zeta/detail/future.hpp>
 
 #include <vector>
 
 namespace services::dispatcher {
 
+    namespace impl {
+        struct plan_resolve_index_t;
+    }
+
     // Returns true if ct.type_name() maps to a known built-in logical type.
     bool resolve_builtin(components::types::complex_logical_type& ct);
 
-    void apply_resolved(components::types::complex_logical_type& ct,
-                        const resolved_type_t* rt);
+    // M4.G.2: resolves a single UNKNOWN type from the plan-tree idx
+    // (passed explicitly — M4.H removed the thread_local). Pure sync —
+    // Pass 1's resolve_type operators must have stamped the relevant
+    // metadata before this is called.
+    void resolve_one_type(components::types::complex_logical_type& ct,
+                          const impl::plan_resolve_index_t* idx);
 
-    // Resolves a single UNKNOWN type by querying catalog_view.
-    actor_zeta::unique_future<void>
-    resolve_one_type(components::types::complex_logical_type& ct,
-                     catalog_view_t& view,
-                     components::execution_context_t ctx);
-
-    // Resolves UNKNOWN types in all columns (including STRUCT fields and ARRAY element types).
-    actor_zeta::unique_future<void>
-    resolve_column_definitions(std::vector<components::table::column_definition_t>& cols,
-                                catalog_view_t& view,
-                                components::execution_context_t ctx);
+    // Resolves UNKNOWN types in all columns (including STRUCT fields and
+    // ARRAY element types) using the plan-tree idx.
+    void resolve_column_definitions(std::vector<components::table::column_definition_t>& cols,
+                                    const impl::plan_resolve_index_t* idx);
 
 } // namespace services::dispatcher

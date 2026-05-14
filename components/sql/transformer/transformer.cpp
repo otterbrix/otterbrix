@@ -42,7 +42,7 @@ namespace components::sql::transform {
                 log_node = transform_create_database(n);
                 // Phase 13 T13: CREATE DATABASE → resolve the namespace name so
                 // a later patch can use the resolve node to detect duplicates
-                // through the pipeline instead of catalog_view's side-channel.
+                // through the pipeline.
                 log_node = maybe_wrap_with_catalog_resolve_namespace(
                     resource_, dbname, std::move(log_node));
                 break;
@@ -57,14 +57,7 @@ namespace components::sql::transform {
                 break;
             }
             case T_CreateStmt:
-                // Phase 13 T13: CREATE TABLE — resolve target namespace AND
-                // future table name (existence check / collision). transform_
-                // create_table builds the dbname/relname into the resulting
-                // node, but we don't introspect it here to keep the call-site
-                // change small; rely on the planner's downstream namespace_oid
-                // resolution for now.
-                // TODO: add catalog_resolve_namespace wrap by reading the
-                // RangeVar dbname out of the CreateStmt node directly.
+                // Wrap is inside transform_create_table (mirrors DML pattern).
                 log_node = transform_create_table(pg_cast<CreateStmt>(node));
                 break;
             case T_DropStmt:

@@ -61,7 +61,8 @@ components::logical_plan::node_type find_effective_dml_type(
         return t == node_type::catalog_resolve_namespace_t ||
                t == node_type::catalog_resolve_table_t ||
                t == node_type::catalog_resolve_type_t ||
-               t == node_type::catalog_resolve_function_t;
+               t == node_type::catalog_resolve_function_t ||
+               t == node_type::catalog_resolve_constraint_t;
     };
     auto* n = plan.get();
     while (n) {
@@ -204,7 +205,8 @@ namespace services::collection::executor {
                 return t == components::logical_plan::node_type::catalog_resolve_namespace_t ||
                        t == components::logical_plan::node_type::catalog_resolve_table_t ||
                        t == components::logical_plan::node_type::catalog_resolve_type_t ||
-                       t == components::logical_plan::node_type::catalog_resolve_function_t;
+                       t == components::logical_plan::node_type::catalog_resolve_function_t ||
+                       t == components::logical_plan::node_type::catalog_resolve_constraint_t;
             };
             for (const auto& c : limit_lookup_node->children()) {
                 if (c && !is_catalog_resolve(c->type())) {

@@ -17,9 +17,8 @@ namespace components::operators {
     //   3. build_pg_attribute_row reusing attoid/attnum/atttypid but with attname=new_name
     //      and append_pg_catalog_row.
     //
-    // No in-memory schema rename hook exists today; the change becomes visible after the
-    // catalog_view refresh that follows the DDL commit. This mirrors the legacy
-    // dispatcher::ddl.cpp::rename_column path.
+    // No in-memory schema rename hook exists today; the change becomes visible
+    // on subsequent resolve_table operator runs (which read pg_attribute fresh).
     //
     // old_name_ is retained for trace/error display only — routing is by attoid_.
     class operator_alter_column_rename_t final : public read_write_operator_t {

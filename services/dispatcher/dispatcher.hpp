@@ -17,6 +17,7 @@
 #include <core/executor.hpp>
 #include <mutex>
 
+#include <components/catalog/catalog_oids.hpp>
 #include <components/compute/function.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/log/log.hpp>
@@ -31,8 +32,6 @@
 #include <services/wal/wal_contract.hpp>
 
 namespace services::dispatcher {
-
-    class catalog_view_t;
 
     class manager_dispatcher_t final : public actor_zeta::actor::actor_mixin<manager_dispatcher_t> {
         using collection_storage_t = std::pmr::set<collection_full_name_t>;
@@ -92,6 +91,12 @@ namespace services::dispatcher {
                                                             &manager_dispatcher_t::abort_transaction>;
 
     private:
+        // Pipeline-routed OID allocation. Builds a node_allocate_oids_t leaf,
+        // drives operator_allocate_oids_t via the standard executor loop, and
+        // returns the stamped batch.
+        unique_future<std::vector<components::catalog::oid_t>>
+        allocate_oids_via_pipeline(components::session::session_id_t session, std::size_t count);
+
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
         log_t log_;

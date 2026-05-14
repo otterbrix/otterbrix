@@ -112,7 +112,7 @@ namespace components::catalog {
             c.emplace_back("typnamespace", oid_col(), true);
             // typdefspec: flat-text encoded complex_logical_type via encode_type_spec
             // (mirrors pg_attribute's atttypspec). Empty for built-in scalar pg_type entries;
-            // STRUCT/ENUM/UDT rows carry the full child-type tree so catalog_view_t can
+            // STRUCT/ENUM/UDT rows carry the full child-type tree so readers can
             // reconstruct the rich definition after restart. Optional column; rows missing
             // this field round-trip as UNKNOWN per decode_type_spec's empty-string fallback.
             c.emplace_back("typdefspec", str_col(), false);

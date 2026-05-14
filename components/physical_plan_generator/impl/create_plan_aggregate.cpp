@@ -1,5 +1,6 @@
 #include "create_plan_aggregate.hpp"
 
+#include <components/catalog/catalog_codes.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_limit.hpp>
@@ -66,9 +67,21 @@ namespace services::planner::impl {
                 executor = std::move(match_op);
             }
         } else {
+            // M7: live-columns projection mask for relkind='g' transfer_scan.
+            std::vector<std::string> live_aliases;
+            if (const auto* md = context.table_metadata_for(node->table_oid())) {
+                if (md->relkind == components::catalog::relkind::computed) {
+                    live_aliases.reserve(md->columns.size());
+                    for (const auto& col : md->columns) {
+                        live_aliases.push_back(col.attname);
+                    }
+                }
+            }
             executor = match_op ? std::move(match_op)
                                 : static_cast<components::operators::operator_ptr>(boost::intrusive_ptr(
-                                      new components::operators::transfer_scan(plan_resource, node->table_oid(), scan_limit)));
+                                      new components::operators::transfer_scan(
+                                          plan_resource, node->table_oid(), scan_limit,
+                                          std::move(live_aliases))));
         }
         if (group_op) {
             group_op->set_children(std::move(executor));

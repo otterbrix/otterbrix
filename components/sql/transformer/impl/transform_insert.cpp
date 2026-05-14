@@ -105,7 +105,8 @@ namespace components::sql::transform {
             return maybe_wrap_with_catalog_resolve_table(resource_,
                                                           dbname_for_resolve,
                                                           relname_for_resolve,
-                                                          std::move(ins));
+                                                          std::move(ins),
+                                                          constraint_resolve_kind::outgoing);
         } else {
             auto qn = rangevar_to_qualified_name(node.relation);
             const std::string dbname_for_resolve = qn.dbname;
@@ -118,7 +119,8 @@ namespace components::sql::transform {
             return maybe_wrap_with_catalog_resolve_table(resource_,
                                                           dbname_for_resolve,
                                                           relname_for_resolve,
-                                                          std::move(res));
+                                                          std::move(res),
+                                                          constraint_resolve_kind::outgoing);
         }
     }
 } // namespace components::sql::transform

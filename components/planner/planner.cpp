@@ -125,6 +125,8 @@ namespace components::planner {
             case node_type::catalog_resolve_namespace_t:
             case node_type::catalog_resolve_type_t:
             case node_type::catalog_resolve_function_t:
+            case node_type::catalog_resolve_constraint_t:
+            case node_type::allocate_oids_t:
                 return node;
             default:
                 for (auto& child : node->children()) {
@@ -225,7 +227,7 @@ namespace components::planner {
 
         // CREATE SEQUENCE → sequence_t(primitive_write × N) over pg_class + pg_sequence
         // + pg_depend (seq → ns 'n'). namespace_oid is set by the enrich phase
-        // (catalog_view lookup); the seq_oid is allocated from the dispatcher's batch.
+        // (from the plan-tree resolve idx); the seq_oid is allocated from the dispatcher's batch.
         node_ptr rewrite_create_sequence(std::pmr::memory_resource* r,
                                           node_ptr node,
                                           catalog::oid_batch_t& oid_batch) {
@@ -655,6 +657,8 @@ namespace components::planner {
             case node_type::catalog_resolve_namespace_t:
             case node_type::catalog_resolve_type_t:
             case node_type::catalog_resolve_function_t:
+            case node_type::catalog_resolve_constraint_t:
+            case node_type::allocate_oids_t:
                 return node;
             default:
                 for (auto& child : node->children()) {

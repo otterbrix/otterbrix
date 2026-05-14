@@ -38,6 +38,7 @@
 #include <components/logical_plan/node_drop_view.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_having.hpp>
+#include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_limit.hpp>
@@ -115,6 +116,75 @@ namespace services::dispatcher {
             std::vector<std::string> nn;
             fill_not_null(*md, nn, /*include_with_defaults=*/false);
             node->set_not_null_cols(std::move(nn));
+
+            // Coerce literal chunk types to table column types.
+            // The SQL transformer builds the INSERT chunk from VALUES literals,
+            // so integer literals become BIGINT, float literals become FLOAT/DOUBLE,
+            // and ROW(...) STRUCTs carry those literal types in their children.
+            // Storage allocates per-vector buffers from the chunk's type, so a
+            // BIGINT vector writes 8 bytes per row. On read, pg_attribute says
+            // the column is INTEGER (4 bytes) — and the int32 stride misaligns
+            // with the 8-byte payload. Rebuild each column vector with the
+            // table's declared type; cast_as on logical_value_t handles the
+            // recursive STRUCT/ARRAY descent.
+            if (!node->children().empty() &&
+                node->children().front() &&
+                node->children().front()->type() == components::logical_plan::node_type::data_t) {
+                auto* dat = static_cast<components::logical_plan::node_data_t*>(
+                    node->children().front().get());
+                auto& chunk = dat->data_chunk();
+                const auto& kt = node->key_translation();
+                for (std::size_t ci = 0; ci < chunk.column_count(); ++ci) {
+                    auto& col = chunk.data[ci];
+                    // Locate this chunk column's matching table column by name
+                    // (key_translation[i] when present, else position).
+                    std::string col_name;
+                    if (ci < kt.size()) {
+                        col_name = kt[ci].as_string();
+                    } else {
+                        col_name = std::string(col.type().alias());
+                    }
+                    const components::types::complex_logical_type* target_type = nullptr;
+                    for (const auto& tc : md->columns) {
+                        if (tc.attname == col_name) { target_type = &tc.type; break; }
+                    }
+                    if (!target_type) continue;
+                    // complex_logical_type::operator== only compares the top-
+                    // level logical_type enum, so STRUCT-vs-STRUCT compares
+                    // equal regardless of children. For composite types (where
+                    // SQL literal children may carry the wrong width — BIGINT
+                    // for int4, DOUBLE for float4, …), force a full rebuild so
+                    // cast_as recurses into children. Scalars get the cheap
+                    // identity check.
+                    using LT = components::types::logical_type;
+                    const bool is_composite =
+                        col.type().type() == LT::STRUCT ||
+                        col.type().type() == LT::LIST ||
+                        col.type().type() == LT::ARRAY ||
+                        col.type().type() == LT::MAP;
+                    if (!is_composite && col.type() == *target_type) continue;
+                    // Build a fresh vector with the table's declared type and
+                    // copy every row via cast_as. complex_logical_type::cast_as
+                    // recurses STRUCT children, so nested ROW(int_literal,...)
+                    // → STRUCT(INTEGER,...) is fully retyped.
+                    components::vector::vector_t replacement(
+                        col.resource(), *target_type, chunk.capacity());
+                    const auto rows = chunk.size();
+                    for (std::uint64_t row = 0; row < rows; ++row) {
+                        auto v = col.value(row);
+                        if (!v.is_null() && v.type() != *target_type) {
+                            v = v.cast_as(*target_type);
+                        }
+                        replacement.set_value(row, v);
+                    }
+                    // Preserve the original column alias (used by storage_append
+                    // for name-based key matching).
+                    if (col.type().has_alias()) {
+                        replacement.type().set_alias(col.type().alias());
+                    }
+                    col = std::move(replacement);
+                }
+            }
         }
 
         void enrich_update_sync(components::logical_plan::node_update_t* node,

@@ -1,5 +1,7 @@
 #include "planner.hpp"
 
+#include <cstdio>
+
 #include <catalog/catalog_codes.hpp>
 #include <catalog/catalog_oids.hpp>
 #include <catalog/ddl_metadata_builder.hpp>
@@ -366,9 +368,11 @@ namespace components::planner {
                     r, db_name, std::string(ct->type().type_name()), field_cols,
                     /*is_disk_storage=*/false, target_ns,
                     oid_batch, catalog::relkind::composite_type);
+                auto spec = components::catalog::encode_type_spec(ct->type());
+                std::fprintf(stderr, "[PLN-CT2] name='%s' typdefspec='%s'\n",
+                    std::string(ct->type().type_name()).c_str(), spec.c_str());
                 auto type_writes = catalog::build_create_type_writes(
-                    r, std::string(ct->type().type_name()), target_ns, composite_oid,
-                    components::catalog::encode_type_spec(ct->type()));
+                    r, std::string(ct->type().type_name()), target_ns, composite_oid, spec);
                 for (auto& w : type_writes) writes.push_back(std::move(w));
             } else {
                 // ENUM and other extension types — persisted via pg_type.

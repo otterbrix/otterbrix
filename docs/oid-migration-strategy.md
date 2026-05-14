@@ -127,4 +127,3 @@ until a triggering feature lands.
 - `components/catalog/system_table_schemas.cpp` — well-known oid mapping.
 - `services/disk/manager_disk.hpp` — `storages_` shape.
 - `services/wal/record.hpp` — WAL record format (carries `table_oid`).
-- `docs/phase8-audit.md` — test-baseline tracker for the migration.

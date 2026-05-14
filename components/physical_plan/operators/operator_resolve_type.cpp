@@ -2,6 +2,7 @@
 
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/helpers.hpp>
+#include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
 #include <components/logical_plan/node_catalog_resolve_type.hpp>
 #include <components/types/logical_value.hpp>

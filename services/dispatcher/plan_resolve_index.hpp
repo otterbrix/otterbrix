@@ -230,10 +230,8 @@ namespace services::dispatcher::impl {
         if (!idx) return components::catalog::INVALID_OID;
         if (auto it = idx->ns_by_dbname.find(std::string(dbname));
             it != idx->ns_by_dbname.end()) {
-            plan_resolve_ns_hit_counter().fetch_add(1, std::memory_order_relaxed);
             return it->second;
         }
-        plan_resolve_ns_miss_counter().fetch_add(1, std::memory_order_relaxed);
         return components::catalog::INVALID_OID;
     }
 

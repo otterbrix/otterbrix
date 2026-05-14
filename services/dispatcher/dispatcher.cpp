@@ -34,6 +34,7 @@
 #include <components/logical_plan/node_drop_type.hpp>
 #include <components/logical_plan/node_drop_view.hpp>
 #include <components/logical_plan/node_insert.hpp>
+#include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/logical_plan/node_abort_transaction.hpp>
@@ -338,6 +339,108 @@ namespace services::dispatcher {
         // Optimizer: constant folding, etc.
         logic_plan = components::planner::optimize(resource(), logic_plan, nullptr, params.get());
 
+        // Direct API path (wrapper_dispatcher::execute_plan, create_collection,
+        // find, delete_*, update_*) bypasses the SQL transformer that injects
+        // catalog_resolve_namespace_t / catalog_resolve_table_t front-children.
+        // Validate/enrich consume OIDs through the plan-tree idx, so we must
+        // build the same wrap here when the caller handed us a bare DML/DDL.
+        // Walks the entire plan tree so multi-table consumers (INSERT FROM
+        // SELECT, JOIN, etc.) get resolves for every (db, rel) pair.
+        if (logic_plan->type() != node_type::sequence_t) {
+            std::set<std::string> wrap_dbs;
+            std::set<std::pair<std::string, std::string>> wrap_tbls;
+            auto add_dbrel = [&](std::string db, std::string rel) {
+                if (db.empty()) return;
+                wrap_dbs.insert(db);
+                if (!rel.empty()) {
+                    wrap_tbls.insert({std::move(db), std::move(rel)});
+                }
+            };
+            // Iterative pre-order walk (no recursion → no std::function).
+            std::vector<const node_t*> stack;
+            stack.push_back(logic_plan.get());
+            while (!stack.empty()) {
+                const node_t* n = stack.back();
+                stack.pop_back();
+                if (!n) continue;
+                switch (n->type()) {
+                    case node_type::insert_t: {
+                        auto* d = static_cast<const node_insert_t*>(n);
+                        add_dbrel(d->dbname(), d->relname()); break;
+                    }
+                    case node_type::update_t: {
+                        auto* d = static_cast<const node_update_t*>(n);
+                        add_dbrel(d->dbname(), d->relname()); break;
+                    }
+                    case node_type::delete_t: {
+                        auto* d = static_cast<const node_delete_t*>(n);
+                        add_dbrel(d->dbname(), d->relname()); break;
+                    }
+                    case node_type::aggregate_t: {
+                        auto* d = static_cast<const node_aggregate_t*>(n);
+                        add_dbrel(d->dbname(), d->relname()); break;
+                    }
+                    case node_type::match_t: {
+                        auto* d = static_cast<const node_match_t*>(n);
+                        add_dbrel(d->dbname(), d->relname()); break;
+                    }
+                    case node_type::join_t: {
+                        auto* d = static_cast<const node_join_t*>(n);
+                        add_dbrel(d->dbname(), d->relname()); break;
+                    }
+                    case node_type::create_collection_t: {
+                        auto* d = static_cast<const node_create_collection_t*>(n);
+                        add_dbrel(d->dbname(), d->relname()); break;
+                    }
+                    case node_type::drop_collection_t: {
+                        auto* d = static_cast<const node_drop_collection_t*>(n);
+                        add_dbrel(d->dbname(), d->relname()); break;
+                    }
+                    case node_type::create_index_t: {
+                        auto* d = static_cast<const node_create_index_t*>(n);
+                        add_dbrel(d->dbname(), d->relname()); break;
+                    }
+                    case node_type::drop_index_t: {
+                        auto* d = static_cast<const node_drop_index_t*>(n);
+                        add_dbrel(d->dbname(), d->relname()); break;
+                    }
+                    case node_type::create_database_t: {
+                        auto* d = static_cast<const node_create_database_t*>(n);
+                        if (!d->dbname().empty()) wrap_dbs.insert(d->dbname());
+                        break;
+                    }
+                    case node_type::drop_database_t: {
+                        auto* d = static_cast<const node_drop_database_t*>(n);
+                        if (!d->dbname().empty()) wrap_dbs.insert(d->dbname());
+                        break;
+                    }
+                    default: break;
+                }
+                for (const auto& c : n->children()) stack.push_back(c.get());
+            }
+            if (!wrap_dbs.empty() || !wrap_tbls.empty()) {
+                auto seq = boost::intrusive_ptr<components::logical_plan::node_t>(
+                    new components::logical_plan::node_sequence_t(resource()));
+                std::set<std::string> resolved_dbs;
+                for (const auto& db : wrap_dbs) {
+                    seq->append_child(
+                        components::logical_plan::make_node_catalog_resolve_namespace(resource(), db));
+                    resolved_dbs.insert(db);
+                }
+                for (const auto& [db, rel] : wrap_tbls) {
+                    if (!resolved_dbs.count(db)) {
+                        seq->append_child(
+                            components::logical_plan::make_node_catalog_resolve_namespace(resource(), db));
+                        resolved_dbs.insert(db);
+                    }
+                    seq->append_child(
+                        components::logical_plan::make_node_catalog_resolve_table(resource(), db, rel));
+                }
+                seq->append_child(std::move(logic_plan));
+                logic_plan = seq;
+            }
+        }
+
         // Phase 13 M1: Pass 1 — execute catalog_resolve_*_t front children
         // of the transformer's sequence_t wrap BEFORE validate. The
         // operator_resolve_*_t back-pointer constructor stamps
@@ -547,6 +650,21 @@ namespace services::dispatcher {
                             if (col_def.type().type_name().empty()) {
                                 break;
                             }
+                            // Builtin scalars (bool, int4, …) resolve sync via
+                            // pg_name_to_logical_type — the pre-M4 path handled
+                            // this implicitly through view.get_type preload.
+                            const auto lt = components::catalog::pg_name_to_logical_type(
+                                col_def.type().type_name());
+                            if (lt != logical_type::UNKNOWN) {
+                                std::string alias = col_def.type().has_alias()
+                                                      ? col_def.type().alias()
+                                                      : std::string{};
+                                col_def.type() = components::types::complex_logical_type{lt};
+                                if (!alias.empty()) {
+                                    col_def.type().set_alias(alias);
+                                }
+                                continue;
+                            }
                             error = check_type_exists(resource(),
                                                        &dispatcher_idx,
                                                        col_def.type().type_name(),
@@ -603,6 +721,16 @@ namespace services::dispatcher {
                 if (n->type().type() == logical_type::STRUCT) {
                     for (auto& field : n->type().child_types()) {
                         if (field.type() == logical_type::UNKNOWN) {
+                            const auto lt = components::catalog::pg_name_to_logical_type(
+                                field.type_name());
+                            if (lt != logical_type::UNKNOWN) {
+                                std::string alias = field.has_alias() ? field.alias() : std::string{};
+                                field = components::types::complex_logical_type{lt};
+                                if (!alias.empty()) {
+                                    field.set_alias(alias);
+                                }
+                                continue;
+                            }
                             error = check_type_exists(resource(), &dispatcher_idx, field.type_name(), str_path);
                             if (error) {
                                 break;

@@ -10,6 +10,7 @@
 #include "logical_plan/node_update.hpp"
 
 #include <components/catalog/cascade_planner.hpp>
+#include <components/catalog/system_table_schemas.hpp>
 #include <components/catalog/table_id.hpp>
 #include <components/compute/function.hpp>
 #include <components/compute/kernel_signature.hpp>
@@ -814,6 +815,15 @@ namespace services::dispatcher {
                        const impl::plan_resolve_index_t* idx,
                        const std::string& alias,
                        std::span<const std::string> search_dbnames) {
+        // Builtin scalars (bool, int4, text, …) are resolved synchronously
+        // via pg_name_to_logical_type — no catalog lookup needed. The pre-M4
+        // view-based path implicitly handled this through view.get_type
+        // pre-loading; the plan-tree idx flow has no such preload, so we
+        // short-circuit here.
+        if (components::catalog::pg_name_to_logical_type(alias) !=
+            components::types::logical_type::UNKNOWN) {
+            return {};
+        }
         // M4.G.9: probe plan-tree idx via impl::type_md_for. Transformer
         // (M4.G.1/4/5) emits resolve_type for every (dbname, alias) tuple
         // we'll search here. Empty search_dbnames defaults to public + pg_catalog.

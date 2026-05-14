@@ -88,58 +88,31 @@ TEST_CASE("integration::cpp::test_collection::insert") {
     }
 
     INFO("initialization") {
-        auto create_table = [&](const collection_name_t& collection, const char* col_spec) {
+        auto create_collection = [&](const collection_name_t& collection,
+                                     const std::vector<table::column_definition_t>& columns) {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session,
-                fmt::format("CREATE TABLE {}.{}({});", table_database_name, collection, col_spec));
+            dispatcher->create_collection(session, table_database_name, collection, columns);
         };
 
         {
             auto session = otterbrix::session_id_t();
             dispatcher->create_database(session, table_database_name);
         }
-        create_table(table_collection_name_simple,
-                     "count_duplicate bigint, count bigint, count_str string, count_double double, "
-                     "count_bool bool, count_array ubigint[5], count_decimal decimal(15,7)");
-        create_table(table_collection_name_not_null,
-                     "count_duplicate bigint NOT NULL, count bigint NOT NULL, count_str string NOT NULL, "
-                     "count_double double NOT NULL, count_bool bool NOT NULL, "
-                     "count_array ubigint[5] NOT NULL, count_decimal decimal(15,7) NOT NULL");
-        create_table(table_collection_name_null_defaults,
-                     "count_duplicate bigint DEFAULT NULL, count bigint DEFAULT NULL, "
-                     "count_str string DEFAULT NULL, count_double double DEFAULT NULL, "
-                     "count_bool bool DEFAULT NULL, count_array ubigint[5] DEFAULT NULL, "
-                     "count_decimal decimal(15,7) DEFAULT NULL");
-        create_table(table_collection_name_value_defaults,
-                     "count_duplicate bigint DEFAULT 0, count bigint DEFAULT 0, "
-                     "count_str string DEFAULT '', count_double double DEFAULT 0.0, "
-                     "count_bool bool DEFAULT false, count_array ubigint[5] DEFAULT [0,0,0,0,0], "
-                     "count_decimal decimal(15,7) DEFAULT 0");
-        create_table(table_collection_name_value_defaults_not_null,
-                     "count_duplicate bigint NOT NULL DEFAULT 0, count bigint NOT NULL DEFAULT 0, "
-                     "count_str string NOT NULL DEFAULT '', count_double double NOT NULL DEFAULT 0.0, "
-                     "count_bool bool NOT NULL DEFAULT false, "
-                     "count_array ubigint[5] NOT NULL DEFAULT [0,0,0,0,0], "
-                     "count_decimal decimal(15,7) NOT NULL DEFAULT 0");
+        create_collection(table_collection_name_simple, columns_simple);
+        create_collection(table_collection_name_not_null, columns_not_null);
+        create_collection(table_collection_name_null_defaults, columns_null_defaults);
+        create_collection(table_collection_name_value_defaults, columns_value_defaults);
+        create_collection(table_collection_name_value_defaults_not_null, columns_value_defaults_not_null);
     }
 
     INFO("full insert") {
-        // All 7 columns in declared order (count_duplicate, count, ...).
+        // is the same for all
         auto full_insert = [&](const collection_name_t& collection) {
-            std::vector<std::string> rows;
-            rows.reserve(kNumInserts);
-            for (int i = 1; i <= kNumInserts; ++i) {
-                rows.push_back(fmt::format("({}, {}, '{}', {}, {}, [{}, {}, {}, {}, {}], {})",
-                                           i, i, i, i + 0.1,
-                                           (i % 2 != 0) ? "true" : "false",
-                                           i, i + 1, i + 2, i + 3, i + 4,
-                                           i));
-            }
+            auto chunk = gen_data_chunk(kNumInserts, 0, types, dispatcher->resource());
+            auto ins = logical_plan::make_node_insert(dispatcher->resource(), table_database_name, collection,
+                                                      std::move(chunk));
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                fmt::format("INSERT INTO {}.{} (count_duplicate, count, count_str, count_double, "
-                            "count_bool, count_array, count_decimal) VALUES {};",
-                            table_database_name, collection, fmt::join(rows, ", ")));
+            auto cur = dispatcher->execute_plan(session, ins);
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
         };
@@ -152,22 +125,16 @@ TEST_CASE("integration::cpp::test_collection::insert") {
     }
 
     INFO("reordered insert") {
-        // Column list swaps positions 0/1 — storage must align by alias.
+        // is the same for all
+        auto swapped_types = types;
+        std::swap(swapped_types[0], swapped_types[1]);
+
         auto reordered_insert = [&](const collection_name_t& collection) {
-            std::vector<std::string> rows;
-            rows.reserve(kNumInserts);
-            for (int i = 1; i <= kNumInserts; ++i) {
-                rows.push_back(fmt::format("({}, {}, '{}', {}, {}, [{}, {}, {}, {}, {}], {})",
-                                           i, i, i, i + 0.1,
-                                           (i % 2 != 0) ? "true" : "false",
-                                           i, i + 1, i + 2, i + 3, i + 4,
-                                           i));
-            }
+            auto chunk = gen_data_chunk(kNumInserts, 0, swapped_types, dispatcher->resource());
+            auto ins = logical_plan::make_node_insert(dispatcher->resource(), table_database_name, collection,
+                                                      std::move(chunk));
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                fmt::format("INSERT INTO {}.{} (count, count_duplicate, count_str, count_double, "
-                            "count_bool, count_array, count_decimal) VALUES {};",
-                            table_database_name, collection, fmt::join(rows, ", ")));
+            auto cur = dispatcher->execute_plan(session, ins);
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
         };
@@ -180,25 +147,16 @@ TEST_CASE("integration::cpp::test_collection::insert") {
     }
 
     INFO("insert with conversions") {
-        // First column renamed (count_duplicate → count_but_integer): no
-        // matching catalog column, so storage must accept the row via
-        // positional fallback / type coercion. Values stay in 1..100 so
-        // INTEGER↔BIGINT coercion is safe.
+        // is the same for all
+        auto changed_types = types;
+        changed_types[0] = types::complex_logical_type{types::logical_type::INTEGER, "count_but_integer"};
+
         auto insert_with_conversion = [&](const collection_name_t& collection) {
-            std::vector<std::string> rows;
-            rows.reserve(kNumInserts);
-            for (int i = 1; i <= kNumInserts; ++i) {
-                rows.push_back(fmt::format("({}, {}, '{}', {}, {}, [{}, {}, {}, {}, {}], {})",
-                                           i, i, i, i + 0.1,
-                                           (i % 2 != 0) ? "true" : "false",
-                                           i, i + 1, i + 2, i + 3, i + 4,
-                                           i));
-            }
+            auto chunk = gen_data_chunk(kNumInserts, 0, changed_types, dispatcher->resource());
+            auto ins = logical_plan::make_node_insert(dispatcher->resource(), table_database_name, collection,
+                                                      std::move(chunk));
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                fmt::format("INSERT INTO {}.{} (count_but_integer, count, count_str, count_double, "
-                            "count_bool, count_array, count_decimal) VALUES {};",
-                            table_database_name, collection, fmt::join(rows, ", ")));
+            auto cur = dispatcher->execute_plan(session, ins);
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
         };
@@ -211,24 +169,22 @@ TEST_CASE("integration::cpp::test_collection::insert") {
     }
 
     INFO("partial insert") {
-        // 6 columns — drop "count" (position 1). Storage either fills with
-        // default / null depending on the column definition (NOT NULL,
-        // DEFAULT NULL, value DEFAULT).
+        // is the same for all
+        auto partial_types = types;
+        partial_types.erase(partial_types.begin() + 1);
+        std::pmr::vector<expressions::key_t> fields(dispatcher->resource());
+        fields.reserve(partial_types.size());
+        for (const auto& type : partial_types) {
+            fields.emplace_back(dispatcher->resource(), type.alias());
+        }
+
         auto partial_insert = [&](const collection_name_t& collection) {
-            std::vector<std::string> rows;
-            rows.reserve(kNumInserts);
-            for (int i = 1; i <= kNumInserts; ++i) {
-                rows.push_back(fmt::format("({}, '{}', {}, {}, [{}, {}, {}, {}, {}], {})",
-                                           i, i, i + 0.1,
-                                           (i % 2 != 0) ? "true" : "false",
-                                           i, i + 1, i + 2, i + 3, i + 4,
-                                           i));
-            }
+            auto chunk = gen_data_chunk(kNumInserts, 0, partial_types, dispatcher->resource());
+            auto ins = logical_plan::make_node_insert(dispatcher->resource(), table_database_name, collection,
+                                                      std::move(chunk),
+                                                      std::pmr::vector<expressions::key_t>{fields});
             auto session = otterbrix::session_id_t();
-            return dispatcher->execute_sql(session,
-                fmt::format("INSERT INTO {}.{} (count_duplicate, count_str, count_double, count_bool, "
-                            "count_array, count_decimal) VALUES {};",
-                            table_database_name, collection, fmt::join(rows, ", ")));
+            return dispatcher->execute_plan(session, ins);
         };
         auto select_all = [&](const collection_name_t& collection) {
             auto session = otterbrix::session_id_t();
@@ -334,23 +290,23 @@ TEST_CASE("integration::cpp::test_collection::insert") {
     }
 
     INFO("partial insert in reverse order") {
-        // Same 6 columns as partial insert, but column list reversed.
+        // is the same for all
+        auto reversed_partial_types = types;
+        reversed_partial_types.erase(reversed_partial_types.begin() + 1);
+        std::reverse(reversed_partial_types.begin(), reversed_partial_types.end());
+        std::pmr::vector<expressions::key_t> fields(dispatcher->resource());
+        fields.reserve(reversed_partial_types.size());
+        for (const auto& type : reversed_partial_types) {
+            fields.emplace_back(dispatcher->resource(), type.alias());
+        }
+
         auto reversed_partial_insert = [&](const collection_name_t& collection) {
-            std::vector<std::string> rows;
-            rows.reserve(kNumInserts);
-            for (int i = 1; i <= kNumInserts; ++i) {
-                rows.push_back(fmt::format("({}, [{}, {}, {}, {}, {}], {}, {}, '{}', {})",
-                                           i,
-                                           i, i + 1, i + 2, i + 3, i + 4,
-                                           (i % 2 != 0) ? "true" : "false",
-                                           i + 0.1, i,
-                                           i));
-            }
+            auto chunk = gen_data_chunk(kNumInserts, 0, reversed_partial_types, dispatcher->resource());
+            auto ins = logical_plan::make_node_insert(dispatcher->resource(), table_database_name, collection,
+                                                      std::move(chunk),
+                                                      std::pmr::vector<expressions::key_t>{fields});
             auto session = otterbrix::session_id_t();
-            return dispatcher->execute_sql(session,
-                fmt::format("INSERT INTO {}.{} (count_decimal, count_array, count_bool, count_double, "
-                            "count_str, count_duplicate) VALUES {};",
-                            table_database_name, collection, fmt::join(rows, ", ")));
+            return dispatcher->execute_plan(session, ins);
         };
         auto select_all = [&](const collection_name_t& collection) {
             auto session = otterbrix::session_id_t();
@@ -453,23 +409,20 @@ TEST_CASE("integration::cpp::test_collection::insert") {
     }
 
     INFO("invalid key in insert") {
-        // All column names prefixed with "invalid_key_" — no match in catalog.
+        // is the same for all
+        std::pmr::vector<expressions::key_t> fields(dispatcher->resource());
+        fields.reserve(types.size());
+        for (const auto& type : types) {
+            fields.emplace_back(dispatcher->resource(), "invalid_key_" + type.alias());
+        }
+
         auto invalid_keys_insert = [&](const collection_name_t& collection) {
-            std::vector<std::string> rows;
-            rows.reserve(kNumInserts);
-            for (int i = 1; i <= kNumInserts; ++i) {
-                rows.push_back(fmt::format("({}, {}, '{}', {}, {}, [{}, {}, {}, {}, {}], {})",
-                                           i, i, i, i + 0.1,
-                                           (i % 2 != 0) ? "true" : "false",
-                                           i, i + 1, i + 2, i + 3, i + 4,
-                                           i));
-            }
+            auto chunk = gen_data_chunk(kNumInserts, 0, types, dispatcher->resource());
+            auto ins = logical_plan::make_node_insert(dispatcher->resource(), table_database_name, collection,
+                                                      std::move(chunk),
+                                                      std::pmr::vector<expressions::key_t>{fields});
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                fmt::format("INSERT INTO {}.{} (invalid_key_count_duplicate, invalid_key_count, "
-                            "invalid_key_count_str, invalid_key_count_double, invalid_key_count_bool, "
-                            "invalid_key_count_array, invalid_key_count_decimal) VALUES {};",
-                            table_database_name, collection, fmt::join(rows, ", ")));
+            auto cur = dispatcher->execute_plan(session, ins);
             REQUIRE(cur->is_error());
         };
 

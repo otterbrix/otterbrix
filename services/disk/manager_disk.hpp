@@ -30,8 +30,8 @@
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <components/vector/data_chunk.hpp>
-#include "ddl_result.hpp"
-#include "resolve_result.hpp"
+#include <components/catalog/results/ddl_result.hpp>
+#include <components/catalog/results/resolve_result.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/context/pg_catalog_swap.hpp>

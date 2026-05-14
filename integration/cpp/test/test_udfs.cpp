@@ -163,37 +163,28 @@ TEST_CASE("integration::cpp::test_udfs") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session,
-                fmt::format("CREATE TABLE {}.{}(count bigint, count_str string, "
-                            "count_double double, count_bool bool, count_array ubigint[5], "
-                            "count_decimal decimal(15,7));",
-                            database_name, collection_name));
+            std::vector<components::table::column_definition_t> columns;
+            columns.reserve(types.size());
+            for (const auto& type : types) {
+                columns.emplace_back(type.alias(), type);
+            }
+            dispatcher->create_collection(session, database_name, collection_name, columns);
         }
     }
 
     INFO("insert") {
-        std::vector<std::string> rows;
-        rows.reserve(kNumInserts);
-        for (int i = 1; i <= kNumInserts; ++i) {
-            rows.push_back(fmt::format("({}, '{}', {}, {}, [{}, {}, {}, {}, {}], {})",
-                                       i, i, i + 0.1,
-                                       (i % 2 != 0) ? "true" : "false",
-                                       i, i + 1, i + 2, i + 3, i + 4,
-                                       i));
-        }
-        const std::string insert_query = fmt::format(
-            "INSERT INTO {}.{} (count, count_str, count_double, count_bool, "
-            "count_array, count_decimal) VALUES {};",
-            database_name, collection_name, fmt::join(rows, ", "));
+        auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
+        auto ins =
+            logical_plan::make_node_insert(dispatcher->resource(), database_name, collection_name, std::move(chunk));
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session, insert_query);
+            auto cur = dispatcher->execute_plan(session, ins);
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session, insert_query);
+            auto cur = dispatcher->execute_plan(session, ins);
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
         }

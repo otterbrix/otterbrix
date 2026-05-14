@@ -49,6 +49,37 @@ namespace otterbrix {
             -> components::cursor::cursor_t_ptr;
         auto drop_database(const session_id_t& session, const database_name_t& database)
             -> components::cursor::cursor_t_ptr;
+        auto create_collection(const session_id_t& session,
+                               const database_name_t& database,
+                               const collection_name_t& collection,
+                               std::vector<components::table::column_definition_t> column_definitions = {},
+                               std::vector<components::table::table_constraint_t> constraints = {})
+            -> components::cursor::cursor_t_ptr;
+        auto drop_collection(const session_id_t& session,
+                             const database_name_t& database,
+                             const collection_name_t& collection) -> components::cursor::cursor_t_ptr;
+        auto find(const session_id_t& session,
+                  components::logical_plan::node_aggregate_ptr condition,
+                  components::logical_plan::parameter_node_ptr params) -> components::cursor::cursor_t_ptr;
+        auto find_one(const session_id_t& session,
+                      components::logical_plan::node_aggregate_ptr condition,
+                      components::logical_plan::parameter_node_ptr params) -> components::cursor::cursor_t_ptr;
+        auto delete_one(const session_id_t& session,
+                        components::logical_plan::node_match_ptr condition,
+                        components::logical_plan::parameter_node_ptr params) -> components::cursor::cursor_t_ptr;
+        auto delete_many(const session_id_t& session,
+                         components::logical_plan::node_match_ptr condition,
+                         components::logical_plan::parameter_node_ptr params) -> components::cursor::cursor_t_ptr;
+        auto update_one(const session_id_t& session,
+                        components::logical_plan::node_match_ptr condition,
+                        components::logical_plan::parameter_node_ptr params,
+                        const std::pmr::vector<components::expressions::update_expr_ptr>& updates,
+                        bool upsert) -> components::cursor::cursor_t_ptr;
+        auto update_many(const session_id_t& session,
+                         components::logical_plan::node_match_ptr condition,
+                         components::logical_plan::parameter_node_ptr params,
+                         const std::pmr::vector<components::expressions::update_expr_ptr>& updates,
+                         bool upsert) -> components::cursor::cursor_t_ptr;
         auto register_udf(const session_id_t& session, components::compute::function_ptr function) -> bool;
         auto unregister_udf(const session_id_t& session,
                             const std::string& function_name,
@@ -56,6 +87,10 @@ namespace otterbrix {
         auto create_index(const session_id_t& session, components::logical_plan::node_create_index_ptr node)
             -> components::cursor::cursor_t_ptr;
         auto drop_index(const session_id_t& session, components::logical_plan::node_drop_index_ptr node)
+            -> components::cursor::cursor_t_ptr;
+        auto execute_plan(const session_id_t& session,
+                          components::logical_plan::node_ptr plan,
+                          components::logical_plan::parameter_node_ptr params = nullptr)
             -> components::cursor::cursor_t_ptr;
         auto execute_sql(const session_id_t& session, const std::string& query) -> components::cursor::cursor_t_ptr;
 

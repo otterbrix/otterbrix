@@ -123,7 +123,7 @@ TEST_CASE("integration::cpp::test_sql_features::in_list") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, fmt::format("CREATE TABLE {}.{}();", database_name, collection_name));
+            dispatcher->create_collection(session, database_name, collection_name);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -199,7 +199,7 @@ TEST_CASE("integration::cpp::test_sql_features::like") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, fmt::format("CREATE TABLE {}.{}();", database_name, collection_name));
+            dispatcher->create_collection(session, database_name, collection_name);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -283,7 +283,7 @@ TEST_CASE("integration::cpp::test_sql_features::distinct") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, fmt::format("CREATE TABLE {}.{}();", database_name, collection_name));
+            dispatcher->create_collection(session, database_name, collection_name);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -345,7 +345,7 @@ TEST_CASE("integration::cpp::test_sql_features::count_distinct") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, fmt::format("CREATE TABLE {}.{}();", database_name, collection_name));
+            dispatcher->create_collection(session, database_name, collection_name);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -412,7 +412,7 @@ TEST_CASE("integration::cpp::test_sql_features::having") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, fmt::format("CREATE TABLE {}.{}();", database_name, collection_name));
+            dispatcher->create_collection(session, database_name, collection_name);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -478,7 +478,7 @@ TEST_CASE("integration::cpp::test_sql_features::edge_cases") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, fmt::format("CREATE TABLE {}.{}();", database_name, collection_name));
+            dispatcher->create_collection(session, database_name, collection_name);
         }
     }
 
@@ -678,7 +678,7 @@ TEST_CASE("integration::cpp::test_sql_features::case_when") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, fmt::format("CREATE TABLE {}.{}();", database_name, collection_name));
+            dispatcher->create_collection(session, database_name, collection_name);
         }
         {
             auto session = otterbrix::session_id_t();

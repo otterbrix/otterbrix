@@ -44,9 +44,9 @@ namespace components::sql::transform {
     } // namespace
 
     logical_plan::node_ptr transformer::transform_create_type(CompositeTypeStmt& node) {
-        auto type =
-            types::complex_logical_type::create_struct(construct(node.typevar->relname), get_types(*node.coldeflist));
-        auto created = logical_plan::make_node_create_type(resource_, type);
+        auto type = types::complex_logical_type::create_struct(construct(node.typevar->relname), get_types(*node.coldeflist));
+        auto type_copy = type;
+        auto created = logical_plan::make_node_create_type(resource_, std::move(type_copy));
         return wrap_create_type(resource_, type, std::move(created));
     }
 
@@ -62,7 +62,8 @@ namespace components::sql::transform {
             values.back().set_alias(strVal(cell.data));
         }
         auto type = types::complex_logical_type::create_enum(strVal(node.typeName->lst.back().data), std::move(values));
-        auto created = logical_plan::make_node_create_type(resource_, type);
+        auto type_copy = type;
+        auto created = logical_plan::make_node_create_type(resource_, std::move(type_copy));
         return wrap_create_type(resource_, type, std::move(created));
     }
 

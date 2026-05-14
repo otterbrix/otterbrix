@@ -27,25 +27,39 @@ static const collection_name_t collection_name_2 = "testcollection2";
         }                                                                                                              \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
-            dispatcher->execute_sql(session,                                                                            \
-                fmt::format("CREATE TABLE {}.{}(count bigint, count_str string, "                                       \
-                            "count_double double, count_bool bool, count_array ubigint[5], "                            \
-                            "count_decimal decimal(15,7));",                                                            \
-                            (DB), (COLL)));                                                                             \
+            auto types = gen_data_chunk(0, dispatcher->resource()).types();                                            \
+            std::vector<components::table::column_definition_t> columns;                                               \
+            columns.reserve(types.size());                                                                             \
+            for (const auto& type : types) {                                                                           \
+                columns.emplace_back(type.alias(), type);                                                              \
+            }                                                                                                          \
+            dispatcher->create_collection(session, DB, COLL, columns);                                                 \
         }                                                                                                              \
     } while (false)
 
 #define FILL_COLLECTION_WAL(DB, COLL, COUNT)                                                                           \
     do {                                                                                                               \
-        auto session = otterbrix::session_id_t();                                                                      \
-        dispatcher->execute_sql(session, gen_data_chunk_insert_sql((DB), (COLL), (COUNT)));                            \
+        auto chunk = gen_data_chunk(COUNT, dispatcher->resource());                                                    \
+        auto ins = components::logical_plan::make_node_insert(dispatcher->resource(), DB, COLL, std::move(chunk));   \
+        {                                                                                                              \
+            auto session = otterbrix::session_id_t();                                                                  \
+            dispatcher->execute_plan(session, ins);                                                                    \
+        }                                                                                                              \
     } while (false)
 
-#define CHECK_FIND_WAL_SQL(DB, COLL, KEY, OP_STR, VALUE_SQL, COUNT)                                                    \
+#define CHECK_FIND_WAL(DB, COLL, KEY, COMPARE, VALUE, COUNT)                                                           \
     do {                                                                                                               \
         auto session = otterbrix::session_id_t();                                                                      \
-        auto c = dispatcher->execute_sql(session,                                                                       \
-            fmt::format("SELECT * FROM {}.{} WHERE {} {} {};", (DB), (COLL), (KEY), OP_STR, VALUE_SQL));               \
+        auto plan = components::logical_plan::make_node_aggregate(dispatcher->resource(), DB, COLL);                 \
+        auto expr = components::expressions::make_compare_expression(dispatcher->resource(),                           \
+                                                                     COMPARE,                                          \
+                                                                     key{dispatcher->resource(), KEY, side_t::left},   \
+                                                                     id_par{1});                                       \
+        plan->append_child(                                                                                            \
+            components::logical_plan::make_node_match(dispatcher->resource(), DB, COLL, std::move(expr)));           \
+        auto params = components::logical_plan::make_parameter_node(dispatcher->resource());                           \
+        params->add_parameter(id_par{1}, VALUE);                                                                       \
+        auto c = dispatcher->find(session, plan, params);                                                              \
         REQUIRE(c->size() == COUNT);                                                                                   \
     } while (false)
 
@@ -144,16 +158,36 @@ TEST_CASE("integration::cpp::test_wal_pool::index_durability") {
         FILL_COLLECTION_WAL(database_name, collection_name, kDocuments);
 
         // Verify index works before restart
-        CHECK_FIND_WAL_SQL(database_name, collection_name, "count", "=",  "50",  1);
+        CHECK_FIND_WAL(database_name,
+                       collection_name,
+                       "count",
+                       compare_type::eq,
+                       logical_value_t(dispatcher->resource(), 50),
+                       1);
     }
 
     INFO("phase 2: restart and verify index survived") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        CHECK_FIND_WAL_SQL(database_name, collection_name, "count", "=",  "1",   1);
-        CHECK_FIND_WAL_SQL(database_name, collection_name, "count", "=",  "50",  1);
-        CHECK_FIND_WAL_SQL(database_name, collection_name, "count", ">",  "90",  10);
+        CHECK_FIND_WAL(database_name,
+                       collection_name,
+                       "count",
+                       compare_type::eq,
+                       logical_value_t(dispatcher->resource(), 1),
+                       1);
+        CHECK_FIND_WAL(database_name,
+                       collection_name,
+                       "count",
+                       compare_type::eq,
+                       logical_value_t(dispatcher->resource(), 50),
+                       1);
+        CHECK_FIND_WAL(database_name,
+                       collection_name,
+                       "count",
+                       compare_type::gt,
+                       logical_value_t(dispatcher->resource(), 90),
+                       10);
     }
 }
 
@@ -174,11 +208,13 @@ TEST_CASE("integration::cpp::test_wal_pool::multiple_collections_routing") {
         // Collection 2
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session,
-                fmt::format("CREATE TABLE {}.{}(count bigint, count_str string, "
-                            "count_double double, count_bool bool, count_array ubigint[5], "
-                            "count_decimal decimal(15,7));",
-                            database_name, collection_name_2));
+            auto types = gen_data_chunk(0, dispatcher->resource()).types();
+            std::vector<components::table::column_definition_t> columns;
+            columns.reserve(types.size());
+            for (const auto& type : types) {
+                columns.emplace_back(type.alias(), type);
+            }
+            dispatcher->create_collection(session, database_name, collection_name_2, columns);
         }
         FILL_COLLECTION_WAL(database_name, collection_name_2, kDocuments);
 

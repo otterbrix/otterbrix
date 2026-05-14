@@ -205,7 +205,7 @@ namespace components::sql::transform {
                     throw parser_exception_t{"incorrect drop: arguments size", ""};
                 }
                 std::string type_name = strVal(drop_name.back().data);
-                auto n = logical_plan::make_node_drop_type(resource_, type_name);
+                auto n = logical_plan::make_node_drop_type(resource_, std::string{type_name});
                 // M4.F: wrap with resolve_type so Pass 1 stamps type_oid +
                 // resolved_type_metadata. enrich's drop_type_t branch reads
                 // from plan-tree idx (resolve_type_t stamps it at Pass 1).

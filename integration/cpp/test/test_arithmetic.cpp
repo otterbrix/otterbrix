@@ -35,20 +35,20 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session,
-                fmt::format("CREATE TABLE {}.{}(count bigint, count_str string, "
-                            "count_double double, count_bool bool, count_array ubigint[5], "
-                            "count_decimal decimal(15,7));",
-                            database_name, collection_name));
+            dispatcher->create_collection(session, database_name, collection_name, columns);
         }
     }
 
     INFO("insert test data") {
-        auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(
-            session, gen_data_chunk_insert_sql(database_name, collection_name, kNumInserts));
-        REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kNumInserts);
+        auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
+        auto ins =
+            logical_plan::make_node_insert(dispatcher->resource(), database_name, collection_name, std::move(chunk));
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_plan(session, ins);
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == kNumInserts);
+        }
     }
 
     // ================================================================
@@ -712,11 +712,7 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session,
-                fmt::format("CREATE TABLE {}.{}(count bigint, count_str string, "
-                            "count_double double, count_bool bool, count_array ubigint[5], "
-                            "count_decimal decimal(15,7));",
-                            database_name, collection_name));
+            dispatcher->create_collection(session, database_name, collection_name, columns);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -727,9 +723,11 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
     INFO("insert test data") {
         // Insert main collection data
         {
+            auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
+            auto ins = logical_plan::make_node_insert(dispatcher->resource(), database_name, collection_name,
+                                                      std::move(chunk));
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session, gen_data_chunk_insert_sql(database_name, collection_name, kNumInserts));
+            auto cur = dispatcher->execute_plan(session, ins);
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
         }
@@ -805,18 +803,16 @@ TEST_CASE("integration::cpp::test_arithmetic::having") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session,
-                fmt::format("CREATE TABLE {}.{}(count bigint, count_str string, "
-                            "count_double double, count_bool bool, count_array ubigint[5], "
-                            "count_decimal decimal(15,7));",
-                            database_name, collection_name));
+            dispatcher->create_collection(session, database_name, collection_name, columns);
         }
     }
 
     INFO("insert test data") {
+        auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
+        auto ins =
+            logical_plan::make_node_insert(dispatcher->resource(), database_name, collection_name, std::move(chunk));
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(
-            session, gen_data_chunk_insert_sql(database_name, collection_name, kNumInserts));
+        auto cur = dispatcher->execute_plan(session, ins);
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kNumInserts);
     }
@@ -874,18 +870,16 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session,
-                fmt::format("CREATE TABLE {}.{}(count bigint, count_str string, "
-                            "count_double double, count_bool bool, count_array ubigint[5], "
-                            "count_decimal decimal(15,7));",
-                            database_name, collection_name));
+            dispatcher->create_collection(session, database_name, collection_name, columns);
         }
     }
 
     INFO("insert test data") {
+        auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
+        auto ins =
+            logical_plan::make_node_insert(dispatcher->resource(), database_name, collection_name, std::move(chunk));
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(
-            session, gen_data_chunk_insert_sql(database_name, collection_name, kNumInserts));
+        auto cur = dispatcher->execute_plan(session, ins);
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kNumInserts);
     }
@@ -979,18 +973,16 @@ TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session,
-                fmt::format("CREATE TABLE {}.{}(count bigint, count_str string, "
-                            "count_double double, count_bool bool, count_array ubigint[5], "
-                            "count_decimal decimal(15,7));",
-                            database_name, collection_name));
+            dispatcher->create_collection(session, database_name, collection_name, columns);
         }
     }
 
     INFO("insert test data") {
+        auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
+        auto ins =
+            logical_plan::make_node_insert(dispatcher->resource(), database_name, collection_name, std::move(chunk));
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(
-            session, gen_data_chunk_insert_sql(database_name, collection_name, kNumInserts));
+        auto cur = dispatcher->execute_plan(session, ins);
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kNumInserts);
     }
@@ -1159,18 +1151,16 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session,
-                fmt::format("CREATE TABLE {}.{}(count bigint, count_str string, "
-                            "count_double double, count_bool bool, count_array ubigint[5], "
-                            "count_decimal decimal(15,7));",
-                            database_name, collection_name));
+            dispatcher->create_collection(session, database_name, collection_name, columns);
         }
     }
 
     INFO("insert test data") {
+        auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
+        auto ins =
+            logical_plan::make_node_insert(dispatcher->resource(), database_name, collection_name, std::move(chunk));
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(
-            session, gen_data_chunk_insert_sql(database_name, collection_name, kNumInserts));
+        auto cur = dispatcher->execute_plan(session, ins);
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kNumInserts);
     }

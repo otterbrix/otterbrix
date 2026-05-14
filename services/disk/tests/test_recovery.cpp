@@ -268,7 +268,7 @@ TEST_CASE("services::disk::recovery::dynamic_schema_persists_across_restart") {
         REQUIRE_NOTHROW(fx_reopen.disk->restore_oid_generator_sync());
 
         // Direct read of pg_computed_column: relid=table_oid → 2 live rows.
-        const collection_full_name_t pg_cc{"pg_catalog", "main", "pg_computed_column"};
+        const qualified_name_t pg_cc{"pg_catalog", "main", "pg_computed_column"};
         components::types::logical_value_t toid_lv(&fx_reopen.resource, table_oid);
         auto rows = fx_reopen.invoke(&manager_disk_t::read_rows_by_key, fx_reopen.ctx(),
                                       pg_cc,

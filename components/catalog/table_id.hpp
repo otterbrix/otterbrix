@@ -15,7 +15,7 @@ namespace components::catalog {
     public:
         table_id(std::pmr::memory_resource* resource, std::pmr::vector<std::pmr::string> full_name);
         table_id(std::pmr::memory_resource* resource, table_namespace_t ns, std::pmr::string name);
-        table_id(std::pmr::memory_resource* resource, const collection_full_name_t& full_name);
+        table_id(std::pmr::memory_resource* resource, const qualified_name_t& full_name);
 
         [[nodiscard]] const table_namespace_t& get_namespace() const;
         [[nodiscard]] const std::pmr::string& table_name() const;

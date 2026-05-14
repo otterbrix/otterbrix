@@ -143,9 +143,9 @@ TEST_CASE("services::disk::mvcc::uncommitted_delete_invisible_to_other_readers")
     auto uncommitted = TRANSACTION_ID_START + 13;
     // Issue uncommitted deletes (tombstone tagged with uncommitted txn_id — no commit).
     {
-        const collection_full_name_t pg_class{"pg_catalog", "main", "pg_class"};
-        const collection_full_name_t pg_attr{"pg_catalog", "main", "pg_attribute"};
-        const collection_full_name_t pg_dep{"pg_catalog", "main", "pg_depend"};
+        const qualified_name_t pg_class{"pg_catalog", "main", "pg_class"};
+        const qualified_name_t pg_attr{"pg_catalog", "main", "pg_attribute"};
+        const qualified_name_t pg_dep{"pg_catalog", "main", "pg_depend"};
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_class, std::int64_t{0}, table_oid);
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_attr,  std::int64_t{1}, table_oid);
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep,   std::int64_t{1}, table_oid);
@@ -168,8 +168,8 @@ TEST_CASE("services::disk::mvcc::resolve_includes_uncommitted_deletes") {
     auto uncommitted = TRANSACTION_ID_START + 21;
     // Issue uncommitted namespace deletes (no commit — tombstones stay uncommitted).
     {
-        const collection_full_name_t pg_ns{"pg_catalog", "main", "pg_namespace"};
-        const collection_full_name_t pg_dep{"pg_catalog", "main", "pg_depend"};
+        const qualified_name_t pg_ns{"pg_catalog", "main", "pg_namespace"};
+        const qualified_name_t pg_dep{"pg_catalog", "main", "pg_depend"};
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_ns,  std::int64_t{0}, drop_ns_oid);
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{1}, drop_ns_oid);
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{3}, drop_ns_oid);
@@ -201,9 +201,9 @@ TEST_CASE("services::disk::mvcc::uncommitted_drop_index_invisible") {
     auto uncommitted = TRANSACTION_ID_START + 77;
     // Issue uncommitted index deletes (no commit — tombstones stay uncommitted).
     {
-        const collection_full_name_t pg_idx{"pg_catalog", "main", "pg_index"};
-        const collection_full_name_t pg_cls{"pg_catalog", "main", "pg_class"};
-        const collection_full_name_t pg_dep{"pg_catalog", "main", "pg_depend"};
+        const qualified_name_t pg_idx{"pg_catalog", "main", "pg_index"};
+        const qualified_name_t pg_cls{"pg_catalog", "main", "pg_class"};
+        const qualified_name_t pg_dep{"pg_catalog", "main", "pg_depend"};
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_idx, std::int64_t{0}, index_oid);
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_cls, std::int64_t{0}, index_oid);
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{1}, index_oid);
@@ -223,8 +223,8 @@ TEST_CASE("services::disk::mvcc::uncommitted_drop_type_invisible") {
     auto uncommitted = TRANSACTION_ID_START + 88;
     // Issue uncommitted type deletes (no commit — tombstones stay uncommitted).
     {
-        const collection_full_name_t pg_type{"pg_catalog", "main", "pg_type"};
-        const collection_full_name_t pg_dep{"pg_catalog", "main", "pg_depend"};
+        const qualified_name_t pg_type{"pg_catalog", "main", "pg_type"};
+        const qualified_name_t pg_dep{"pg_catalog", "main", "pg_depend"};
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_type, std::int64_t{0}, type_oid);
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep,  std::int64_t{1}, type_oid);
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep,  std::int64_t{3}, type_oid);
@@ -299,8 +299,8 @@ TEST_CASE("services::disk::mvcc::drop_cascade_uncommitted_invisible_to_other_rea
     auto uncommitted = TRANSACTION_ID_START + 111;
     // Issue uncommitted namespace deletes (no commit — tombstones stay uncommitted).
     {
-        const collection_full_name_t pg_ns{"pg_catalog", "main", "pg_namespace"};
-        const collection_full_name_t pg_dep{"pg_catalog", "main", "pg_depend"};
+        const qualified_name_t pg_ns{"pg_catalog", "main", "pg_namespace"};
+        const qualified_name_t pg_dep{"pg_catalog", "main", "pg_depend"};
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_ns,  std::int64_t{0}, ns_oid);
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{1}, ns_oid);
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{3}, ns_oid);
@@ -328,7 +328,7 @@ TEST_CASE("services::disk::mvcc::dynamic_schema_register_invisible_until_commit"
 
     // txn1 appends a pg_computed_column row but does NOT call storage_commit_appends.
     const uint64_t txn1 = TRANSACTION_ID_START + 901;
-    const collection_full_name_t pg_cc{"pg_catalog", "main", "pg_computed_column"};
+    const qualified_name_t pg_cc{"pg_catalog", "main", "pg_computed_column"};
     std::vector<components::pg_catalog_append_range_t> pending_ranges;
     {
         auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
@@ -372,7 +372,7 @@ TEST_CASE("services::disk::mvcc::dynamic_schema_register_rollback_undoes") {
     auto table_oid = disk_test_helpers::test_create_computing_table(fx, ns_oid, std::string("docs"));
 
     const uint64_t txn1 = TRANSACTION_ID_START + 902;
-    const collection_full_name_t pg_cc{"pg_catalog", "main", "pg_computed_column"};
+    const qualified_name_t pg_cc{"pg_catalog", "main", "pg_computed_column"};
     std::vector<components::pg_catalog_append_range_t> pending_ranges;
     {
         auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
@@ -427,7 +427,7 @@ TEST_CASE("services::disk::mvcc::dynamic_schema_register_visible_in_same_txn") {
     auto table_oid = disk_test_helpers::test_create_computing_table(fx, ns_oid, std::string("docs"));
 
     const uint64_t txn1 = TRANSACTION_ID_START + 903;
-    const collection_full_name_t pg_cc{"pg_catalog", "main", "pg_computed_column"};
+    const qualified_name_t pg_cc{"pg_catalog", "main", "pg_computed_column"};
     {
         auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
         const components::catalog::oid_t attoid = oids[0];

@@ -287,14 +287,6 @@ namespace services::dispatcher {
         trace(log_, "manager_dispatcher_t: spawned {} executors with WAL/Disk/Index addresses", executor_pool_size_);
     }
 
-    void manager_dispatcher_t::init_from_state(std::pmr::set<collection_full_name_t> collections) {
-        trace(log_, "manager_dispatcher_t::init_from_state: populating storage");
-        for (const auto& full_name : collections) {
-            collections_.insert(full_name);
-        }
-        trace(log_, "manager_dispatcher_t::init_from_state: complete - {} collections", collections_.size());
-    }
-
     manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr>
     manager_dispatcher_t::execute_plan(components::session::session_id_t session,
                                        node_ptr plan,
@@ -327,13 +319,13 @@ namespace services::dispatcher {
         // Phase 13 T18: descend through transformer's sequence_t(catalog_resolve_*,
         // <drop_node>) wrapper to reach the real drop node before casting.
         std::string drop_target_database;
-        collection_full_name_t drop_target_collection;
+        qualified_name_t drop_target_collection;
         const auto* root_for_drop = effective_root_node(plan.get());
         if (original_type == node_type::drop_database_t) {
             drop_target_database = static_cast<const node_drop_database_t*>(root_for_drop)->dbname();
         } else if (original_type == node_type::drop_collection_t) {
             auto* drop_node = static_cast<const node_drop_collection_t*>(root_for_drop);
-            drop_target_collection = collection_full_name_t{drop_node->dbname(), drop_node->relname()};
+            drop_target_collection = qualified_name_t{drop_node->dbname(), drop_node->relname()};
         }
         auto logic_plan = std::move(plan);
         // Optimizer: constant folding, etc.
@@ -562,96 +554,96 @@ namespace services::dispatcher {
         // node owns a (db, rel)-shaped pair; nodes that don't (create_type_t,
         // drop_type_t, wrappers) yield empty identifiers — same outcome as
         // the previous cfn_of() default branch.
-        auto build_id_cfn = [](const node_t* n) -> collection_full_name_t {
+        auto build_id_cfn = [](const node_t* n) -> qualified_name_t {
             if (!n) return {};
             switch (n->type()) {
                 case node_type::aggregate_t: {
                     auto* d = static_cast<const node_aggregate_t*>(n);
-                    return collection_full_name_t{d->dbname(), d->relname()};
+                    return qualified_name_t{d->dbname(), d->relname()};
                 }
                 case node_type::alter_column_add_t: {
                     auto* d = static_cast<const node_alter_column_add_t*>(n);
-                    return collection_full_name_t{d->dbname(), d->relname()};
+                    return qualified_name_t{d->dbname(), d->relname()};
                 }
                 case node_type::alter_column_drop_t: {
                     auto* d = static_cast<const node_alter_column_drop_t*>(n);
-                    return collection_full_name_t{d->dbname(), d->relname()};
+                    return qualified_name_t{d->dbname(), d->relname()};
                 }
                 case node_type::alter_column_rename_t: {
                     auto* d = static_cast<const node_alter_column_rename_t*>(n);
-                    return collection_full_name_t{d->dbname(), d->relname()};
+                    return qualified_name_t{d->dbname(), d->relname()};
                 }
                 case node_type::alter_table_t: {
                     auto* d = static_cast<const node_alter_table_t*>(n);
-                    return collection_full_name_t{d->dbname(), d->relname()};
+                    return qualified_name_t{d->dbname(), d->relname()};
                 }
                 case node_type::create_collection_t: {
                     auto* d = static_cast<const node_create_collection_t*>(n);
-                    return collection_full_name_t{d->dbname(), d->relname()};
+                    return qualified_name_t{d->dbname(), d->relname()};
                 }
                 case node_type::create_constraint_t: {
                     auto* d = static_cast<const node_create_constraint_t*>(n);
-                    return collection_full_name_t{d->dbname(), d->relname()};
+                    return qualified_name_t{d->dbname(), d->relname()};
                 }
                 case node_type::create_database_t: {
                     auto* d = static_cast<const node_create_database_t*>(n);
-                    return collection_full_name_t{d->dbname(), std::string{}};
+                    return qualified_name_t{d->dbname(), std::string{}};
                 }
                 case node_type::create_index_t: {
                     auto* d = static_cast<const node_create_index_t*>(n);
-                    return collection_full_name_t{d->dbname(), d->relname()};
+                    return qualified_name_t{d->dbname(), d->relname()};
                 }
                 case node_type::create_macro_t: {
                     auto* d = static_cast<const node_create_macro_t*>(n);
-                    return collection_full_name_t{d->dbname(), d->macroname()};
+                    return qualified_name_t{d->dbname(), d->macroname()};
                 }
                 case node_type::create_sequence_t: {
                     auto* d = static_cast<const node_create_sequence_t*>(n);
-                    return collection_full_name_t{d->dbname(), d->seqname()};
+                    return qualified_name_t{d->dbname(), d->seqname()};
                 }
                 case node_type::create_view_t: {
                     auto* d = static_cast<const node_create_view_t*>(n);
-                    return collection_full_name_t{d->dbname(), d->viewname()};
+                    return qualified_name_t{d->dbname(), d->viewname()};
                 }
                 case node_type::delete_t: {
                     auto* d = static_cast<const node_delete_t*>(n);
-                    return collection_full_name_t{d->dbname(), d->relname()};
+                    return qualified_name_t{d->dbname(), d->relname()};
                 }
                 case node_type::drop_collection_t: {
                     auto* d = static_cast<const node_drop_collection_t*>(n);
-                    return collection_full_name_t{d->dbname(), d->relname()};
+                    return qualified_name_t{d->dbname(), d->relname()};
                 }
                 case node_type::drop_database_t: {
                     auto* d = static_cast<const node_drop_database_t*>(n);
-                    return collection_full_name_t{d->dbname(), std::string{}};
+                    return qualified_name_t{d->dbname(), std::string{}};
                 }
                 case node_type::drop_index_t: {
                     auto* d = static_cast<const node_drop_index_t*>(n);
-                    return collection_full_name_t{d->dbname(), d->relname()};
+                    return qualified_name_t{d->dbname(), d->relname()};
                 }
                 case node_type::drop_macro_t: {
                     auto* d = static_cast<const node_drop_macro_t*>(n);
-                    return collection_full_name_t{d->dbname(), d->macroname()};
+                    return qualified_name_t{d->dbname(), d->macroname()};
                 }
                 case node_type::drop_sequence_t: {
                     auto* d = static_cast<const node_drop_sequence_t*>(n);
-                    return collection_full_name_t{d->dbname(), d->seqname()};
+                    return qualified_name_t{d->dbname(), d->seqname()};
                 }
                 case node_type::drop_view_t: {
                     auto* d = static_cast<const node_drop_view_t*>(n);
-                    return collection_full_name_t{d->dbname(), d->viewname()};
+                    return qualified_name_t{d->dbname(), d->viewname()};
                 }
                 case node_type::insert_t: {
                     auto* d = static_cast<const node_insert_t*>(n);
-                    return collection_full_name_t{d->dbname(), d->relname()};
+                    return qualified_name_t{d->dbname(), d->relname()};
                 }
                 case node_type::match_t: {
                     auto* d = static_cast<const node_match_t*>(n);
-                    return collection_full_name_t{d->dbname(), d->relname()};
+                    return qualified_name_t{d->dbname(), d->relname()};
                 }
                 case node_type::update_t: {
                     auto* d = static_cast<const node_update_t*>(n);
-                    return collection_full_name_t{d->dbname(), d->relname()};
+                    return qualified_name_t{d->dbname(), d->relname()};
                 }
                 default:
                     return {};
@@ -734,7 +726,7 @@ namespace services::dispatcher {
             }
             case node_type::drop_collection_t: {
                 auto* drop_node = static_cast<node_drop_collection_t*>(effective_root_node(logic_plan.get()));
-                if (!collections_.count(collection_full_name_t{drop_node->dbname(), drop_node->relname()})) {
+                if (!collections_.count(qualified_name_t{drop_node->dbname(), drop_node->relname()})) {
                     error = make_cursor(resource(), error_code_t::collection_not_exists,
                                         "collection does not exist");
                     break;
@@ -1370,7 +1362,7 @@ namespace services::dispatcher {
                     auto* root_after_plan = effective_root_node(logic_plan.get());
                     if (root_after_plan && !root_after_plan->children().empty()) {
                         auto* cc_child = static_cast<node_create_collection_t*>(root_after_plan->children().front().get());
-                        collections_.insert(collection_full_name_t{cc_child->dbname(), cc_child->relname()});
+                        collections_.insert(qualified_name_t{cc_child->dbname(), cc_child->relname()});
                     }
                 }
                 // Drop side: the cascade operator removed pg_class/pg_namespace rows on

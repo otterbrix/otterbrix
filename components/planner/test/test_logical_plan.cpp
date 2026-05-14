@@ -27,7 +27,7 @@ using key = components::expressions::key_t;
 constexpr auto database_name = "database";
 constexpr auto collection_name = "collection";
 
-collection_full_name_t get_name() { return {database_name, collection_name}; }
+qualified_name_t get_name() { return {database_name, collection_name}; }
 
 TEST_CASE("components::planner::create_database") {
     auto resource = std::pmr::synchronized_pool_resource();

@@ -41,7 +41,6 @@ namespace otterbrix {
             }
         }
 
-        std::pmr::set<collection_full_name_t> collections(&resource);
         services::wal::id_t last_wal_id{0};
 
         if (!config.disk.path.empty()) {
@@ -60,8 +59,7 @@ namespace otterbrix {
         auto wal_records = wal_reader.read_committed_records(last_wal_id);
 
         trace(log_,
-              "spaces::PHASE 1 complete - loaded {} collections, {} index definitions, {} WAL records",
-              collections.size(),
+              "spaces::PHASE 1 complete - loaded {} index definitions, {} WAL records",
               index_definitions.size(),
               wal_records.size());
 
@@ -145,8 +143,6 @@ namespace otterbrix {
         }
 
         manager_index_->sync(std::make_tuple(manager_disk_address));
-
-        manager_dispatcher_->init_from_state(std::move(collections));
 
         // Replay physical WAL records directly to storage (before schedulers start). Group
         // by oid: system-table (oid < FIRST_USER_OID) records are replayed first
@@ -262,15 +258,13 @@ namespace otterbrix {
                 }
             }
 
-            // Replay user tables in parallel.
-            std::vector<std::thread> workers;
-            workers.reserve(user_by_oid.size());
+            // Replay user tables sequentially. The parallel variant raced on
+            // manager_disk_t::storages_ (unordered_map) — each worker called
+            // create_storage_with_columns_sync() concurrently, and the hash
+            // table is not thread-safe (TSan-confirmed). Bootstrap is a rare
+            // path, so the perf hit is negligible.
             for (auto& [oid, records] : user_by_oid) {
-                workers.emplace_back(
-                    [&replay_one, oid, &records] { replay_one(oid, records); });
-            }
-            for (auto& w : workers) {
-                w.join();
+                replay_one(oid, records);
             }
 
             uint64_t physical_count = 0;
@@ -278,7 +272,7 @@ namespace otterbrix {
             for (auto& [oid, records] : user_by_oid)   physical_count += records.size();
             if (physical_count > 0) {
                 trace(log_,
-                      "spaces::replayed {} physical WAL records across {} tables in parallel",
+                      "spaces::replayed {} physical WAL records across {} tables",
                       physical_count,
                       system_by_oid.size() + user_by_oid.size());
             }

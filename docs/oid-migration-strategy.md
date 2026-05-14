@@ -1,6 +1,6 @@
 # OID Migration Strategy
 
-**Status**: design proposal, not yet started.
+**Status**: COMPLETE (Phase 8 + Phase 9 shipped 2026-05-10 — see §12.4 status markers below). Phase 10+ (full `collection_full_name_t` removal from `components/logical_plan/`, type rename to `qualified_name_t` ~312 callsites) deferred; cosmetic, non-blocking — fields are already split into role-named (`dbname()`/`relname()`/`schemaname()`).
 **Created**: 2026-05-09 (post Phase 0-7 + cleanup).
 **Owner**: TBD.
 **Related**: task #132 (storage_commit_append crash for wrapped relkind='g' INSERT), task #133 to be created for this work.

@@ -34,7 +34,7 @@
 namespace services::dispatcher {
 
     class manager_dispatcher_t final : public actor_zeta::actor::actor_mixin<manager_dispatcher_t> {
-        using collection_storage_t = std::pmr::set<collection_full_name_t>;
+        using collection_storage_t = std::pmr::set<qualified_name_t>;
 
     public:
         template<typename T>
@@ -61,8 +61,6 @@ namespace services::dispatcher {
         enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
         void sync(sync_pack pack);
-
-        void init_from_state(std::pmr::set<collection_full_name_t> collections);
 
         unique_future<components::cursor::cursor_t_ptr>
         execute_plan(components::session::session_id_t session,

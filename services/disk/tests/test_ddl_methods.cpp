@@ -159,7 +159,7 @@ TEST_CASE("services::disk::ddl::computed_register_same_type_idempotent") {
     REQUIRE(attoid2 == catalog::INVALID_OID);
 
     // Single column visible at version 0, refcount=1.
-    const collection_full_name_t pg_cc{"pg_catalog", "main", "pg_computed_column"};
+    const qualified_name_t pg_cc{"pg_catalog", "main", "pg_computed_column"};
     components::types::logical_value_t toid_lv(&fx.resource, table_oid);
     components::types::logical_value_t name_lv(&fx.resource, std::string("count"));
     auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc,
@@ -224,7 +224,7 @@ TEST_CASE("services::disk::ddl::computed_unregister_marks_dead") {
     REQUIRE(test_computed_unregister(fx, table_oid, "count"));
 
     // Two rows on disk for ("agg", "count"): live (refcount=1) + tombstone (refcount=0).
-    const collection_full_name_t pg_cc{"pg_catalog", "main", "pg_computed_column"};
+    const qualified_name_t pg_cc{"pg_catalog", "main", "pg_computed_column"};
     components::types::logical_value_t toid_lv(&fx.resource, table_oid);
     components::types::logical_value_t name_lv(&fx.resource, std::string("count"));
     auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc,
@@ -294,7 +294,7 @@ TEST_CASE("services::disk::ddl::computed_field_drop_then_readd") {
     auto attoid_b2 = test_computed_register(fx, table_oid, "b",
                                              components::catalog::well_known_oid::string_type);
 
-    const collection_full_name_t pg_cc{"pg_catalog", "main", "pg_computed_column"};
+    const qualified_name_t pg_cc{"pg_catalog", "main", "pg_computed_column"};
     components::types::logical_value_t toid_lv(&fx.resource, table_oid);
     auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc,
                           std::vector<std::string>{"relid"},
@@ -418,7 +418,7 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
     // Drop b → appends tombstone (rc=0) reusing attoid_b.
     REQUIRE(test_computed_unregister(fx, table_oid, "b"));
 
-    const collection_full_name_t pg_cc{"pg_catalog", "main", "pg_computed_column"};
+    const qualified_name_t pg_cc{"pg_catalog", "main", "pg_computed_column"};
 
     // Pre-VACUUM: 4 rows total for this table (a-live, b-live, b-tombstone, c-live).
     {
@@ -453,7 +453,7 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
             fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_cc,
                        std::int64_t{1}, attoid);
         }
-        std::set<collection_full_name_t> deletes_local{pg_cc};
+        std::set<qualified_name_t> deletes_local{pg_cc};
         fx.invoke(&manager_disk_t::storage_commit_deletes, txn_ctx(),
                    std::uint64_t{1000}, std::move(deletes_local));
     }
@@ -505,7 +505,7 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
     REQUIRE(table_oid >= FIRST_USER_OID);
 
     // Storage entry must exist for storage_append / compact to operate on.
-    const collection_full_name_t agg_name{"public", "main", "agg"};
+    const qualified_name_t agg_name{"public", "main", "agg"};
     fx.invoke(&manager_disk_t::create_storage, session_id_t{}, agg_name);
 
     // Register columns a/b/c in pg_computed_column.
@@ -548,7 +548,7 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
     // Simulate operator_vacuum step 5a: drop column "b" via tombstone-GC.
     REQUIRE(test_computed_unregister(fx, table_oid, "b"));
     {
-        const collection_full_name_t pg_cc{"pg_catalog", "main", "pg_computed_column"};
+        const qualified_name_t pg_cc{"pg_catalog", "main", "pg_computed_column"};
         logical_value_t toid_lv(&fx.resource, table_oid);
         auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc,
                               std::vector<std::string>{"relid"},
@@ -563,7 +563,7 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
             fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_cc,
                        std::int64_t{1}, attoid);
         }
-        std::set<collection_full_name_t> deletes_local{pg_cc};
+        std::set<qualified_name_t> deletes_local{pg_cc};
         fx.invoke(&manager_disk_t::storage_commit_deletes, txn_ctx(),
                    std::uint64_t{1000}, std::move(deletes_local));
     }
@@ -605,7 +605,7 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
 
     // Unknown-table calls are silent no-ops (return 0).
     {
-        const collection_full_name_t missing{"public", "main", "no_such_table"};
+        const qualified_name_t missing{"public", "main", "no_such_table"};
         std::set<std::string> live{};
         auto dropped = fx.invoke(&manager_disk_t::compact_relkind_g_storage,
                                   fx.ctx(), missing, std::move(live));
@@ -661,10 +661,10 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
     // writes catalog rows). storage_append needs a storage entry to operate on,
     // so create one explicitly (schema-less, mirroring the runtime path that
     // create_collection takes for fresh tables).
-    const collection_full_name_t docs_name{"public", "main", "docs"};
+    const qualified_name_t docs_name{"public", "main", "docs"};
     fx.invoke(&manager_disk_t::create_storage, session_id_t{}, docs_name);
 
-    auto append_ctx = [&](const collection_full_name_t& n) {
+    auto append_ctx = [&](const qualified_name_t& n) {
         return components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, n};
     };
 

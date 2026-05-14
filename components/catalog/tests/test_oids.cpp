@@ -132,7 +132,7 @@ TEST_CASE("test_oid_immutability") {
     std::pmr::synchronized_pool_resource resource;
 
     SECTION("table_id::set_oid") {
-        collection_full_name_t cfn("main", "users");
+        qualified_name_t cfn("main", "users");
         table_id tid(&resource, cfn);
         tid.set_oid(20000);
         REQUIRE_NOTHROW(tid.set_oid(20000)); // idempotent
@@ -155,7 +155,7 @@ TEST_CASE("test_oid_immutability") {
 TEST_CASE("test_table_oid_assignment") {
     std::pmr::synchronized_pool_resource resource;
 
-    collection_full_name_t cfn("main", "users");
+    qualified_name_t cfn("main", "users");
     table_id tid(&resource, cfn);
     REQUIRE(tid.oid() == INVALID_OID);
     tid.set_oid(20000);

@@ -163,12 +163,12 @@ TEST_CASE("services::disk::pg_depend::drop_type_restrict_no_deps") {
                                                                std::string("standalone_type"), std::string{});
     // Drop the type via pg_catalog rows (no restrict/cascade distinction in helper API).
     {
-        const collection_full_name_t pg_type{"pg_catalog", "main", "pg_type"};
-        const collection_full_name_t pg_dep{"pg_catalog", "main", "pg_depend"};
+        const qualified_name_t pg_type{"pg_catalog", "main", "pg_type"};
+        const qualified_name_t pg_dep{"pg_catalog", "main", "pg_depend"};
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, disk_test_helpers::txn_ctx(), pg_type, std::int64_t{0}, type_oid);
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, disk_test_helpers::txn_ctx(), pg_dep,  std::int64_t{1}, type_oid);
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, disk_test_helpers::txn_ctx(), pg_dep,  std::int64_t{3}, type_oid);
-        std::set<collection_full_name_t> deletes_local{pg_type, pg_dep};
+        std::set<qualified_name_t> deletes_local{pg_type, pg_dep};
         fx.invoke(&manager_disk_t::storage_commit_deletes, disk_test_helpers::txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
     }
     auto rr = fx.invoke(&manager_disk_t::resolve_type, fx.ctx(), ns_oid,

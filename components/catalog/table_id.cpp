@@ -16,7 +16,7 @@ namespace components::catalog {
         , name_(std::move(name), resource)
         , resource_(resource) {}
 
-    table_id::table_id(std::pmr::memory_resource* resource, const collection_full_name_t& full_name)
+    table_id::table_id(std::pmr::memory_resource* resource, const qualified_name_t& full_name)
         : namespace_parts_(resource)
         , name_(full_name.collection)
         , resource_(resource) {

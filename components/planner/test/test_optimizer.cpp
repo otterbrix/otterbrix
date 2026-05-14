@@ -18,7 +18,7 @@ using key = components::expressions::key_t;
 constexpr auto database_name = "database";
 constexpr auto collection_name = "collection";
 
-static collection_full_name_t coll_name() { return {database_name, collection_name}; }
+static qualified_name_t coll_name() { return {database_name, collection_name}; }
 
 // ================================================================
 // Helper: build a match node with a single expression

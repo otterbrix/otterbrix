@@ -422,7 +422,7 @@ TEST_CASE("services::disk::persistence::test_sequence_persistence") {
         seq_oid = test_create_sequence(fd, ns_oid, "counter", 10, 2, 1, 1000, true);
         REQUIRE(seq_oid >= FIRST_USER_OID);
         // AC #1: pg_sequence row written (field values verified at integration level).
-        const collection_full_name_t pg_seq{"pg_catalog", "main", "pg_sequence"};
+        const qualified_name_t pg_seq{"pg_catalog", "main", "pg_sequence"};
         auto seq_rows = fd.invoke(&manager_disk_t::scan_by_key, fd.ctx(), pg_seq,
                                    std::vector<std::string>{"seqrelid"},
                                    std::vector<components::types::logical_value_t>{
@@ -449,7 +449,7 @@ TEST_CASE("services::disk::persistence::test_sequence_persistence") {
         REQUIRE(r.found);
         REQUIRE(r.oid == seq_oid);
         REQUIRE(r.relkind == components::catalog::relkind::sequence);
-        const collection_full_name_t pg_seq2{"pg_catalog", "main", "pg_sequence"};
+        const qualified_name_t pg_seq2{"pg_catalog", "main", "pg_sequence"};
         auto seq_rows2 = fd2.invoke(&manager_disk_t::scan_by_key, fd2.ctx(), pg_seq2,
                                      std::vector<std::string>{"seqrelid"},
                                      std::vector<components::types::logical_value_t>{
@@ -475,7 +475,7 @@ TEST_CASE("services::disk::persistence::test_view_persistence") {
         view_oid = test_create_view(fd, ns_oid, "my_view", view_sql);
         REQUIRE(view_oid >= FIRST_USER_OID);
         // AC #1: pg_rewrite row written with ev_class == view_oid.
-        const collection_full_name_t pg_rewrite_tbl{"pg_catalog", "main", "pg_rewrite"};
+        const qualified_name_t pg_rewrite_tbl{"pg_catalog", "main", "pg_rewrite"};
         auto rewrite_rows = fd.invoke(&manager_disk_t::scan_by_key, fd.ctx(), pg_rewrite_tbl,
                                        std::vector<std::string>{"ev_class"},
                                        std::vector<components::types::logical_value_t>{
@@ -502,7 +502,7 @@ TEST_CASE("services::disk::persistence::test_view_persistence") {
         REQUIRE(r.found);
         REQUIRE(r.oid == view_oid);
         REQUIRE(r.relkind == components::catalog::relkind::view);
-        const collection_full_name_t pg_rewrite_tbl2{"pg_catalog", "main", "pg_rewrite"};
+        const qualified_name_t pg_rewrite_tbl2{"pg_catalog", "main", "pg_rewrite"};
         auto rewrite_rows2 = fd2.invoke(&manager_disk_t::scan_by_key, fd2.ctx(), pg_rewrite_tbl2,
                                          std::vector<std::string>{"ev_class"},
                                          std::vector<components::types::logical_value_t>{
@@ -527,7 +527,7 @@ TEST_CASE("services::disk::persistence::test_macro_persistence") {
         ns_oid = test_create_namespace(fd, "macro_ns");
         macro_oid = test_create_macro(fd, ns_oid, "double", macro_body);
         REQUIRE(macro_oid >= FIRST_USER_OID);
-        const collection_full_name_t pg_rewrite_m{"pg_catalog", "main", "pg_rewrite"};
+        const qualified_name_t pg_rewrite_m{"pg_catalog", "main", "pg_rewrite"};
         auto rewrite_rows_m = fd.invoke(&manager_disk_t::scan_by_key, fd.ctx(), pg_rewrite_m,
                                          std::vector<std::string>{"ev_class"},
                                          std::vector<components::types::logical_value_t>{
@@ -544,7 +544,7 @@ TEST_CASE("services::disk::persistence::test_macro_persistence") {
         REQUIRE(r.found);
         REQUIRE(r.oid == macro_oid);
         REQUIRE(r.relkind == components::catalog::relkind::macro);
-        const collection_full_name_t pg_rewrite_m2{"pg_catalog", "main", "pg_rewrite"};
+        const qualified_name_t pg_rewrite_m2{"pg_catalog", "main", "pg_rewrite"};
         auto rewrite_rows_m2 = fd2.invoke(&manager_disk_t::scan_by_key, fd2.ctx(), pg_rewrite_m2,
                                            std::vector<std::string>{"ev_class"},
                                            std::vector<components::types::logical_value_t>{
@@ -661,7 +661,7 @@ TEST_CASE("services::disk::persistence::test_check_constraint_persistence") {
         fresh_disk fd2(dir);
         fd2.manager->load_system_tables_sync();
         fd2.manager->restore_oid_generator_sync();
-        const collection_full_name_t pg_constr{"pg_catalog", "main", "pg_constraint"};
+        const qualified_name_t pg_constr{"pg_catalog", "main", "pg_constraint"};
         auto check_rows = fd2.invoke(&manager_disk_t::scan_by_key, fd2.ctx(), pg_constr,
                                       std::vector<std::string>{"conrelid"},
                                       std::vector<components::types::logical_value_t>{

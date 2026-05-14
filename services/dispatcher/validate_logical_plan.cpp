@@ -860,7 +860,7 @@ namespace services::dispatcher {
         // as a single value (for table_id construction and for the
         // dependency-set populated by validate_types/_schema). Resolved-
         // stage routing should use node->table_oid() instead.
-        collection_full_name_t local_node_cfn(const node_t* node) {
+        qualified_name_t local_node_cfn(const node_t* node) {
             if (!node) return {};
             switch (node->type()) {
                 case node_type::aggregate_t:
@@ -1616,7 +1616,7 @@ namespace services::dispatcher {
             // For now next 3 nodes do not support returning clause:
             case node_type::insert_t: {
                 auto* insert_node = reinterpret_cast<node_insert_t*>(node);
-                table_id id(resource, collection_full_name_t{insert_node->dbname(), insert_node->relname()});
+                table_id id(resource, qualified_name_t{insert_node->dbname(), insert_node->relname()});
                 if (auto err = check_collection_exists(resource, idx, id); err) {
                     return schema_result<named_schema>{resource, err->get_error()};
                 }
@@ -1799,7 +1799,7 @@ namespace services::dispatcher {
                 const std::string& target_dbname = (node->type() == node_type::update_t)
                     ? reinterpret_cast<node_update_t*>(node)->dbname()
                     : reinterpret_cast<node_delete_t*>(node)->dbname();
-                table_id id(resource, collection_full_name_t{target_dbname, target_relname});
+                table_id id(resource, qualified_name_t{target_dbname, target_relname});
                 const auto* tbl_upd = impl::tbl_md_for(idx, target_dbname, target_relname);
                 if (tbl_upd && tbl_upd->relkind != 'g') {
                     for (const auto& column : tbl_upd->columns) {
@@ -1918,7 +1918,7 @@ namespace services::dispatcher {
             }
             case node_type::create_index_t: {
                 auto* idx_node = static_cast<node_create_index_t*>(node);
-                table_id id(resource, collection_full_name_t{idx_node->dbname(), idx_node->relname()});
+                table_id id(resource, qualified_name_t{idx_node->dbname(), idx_node->relname()});
                 if (auto err = check_collection_exists(resource, idx, id); err) {
                     return schema_result<named_schema>{resource, err->get_error()};
                 }

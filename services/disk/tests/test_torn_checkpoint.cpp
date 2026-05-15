@@ -21,15 +21,6 @@ namespace {
     }
     void cleanup_torn_dir() { std::filesystem::remove_all(torn_test_dir()); }
 
-    std::vector<storage_index_t> make_indices(uint64_t count) {
-        std::vector<storage_index_t> ix;
-        ix.reserve(count);
-        for (uint64_t i = 0; i < count; i++) {
-            ix.emplace_back(static_cast<int64_t>(i));
-        }
-        return ix;
-    }
-
     void append_one_int(data_table_t& table, std::pmr::memory_resource* res, int64_t value) {
         auto types = table.copy_types();
         data_chunk_t chunk(res, types, 1);

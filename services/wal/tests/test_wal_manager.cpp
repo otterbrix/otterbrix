@@ -357,7 +357,7 @@ TEST_CASE("wal_manager::test_auto_checkpoint_on_wal_size") {
                                                       uint64_t{0},
                                                       uint64_t{10},
                                                       uint64_t{1001});
-        std::move(fut).get();
+        REQUIRE(std::move(fut).get() > 0);
     }
     {
         auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
@@ -366,7 +366,7 @@ TEST_CASE("wal_manager::test_auto_checkpoint_on_wal_size") {
                                                       uint64_t{1001},
                                                       wal_sync_mode::NORMAL,
                                                       kMainDb);
-        std::move(fut).get();
+        REQUIRE(std::move(fut).get() > 0);
     }
 
     // Now threshold is exceeded: auto_checkpoint_wal_id must return current wal_id > 0.

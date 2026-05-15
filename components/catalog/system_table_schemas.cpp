@@ -352,7 +352,8 @@ namespace components::catalog {
 
         if (t.type() == LT::DECIMAL) {
             const auto* ext = static_cast<const types::decimal_logical_type_extension*>(t.extension());
-            return "numeric(" + std::to_string(ext->width()) + "," + std::to_string(ext->scale()) + ")";
+            return "numeric(" + std::to_string(static_cast<unsigned>(ext->width())) + "," +
+                   std::to_string(static_cast<unsigned>(ext->scale())) + ")";
         }
         if (t.type() == LT::UNKNOWN) {
             return "UNKNOWN(" + t.type_name() + ")";
@@ -709,9 +710,9 @@ namespace components::catalog {
                 out += v.value<bool>() ? '1' : '0';
                 break;
             case LT::TINYINT:   out += std::to_string(v.value<int8_t>());   break;
-            case LT::UTINYINT:  out += std::to_string(v.value<uint8_t>());  break;
+            case LT::UTINYINT:  out += std::to_string(static_cast<unsigned>(v.value<uint8_t>()));  break;
             case LT::SMALLINT:  out += std::to_string(v.value<int16_t>());  break;
-            case LT::USMALLINT: out += std::to_string(v.value<uint16_t>()); break;
+            case LT::USMALLINT: out += std::to_string(static_cast<unsigned>(v.value<uint16_t>())); break;
             case LT::INTEGER:   out += std::to_string(v.value<int32_t>());  break;
             case LT::UINTEGER:  out += std::to_string(v.value<uint32_t>()); break;
             case LT::BIGINT:    out += std::to_string(v.value<int64_t>());  break;

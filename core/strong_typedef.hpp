@@ -57,9 +57,9 @@
         struct D : boost::totally_ordered1<D> {                                                                        \
             typedef T base_type;                                                                                       \
             T t;                                                                                                       \
-            constexpr explicit D(const T& t_) noexcept(std::is_nothrow_copy_constructible_v<T>)                        \
+            explicit D(const T& t_) noexcept(std::is_nothrow_copy_constructible_v<T>)                                  \
                 : t(t_) {}                                                                                             \
-            constexpr explicit D(T&& t_) noexcept(std::is_nothrow_move_constructible_v<T>)                             \
+            explicit D(T&& t_) noexcept(std::is_nothrow_move_constructible_v<T>)                                       \
                 : t(std::move(t_)) {}                                                                                  \
             D()                                                                                                        \
             noexcept(std::is_nothrow_default_constructible_v<T>)                                                       \

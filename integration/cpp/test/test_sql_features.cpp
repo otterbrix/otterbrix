@@ -2716,7 +2716,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_stress_1000_rando
     // is roomy for any not-yet-optimized dispatcher path while still catching
     // a true regression (e.g. quadratic schema-merge cost). ASan instrumentation
     // adds ~3× overhead so the threshold is raised in that build only.
-#if defined(__SANITIZE_ADDRESS__) || (defined(__has_feature) && __has_feature(address_sanitizer))
+#ifdef __SANITIZE_ADDRESS__
     REQUIRE(elapsed_ms < 180000);
 #else
     REQUIRE(elapsed_ms < 60000);

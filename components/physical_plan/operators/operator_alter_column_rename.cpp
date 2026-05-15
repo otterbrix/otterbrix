@@ -44,12 +44,16 @@ namespace components::operators {
 
         // Step 1: keyed single-row read of the live pg_attribute row by attoid.
         components::types::logical_value_t attoid_lv(resource_, attoid_);
+        std::pmr::vector<std::string> pa_keys(resource_);
+        pa_keys.emplace_back("attoid");
+        std::pmr::vector<components::types::logical_value_t> pa_vals(resource_);
+        pa_vals.emplace_back(attoid_lv);
         auto [_pa, paf] = actor_zeta::send(
             ctx->disk_address,
             &services::disk::manager_disk_t::read_rows_by_key,
             exec_ctx, pg_attr,
-            std::vector<std::string>{"attoid"},
-            std::vector<components::types::logical_value_t>{attoid_lv});
+            std::move(pa_keys),
+            std::move(pa_vals));
         auto attr_rows = co_await std::move(paf);
 
         catalog::oid_t attoid = catalog::INVALID_OID;

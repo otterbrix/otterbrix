@@ -80,12 +80,16 @@ namespace components::operators {
 
         // Step 1: scan pg_constraint by (conrelid|confrelid).
         types::logical_value_t table_lv(resource_, table_oid);
+        std::pmr::vector<std::string> con_keys(resource_);
+        con_keys.emplace_back(key_col);
+        std::pmr::vector<types::logical_value_t> con_vals(resource_);
+        con_vals.emplace_back(table_lv);
         auto [_c, fut_con] = actor_zeta::send(
             ctx->disk_address,
             &services::disk::manager_disk_t::read_rows_by_key,
             exec_ctx, kPgConstraint,
-            std::vector<std::string>{key_col},
-            std::vector<types::logical_value_t>{table_lv});
+            std::move(con_keys),
+            std::move(con_vals));
         auto con_rows = co_await std::move(fut_con);
 
         for (const auto& row : con_rows) {
@@ -115,12 +119,16 @@ namespace components::operators {
                     row[catalog::pg_constraint_col::confkey].is_null() ? std::string{} : std::string(row[catalog::pg_constraint_col::confkey].value<std::string_view>()));
 
                 types::logical_value_t child_lv(resource_, fk.child_table_oid);
+                std::pmr::vector<std::string> attr_c_keys(resource_);
+                attr_c_keys.emplace_back("attrelid");
+                std::pmr::vector<types::logical_value_t> attr_c_vals(resource_);
+                attr_c_vals.emplace_back(child_lv);
                 auto [_a, fut_attr_c] = actor_zeta::send(
                     ctx->disk_address,
                     &services::disk::manager_disk_t::read_rows_by_key,
                     exec_ctx, kPgAttribute,
-                    std::vector<std::string>{"attrelid"},
-                    std::vector<types::logical_value_t>{child_lv});
+                    std::move(attr_c_keys),
+                    std::move(attr_c_vals));
                 auto child_attr = co_await std::move(fut_attr_c);
                 fk.child_col_names = catalog::attoids_to_names(child_attr, child_attoids);
 
@@ -174,12 +182,16 @@ namespace components::operators {
                 }
 
                 types::logical_value_t parent_lv(resource_, fk.parent_table_oid);
+                std::pmr::vector<std::string> attr_p_keys(resource_);
+                attr_p_keys.emplace_back("attrelid");
+                std::pmr::vector<types::logical_value_t> attr_p_vals(resource_);
+                attr_p_vals.emplace_back(parent_lv);
                 auto [_b, fut_attr_p] = actor_zeta::send(
                     ctx->disk_address,
                     &services::disk::manager_disk_t::read_rows_by_key,
                     exec_ctx, kPgAttribute,
-                    std::vector<std::string>{"attrelid"},
-                    std::vector<types::logical_value_t>{parent_lv});
+                    std::move(attr_p_keys),
+                    std::move(attr_p_vals));
                 auto parent_attr = co_await std::move(fut_attr_p);
                 fk.parent_col_names = catalog::attoids_to_names(parent_attr, parent_attoids);
 
@@ -188,12 +200,16 @@ namespace components::operators {
                     // + schema (so operator_fk_cascade_t can locate the
                     // descendant collection without a back-resolve).
                     types::logical_value_t child_oid_lv(resource_, fk.child_table_oid);
+                    std::pmr::vector<std::string> cls_keys(resource_);
+                    cls_keys.emplace_back("oid");
+                    std::pmr::vector<types::logical_value_t> cls_vals(resource_);
+                    cls_vals.emplace_back(child_oid_lv);
                     auto [_cls, fut_cls] = actor_zeta::send(
                         ctx->disk_address,
                         &services::disk::manager_disk_t::read_rows_by_key,
                         exec_ctx, kPgClass,
-                        std::vector<std::string>{"oid"},
-                        std::vector<types::logical_value_t>{child_oid_lv});
+                        std::move(cls_keys),
+                        std::move(cls_vals));
                     auto cls_rows = co_await std::move(fut_cls);
                     if (!cls_rows.empty() && cls_rows[0].size() > catalog::pg_class_col::relname) {
                         fk.child_collection_name =
@@ -202,12 +218,16 @@ namespace components::operators {
                         const auto ns_oid = static_cast<catalog::oid_t>(
                             cls_rows[0][catalog::pg_class_col::relnamespace].value<std::uint32_t>());
                         types::logical_value_t ns_oid_lv(resource_, ns_oid);
+                        std::pmr::vector<std::string> ns_keys(resource_);
+                        ns_keys.emplace_back("oid");
+                        std::pmr::vector<types::logical_value_t> ns_vals(resource_);
+                        ns_vals.emplace_back(ns_oid_lv);
                         auto [_ns, fut_ns] = actor_zeta::send(
                             ctx->disk_address,
                             &services::disk::manager_disk_t::read_rows_by_key,
                             exec_ctx, kPgNamespace,
-                            std::vector<std::string>{"oid"},
-                            std::vector<types::logical_value_t>{ns_oid_lv});
+                            std::move(ns_keys),
+                            std::move(ns_vals));
                         auto ns_rows = co_await std::move(fut_ns);
                         if (!ns_rows.empty() && ns_rows[0].size() > catalog::pg_namespace_col::nspname) {
                             fk.child_schema =

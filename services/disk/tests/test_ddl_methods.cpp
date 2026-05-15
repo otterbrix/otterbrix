@@ -159,12 +159,17 @@ TEST_CASE("services::disk::ddl::computed_register_same_type_idempotent") {
     REQUIRE(attoid2 == catalog::INVALID_OID);
 
     // Single column visible at version 0, refcount=1.
-    const qualified_name_t pg_cc{"pg_catalog", "main", "pg_computed_column"};
+    constexpr catalog::oid_t pg_cc = catalog::well_known_oid::pg_computed_column_table;
     components::types::logical_value_t toid_lv(&fx.resource, table_oid);
     components::types::logical_value_t name_lv(&fx.resource, std::string("count"));
+    std::pmr::vector<std::string> k1{&fx.resource};
+    k1.emplace_back("relid");
+    k1.emplace_back("attname");
+    std::pmr::vector<components::types::logical_value_t> v1{&fx.resource};
+    v1.emplace_back(toid_lv);
+    v1.emplace_back(name_lv);
     auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc,
-                          std::vector<std::string>{"relid", "attname"},
-                          std::vector<components::types::logical_value_t>{toid_lv, name_lv});
+                          std::move(k1), std::move(v1));
     REQUIRE(rows.size() == 1);
     REQUIRE(rows[0][5].value<std::int64_t>() == 1);
 
@@ -224,12 +229,17 @@ TEST_CASE("services::disk::ddl::computed_unregister_marks_dead") {
     REQUIRE(test_computed_unregister(fx, table_oid, "count"));
 
     // Two rows on disk for ("agg", "count"): live (refcount=1) + tombstone (refcount=0).
-    const qualified_name_t pg_cc{"pg_catalog", "main", "pg_computed_column"};
+    constexpr catalog::oid_t pg_cc = catalog::well_known_oid::pg_computed_column_table;
     components::types::logical_value_t toid_lv(&fx.resource, table_oid);
     components::types::logical_value_t name_lv(&fx.resource, std::string("count"));
+    std::pmr::vector<std::string> k2{&fx.resource};
+    k2.emplace_back("relid");
+    k2.emplace_back("attname");
+    std::pmr::vector<components::types::logical_value_t> v2{&fx.resource};
+    v2.emplace_back(toid_lv);
+    v2.emplace_back(name_lv);
     auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc,
-                          std::vector<std::string>{"relid", "attname"},
-                          std::vector<components::types::logical_value_t>{toid_lv, name_lv});
+                          std::move(k2), std::move(v2));
     REQUIRE(rows.size() == 2);
 
     bool found_live = false;
@@ -294,11 +304,14 @@ TEST_CASE("services::disk::ddl::computed_field_drop_then_readd") {
     auto attoid_b2 = test_computed_register(fx, table_oid, "b",
                                              components::catalog::well_known_oid::string_type);
 
-    const qualified_name_t pg_cc{"pg_catalog", "main", "pg_computed_column"};
+    constexpr catalog::oid_t pg_cc = catalog::well_known_oid::pg_computed_column_table;
     components::types::logical_value_t toid_lv(&fx.resource, table_oid);
+    std::pmr::vector<std::string> k3{&fx.resource};
+    k3.emplace_back("relid");
+    std::pmr::vector<components::types::logical_value_t> v3{&fx.resource};
+    v3.emplace_back(toid_lv);
     auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc,
-                          std::vector<std::string>{"relid"},
-                          std::vector<components::types::logical_value_t>{toid_lv});
+                          std::move(k3), std::move(v3));
 
     // Branch on observed register-side behavior so the test stays useful even
     // if the operator's same-type policy is later relaxed (e.g. to revive
@@ -418,14 +431,17 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
     // Drop b → appends tombstone (rc=0) reusing attoid_b.
     REQUIRE(test_computed_unregister(fx, table_oid, "b"));
 
-    const qualified_name_t pg_cc{"pg_catalog", "main", "pg_computed_column"};
+    constexpr catalog::oid_t pg_cc = catalog::well_known_oid::pg_computed_column_table;
 
     // Pre-VACUUM: 4 rows total for this table (a-live, b-live, b-tombstone, c-live).
     {
         components::types::logical_value_t toid_lv(&fx.resource, table_oid);
+        std::pmr::vector<std::string> kk{&fx.resource};
+        kk.emplace_back("relid");
+        std::pmr::vector<components::types::logical_value_t> vv{&fx.resource};
+        vv.emplace_back(toid_lv);
         auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc,
-                              std::vector<std::string>{"relid"},
-                              std::vector<components::types::logical_value_t>{toid_lv});
+                              std::move(kk), std::move(vv));
         REQUIRE(rows.size() == 4);
     }
 
@@ -435,9 +451,12 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
     // the per-attoid delete drops BOTH rows for column "b".
     {
         components::types::logical_value_t toid_lv(&fx.resource, table_oid);
+        std::pmr::vector<std::string> kk{&fx.resource};
+        kk.emplace_back("relid");
+        std::pmr::vector<components::types::logical_value_t> vv{&fx.resource};
+        vv.emplace_back(toid_lv);
         auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc,
-                              std::vector<std::string>{"relid"},
-                              std::vector<components::types::logical_value_t>{toid_lv});
+                              std::move(kk), std::move(vv));
         std::vector<catalog::oid_t> dead_attoids;
         for (const auto& row : rows) {
             REQUIRE(row.size() >= 6);
@@ -453,7 +472,7 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
             fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_cc,
                        std::int64_t{1}, attoid);
         }
-        std::set<qualified_name_t> deletes_local{pg_cc};
+        std::set<catalog::oid_t> deletes_local{pg_cc};
         fx.invoke(&manager_disk_t::storage_commit_deletes, txn_ctx(),
                    std::uint64_t{1000}, std::move(deletes_local));
     }
@@ -462,9 +481,12 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
     // its tombstone because both share the same attoid.
     {
         components::types::logical_value_t toid_lv(&fx.resource, table_oid);
+        std::pmr::vector<std::string> kk{&fx.resource};
+        kk.emplace_back("relid");
+        std::pmr::vector<components::types::logical_value_t> vv{&fx.resource};
+        vv.emplace_back(toid_lv);
         auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc,
-                              std::vector<std::string>{"relid"},
-                              std::vector<components::types::logical_value_t>{toid_lv});
+                              std::move(kk), std::move(vv));
         REQUIRE(rows.size() == 2);
         std::vector<std::string> names;
         for (const auto& row : rows) {
@@ -505,8 +527,8 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
     REQUIRE(table_oid >= FIRST_USER_OID);
 
     // Storage entry must exist for storage_append / compact to operate on.
-    const qualified_name_t agg_name{"public", "main", "agg"};
-    fx.invoke(&manager_disk_t::create_storage, session_id_t{}, agg_name);
+    fx.invoke(&manager_disk_t::create_storage, session_id_t{}, table_oid,
+              catalog::well_known_oid::main_database);
 
     // Register columns a/b/c in pg_computed_column.
     auto attoid_a = test_computed_register(fx, table_oid, "a",
@@ -535,24 +557,27 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
         chunk->set_value(2, 0, logical_value_t(&fx.resource, std::int64_t{3}));
         components::execution_context_t append_ctx{session_id_t{},
                                                     components::table::transaction_data{0, 0},
-                                                    agg_name};
-        fx.invoke(&manager_disk_t::storage_append, append_ctx, std::move(chunk));
+                                                    table_oid};
+        fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, std::move(chunk));
     }
 
     // Verify storage now has 3 columns (post-#96).
     {
-        auto types = fx.invoke(&manager_disk_t::storage_types, session_id_t{}, agg_name);
+        auto types = fx.invoke(&manager_disk_t::storage_types, session_id_t{}, table_oid);
         REQUIRE(types.size() == 3);
     }
 
     // Simulate operator_vacuum step 5a: drop column "b" via tombstone-GC.
     REQUIRE(test_computed_unregister(fx, table_oid, "b"));
     {
-        const qualified_name_t pg_cc{"pg_catalog", "main", "pg_computed_column"};
+        constexpr catalog::oid_t pg_cc = catalog::well_known_oid::pg_computed_column_table;
         logical_value_t toid_lv(&fx.resource, table_oid);
+        std::pmr::vector<std::string> kk{&fx.resource};
+        kk.emplace_back("relid");
+        std::pmr::vector<logical_value_t> vv{&fx.resource};
+        vv.emplace_back(toid_lv);
         auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc,
-                              std::vector<std::string>{"relid"},
-                              std::vector<logical_value_t>{toid_lv});
+                              std::move(kk), std::move(vv));
         std::vector<catalog::oid_t> dead_attoids;
         for (const auto& row : rows) {
             if (row[5].value<std::int64_t>() <= 0) {
@@ -563,7 +588,7 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
             fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_cc,
                        std::int64_t{1}, attoid);
         }
-        std::set<qualified_name_t> deletes_local{pg_cc};
+        std::set<catalog::oid_t> deletes_local{pg_cc};
         fx.invoke(&manager_disk_t::storage_commit_deletes, txn_ctx(),
                    std::uint64_t{1000}, std::move(deletes_local));
     }
@@ -573,13 +598,13 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
     {
         std::set<std::string> live{"a", "c"};
         auto dropped = fx.invoke(&manager_disk_t::compact_relkind_g_storage,
-                                  fx.ctx(), agg_name, std::move(live));
+                                  fx.ctx(), table_oid, std::move(live));
         REQUIRE(dropped == 1);
     }
 
     // Storage now has 2 columns: a, c.
     {
-        auto types = fx.invoke(&manager_disk_t::storage_types, session_id_t{}, agg_name);
+        auto types = fx.invoke(&manager_disk_t::storage_types, session_id_t{}, table_oid);
         REQUIRE(types.size() == 2);
     }
 
@@ -587,7 +612,7 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
     {
         std::set<std::string> live{"a", "c"};
         auto dropped = fx.invoke(&manager_disk_t::compact_relkind_g_storage,
-                                  fx.ctx(), agg_name, std::move(live));
+                                  fx.ctx(), table_oid, std::move(live));
         REQUIRE(dropped == 0);
     }
 
@@ -595,20 +620,21 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
     {
         std::set<std::string> live{};
         auto dropped = fx.invoke(&manager_disk_t::compact_relkind_g_storage,
-                                  fx.ctx(), agg_name, std::move(live));
+                                  fx.ctx(), table_oid, std::move(live));
         REQUIRE(dropped == 2);
     }
     {
-        auto types = fx.invoke(&manager_disk_t::storage_types, session_id_t{}, agg_name);
+        auto types = fx.invoke(&manager_disk_t::storage_types, session_id_t{}, table_oid);
         REQUIRE(types.empty());
     }
 
     // Unknown-table calls are silent no-ops (return 0).
     {
-        const qualified_name_t missing{"public", "main", "no_such_table"};
+        // A never-allocated user oid: definitely not in storages_.
+        const catalog::oid_t missing_oid{FIRST_USER_OID + 9999};
         std::set<std::string> live{};
         auto dropped = fx.invoke(&manager_disk_t::compact_relkind_g_storage,
-                                  fx.ctx(), missing, std::move(live));
+                                  fx.ctx(), missing_oid, std::move(live));
         REQUIRE(dropped == 0);
     }
 }
@@ -661,11 +687,11 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
     // writes catalog rows). storage_append needs a storage entry to operate on,
     // so create one explicitly (schema-less, mirroring the runtime path that
     // create_collection takes for fresh tables).
-    const qualified_name_t docs_name{"public", "main", "docs"};
-    fx.invoke(&manager_disk_t::create_storage, session_id_t{}, docs_name);
+    fx.invoke(&manager_disk_t::create_storage, session_id_t{}, table_oid,
+              catalog::well_known_oid::main_database);
 
-    auto append_ctx = [&](const qualified_name_t& n) {
-        return components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, n};
+    auto append_ctx = [&](catalog::oid_t toid) {
+        return components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, toid};
     };
 
     auto build_chunk = [&](std::vector<std::pair<std::string, complex_logical_type>> cols,
@@ -693,8 +719,8 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
                 c.set_value(0, 0, logical_value_t(&fx.resource, std::int64_t{1}));
             },
             /*rows=*/1);
-        auto [start, count] = fx.invoke(&manager_disk_t::storage_append, append_ctx(docs_name),
-                                         std::move(chunk));
+        auto [start, count] = fx.invoke(&manager_disk_t::storage_append, append_ctx(table_oid),
+                                         table_oid, std::move(chunk));
         REQUIRE(count == 1);
         (void)start;
     }
@@ -717,7 +743,7 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
                 c.set_value(1, 0, logical_value_t(&fx.resource, std::string("x")));
             },
             /*rows=*/1);
-        fx.invoke(&manager_disk_t::storage_append, append_ctx(docs_name), std::move(chunk));
+        fx.invoke(&manager_disk_t::storage_append, append_ctx(table_oid), table_oid, std::move(chunk));
     }
 
     {
@@ -725,9 +751,9 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
         // relkind='g' tables when the incoming chunk brings columns that aren't in
         // the current data_table_t. Pre-existing rows get NULL-equivalent
         // (zero-initialized) values for the new column.
-        auto types = fx.invoke(&manager_disk_t::storage_types, session_id_t{}, docs_name);
+        auto types = fx.invoke(&manager_disk_t::storage_types, session_id_t{}, table_oid);
         REQUIRE(types.size() == 2);
-        auto rows = fx.invoke(&manager_disk_t::storage_scan, session_id_t{}, docs_name,
+        auto rows = fx.invoke(&manager_disk_t::storage_scan, session_id_t{}, table_oid,
                                std::unique_ptr<components::table::table_filter_t>{}, /*limit=*/-1,
                                components::table::transaction_data{0, 0});
         REQUIRE(rows);
@@ -749,13 +775,13 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
                 c.set_value(2, 0, logical_value_t(&fx.resource, double{3.14}));
             },
             /*rows=*/1);
-        fx.invoke(&manager_disk_t::storage_append, append_ctx(docs_name), std::move(chunk));
+        fx.invoke(&manager_disk_t::storage_append, append_ctx(table_oid), table_oid, std::move(chunk));
     }
 
     {
-        auto types = fx.invoke(&manager_disk_t::storage_types, session_id_t{}, docs_name);
+        auto types = fx.invoke(&manager_disk_t::storage_types, session_id_t{}, table_oid);
         REQUIRE(types.size() == 3);
-        auto rows = fx.invoke(&manager_disk_t::storage_scan, session_id_t{}, docs_name,
+        auto rows = fx.invoke(&manager_disk_t::storage_scan, session_id_t{}, table_oid,
                                std::unique_ptr<components::table::table_filter_t>{}, /*limit=*/-1,
                                components::table::transaction_data{0, 0});
         REQUIRE(rows);

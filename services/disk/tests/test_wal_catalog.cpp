@@ -193,8 +193,9 @@ TEST_CASE("services::disk::wal_catalog::create_table_writes_pg_class_and_pg_attr
     auto cls_after = pg_catalog_records_for(dir, "pg_class");
     auto att_after = pg_catalog_records_for(dir, "pg_attribute");
     REQUIRE(cls_after >= cls_before + 1);
-    // At least one pg_attribute row per column.
-    REQUIRE(att_after >= att_before + 3);
+    // pg_attribute rows for all columns are now batched into a single WAL
+    // record (one chunk holds N rows, see build_create_table_writes).
+    REQUIRE(att_after >= att_before + 1);
     cleanup_dir(dir);
 }
 

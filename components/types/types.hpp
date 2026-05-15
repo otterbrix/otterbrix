@@ -416,8 +416,8 @@ namespace components::types {
         bool is_nested() const;
 
         const complex_logical_type& child_type() const;
-        std::vector<complex_logical_type>& child_types();
-        const std::vector<complex_logical_type>& child_types() const;
+        std::pmr::vector<complex_logical_type>& child_types();
+        const std::pmr::vector<complex_logical_type>& child_types() const;
         logical_type_extension* extension() const;
 
         bool is_convertable_to(const complex_logical_type& other) const;
@@ -441,9 +441,9 @@ namespace components::types {
                                                const complex_logical_type& value_type,
                                                std::string alias = "");
         static complex_logical_type
-        create_struct(std::string name, const std::vector<complex_logical_type>& fields, std::string alias = "");
-        static complex_logical_type create_union(std::vector<complex_logical_type> fields, std::string alias = "");
-        static complex_logical_type create_variant(std::string alias = "");
+        create_struct(std::string name, const std::pmr::vector<complex_logical_type>& fields, std::string alias = "");
+        static complex_logical_type create_union(std::pmr::vector<complex_logical_type> fields, std::string alias = "");
+        static complex_logical_type create_variant(std::pmr::memory_resource* resource, std::string alias = "");
         static complex_logical_type create_unknown(std::string type_name, std::string alias = "");
 
     private:
@@ -563,23 +563,21 @@ namespace components::types {
 
     class struct_logical_type_extension : public logical_type_extension {
     public:
-        explicit struct_logical_type_extension(std::string name, const std::vector<complex_logical_type>& fields);
+        explicit struct_logical_type_extension(std::string name,const std::pmr::vector<complex_logical_type>& fields);
 
         // fields must be aliased
-        struct_logical_type_extension(std::string name,
-                                      const std::vector<types::complex_logical_type>& columns,
-                                      std::vector<field_description> descriptions);
+        struct_logical_type_extension(std::string name, const std::pmr::vector<types::complex_logical_type>& columns, std::pmr::vector<field_description> descriptions);
 
         const std::string& type_name() const { return type_name_; }
-        std::vector<complex_logical_type>& child_types() { return fields_; }
-        const std::vector<complex_logical_type>& child_types() const { return fields_; }
-        const std::vector<field_description>& descriptions() const { return descriptions_; }
+        std::pmr::vector<complex_logical_type>& child_types() { return fields_; }
+        const std::pmr::vector<complex_logical_type>& child_types() const { return fields_; }
+        const std::pmr::vector<field_description>& descriptions() const { return descriptions_; }
 
 
     private:
         std::string type_name_;
-        std::vector<complex_logical_type> fields_;
-        std::vector<field_description> descriptions_;
+        std::pmr::vector<complex_logical_type> fields_;
+        std::pmr::vector<field_description> descriptions_;
     };
 
     class decimal_logical_type_extension : public logical_type_extension {
@@ -600,15 +598,15 @@ namespace components::types {
     class function_logical_type_extension : public logical_type_extension {
     public:
         explicit function_logical_type_extension(complex_logical_type return_type,
-                                                 std::vector<complex_logical_type> arguments);
+                                                 std::pmr::vector<complex_logical_type> arguments);
 
         const complex_logical_type& return_type() const noexcept { return return_type_; }
-        const std::vector<complex_logical_type>& argument_types() const noexcept { return argument_types_; }
+        const std::pmr::vector<complex_logical_type>& argument_types() const noexcept { return argument_types_; }
 
 
     private:
         complex_logical_type return_type_;
-        std::vector<complex_logical_type> argument_types_;
+        std::pmr::vector<complex_logical_type> argument_types_;
     };
 
     class unknown_logical_type_extension : public logical_type_extension {

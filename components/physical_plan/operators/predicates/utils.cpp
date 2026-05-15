@@ -1,6 +1,8 @@
 #include "utils.hpp"
 #include <components/expressions/key.hpp>
 #include <components/expressions/scalar_expression.hpp>
+
+#include <cassert>
 #include <stdexcept>
 
 namespace components::operators::predicates::impl {
@@ -15,10 +17,13 @@ namespace components::operators::predicates::impl {
         if (key.path().empty()) {
             throw std::logic_error("create_value_getter: key path is empty");
         }
-        // side_t::right → read from chunk_right (join right side).
-        // side_t::left or undefined → read from chunk_left.
-        // undefined arises for bare column references (no table qualifier) in single-table
-        // predicates such as CHECK constraints, where chunk_left == chunk_right anyway.
+        // Validation must resolve `side` before execution. For single-table
+        // predicates (CHECK constraints where chunk_left == chunk_right) the
+        // validator is expected to set side=left explicitly — undefined here
+        // indicates a missed validation step. Matches the
+        // update_expression.cpp:141 contract.
+        assert(key.side() != expressions::side_t::undefined
+               && "create_value_getter: side must be resolved at validation");
         if (key.side() == expressions::side_t::right) {
             return [path = key.path()](const vector::data_chunk_t&,
                                        const vector::data_chunk_t& chunk_right,

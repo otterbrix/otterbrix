@@ -174,7 +174,6 @@ namespace components::sql::transform {
     std::string deparse_check_expr(Node* node);
 
     types::complex_logical_type get_type(TypeName* type);
-    std::vector<types::complex_logical_type> get_types(PGList& list);
     std::pmr::vector<types::complex_logical_type> get_types(std::pmr::memory_resource* resource, PGList& list);
 
     types::logical_value_t get_value(std::pmr::memory_resource* resource, Node* node);

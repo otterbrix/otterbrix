@@ -6,6 +6,7 @@
 #include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <components/vector/vector_buffer.hpp>
 #include <services/disk/manager_disk.hpp>
 
 #include <cstdint>
@@ -16,6 +17,18 @@
 namespace components::operators {
 
     namespace catalog = components::catalog;
+
+    namespace {
+        // File-local typed setter — mirrors the ddl_metadata_builder.cpp helpers.
+        // Writes directly into the column's typed buffer at (col, row), avoiding
+        // a logical_value_t variant round-trip when both sides are known to be
+        // uint32_t at compile time.
+        inline void set_uint32(vector::data_chunk_t& c, size_t col, size_t row, std::uint32_t v) {
+            auto& vec = c.data[col];
+            vec.template data<std::uint32_t>()[row] = v;
+            vec.validity().set(row, true);
+        }
+    } // namespace
 
     operator_resolve_namespace_t::operator_resolve_namespace_t(std::pmr::memory_resource* resource,
                                                                  log_t                       log,
@@ -69,12 +82,16 @@ namespace components::operators {
         // Filter on nspname == name_ via the generic read_rows_by_key actor
         // message — pure storage primitive.
         types::logical_value_t name_lv(resource_, std::string_view{name_});
+        std::pmr::vector<std::string> ns_keys(resource_);
+        ns_keys.emplace_back("nspname");
+        std::pmr::vector<types::logical_value_t> ns_vals(resource_);
+        ns_vals.emplace_back(name_lv);
         auto [_ns, nsf] = actor_zeta::send(
             ctx->disk_address,
             &services::disk::manager_disk_t::read_rows_by_key,
             exec_ctx, kPgNamespace,
-            std::vector<std::string>{"nspname"},
-            std::vector<types::logical_value_t>{name_lv});
+            std::move(ns_keys),
+            std::move(ns_vals));
         auto ns_rows = co_await std::move(nsf);
 
         if (!ns_rows.empty() && !ns_rows[0].empty() && !ns_rows[0][0].is_null()) {
@@ -83,9 +100,8 @@ namespace components::operators {
             // which returns the first match.
             const auto oid_val = static_cast<catalog::oid_t>(
                 ns_rows[0][0].value<std::uint32_t>());
-            types::logical_value_t oid_lv(resource_, oid_val);
             out_chunk.set_cardinality(1);
-            out_chunk.set_value(0, 0, oid_lv);
+            set_uint32(out_chunk, 0, 0, static_cast<std::uint32_t>(oid_val));
             // Phase 13 Step 3: stamp the resolved oid onto the logical-plan node
             // so the dispatcher's Pass 2 (validate / enrich / planner) can read
             // it via plan_resolve_index_t.

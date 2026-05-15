@@ -323,9 +323,15 @@ catalog::oid_t test_computed_register(Fx& fx, catalog::oid_t table_oid,
     constexpr catalog::oid_t pg_cc = catalog::well_known_oid::pg_computed_column_table;
     components::types::logical_value_t toid_lv(&fx.resource, table_oid);
     components::types::logical_value_t name_lv(&fx.resource, field_name);
+    std::pmr::vector<std::string> reg_keys{&fx.resource};
+    reg_keys.emplace_back("relid");
+    reg_keys.emplace_back("attname");
+    std::pmr::vector<components::types::logical_value_t> reg_vals{&fx.resource};
+    reg_vals.emplace_back(toid_lv);
+    reg_vals.emplace_back(name_lv);
     auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, auto_ctx(), pg_cc,
-                          std::vector<std::string>{"relid", "attname"},
-                          std::vector<components::types::logical_value_t>{toid_lv, name_lv});
+                          std::move(reg_keys),
+                          std::move(reg_vals));
 
     std::int64_t   max_version    = -1;
     catalog::oid_t latest_atttypid = catalog::INVALID_OID;
@@ -374,9 +380,15 @@ bool test_computed_unregister(Fx& fx, catalog::oid_t table_oid,
     constexpr catalog::oid_t pg_cc = catalog::well_known_oid::pg_computed_column_table;
     components::types::logical_value_t toid_lv(&fx.resource, table_oid);
     components::types::logical_value_t name_lv(&fx.resource, field_name);
+    std::pmr::vector<std::string> unreg_keys{&fx.resource};
+    unreg_keys.emplace_back("relid");
+    unreg_keys.emplace_back("attname");
+    std::pmr::vector<components::types::logical_value_t> unreg_vals{&fx.resource};
+    unreg_vals.emplace_back(toid_lv);
+    unreg_vals.emplace_back(name_lv);
     auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, auto_ctx(), pg_cc,
-                          std::vector<std::string>{"relid", "attname"},
-                          std::vector<components::types::logical_value_t>{toid_lv, name_lv});
+                          std::move(unreg_keys),
+                          std::move(unreg_vals));
 
     std::int64_t   max_version  = -1;
     catalog::oid_t live_attoid  = catalog::INVALID_OID;

@@ -74,32 +74,30 @@ namespace {
         }
     };
 
-    bool sys(const fixture& fx, const std::string& tbl) {
-        return fx.manager->has_storage(qualified_name_t{"pg_catalog", "main", tbl});
-    }
 } // namespace
 
 // 1. After bootstrap all 10 pg_catalog.* tables are loaded into storages_.
 //    Doc test alias: test_user_table_not_in_storages_at_start (system-side half).
 TEST_CASE("services::disk::d4::all_system_tables_loaded_after_bootstrap") {
     fixture fx;
-    REQUIRE(sys(fx, "pg_database"));
-    REQUIRE(sys(fx, "pg_namespace"));
-    REQUIRE(sys(fx, "pg_class"));
-    REQUIRE(sys(fx, "pg_attribute"));
-    REQUIRE(sys(fx, "pg_type"));
-    REQUIRE(sys(fx, "pg_proc"));
-    REQUIRE(sys(fx, "pg_depend"));
-    REQUIRE(sys(fx, "pg_constraint"));
-    REQUIRE(sys(fx, "pg_index"));
-    REQUIRE(sys(fx, "pg_computed_column"));
+    REQUIRE(fx.manager->has_storage(well_known_oid::pg_database_table));
+    REQUIRE(fx.manager->has_storage(well_known_oid::pg_namespace_table));
+    REQUIRE(fx.manager->has_storage(well_known_oid::pg_class_table));
+    REQUIRE(fx.manager->has_storage(well_known_oid::pg_attribute_table));
+    REQUIRE(fx.manager->has_storage(well_known_oid::pg_type_table));
+    REQUIRE(fx.manager->has_storage(well_known_oid::pg_proc_table));
+    REQUIRE(fx.manager->has_storage(well_known_oid::pg_depend_table));
+    REQUIRE(fx.manager->has_storage(well_known_oid::pg_constraint_table));
+    REQUIRE(fx.manager->has_storage(well_known_oid::pg_index_table));
+    REQUIRE(fx.manager->has_storage(well_known_oid::pg_computed_column_table));
 }
 
 // 2. Before any user DDL, no user-table storage exists.
 //    Doc test alias: test_user_table_not_in_storages_at_start (user-side half).
 TEST_CASE("services::disk::d4::user_table_not_in_storages_at_start") {
     fixture fx;
-    REQUIRE_FALSE(fx.manager->has_storage(qualified_name_t{"any_ns", "main", "any_table"}));
+    // An unallocated user oid (FIRST_USER_OID would be the next allocated) — definitely not loaded.
+    REQUIRE_FALSE(fx.manager->has_storage(catalog::oid_t{FIRST_USER_OID + 1000}));
 }
 
 // 3. CREATE TABLE only writes pg_class / pg_attribute rows. The user storage is
@@ -115,7 +113,7 @@ TEST_CASE("services::disk::d4::create_table_does_not_eager_load_storage") {
     REQUIRE(rt_oid >= FIRST_USER_OID);
     // Storage is intentionally NOT in storages_: D4 = lazy. resolve_table is the
     // entry point that promotes a disk-resident .otbx into storages_.
-    REQUIRE_FALSE(fx.manager->has_storage(qualified_name_t{"ns_d4a", "main", "users"}));
+    REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
 }
 
 // 4. resolve_table sees a freshly created user table in pg_class even when its storage
@@ -141,7 +139,7 @@ TEST_CASE("services::disk::d4::drop_unloaded_table") {
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("v", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto rt_oid = test_create_table(fx, ns_oid, "temp_t", std::move(cols));
-    REQUIRE_FALSE(fx.manager->has_storage(qualified_name_t{"ns_d4c", "main", "temp_t"}));
+    REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
     test_drop_table(fx, rt_oid);
     // After drop the table is no longer resolvable.
     auto resolved = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(),
@@ -158,12 +156,12 @@ TEST_CASE("services::disk::d4::alter_unloaded_table_add_column") {
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto rt_oid = test_create_table(fx, ns_oid, "alter_me", std::move(cols));
-    REQUIRE_FALSE(fx.manager->has_storage(qualified_name_t{"ns_d4d", "main", "alter_me"}));
+    REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
     components::table::column_definition_t new_col(
         "name", components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL});
     test_add_column(fx, rt_oid, std::move(new_col), 2);
     // No user-storage materialisation as a side-effect of ALTER.
-    REQUIRE_FALSE(fx.manager->has_storage(qualified_name_t{"ns_d4d", "main", "alter_me"}));
+    REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
     // The new column shows up via resolve_table.
     auto resolved = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(),
                                 ns_oid, std::string("alter_me"), std::uint64_t{0});
@@ -179,13 +177,13 @@ TEST_CASE("services::disk::d4::repeated_resolve_does_not_create_storage") {
     auto ns_oid = test_create_namespace(fx, "ns_d4e");
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
-    test_create_table(fx, ns_oid, "readme", std::move(cols));
+    auto rt_oid = test_create_table(fx, ns_oid, "readme", std::move(cols));
     for (int i = 0; i < 3; ++i) {
         auto r = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(),
                            ns_oid, std::string("readme"), std::uint64_t{0});
         REQUIRE(r.found);
     }
-    REQUIRE_FALSE(fx.manager->has_storage(qualified_name_t{"ns_d4e", "main", "readme"}));
+    REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
 }
 
 // 8. resolve_table walks pg_attribute filtered by attrelid and returns the attoids in
@@ -214,7 +212,7 @@ TEST_CASE("services::disk::d4::peek_checkpoint_wal_id_unknown_returns_zero") {
     fixture fx;
     // A table that was never created has no sidecar: peek returns 0.
     auto v = fx.manager->peek_checkpoint_wal_id_from_disk(
-        qualified_name_t{"ns_never", "main", "nonexistent"});
+        catalog::oid_t{FIRST_USER_OID + 9000}, well_known_oid::main_database);
     REQUIRE(v == services::wal::id_t{0});
 }
 
@@ -225,10 +223,9 @@ TEST_CASE("services::disk::d4::load_storage_for_wal_replay_noop_when_loaded") {
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     // Create the table (writes pg_class/pg_attribute; does NOT load user storage).
-    test_create_table(fx, ns_oid, "lazy_t", std::move(cols));
+    auto rt_oid = test_create_table(fx, ns_oid, "lazy_t", std::move(cols));
 
     // Calling load_storage_for_wal_replay_sync on a table that has no .otbx must not crash.
     REQUIRE_NOTHROW(
-        fx.manager->load_storage_for_wal_replay_sync(
-            qualified_name_t{"ns_d4g", "main", "lazy_t"}));
+        fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database));
 }

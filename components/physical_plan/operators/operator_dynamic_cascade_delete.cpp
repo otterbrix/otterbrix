@@ -42,9 +42,10 @@ namespace components::operators {
             std::int64_t   oid_col_idx;
         };
 
-        std::vector<per_step_delete_t> deletes_for_classid(catalog::oid_t classid) {
+        std::pmr::vector<per_step_delete_t>
+        deletes_for_classid(std::pmr::memory_resource* resource, catalog::oid_t classid) {
             using namespace catalog::well_known_oid;
-            std::vector<per_step_delete_t> out;
+            std::pmr::vector<per_step_delete_t> out(resource);
             if (classid == pg_class_table) {
                 out.push_back({pg_index_table,           0}); // pg_index.indexrelid
                 out.push_back({pg_index_table,           1}); // pg_index.indrelid
@@ -120,8 +121,9 @@ namespace components::operators {
         // dep_graph also serves as the visited set: presence of a key
         // signals "already expanded". This avoids a second container and
         // keeps the asymptotics the same as the original BFS.
-        std::unordered_map<std::uint64_t, std::vector<catalog::dependency_t>> dep_graph;
-        std::vector<std::uint64_t> stack;
+        std::pmr::unordered_map<std::uint64_t, std::pmr::vector<catalog::dependency_t>>
+            dep_graph(resource_);
+        std::pmr::vector<std::uint64_t> stack(resource_);
         stack.push_back(encode_key(seed_classid_, seed_objid_));
 
         while (!stack.empty()) {
@@ -134,16 +136,22 @@ namespace components::operators {
 
             types::logical_value_t cls_lv(resource_, ref_cls);
             types::logical_value_t oid_lv(resource_, ref_oid);
+            std::pmr::vector<std::string> rd_keys(resource_);
+            rd_keys.emplace_back("refclassid");
+            rd_keys.emplace_back("refobjid");
+            std::pmr::vector<types::logical_value_t> rd_vals(resource_);
+            rd_vals.emplace_back(cls_lv);
+            rd_vals.emplace_back(oid_lv);
             auto [_rd, rdf] = actor_zeta::send(
                 ctx->disk_address,
                 &services::disk::manager_disk_t::read_rows_by_key,
                 exec_ctx,
                 kPgDepend,
-                std::vector<std::string>{"refclassid", "refobjid"},
-                std::vector<types::logical_value_t>{cls_lv, oid_lv});
+                std::move(rd_keys),
+                std::move(rd_vals));
             auto dep_rows = co_await std::move(rdf);
 
-            std::vector<catalog::dependency_t> deps;
+            std::pmr::vector<catalog::dependency_t> deps(resource_);
             deps.reserve(dep_rows.size());
             for (const auto& row : dep_rows) {
                 if (row.size() < 5) continue;
@@ -157,22 +165,29 @@ namespace components::operators {
                 deps.push_back(d);
                 stack.push_back(encode_key(d.classid, d.objid));
             }
-            dep_graph[k] = std::move(deps);
+            dep_graph.insert_or_assign(k, std::move(deps));
         }
 
         // Step 2 — feed the closure into catalog::plan_drop. For RESTRICT,
         // plan_drop returns immediately with status=restrict_blocked when a
         // 'n' (normal external) dependency is present. For CASCADE it
-        // computes the topological drop order; cycles propagate as
-        // cycle_detected_error to the dispatcher's catch-all.
+        // computes the topological drop order; cycles are surfaced via
+        // status=cycle_detected (blocking_oid carries the offending oid).
         const auto plan = catalog::plan_drop(
-            seed_classid_, seed_objid_, behavior_,
-            [&dep_graph](catalog::oid_t cls, catalog::oid_t oid)
-                -> std::vector<catalog::dependency_t> {
+            resource_, seed_classid_, seed_objid_, behavior_,
+            [&dep_graph](std::pmr::memory_resource* mr,
+                         catalog::oid_t cls, catalog::oid_t oid)
+                -> std::pmr::vector<catalog::dependency_t> {
                 auto it = dep_graph.find(encode_key(cls, oid));
-                return it != dep_graph.end() ? it->second
-                                              : std::vector<catalog::dependency_t>{};
+                if (it == dep_graph.end()) {
+                    return std::pmr::vector<catalog::dependency_t>{mr};
+                }
+                return std::pmr::vector<catalog::dependency_t>{
+                    it->second.begin(), it->second.end(), mr};
             });
+        // Free dep_graph as soon as plan is built — it can hold significant memory
+        // for deep cascades and the rest of this coroutine only needs `plan`.
+        dep_graph.clear();
 
         if (plan.status == catalog::ddl_status::restrict_blocked) {
             // Surface the blocked status to the executor. Phase #49 upgrades
@@ -181,6 +196,13 @@ namespace components::operators {
             // make_ddl_error_cursor.
             std::string msg = "DROP RESTRICT: object has dependents (blocking oid ";
             msg += std::to_string(plan.blocking_oid) + ")";
+            set_error(std::move(msg));
+            mark_executed();
+            co_return;
+        }
+        if (plan.status == catalog::ddl_status::cycle_detected) {
+            std::string msg = "DROP: pg_depend cycle detected at oid ";
+            msg += std::to_string(plan.blocking_oid);
             set_error(std::move(msg));
             mark_executed();
             co_return;
@@ -195,7 +217,7 @@ namespace components::operators {
         struct pending_storage_drop_t {
             catalog::oid_t table_oid{catalog::INVALID_OID};
         };
-        std::vector<pending_storage_drop_t> pending_storage_drops;
+        std::pmr::vector<pending_storage_drop_t> pending_storage_drops(resource_);
 
         constexpr catalog::oid_t kPgClass = catalog::well_known_oid::pg_class_table;
 
@@ -206,12 +228,16 @@ namespace components::operators {
             // Storage routing is by table_oid only — relname/nspname are no longer needed
             // (Phase 10.F removed the cfn-based routing path).
             types::logical_value_t pcoid_lv(resource_, step.objid);
+            std::pmr::vector<std::string> pc_keys(resource_);
+            pc_keys.emplace_back("oid");
+            std::pmr::vector<types::logical_value_t> pc_vals(resource_);
+            pc_vals.emplace_back(pcoid_lv);
             auto [_pc, pcf] = actor_zeta::send(
                 ctx->disk_address,
                 &services::disk::manager_disk_t::read_rows_by_key,
                 exec_ctx, kPgClass,
-                std::vector<std::string>{"oid"},
-                std::vector<types::logical_value_t>{pcoid_lv});
+                std::move(pc_keys),
+                std::move(pc_vals));
             auto pc_rows = co_await std::move(pcf);
             if (pc_rows.empty() || pc_rows[0].size() < 4) continue;
             const auto& row = pc_rows[0];
@@ -237,7 +263,7 @@ namespace components::operators {
         // given (table, col, oid) tuple are silent no-ops. This matches
         // build_drop_sequence's behaviour in the old dispatcher path.
         for (const auto& step : plan.steps) {
-            for (auto& d : deletes_for_classid(step.classid)) {
+            for (auto& d : deletes_for_classid(resource_, step.classid)) {
                 auto [_d, df] = actor_zeta::send(
                     ctx->disk_address,
                     &services::disk::manager_disk_t::delete_pg_catalog_rows,

@@ -1,6 +1,9 @@
 #include "system_table_schemas.hpp"
 #include "catalog_codes.hpp"
 
+#include <array>
+#include <charconv>
+
 #include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
 
@@ -220,36 +223,37 @@ namespace components::catalog {
         }
     } // namespace
 
-    std::vector<system_table_def_t> all_system_tables() {
-        std::vector<system_table_def_t> tables;
-        tables.reserve(12);
-        const oid_t pg_catalog = well_known_oid::pg_catalog_namespace;
-
+    std::span<const system_table_def_t> all_system_tables() {
+        // Built once on first call into a fixed-size std::array (no heap), thereafter
+        // returned as a zero-cost std::span. Schemas are immutable for the life of the
+        // process. C++11 magic-statics guarantee single-threaded initialisation.
+        //
         // pg_database is bootstrapped first because every other catalog object (namespace,
         // relation, type, function) is conceptually scoped to a database. The default "main"
         // database row is seeded with well_known_oid::main_database in
         // manager_disk_t::bootstrap_system_tables_sync.
-        tables.push_back({"pg_database",         well_known_oid::pg_database_table,           pg_catalog, relkind::regular, pg_database_columns()});
-        tables.push_back({"pg_namespace",       well_known_oid::pg_namespace_table,        pg_catalog, relkind::regular, pg_namespace_columns()});
-        tables.push_back({"pg_class",            well_known_oid::pg_class_table,             pg_catalog, relkind::regular, pg_class_columns()});
-        tables.push_back({"pg_attribute",        well_known_oid::pg_attribute_table,         pg_catalog, relkind::regular, pg_attribute_columns()});
-        tables.push_back({"pg_type",             well_known_oid::pg_type_table,              pg_catalog, relkind::regular, pg_type_columns()});
-        tables.push_back({"pg_proc",             well_known_oid::pg_proc_table,              pg_catalog, relkind::regular, pg_proc_columns()});
-        tables.push_back({"pg_depend",           well_known_oid::pg_depend_table,            pg_catalog, relkind::regular, pg_depend_columns()});
-        tables.push_back({"pg_constraint",       well_known_oid::pg_constraint_table,        pg_catalog, relkind::regular, pg_constraint_columns()});
-        tables.push_back({"pg_index",            well_known_oid::pg_index_table,             pg_catalog, relkind::regular, pg_index_columns()});
-        tables.push_back({"pg_computed_column",  well_known_oid::pg_computed_column_table,   pg_catalog, relkind::regular, pg_computed_column_columns()});
-        tables.push_back({"pg_sequence",         well_known_oid::pg_sequence_table,          pg_catalog, relkind::regular, pg_sequence_columns()});
-        tables.push_back({"pg_rewrite",          well_known_oid::pg_rewrite_table,           pg_catalog, relkind::regular, pg_rewrite_columns()});
-
+        static const std::array<system_table_def_t, 12> tables = []() {
+            const oid_t pg_catalog = well_known_oid::pg_catalog_namespace;
+            return std::array<system_table_def_t, 12>{{
+                {"pg_database",         well_known_oid::pg_database_table,           pg_catalog, relkind::regular, pg_database_columns()},
+                {"pg_namespace",        well_known_oid::pg_namespace_table,          pg_catalog, relkind::regular, pg_namespace_columns()},
+                {"pg_class",            well_known_oid::pg_class_table,              pg_catalog, relkind::regular, pg_class_columns()},
+                {"pg_attribute",        well_known_oid::pg_attribute_table,          pg_catalog, relkind::regular, pg_attribute_columns()},
+                {"pg_type",             well_known_oid::pg_type_table,               pg_catalog, relkind::regular, pg_type_columns()},
+                {"pg_proc",             well_known_oid::pg_proc_table,               pg_catalog, relkind::regular, pg_proc_columns()},
+                {"pg_depend",           well_known_oid::pg_depend_table,             pg_catalog, relkind::regular, pg_depend_columns()},
+                {"pg_constraint",       well_known_oid::pg_constraint_table,         pg_catalog, relkind::regular, pg_constraint_columns()},
+                {"pg_index",            well_known_oid::pg_index_table,              pg_catalog, relkind::regular, pg_index_columns()},
+                {"pg_computed_column",  well_known_oid::pg_computed_column_table,    pg_catalog, relkind::regular, pg_computed_column_columns()},
+                {"pg_sequence",         well_known_oid::pg_sequence_table,           pg_catalog, relkind::regular, pg_sequence_columns()},
+                {"pg_rewrite",          well_known_oid::pg_rewrite_table,            pg_catalog, relkind::regular, pg_rewrite_columns()},
+            }};
+        }();
         return tables;
     }
 
     const system_table_def_t* find_system_table(std::string_view name) {
-        // Static cache: the schemas are immutable once constructed. all_system_tables() rebuilds
-        // the vector each call, so we cache once. Lifetime tied to translation unit.
-        static const std::vector<system_table_def_t> tables = all_system_tables();
-        for (const auto& t : tables) {
+        for (const auto& t : all_system_tables()) {
             if (t.name == name) {
                 return &t;
             }
@@ -401,27 +405,27 @@ namespace components::catalog {
 
     // Recursive descent parser for the flat-text format.
     static types::complex_logical_type parse_flat_type(std::pmr::memory_resource* resource,
-                                                        const std::string& s,
+                                                        std::string_view s,
                                                         size_t& pos);
 
     // Read characters until one of the stop chars (at depth 0).
-    static std::string read_token(const std::string& s, size_t& pos) {
+    static std::string read_token(std::string_view s, size_t& pos) {
         size_t start = pos;
         while (pos < s.size() &&
                s[pos] != '(' && s[pos] != ')' && s[pos] != ',' && s[pos] != ':') {
             ++pos;
         }
-        return s.substr(start, pos - start);
+        return std::string{s.substr(start, pos - start)};
     }
 
     static types::complex_logical_type parse_flat_type(std::pmr::memory_resource* resource,
-                                                        const std::string& s,
+                                                        std::string_view s,
                                                         size_t& pos) {
         using LT = types::logical_type;
         std::string name = read_token(s, pos);
 
         if (pos >= s.size() || s[pos] != '(') {
-            if (name == "VARIANT") return types::complex_logical_type::create_variant();
+            if (name == "VARIANT") return types::complex_logical_type::create_variant(resource);
             auto lt = scalar_name_to_type(name);
             if (lt != LT::UNKNOWN) return types::complex_logical_type{lt};
             return types::complex_logical_type::create_unknown(name);
@@ -431,8 +435,15 @@ namespace components::catalog {
         if (name == "numeric" || name == "DECIMAL") {
             std::string w = read_token(s, pos); ++pos; // ','
             std::string sc = read_token(s, pos); ++pos; // ')'
+            int wv{};
+            int scv{};
+            auto [wp, wec] = std::from_chars(w.data(), w.data() + w.size(), wv);
+            auto [scp, scec] = std::from_chars(sc.data(), sc.data() + sc.size(), scv);
+            if (wec != std::errc{} || scec != std::errc{}) {
+                return types::complex_logical_type{LT::UNKNOWN};
+            }
             return types::complex_logical_type::create_decimal(
-                static_cast<uint8_t>(std::stoi(w)), static_cast<uint8_t>(std::stoi(sc)));
+                static_cast<uint8_t>(wv), static_cast<uint8_t>(scv));
         }
         if (name == "UNKNOWN") {
             std::string tname = read_token(s, pos); ++pos; // ')'
@@ -445,7 +456,12 @@ namespace components::catalog {
         if (name == "ARRAY") {
             auto inner = parse_flat_type(resource, s, pos); ++pos; // ','
             std::string sz = read_token(s, pos);             ++pos; // ')'
-            return types::complex_logical_type::create_array(inner, std::stoull(sz));
+            unsigned long long sv{};
+            auto [sp, sec] = std::from_chars(sz.data(), sz.data() + sz.size(), sv);
+            if (sec != std::errc{}) {
+                return types::complex_logical_type{LT::UNKNOWN};
+            }
+            return types::complex_logical_type::create_array(inner, sv);
         }
         if (name == "MAP") {
             auto key = parse_flat_type(resource, s, pos); ++pos; // ','
@@ -454,7 +470,7 @@ namespace components::catalog {
         }
         if (name == "STRUCT") {
             std::string struct_name = read_token(s, pos);
-            std::vector<types::complex_logical_type> fields;
+            std::pmr::vector<types::complex_logical_type> fields(resource);
             while (pos < s.size() && s[pos] == ',') {
                 ++pos; // ','
                 std::string fname = read_token(s, pos); ++pos; // ':'
@@ -466,7 +482,7 @@ namespace components::catalog {
             return types::complex_logical_type::create_struct(struct_name, fields);
         }
         if (name == "UNION") {
-            std::vector<types::complex_logical_type> fields;
+            std::pmr::vector<types::complex_logical_type> fields(resource);
             // First member
             if (pos < s.size() && s[pos] != ')') {
                 std::string fname = read_token(s, pos); ++pos; // ':'
@@ -535,42 +551,44 @@ namespace components::catalog {
     }
 
     types::complex_logical_type decode_type_spec(std::pmr::memory_resource* resource,
-                                                  const std::string& spec) {
+                                                  std::string_view spec) {
         using LT = types::logical_type;
         if (spec.empty()) {
             return types::complex_logical_type{LT::UNKNOWN};
         }
         // ENUM flat format (pre-existing; kept for backward compat)
         if (spec.size() >= 5 && spec.compare(0, 5, "ENUM:") == 0) {
-            try {
-                auto rest = spec.substr(5);
-                auto colon = rest.find(':');
-                std::string name = (colon == std::string::npos) ? rest : rest.substr(0, colon);
-                std::vector<components::types::logical_value_t> entries;
-                if (colon != std::string::npos) {
-                    auto entries_str = rest.substr(colon + 1);
-                    std::size_t i = 0;
-                    while (i < entries_str.size()) {
-                        std::size_t comma = entries_str.find(',', i);
-                        std::string token = entries_str.substr(
-                            i, comma == std::string::npos ? std::string::npos : comma - i);
-                        std::size_t eq = token.find('=');
-                        if (eq != std::string::npos) {
-                            std::string label = token.substr(0, eq);
-                            int v = std::stoi(token.substr(eq + 1));
-                            components::types::logical_value_t lv(resource, v);
-                            lv.set_alias(label);
-                            entries.push_back(std::move(lv));
+            auto rest = spec.substr(5);
+            auto colon = rest.find(':');
+            std::string name = (colon == std::string_view::npos) ? std::string{rest} : std::string{rest.substr(0, colon)};
+            std::vector<components::types::logical_value_t> entries;
+            if (colon != std::string::npos) {
+                auto entries_str = rest.substr(colon + 1);
+                std::size_t i = 0;
+                while (i < entries_str.size()) {
+                    std::size_t comma = entries_str.find(',', i);
+                    std::string token{entries_str.substr(
+                        i, comma == std::string_view::npos ? std::string_view::npos : comma - i)};
+                    std::size_t eq = token.find('=');
+                    if (eq != std::string::npos) {
+                        std::string label = token.substr(0, eq);
+                        const auto val_str = token.substr(eq + 1);
+                        int v{};
+                        auto [vp, vec_] = std::from_chars(
+                            val_str.data(), val_str.data() + val_str.size(), v);
+                        if (vec_ != std::errc{}) {
+                            return types::complex_logical_type{LT::UNKNOWN};
                         }
-                        if (comma == std::string::npos) break;
-                        i = comma + 1;
+                        components::types::logical_value_t lv(resource, v);
+                        lv.set_alias(label);
+                        entries.push_back(std::move(lv));
                     }
+                    if (comma == std::string::npos) break;
+                    i = comma + 1;
                 }
-                return components::types::complex_logical_type::create_enum(name,
-                                                                              std::move(entries));
-            } catch (...) {
-                return types::complex_logical_type{LT::UNKNOWN};
             }
+            return components::types::complex_logical_type::create_enum(name,
+                                                                          std::move(entries));
         }
         // Flat-text format for all other types.
         try {
@@ -717,38 +735,70 @@ namespace components::catalog {
         const auto type_name = std::string_view(spec).substr(0, colon);
         const auto val_str   = spec.substr(colon + 1);
         const auto lt = scalar_name_to_type(type_name);
-        try {
-            using LT = types::logical_type;
-            switch (lt) {
-                case LT::BOOLEAN:
-                    return types::logical_value_t(resource, val_str == "1");
-                case LT::TINYINT:
-                    return types::logical_value_t(resource, static_cast<int8_t>(std::stoi(val_str)));
-                case LT::UTINYINT:
-                    return types::logical_value_t(resource, static_cast<uint8_t>(std::stoul(val_str)));
-                case LT::SMALLINT:
-                    return types::logical_value_t(resource, static_cast<int16_t>(std::stoi(val_str)));
-                case LT::USMALLINT:
-                    return types::logical_value_t(resource, static_cast<uint16_t>(std::stoul(val_str)));
-                case LT::INTEGER:
-                    return types::logical_value_t(resource, std::stoi(val_str));
-                case LT::UINTEGER:
-                    return types::logical_value_t(resource, static_cast<uint32_t>(std::stoul(val_str)));
-                case LT::BIGINT:
-                    return types::logical_value_t(resource, static_cast<int64_t>(std::stoll(val_str)));
-                case LT::UBIGINT:
-                    return types::logical_value_t(resource, static_cast<uint64_t>(std::stoull(val_str)));
-                case LT::FLOAT:
-                    return types::logical_value_t(resource, std::stof(val_str));
-                case LT::DOUBLE:
-                    return types::logical_value_t(resource, std::stod(val_str));
-                case LT::STRING_LITERAL:
-                    return types::logical_value_t(resource, val_str);
-                default:
-                    return std::nullopt;
+        using LT = types::logical_type;
+        const char* b = val_str.data();
+        const char* e = val_str.data() + val_str.size();
+        switch (lt) {
+            case LT::BOOLEAN:
+                return types::logical_value_t(resource, val_str == "1");
+            case LT::TINYINT: {
+                int v{};
+                auto [p, ec] = std::from_chars(b, e, v);
+                if (ec != std::errc{}) return std::nullopt;
+                return types::logical_value_t(resource, static_cast<int8_t>(v));
             }
-        } catch (...) {
-            return std::nullopt;
+            case LT::UTINYINT: {
+                unsigned long v{};
+                auto [p, ec] = std::from_chars(b, e, v);
+                if (ec != std::errc{}) return std::nullopt;
+                return types::logical_value_t(resource, static_cast<uint8_t>(v));
+            }
+            case LT::SMALLINT: {
+                int v{};
+                auto [p, ec] = std::from_chars(b, e, v);
+                if (ec != std::errc{}) return std::nullopt;
+                return types::logical_value_t(resource, static_cast<int16_t>(v));
+            }
+            case LT::USMALLINT: {
+                unsigned long v{};
+                auto [p, ec] = std::from_chars(b, e, v);
+                if (ec != std::errc{}) return std::nullopt;
+                return types::logical_value_t(resource, static_cast<uint16_t>(v));
+            }
+            case LT::INTEGER: {
+                int v{};
+                auto [p, ec] = std::from_chars(b, e, v);
+                if (ec != std::errc{}) return std::nullopt;
+                return types::logical_value_t(resource, v);
+            }
+            case LT::UINTEGER: {
+                unsigned long v{};
+                auto [p, ec] = std::from_chars(b, e, v);
+                if (ec != std::errc{}) return std::nullopt;
+                return types::logical_value_t(resource, static_cast<uint32_t>(v));
+            }
+            case LT::BIGINT: {
+                long long v{};
+                auto [p, ec] = std::from_chars(b, e, v);
+                if (ec != std::errc{}) return std::nullopt;
+                return types::logical_value_t(resource, static_cast<int64_t>(v));
+            }
+            case LT::UBIGINT: {
+                unsigned long long v{};
+                auto [p, ec] = std::from_chars(b, e, v);
+                if (ec != std::errc{}) return std::nullopt;
+                return types::logical_value_t(resource, static_cast<uint64_t>(v));
+            }
+            case LT::FLOAT:
+                try { return types::logical_value_t(resource, std::stof(val_str)); }
+                catch (...) { return std::nullopt; }
+            case LT::DOUBLE:
+                try { return types::logical_value_t(resource, std::stod(val_str)); }
+                catch (...) { return std::nullopt; }
+            case LT::STRING_LITERAL:
+                return types::logical_value_t(resource, val_str);
+            default:
+                return std::nullopt;
         }
     }
 

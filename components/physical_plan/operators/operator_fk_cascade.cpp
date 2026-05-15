@@ -52,17 +52,22 @@ namespace components::operators {
         if (par_indices.empty()) { mark_executed(); co_return; }
 
         for (uint64_t row = 0; row < chunk.size(); ++row) {
-            std::vector<types::logical_value_t> key_values;
+            std::pmr::vector<types::logical_value_t> key_values(resource_);
             key_values.reserve(par_indices.size());
             for (auto pidx : par_indices) {
                 key_values.push_back(chunk.value(pidx, row));
             }
 
+            std::pmr::vector<std::string> key_cols(resource_);
+            key_cols.reserve(fk_.child_col_names.size());
+            for (const auto& n : fk_.child_col_names) {
+                key_cols.emplace_back(n);
+            }
             auto [_, fut] = actor_zeta::send(ctx->disk_address,
                                               &services::disk::manager_disk_t::scan_by_key,
                                               exec_ctx,
                                               fk_.child_table_oid,
-                                              std::vector<std::string>(fk_.child_col_names),
+                                              std::move(key_cols),
                                               std::move(key_values));
             auto child_ids = co_await std::move(fut);
             if (child_ids.empty()) continue;

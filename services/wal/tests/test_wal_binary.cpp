@@ -186,8 +186,10 @@ TEST_CASE("wal_binary::data_chunk_binary_mixed_types") {
 
     REQUIRE(buffer.size() > 0);
 
-    auto result = deserialize_binary(buffer.data(), buffer.size(), &resource);
+    bool ok = false;
+    auto result = deserialize_binary(buffer.data(), buffer.size(), &resource, ok);
 
+    REQUIRE(ok);
     REQUIRE(result.column_count() == chunk.column_count());
     REQUIRE(result.size() == chunk.size());
 
@@ -219,8 +221,10 @@ TEST_CASE("wal_binary::data_chunk_binary_with_nulls") {
 
     REQUIRE(buffer.size() > 0);
 
-    auto result = deserialize_binary(buffer.data(), buffer.size(), &resource);
+    bool ok = false;
+    auto result = deserialize_binary(buffer.data(), buffer.size(), &resource, ok);
 
+    REQUIRE(ok);
     REQUIRE(result.column_count() == chunk.column_count());
     REQUIRE(result.size() == chunk.size());
 

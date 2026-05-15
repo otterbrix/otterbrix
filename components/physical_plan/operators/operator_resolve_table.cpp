@@ -9,11 +9,14 @@
 #include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <components/vector/vector_buffer.hpp>
 #include <services/disk/manager_disk.hpp>
 
 #include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -21,6 +24,34 @@
 namespace components::operators {
 
     namespace catalog = components::catalog;
+
+    namespace {
+        // File-local typed setters — the relkind='g' output chunk has a fixed
+        // 5-column schema known here, so we skip the logical_value_t variant
+        // round-trip and write directly into the typed buffers.
+        inline void set_int32(vector::data_chunk_t& c, size_t col, size_t row, std::int32_t v) {
+            auto& vec = c.data[col];
+            vec.template data<std::int32_t>()[row] = v;
+            vec.validity().set(row, true);
+        }
+        inline void set_uint32(vector::data_chunk_t& c, size_t col, size_t row, std::uint32_t v) {
+            auto& vec = c.data[col];
+            vec.template data<std::uint32_t>()[row] = v;
+            vec.validity().set(row, true);
+        }
+        inline void set_str(vector::data_chunk_t& c, size_t col, size_t row,
+                            std::string_view v, std::pmr::memory_resource* r) {
+            auto& vec = c.data[col];
+            if (!vec.auxiliary()) {
+                vec.set_auxiliary(std::make_shared<vector::string_vector_buffer_t>(r));
+            }
+            auto* sb = static_cast<vector::string_vector_buffer_t*>(vec.auxiliary().get());
+            auto* ptr = sb->insert(v);
+            reinterpret_cast<std::string_view*>(vec.template data<std::byte>())[row] =
+                std::string_view(static_cast<const char*>(ptr), v.size());
+            vec.validity().set(row, true);
+        }
+    } // namespace
 
     operator_resolve_table_t::operator_resolve_table_t(std::pmr::memory_resource* resource,
                                                          log_t                       log,
@@ -93,8 +124,9 @@ namespace components::operators {
                 mark_executed();
                 co_return;
             }
-            std::vector<std::string> key_cols{"relname"};
-            std::vector<types::logical_value_t> key_vals;
+            std::pmr::vector<std::string> key_cols(resource_);
+            key_cols.emplace_back("relname");
+            std::pmr::vector<types::logical_value_t> key_vals(resource_);
             key_vals.emplace_back(resource_, std::string_view{relname_});
             if (input_namespace_oid_ != catalog::INVALID_OID) {
                 key_cols.emplace_back("relnamespace");
@@ -123,12 +155,16 @@ namespace components::operators {
         // 4=relstoragemode]. We key by "oid" so we get a single row at most.
         {
             types::logical_value_t toid_lv(resource_, table_oid_);
+            std::pmr::vector<std::string> pc_keys(resource_);
+            pc_keys.emplace_back("oid");
+            std::pmr::vector<types::logical_value_t> pc_vals(resource_);
+            pc_vals.emplace_back(toid_lv);
             auto [_pc, pcf] = actor_zeta::send(
                 ctx->disk_address,
                 &services::disk::manager_disk_t::read_rows_by_key,
                 exec_ctx, kPgClass,
-                std::vector<std::string>{"oid"},
-                std::vector<types::logical_value_t>{toid_lv});
+                std::move(pc_keys),
+                std::move(pc_vals));
             auto pc_rows = co_await std::move(pcf);
             if (!pc_rows.empty() && pc_rows[0].size() >= 4) {
                 found_ = true;
@@ -191,12 +227,16 @@ namespace components::operators {
             //     (attrefcount <= 0),
             //   - sort by attoid (register-order in storage adopt_schema).
             types::logical_value_t toid_lv(resource_, table_oid_);
+            std::pmr::vector<std::string> cc_keys(resource_);
+            cc_keys.emplace_back("relid");
+            std::pmr::vector<types::logical_value_t> cc_vals(resource_);
+            cc_vals.emplace_back(toid_lv);
             auto [_cc, ccf] = actor_zeta::send(
                 ctx->disk_address,
                 &services::disk::manager_disk_t::read_rows_by_key,
                 exec_ctx, kPgComputedColumn,
-                std::vector<std::string>{"relid"},
-                std::vector<types::logical_value_t>{toid_lv});
+                std::move(cc_keys),
+                std::move(cc_vals));
             auto cc_rows = co_await std::move(ccf);
 
             struct cc_candidate_t {
@@ -251,12 +291,16 @@ namespace components::operators {
             // 3=atttypid, 4=attnum, 5=attnotnull, 6=atthasdefault,
             // 7=attisdropped, 8=atttypspec, 9=attdefspec].
             types::logical_value_t toid_lv(resource_, table_oid_);
+            std::pmr::vector<std::string> pa_keys(resource_);
+            pa_keys.emplace_back("attrelid");
+            std::pmr::vector<types::logical_value_t> pa_vals(resource_);
+            pa_vals.emplace_back(toid_lv);
             auto [_pa, paf] = actor_zeta::send(
                 ctx->disk_address,
                 &services::disk::manager_disk_t::read_rows_by_key,
                 exec_ctx, kPgAttribute,
-                std::vector<std::string>{"attrelid"},
-                std::vector<types::logical_value_t>{toid_lv});
+                std::move(pa_keys),
+                std::move(pa_vals));
             auto pa_rows = co_await std::move(paf);
 
             for (const auto& row : pa_rows) {
@@ -343,16 +387,14 @@ namespace components::operators {
         auto& out_chunk = output_->data_chunk();
         for (std::size_t i = 0; i < row_count; ++i) {
             const auto& r = rows[i];
-            out_chunk.set_value(0, i,
-                                 types::logical_value_t(resource_, static_cast<std::int32_t>(i + 1)));
-            out_chunk.set_value(1, i,
-                                 types::logical_value_t(resource_, static_cast<std::uint32_t>(r.attoid)));
-            out_chunk.set_value(2, i,
-                                 types::logical_value_t(resource_, std::string_view{r.attname}));
-            out_chunk.set_value(3, i,
-                                 types::logical_value_t(resource_, static_cast<std::uint32_t>(r.atttypid)));
-            out_chunk.set_value(4, i,
-                                 types::logical_value_t(resource_, std::string_view{r.atttypspec}));
+            // Direct typed writes — schema is INTEGER, UINTEGER, STRING,
+            // UINTEGER, STRING; sources are already in the matching C++ types
+            // on the out_row_t struct, so no variant detour needed.
+            set_int32 (out_chunk, 0, i, static_cast<std::int32_t>(i + 1));
+            set_uint32(out_chunk, 1, i, static_cast<std::uint32_t>(r.attoid));
+            set_str   (out_chunk, 2, i, std::string_view{r.attname},    resource_);
+            set_uint32(out_chunk, 3, i, static_cast<std::uint32_t>(r.atttypid));
+            set_str   (out_chunk, 4, i, std::string_view{r.atttypspec}, resource_);
         }
         out_chunk.set_cardinality(row_count);
 

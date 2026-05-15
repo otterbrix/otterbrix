@@ -64,12 +64,16 @@ namespace components::operators {
         // pg_computed_column layout (Phase 11.F-B): 0=relid 1=attoid 2=attname
         // 3=atttypid 4=atttypspec 5=attversion 6=attrefcount.
         types::logical_value_t toid_lv(resource_, table_oid_);
+        std::pmr::vector<std::string> r_keys(resource_);
+        r_keys.emplace_back("relid");
+        std::pmr::vector<types::logical_value_t> r_vals(resource_);
+        r_vals.emplace_back(toid_lv);
         auto [_r, rf] = actor_zeta::send(
             ctx->disk_address,
             &services::disk::manager_disk_t::read_rows_by_key,
             exec_ctx, pg_computed_column,
-            std::vector<std::string>{"relid"},
-            std::vector<types::logical_value_t>{toid_lv});
+            std::move(r_keys),
+            std::move(r_vals));
         auto rows = co_await std::move(rf);
 
         // Step 2: pick the latest live row matching attoid_ (max attversion AND attrefcount > 0).

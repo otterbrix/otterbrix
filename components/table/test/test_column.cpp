@@ -52,7 +52,7 @@ TEST_CASE("components::table::column") {
         return std::string{"long_string_with_index_" + number};
     };
 
-    std::vector<complex_logical_type> fields;
+    std::pmr::vector<complex_logical_type> fields(&resource);
     fields.emplace_back(logical_type::BOOLEAN, "flag");
     fields.emplace_back(logical_type::INTEGER, "number");
     fields.emplace_back(logical_type::STRING_LITERAL, "name");

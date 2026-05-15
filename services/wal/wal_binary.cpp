@@ -345,8 +345,14 @@ namespace services::wal {
         switch (rec.record_type) {
             case wal_record_type::PHYSICAL_INSERT: {
                 if (payload_size > 0) {
-                    rec.physical_data = std::make_unique<components::vector::data_chunk_t>(
-                        components::vector::deserialize_binary(payload, payload_size, resource));
+                    bool ok = false;
+                    auto chunk = components::vector::deserialize_binary(
+                        payload, payload_size, resource, ok);
+                    if (!ok) {
+                        rec.is_corrupt = true;
+                        return rec;
+                    }
+                    rec.physical_data = std::make_unique<components::vector::data_chunk_t>(std::move(chunk));
                 }
                 break;
             }
@@ -376,8 +382,14 @@ namespace services::wal {
                 const char* chunk_data = row_ids_data + row_ids_bytes;
                 uint32_t chunk_size = payload_size - 4 - row_ids_bytes;
                 if (chunk_size > 0) {
-                    rec.physical_data = std::make_unique<components::vector::data_chunk_t>(
-                        components::vector::deserialize_binary(chunk_data, chunk_size, resource));
+                    bool ok = false;
+                    auto chunk = components::vector::deserialize_binary(
+                        chunk_data, chunk_size, resource, ok);
+                    if (!ok) {
+                        rec.is_corrupt = true;
+                        return rec;
+                    }
+                    rec.physical_data = std::make_unique<components::vector::data_chunk_t>(std::move(chunk));
                 }
                 break;
             }

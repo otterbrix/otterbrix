@@ -1,6 +1,7 @@
 #include "data_chunk.hpp"
 #include "vector_operations.hpp"
 
+#include <charconv>
 #include <stdexcept>
 
 namespace components::vector {
@@ -259,8 +260,10 @@ namespace components::vector {
             for (auto it = std::next(path.begin()); it != path.end(); ++it) {
                 bool field_found = false;
                 if (sub_column->type().type() == types::logical_type::ARRAY) {
-                    size_t index = std::stoull(it->c_str());
-                    if (index < static_cast<const types::array_logical_type_extension*>(sub_column->type().extension())
+                    size_t index{};
+                    auto [p, ec] = std::from_chars(it->data(), it->data() + it->size(), index);
+                    if (ec == std::errc{} &&
+                        index < static_cast<const types::array_logical_type_extension*>(sub_column->type().extension())
                                     ->size()) {
                         res.emplace_back(index);
                         sub_column = &sub_column->entry();

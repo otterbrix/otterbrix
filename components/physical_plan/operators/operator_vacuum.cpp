@@ -229,12 +229,16 @@ namespace components::operators {
                 // pg_computed_column layout (Phase 11.F-B): 0=relid 1=attoid
                 // 2=attname 3=atttypid 4=atttypspec 5=attversion 6=attrefcount.
                 types::logical_value_t toid_lv(resource_, table_oid);
+                std::pmr::vector<std::string> cc_keys(resource_);
+                cc_keys.emplace_back("relid");
+                std::pmr::vector<types::logical_value_t> cc_vals(resource_);
+                cc_vals.emplace_back(toid_lv);
                 auto [_cc, ccf] = actor_zeta::send(
                     ctx->disk_address,
                     &services::disk::manager_disk_t::read_rows_by_key,
                     cc_ctx, kPgComputedColumn,
-                    std::vector<std::string>{"relid"},
-                    std::vector<types::logical_value_t>{toid_lv});
+                    std::move(cc_keys),
+                    std::move(cc_vals));
                 auto cc_rows = co_await std::move(ccf);
 
                 std::vector<catalog::oid_t> dead_attoids;
@@ -317,12 +321,16 @@ namespace components::operators {
                 // whose live counterparts were just version-GC'd.
                 {
                     types::logical_value_t toid_lv2(resource_, table_oid);
+                    std::pmr::vector<std::string> cc2_keys(resource_);
+                    cc2_keys.emplace_back("relid");
+                    std::pmr::vector<types::logical_value_t> cc2_vals(resource_);
+                    cc2_vals.emplace_back(toid_lv2);
                     auto [_cc2, ccf2] = actor_zeta::send(
                         ctx->disk_address,
                         &services::disk::manager_disk_t::read_rows_by_key,
                         cc_ctx, kPgComputedColumn,
-                        std::vector<std::string>{"relid"},
-                        std::vector<types::logical_value_t>{toid_lv2});
+                        std::move(cc2_keys),
+                        std::move(cc2_vals));
                     auto live_cc = co_await std::move(ccf2);
 
                     std::set<std::string> live_attnames;

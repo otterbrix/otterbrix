@@ -76,12 +76,18 @@ namespace components::operators {
             // pg_computed_column layout (Phase 11.F-B): 0=relid 1=attoid
             // 2=attname 3=atttypid 4=atttypspec 5=attversion 6=attrefcount.
             types::logical_value_t name_lv(resource_, std::string(col.name()));
+            std::pmr::vector<std::string> r_keys(resource_);
+            r_keys.emplace_back("relid");
+            r_keys.emplace_back("attname");
+            std::pmr::vector<types::logical_value_t> r_vals(resource_);
+            r_vals.emplace_back(toid_lv);
+            r_vals.emplace_back(name_lv);
             auto [_r, rf] = actor_zeta::send(
                 ctx->disk_address,
                 &services::disk::manager_disk_t::read_rows_by_key,
                 exec_ctx, pg_computed_column,
-                std::vector<std::string>{"relid", "attname"},
-                std::vector<types::logical_value_t>{toid_lv, name_lv});
+                std::move(r_keys),
+                std::move(r_vals));
             auto rows = co_await std::move(rf);
 
             std::int64_t   max_version    = -1;
@@ -122,12 +128,16 @@ namespace components::operators {
                 }
                 if (!lookup.empty()) {
                     types::logical_value_t lookup_lv(resource_, std::move(lookup));
+                    std::pmr::vector<std::string> t_keys(resource_);
+                    t_keys.emplace_back("typname");
+                    std::pmr::vector<types::logical_value_t> t_vals(resource_);
+                    t_vals.emplace_back(lookup_lv);
                     auto [_t, tf] = actor_zeta::send(
                         ctx->disk_address,
                         &services::disk::manager_disk_t::read_rows_by_key,
                         exec_ctx, pg_type,
-                        std::vector<std::string>{"typname"},
-                        std::vector<types::logical_value_t>{lookup_lv});
+                        std::move(t_keys),
+                        std::move(t_vals));
                     auto type_rows = co_await std::move(tf);
                     if (!type_rows.empty() && !type_rows[0].empty() && !type_rows[0][0].is_null()) {
                         atttypid = static_cast<catalog::oid_t>(

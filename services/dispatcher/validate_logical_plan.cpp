@@ -361,7 +361,7 @@ namespace services::dispatcher {
                     components::cursor::error_t{error_code_t::unrecognized_function,
                                                 "function: \'" + expr->name() + "(...)\' was not found by the name"}};
             } else if (fn_lk.match_found) {
-                std::vector<complex_logical_type> function_output_types;
+                std::pmr::vector<complex_logical_type> function_output_types(resource);
                 function_output_types.reserve(fn_lk.signature.output_types.size());
                 for (const auto& output_type : fn_lk.signature.output_types) {
                     auto res = output_type.resolve(function_input_types);
@@ -1426,7 +1426,7 @@ namespace services::dispatcher {
                                                                 "function: \'" + agg_expr->function_name() +
                                                                     "(...)\' was not found by the name"}};
                             } else if (agg_lk.match_found) {
-                                std::vector<complex_logical_type> function_output_types;
+                                std::pmr::vector<complex_logical_type> function_output_types(resource);
                                 function_output_types.reserve(agg_lk.signature.output_types.size());
                                 for (const auto& output_type : agg_lk.signature.output_types) {
                                     auto res = output_type.resolve(function_input_types);
@@ -2022,7 +2022,7 @@ namespace services::dispatcher {
     {
         using namespace components::catalog;
         using namespace components::cursor;
-        auto plan = plan_drop(seed_classid, seed_oid,
+        auto plan = plan_drop(resource, seed_classid, seed_oid,
                               components::catalog::drop_behavior_t::restrict_,
                               fetch_deps);
         if (plan.status == components::catalog::ddl_status::restrict_blocked) {

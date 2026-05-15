@@ -144,10 +144,14 @@ namespace components::vector {
             return output;
         }
 
-        // Read the type header for a single column. Advances scan pointer.
-        types::complex_logical_type read_type_header(const char*& scan, const char* end) {
+        // Read the type header for a single column. Advances scan pointer. On any
+        // buffer-overflow sets ok=false and returns an INVALID-typed placeholder
+        // (caller must check ok before using the result).
+        types::complex_logical_type
+        read_type_header(const char*& scan, const char* end, bool& ok) {
             if (scan + 4 > end) {
-                throw std::runtime_error("data_chunk_binary: type header overflows buffer");
+                ok = false;
+                return types::complex_logical_type{types::logical_type::INVALID};
             }
 
             // Logical type
@@ -160,7 +164,8 @@ namespace components::vector {
             std::string alias;
             if (alias_length > 0) {
                 if (scan + alias_length > end) {
-                    throw std::runtime_error("data_chunk_binary: alias overflows buffer");
+                    ok = false;
+                    return types::complex_logical_type{types::logical_type::INVALID};
                 }
                 alias.assign(scan, alias_length);
                 scan += alias_length;
@@ -168,7 +173,8 @@ namespace components::vector {
 
             // Extension type
             if (scan >= end) {
-                throw std::runtime_error("data_chunk_binary: extension type overflows buffer");
+                ok = false;
+                return types::complex_logical_type{types::logical_type::INVALID};
             }
             uint8_t extension_type = *reinterpret_cast<const uint8_t*>(scan);
             scan += 1;
@@ -176,7 +182,8 @@ namespace components::vector {
             switch (extension_type) {
                 case 1: { // ARRAY
                     if (scan + 5 > end) {
-                        throw std::runtime_error("data_chunk_binary: array extension overflows buffer");
+                        ok = false;
+                        return types::complex_logical_type{types::logical_type::INVALID};
                     }
                     auto inner_logical_type =
                         static_cast<types::logical_type>(*reinterpret_cast<const uint8_t*>(scan));
@@ -188,7 +195,8 @@ namespace components::vector {
                 }
                 case 2: { // DECIMAL
                     if (scan + 2 > end) {
-                        throw std::runtime_error("data_chunk_binary: decimal extension overflows buffer");
+                        ok = false;
+                        return types::complex_logical_type{types::logical_type::INVALID};
                     }
                     uint8_t width = *reinterpret_cast<const uint8_t*>(scan);
                     scan += 1;
@@ -199,6 +207,13 @@ namespace components::vector {
                 default: // no extension
                     return types::complex_logical_type(logical_type_value, std::move(alias));
             }
+        }
+
+        // Empty/sentinel chunk returned on deserialize failure. Caller must check
+        // the ok flag and discard the chunk on failure.
+        data_chunk_t make_empty_error_chunk(std::pmr::memory_resource* resource) {
+            std::pmr::vector<types::complex_logical_type> empty_types(resource);
+            return data_chunk_t(resource, empty_types, 1);
         }
 
     } // anonymous namespace
@@ -320,9 +335,13 @@ namespace components::vector {
     // -----------------------------------------------------------------------
     // deserialize_binary
     // -----------------------------------------------------------------------
-    data_chunk_t deserialize_binary(const char* data, size_t len, std::pmr::memory_resource* resource) {
+    data_chunk_t deserialize_binary(const char* data, size_t len,
+                                     std::pmr::memory_resource* resource,
+                                     bool& ok) {
+        ok = true;
         if (len < 10) {
-            throw std::runtime_error("data_chunk_binary: buffer too small for header");
+            ok = false;
+            return make_empty_error_chunk(resource);
         }
 
         const char* pointer = data;
@@ -338,7 +357,8 @@ namespace components::vector {
         const char* null_mask = nullptr;
         if (null_mask_size > 0) {
             if (pointer + null_mask_size > end) {
-                throw std::runtime_error("data_chunk_binary: null mask overflows buffer");
+                ok = false;
+                return make_empty_error_chunk(resource);
             }
             null_mask = pointer;
             pointer += null_mask_size;
@@ -352,17 +372,22 @@ namespace components::vector {
             const char* scan = pointer;
             for (uint16_t column_index = 0; column_index < num_columns; ++column_index) {
                 // Read type header
-                auto column_type = read_type_header(scan, end);
+                auto column_type = read_type_header(scan, end, ok);
+                if (!ok) {
+                    return make_empty_error_chunk(resource);
+                }
                 column_types.push_back(std::move(column_type));
 
                 // Skip data_size + data
                 if (scan + 4 > end) {
-                    throw std::runtime_error("data_chunk_binary: column data_size overflows buffer");
+                    ok = false;
+                    return make_empty_error_chunk(resource);
                 }
                 uint32_t data_size = read_le32(scan);
                 scan += 4;
                 if (scan + data_size > end) {
-                    throw std::runtime_error("data_chunk_binary: column data overflows buffer");
+                    ok = false;
+                    return make_empty_error_chunk(resource);
                 }
                 scan += data_size;
             }
@@ -374,7 +399,10 @@ namespace components::vector {
         // Second pass: populate column data.
         for (uint16_t column_index = 0; column_index < num_columns; ++column_index) {
             // Skip type header (already parsed in first pass)
-            read_type_header(pointer, end);
+            read_type_header(pointer, end, ok);
+            if (!ok) {
+                return make_empty_error_chunk(resource);
+            }
 
             uint32_t data_size = read_le32(pointer);
             pointer += 4;
@@ -384,7 +412,8 @@ namespace components::vector {
 
             if (is_variable_type(physical_type)) {
                 if (data_size < (num_rows + 1) * 4) {
-                    throw std::runtime_error("data_chunk_binary: string offsets overflow");
+                    ok = false;
+                    return make_empty_error_chunk(resource);
                 }
                 const char* offsets_pointer = pointer;
                 const char* string_data = pointer + (num_rows + 1) * 4;

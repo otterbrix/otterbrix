@@ -85,7 +85,10 @@ TEST_CASE("catalog::type_spec::struct_roundtrip") {
     f1.set_alias("x");
     auto f2 = complex_logical_type{logical_type::STRING_LITERAL};
     f2.set_alias("y");
-    auto t = complex_logical_type::create_struct("point", {f1, f2});
+    std::pmr::vector<complex_logical_type> point_fields(g_resource);
+    point_fields.push_back(f1);
+    point_fields.push_back(f2);
+    auto t = complex_logical_type::create_struct("point", point_fields);
     auto spec = encode_type_spec(t);
     REQUIRE(spec == "STRUCT(point,x:int4,y:text)");
 
@@ -104,7 +107,10 @@ TEST_CASE("catalog::type_spec::union_roundtrip") {
     m1.set_alias("i");
     auto m2 = complex_logical_type{logical_type::STRING_LITERAL};
     m2.set_alias("s");
-    auto t = complex_logical_type::create_union({m1, m2});
+    std::pmr::vector<complex_logical_type> union_members(g_resource);
+    union_members.push_back(m1);
+    union_members.push_back(m2);
+    auto t = complex_logical_type::create_union(union_members);
     auto spec = encode_type_spec(t);
     REQUIRE(spec == "UNION(i:int4,s:text)");
 
@@ -118,7 +124,7 @@ TEST_CASE("catalog::type_spec::union_roundtrip") {
 }
 
 TEST_CASE("catalog::type_spec::variant_roundtrip") {
-    auto t = complex_logical_type::create_variant();
+    auto t = complex_logical_type::create_variant(g_resource);
     auto spec = encode_type_spec(t);
     REQUIRE(spec == "VARIANT");
 
@@ -131,7 +137,10 @@ TEST_CASE("catalog::type_spec::nested_list_of_struct") {
     f1.set_alias("lat");
     auto f2 = complex_logical_type{logical_type::FLOAT};
     f2.set_alias("lon");
-    auto inner = complex_logical_type::create_struct("coord", {f1, f2});
+    std::pmr::vector<complex_logical_type> coord_fields(g_resource);
+    coord_fields.push_back(f1);
+    coord_fields.push_back(f2);
+    auto inner = complex_logical_type::create_struct("coord", coord_fields);
     auto t = complex_logical_type::create_list(inner);
     auto spec = encode_type_spec(t);
     REQUIRE(spec == "LIST(STRUCT(coord,lat:float4,lon:float4))");

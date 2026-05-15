@@ -6,6 +6,7 @@
 #include <components/catalog/results/ddl_result.hpp>
 
 #include <functional>
+#include <memory_resource>
 #include <vector>
 
 namespace components::catalog {
@@ -19,9 +20,12 @@ namespace components::catalog {
 
     // Result of planning a DROP operation (CASCADE or RESTRICT).
     struct cascade_plan_t {
+        explicit cascade_plan_t(std::pmr::memory_resource* resource)
+            : steps(resource) {}
+
         // DROP succeeded: ordered list of objects to drop (children first, root last).
         // Empty when behavior==restrict_ and no external dependencies exist.
-        std::vector<drop_step_t> steps;
+        std::pmr::vector<drop_step_t> steps;
 
         // Non-INVALID_OID when RESTRICT is blocked: OID of the blocking dependent.
         oid_t blocking_oid{INVALID_OID};
@@ -37,7 +41,8 @@ namespace components::catalog {
     //
     // behavior: restrict_ → return immediately with blocking_oid if any 'n' dependency
     //           exists; cascade_ → compute full topological drop order.
-    cascade_plan_t plan_drop(oid_t seed_classid,
+    cascade_plan_t plan_drop(std::pmr::memory_resource* resource,
+                              oid_t seed_classid,
                               oid_t seed_oid,
                               drop_behavior_t behavior,
                               const fetch_deps_fn& fetch_deps);

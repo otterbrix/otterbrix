@@ -24,6 +24,7 @@
 #include <components/types/logical_value.hpp>
 
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -89,7 +90,10 @@ namespace components::catalog {
 
     // Returns the 9 system tables, in bootstrap order (pg_namespace first, since pg_class
     // and pg_attribute reference namespaces).
-    std::vector<system_table_def_t> all_system_tables();
+    // Returns the system tables in bootstrap order. Backed by a function-local
+    // `static const std::array<...,12>` populated on first call (C++11 magic-statics
+    // — thread-safe init). Subsequent calls return a zero-cost `std::span` view.
+    std::span<const system_table_def_t> all_system_tables();
 
     // Convenience: lookup a system table by name (returns nullptr if not a system table).
     // Useful for routing during DDL — manager_disk_t needs to know which physical
@@ -105,7 +109,7 @@ namespace components::catalog {
     // logical_type::UNKNOWN on empty/malformed input — non-throwing best-effort.
     std::string encode_type_spec(const types::complex_logical_type& t);
     types::complex_logical_type decode_type_spec(std::pmr::memory_resource* resource,
-                                                  const std::string& spec);
+                                                  std::string_view spec);
 
     // Encode the per-arg `input_type` tagged matcher to a flat text format suitable
     // for pg_proc.proargmatchers. Format per arg: "e:N" exact, "n" numeric, "i" integer,

@@ -7,10 +7,13 @@
 #include <components/logical_plan/node_catalog_resolve_type.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <components/vector/vector_buffer.hpp>
 #include <services/disk/manager_disk.hpp>
 
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -18,6 +21,29 @@ namespace components::operators {
 
     namespace catalog = components::catalog;
     namespace types   = components::types;
+
+    namespace {
+        // File-local typed setters — pg_type schema is statically known here,
+        // so we bypass the logical_value_t variant dispatch and write directly
+        // into the column's typed buffer.
+        inline void set_uint32(vector::data_chunk_t& c, size_t col, size_t row, std::uint32_t v) {
+            auto& vec = c.data[col];
+            vec.template data<std::uint32_t>()[row] = v;
+            vec.validity().set(row, true);
+        }
+        inline void set_str(vector::data_chunk_t& c, size_t col, size_t row,
+                            std::string_view v, std::pmr::memory_resource* r) {
+            auto& vec = c.data[col];
+            if (!vec.auxiliary()) {
+                vec.set_auxiliary(std::make_shared<vector::string_vector_buffer_t>(r));
+            }
+            auto* sb = static_cast<vector::string_vector_buffer_t*>(vec.auxiliary().get());
+            auto* ptr = sb->insert(v);
+            reinterpret_cast<std::string_view*>(vec.template data<std::byte>())[row] =
+                std::string_view(static_cast<const char*>(ptr), v.size());
+            vec.validity().set(row, true);
+        }
+    } // namespace
 
     operator_resolve_type_t::operator_resolve_type_t(std::pmr::memory_resource* resource,
                                                        log_t                      log,
@@ -68,12 +94,16 @@ namespace components::operators {
                 namespace_oid_ = catalog::well_known_oid::pg_catalog_namespace;
             } else if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
                 types::logical_value_t db_lv(resource_, std::string_view{dbname_});
+                std::pmr::vector<std::string> ns_keys(resource_);
+                ns_keys.emplace_back("nspname");
+                std::pmr::vector<types::logical_value_t> ns_vals(resource_);
+                ns_vals.emplace_back(db_lv);
                 auto [_n, nf] = actor_zeta::send(
                     ctx->disk_address,
                     &services::disk::manager_disk_t::read_rows_by_key,
                     exec_ctx, kPgNamespace,
-                    std::vector<std::string>{"nspname"},
-                    std::vector<types::logical_value_t>{db_lv});
+                    std::move(ns_keys),
+                    std::move(ns_vals));
                 auto ns_rows = co_await std::move(nf);
                 if (!ns_rows.empty() && !ns_rows[0].empty() && !ns_rows[0][0].is_null()) {
                     namespace_oid_ = static_cast<catalog::oid_t>(
@@ -88,24 +118,33 @@ namespace components::operators {
             ctx->disk_address != actor_zeta::address_t::empty_address()) {
             types::logical_value_t name_lv(resource_, std::string_view{name_});
             types::logical_value_t ns_lv(resource_, namespace_oid_);
+            std::pmr::vector<std::string> typ_keys(resource_);
+            typ_keys.emplace_back("typname");
+            typ_keys.emplace_back("typnamespace");
+            std::pmr::vector<types::logical_value_t> typ_vals(resource_);
+            typ_vals.emplace_back(name_lv);
+            typ_vals.emplace_back(ns_lv);
             auto [_t, tf] = actor_zeta::send(
                 ctx->disk_address,
                 &services::disk::manager_disk_t::read_rows_by_key,
                 exec_ctx, kPgType,
-                std::vector<std::string>{"typname", "typnamespace"},
-                std::vector<types::logical_value_t>{name_lv, ns_lv});
+                std::move(typ_keys),
+                std::move(typ_vals));
             auto rows = co_await std::move(tf);
 
             if (!rows.empty() && rows.front().size() >= 4) {
                 const auto& row = rows.front();
                 if (!row[0].is_null() && !row[1].is_null() && !row[2].is_null()) {
-                    chunk.set_value(0, 0, row[0]);
-                    chunk.set_value(1, 0, row[1]);
-                    chunk.set_value(2, 0, row[2]);
+                    set_uint32(chunk, 0, 0, row[0].value<std::uint32_t>());
+                    set_str   (chunk, 1, 0, row[1].value<std::string_view>(), resource_);
+                    set_uint32(chunk, 2, 0, row[2].value<std::uint32_t>());
+                    // Preserve original behaviour: when typdefspec is null,
+                    // still write an empty string (not a null cell) so any
+                    // downstream consumer sees the same shape it used to.
                     if (!row[3].is_null()) {
-                        chunk.set_value(3, 0, row[3]);
+                        set_str(chunk, 3, 0, row[3].value<std::string_view>(), resource_);
                     } else {
-                        chunk.set_value(3, 0, types::logical_value_t(resource_, std::string{}));
+                        set_str(chunk, 3, 0, std::string_view{}, resource_);
                     }
                     chunk.set_cardinality(1);
 

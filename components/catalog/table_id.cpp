@@ -1,5 +1,6 @@
 #include "table_id.hpp"
 
+#include <cassert>
 #include <sstream>
 #include <stdexcept>
 
@@ -50,11 +51,12 @@ namespace components::catalog {
     }
 
     void table_id::set_oid(oid_t oid) {
+        // OID is immutable after first assignment — programmer-error precondition.
+        // Assert in debug, no-op in release if someone tries to reassign.
+        assert((oid_ == INVALID_OID || oid_ == oid)
+               && "table_id::set_oid: OID is immutable after assignment");
         if (oid_ != INVALID_OID && oid_ != oid) {
-            std::ostringstream oss;
-            oss << "table_id::set_oid: OID is immutable after assignment (current=" << oid_
-                << ", attempted=" << oid << ", table=" << std::string(to_pmr_string()) << ")";
-            throw std::logic_error(oss.str());
+            return;
         }
         oid_ = oid;
     }

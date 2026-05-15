@@ -318,7 +318,7 @@ namespace services::disk {
                     });
         std::sort(fields.begin(), fields.end(),
                   [](const field_row& a, const field_row& b) { return a.attnum < b.attnum; });
-        std::vector<components::types::complex_logical_type> child_types;
+        std::pmr::vector<components::types::complex_logical_type> child_types(resource());
         child_types.reserve(fields.size());
         for (auto& f : fields) {
             components::types::complex_logical_type ft = f.atttypspec.empty()
@@ -475,8 +475,8 @@ namespace services::disk {
     manager_disk_t::unique_future<std::pmr::vector<std::int64_t>>
     manager_disk_t::scan_by_key(execution_context_t ctx,
                                  components::catalog::oid_t table_oid,
-                                 std::vector<std::string> key_col_names,
-                                 std::vector<components::types::logical_value_t> key_values) {
+                                 std::pmr::vector<std::string> key_col_names,
+                                 std::pmr::vector<components::types::logical_value_t> key_values) {
         std::pmr::vector<std::int64_t> out(resource());
         if (key_col_names.size() != key_values.size() || key_col_names.empty()) {
             co_return out;
@@ -516,13 +516,13 @@ namespace services::disk {
         co_return out;
     }
 
-    manager_disk_t::unique_future<std::vector<std::vector<components::types::logical_value_t>>>
+    manager_disk_t::unique_future<std::pmr::vector<std::pmr::vector<components::types::logical_value_t>>>
     manager_disk_t::read_rows_by_key(execution_context_t ctx,
                                        components::catalog::oid_t table_oid,
-                                       std::vector<std::string> key_col_names,
-                                       std::vector<components::types::logical_value_t> key_values) {
-        using row_t = std::vector<components::types::logical_value_t>;
-        std::vector<row_t> out;
+                                       std::pmr::vector<std::string> key_col_names,
+                                       std::pmr::vector<components::types::logical_value_t> key_values) {
+        using row_t = std::pmr::vector<components::types::logical_value_t>;
+        std::pmr::vector<row_t> out(resource());
         if (key_col_names.size() != key_values.size() || key_col_names.empty()) co_return out;
 
         auto it = storages_.find(table_oid);
@@ -552,7 +552,7 @@ namespace services::disk {
         it->second->storage->scan(chunk, filter.get(), -1, ctx.txn);
 
         for (uint64_t i = 0; i < chunk.size(); ++i) {
-            row_t row;
+            row_t row(resource());
             row.reserve(chunk.column_count());
             for (uint64_t c = 0; c < chunk.column_count(); ++c) {
                 row.push_back(chunk.value(c, i));

@@ -29,7 +29,7 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
         types.emplace_back(complex_logical_type::create_list(logical_type::UINTEGER, "list_fixed"));
         types.emplace_back(complex_logical_type::create_list(logical_type::STRING_LITERAL, "list_string"));
         {
-            std::vector<complex_logical_type> fields;
+            std::pmr::vector<complex_logical_type> fields(&resource);
             fields.emplace_back(logical_type::BOOLEAN, "flag");
             fields.emplace_back(logical_type::INTEGER, "number");
             fields.emplace_back(logical_type::STRING_LITERAL, "string");
@@ -115,7 +115,7 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
         ArrowArray arrow_array;
         to_arrow_schema(&schema, types);
         to_arrow_array(chunk, &arrow_array);
-        auto res = data_chunk_from_arrow(&resource, &arrow_array, schema_from_arrow(&schema));
+        auto res = data_chunk_from_arrow(&resource, &arrow_array, schema_from_arrow(&resource, &schema));
         REQUIRE(chunk.column_count() == res.column_count());
         REQUIRE(chunk.size() == res.size());
         for (size_t i = 0; i < chunk.column_count(); i++) {
@@ -144,7 +144,7 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
         types.emplace_back(complex_logical_type::create_list(logical_type::UINTEGER, "list_fixed"));
         types.emplace_back(complex_logical_type::create_list(logical_type::STRING_LITERAL, "list_string"));
         {
-            std::vector<complex_logical_type> fields;
+            std::pmr::vector<complex_logical_type> fields(&resource);
             fields.emplace_back(logical_type::BOOLEAN, "flag");
             fields.emplace_back(logical_type::INTEGER, "number");
             fields.emplace_back(logical_type::STRING_LITERAL, "string");
@@ -230,7 +230,7 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
         ArrowArray arrow_array;
         to_arrow_schema(&schema, types);
         to_arrow_array(chunk, &arrow_array);
-        auto res = data_chunk_from_arrow(&resource, &arrow_array, schema_from_arrow(&schema));
+        auto res = data_chunk_from_arrow(&resource, &arrow_array, schema_from_arrow(&resource, &schema));
         REQUIRE(chunk.column_count() == res.column_count());
         REQUIRE(chunk.size() == res.size());
         for (size_t i = 0; i < chunk.column_count(); i++) {

@@ -288,12 +288,6 @@ namespace components::sql::transform {
         }
     }
 
-    std::vector<types::complex_logical_type> get_types(PGList& list) {
-        std::vector<types::complex_logical_type> types;
-        fill_with_types(types, list);
-        return types;
-    }
-
     std::pmr::vector<types::complex_logical_type> get_types(std::pmr::memory_resource* resource, PGList& list) {
         std::pmr::vector<types::complex_logical_type> types(resource);
         fill_with_types(types, list);

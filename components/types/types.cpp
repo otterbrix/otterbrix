@@ -346,12 +346,12 @@ namespace components::types {
         return INVALID_TYPE;
     }
 
-    std::vector<complex_logical_type>& complex_logical_type::child_types() {
+    std::pmr::vector<complex_logical_type>& complex_logical_type::child_types() {
         assert(extension_);
         return static_cast<struct_logical_type_extension*>(extension_.get())->child_types();
     }
 
-    const std::vector<complex_logical_type>& complex_logical_type::child_types() const {
+    const std::pmr::vector<complex_logical_type>& complex_logical_type::child_types() const {
         assert(extension_);
         return static_cast<struct_logical_type_extension*>(extension_.get())->child_types();
     }
@@ -449,15 +449,13 @@ namespace components::types {
                                     std::move(alias));
     }
 
-    complex_logical_type complex_logical_type::create_struct(std::string name,
-                                                             const std::vector<complex_logical_type>& fields,
-                                                             std::string alias) {
+    complex_logical_type complex_logical_type::create_struct(std::string name, const std::pmr::vector<complex_logical_type>& fields,std::string alias) {
         return complex_logical_type(logical_type::STRUCT,
                                     std::make_unique<struct_logical_type_extension>(std::move(name), fields),
                                     std::move(alias));
     }
 
-    complex_logical_type complex_logical_type::create_union(std::vector<complex_logical_type> fields,
+    complex_logical_type complex_logical_type::create_union(std::pmr::vector<complex_logical_type> fields,
                                                             std::string alias) {
         // union types always have a hidden "tag" field in front
         fields.emplace(fields.begin(), complex_logical_type{logical_type::UTINYINT});
@@ -466,15 +464,24 @@ namespace components::types {
                                     std::move(alias));
     }
 
-    complex_logical_type complex_logical_type::create_variant(std::string alias) {
-        std::vector<complex_logical_type> children;
+    complex_logical_type complex_logical_type::create_variant(std::pmr::memory_resource* resource, std::string alias) {
+        std::pmr::vector<complex_logical_type> children(resource);
         children.reserve(4);
         children.emplace_back(create_list(logical_type::STRING_LITERAL, "keys"));
-        children.emplace_back(create_list(
-            create_struct("children",
-                          {{logical_type::UINTEGER, "keys_index"}, {logical_type::UINTEGER, "values_index"}})));
-        children.emplace_back(create_list(
-            create_struct("values", {{logical_type::UTINYINT, "type_id"}, {logical_type::UINTEGER, "byte_offset"}})));
+        {
+            std::pmr::vector<complex_logical_type> inner(resource);
+            inner.reserve(2);
+            inner.emplace_back(logical_type::UINTEGER, "keys_index");
+            inner.emplace_back(logical_type::UINTEGER, "values_index");
+            children.emplace_back(create_list(create_struct("children", inner)));
+        }
+        {
+            std::pmr::vector<complex_logical_type> inner(resource);
+            inner.reserve(2);
+            inner.emplace_back(logical_type::UTINYINT, "type_id");
+            inner.emplace_back(logical_type::UINTEGER, "byte_offset");
+            children.emplace_back(create_list(create_struct("values", inner)));
+        }
         children.emplace_back(logical_type::BLOB, "data");
 
         auto info = std::make_unique<struct_logical_type_extension>("data", std::move(children));
@@ -534,19 +541,19 @@ namespace components::types {
         , required_(required) {}
 
     struct_logical_type_extension::struct_logical_type_extension(std::string name,
-                                                                 const std::vector<complex_logical_type>& fields)
+                                                                 const std::pmr::vector<complex_logical_type>& fields)
         : logical_type_extension(extension_type::STRUCT)
         , type_name_(std::move(name))
-        , fields_(fields)
-        , descriptions_() {}
+        , fields_(fields, fields.get_allocator())
+        , descriptions_(fields.get_allocator()) {}
 
     struct_logical_type_extension::struct_logical_type_extension(
         std::string name,
-        const std::vector<types::complex_logical_type>& columns,
-        std::vector<field_description> descriptions)
+        const std::pmr::vector<types::complex_logical_type>& columns,
+        std::pmr::vector<field_description> descriptions)
         : logical_type_extension(extension_type::STRUCT)
         , type_name_(std::move(name))
-        , fields_(columns)
+        , fields_(columns, columns.get_allocator())
         , descriptions_(std::move(descriptions)) {
         assert(fields_.size() == descriptions_.size());
     }
@@ -569,7 +576,7 @@ namespace components::types {
         , user_type_modifiers_(std::move(user_type_modifiers)) {}
 
     function_logical_type_extension::function_logical_type_extension(complex_logical_type return_type,
-                                                                     std::vector<complex_logical_type> arguments)
+                                                                     std::pmr::vector<complex_logical_type> arguments)
         : logical_type_extension(extension_type::FUNCTION)
         , return_type_(std::move(return_type))
         , argument_types_(std::move(arguments)) {}

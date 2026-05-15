@@ -10,7 +10,9 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <memory_resource>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -26,7 +28,7 @@ namespace components::operators {
         // alone reconstructs the type via oid_to_builtin_type.
         types::complex_logical_type
         column_type_from_attribute(std::pmr::memory_resource* resource,
-                                    const std::string& atttypspec,
+                                    std::string_view atttypspec,
                                     catalog::oid_t atttypid) {
             if (!atttypspec.empty()) {
                 return catalog::decode_type_spec(resource, atttypspec);
@@ -74,12 +76,16 @@ namespace components::operators {
             catalog::oid_t ns_oid = catalog::INVALID_OID;
             if (!db.empty()) {
                 types::logical_value_t ns_lv(resource_, std::string_view{db});
+                std::pmr::vector<std::string> ns_keys(resource_);
+                ns_keys.emplace_back("nspname");
+                std::pmr::vector<types::logical_value_t> ns_vals(resource_);
+                ns_vals.emplace_back(ns_lv);
                 auto [_ns, nsf] = actor_zeta::send(
                     ctx->disk_address,
                     &services::disk::manager_disk_t::read_rows_by_key,
                     exec_ctx, kPgNamespace,
-                    std::vector<std::string>{"nspname"},
-                    std::vector<types::logical_value_t>{ns_lv});
+                    std::move(ns_keys),
+                    std::move(ns_vals));
                 auto ns_rows = co_await std::move(nsf);
                 if (!ns_rows.empty() && !ns_rows[0].empty()) {
                     ns_oid = static_cast<catalog::oid_t>(ns_rows[0][0].value<std::uint32_t>());
@@ -98,12 +104,18 @@ namespace components::operators {
             {
                 types::logical_value_t name_lv(resource_, std::string_view{name});
                 types::logical_value_t nsoid_lv(resource_, ns_oid);
+                std::pmr::vector<std::string> tc_keys(resource_);
+                tc_keys.emplace_back("relname");
+                tc_keys.emplace_back("relnamespace");
+                std::pmr::vector<types::logical_value_t> tc_vals(resource_);
+                tc_vals.emplace_back(name_lv);
+                tc_vals.emplace_back(nsoid_lv);
                 auto [_tc, tcf] = actor_zeta::send(
                     ctx->disk_address,
                     &services::disk::manager_disk_t::read_rows_by_key,
                     exec_ctx, kPgClass,
-                    std::vector<std::string>{"relname", "relnamespace"},
-                    std::vector<types::logical_value_t>{name_lv, nsoid_lv});
+                    std::move(tc_keys),
+                    std::move(tc_vals));
                 auto tc_rows = co_await std::move(tcf);
                 if (!tc_rows.empty() && tc_rows[0].size() >= 4) {
                     table_oid = static_cast<catalog::oid_t>(tc_rows[0][0].value<std::uint32_t>());
@@ -128,57 +140,66 @@ namespace components::operators {
             //      attribute rows sequentially during CREATE TABLE / ADD COLUMN,
             //      so storage order ≈ attnum order. Tombstoned rows
             //      (attisdropped=true) are filtered.
-            std::vector<types::complex_logical_type> col_types;
+            std::pmr::vector<types::complex_logical_type> col_types(resource_);
             if (relkind == catalog::relkind::computed) {
                 types::logical_value_t toid_lv(resource_, table_oid);
+                std::pmr::vector<std::string> pc_keys(resource_);
+                pc_keys.emplace_back("relid");
+                std::pmr::vector<types::logical_value_t> pc_vals(resource_);
+                pc_vals.emplace_back(toid_lv);
                 auto [_pc, pcf] = actor_zeta::send(
                     ctx->disk_address,
                     &services::disk::manager_disk_t::read_rows_by_key,
                     exec_ctx, kPgComputedColumn,
-                    std::vector<std::string>{"relid"},
-                    std::vector<types::logical_value_t>{toid_lv});
+                    std::move(pc_keys),
+                    std::move(pc_vals));
                 auto cc_rows = co_await std::move(pcf);
                 // Pick latest attversion per attname where refcount > 0.
                 // Phase 11.F-B: schema is now [0=relid, 1=attoid, 2=attname,
                 // 3=atttypid, 4=atttypspec, 5=attversion, 6=attrefcount].
                 struct cc_entry_t {
-                    catalog::oid_t atttypid;
-                    std::string    atttypspec;
-                    std::int64_t   attversion;
+                    catalog::oid_t    atttypid;
+                    std::pmr::string  atttypspec;
+                    std::int64_t      attversion;
                 };
-                std::unordered_map<std::string, cc_entry_t> latest;
+                std::pmr::unordered_map<std::pmr::string, cc_entry_t> latest(resource_);
                 for (const auto& row : cc_rows) {
                     if (row.size() < 7) continue;
                     if (row[6].is_null() || row[6].template value<std::int64_t>() <= 0) continue;
                     if (row[2].is_null() || row[5].is_null()) continue;
-                    std::string attname{row[2].template value<std::string_view>()};
+                    std::pmr::string attname{row[2].template value<std::string_view>(), resource_};
                     auto atttypid = row[3].is_null()
                                         ? catalog::INVALID_OID
                                         : static_cast<catalog::oid_t>(
                                               row[3].template value<std::uint32_t>());
-                    std::string atttypspec;
+                    std::pmr::string atttypspec{resource_};
                     if (!row[4].is_null())
                         atttypspec.assign(row[4].template value<std::string_view>());
                     auto attversion = row[5].template value<std::int64_t>();
                     auto it = latest.find(attname);
                     if (it == latest.end() || it->second.attversion < attversion) {
-                        latest[attname] = {atttypid, std::move(atttypspec), attversion};
+                        latest.insert_or_assign(std::move(attname),
+                                                cc_entry_t{atttypid, std::move(atttypspec), attversion});
                     }
                 }
                 col_types.reserve(latest.size());
                 for (auto& [attname, entry] : latest) {
                     auto t = column_type_from_attribute(resource_, entry.atttypspec, entry.atttypid);
-                    t.set_alias(attname);
+                    t.set_alias(std::string{attname});
                     col_types.push_back(std::move(t));
                 }
             } else {
                 types::logical_value_t toid_lv(resource_, table_oid);
+                std::pmr::vector<std::string> pa_keys(resource_);
+                pa_keys.emplace_back("attrelid");
+                std::pmr::vector<types::logical_value_t> pa_vals(resource_);
+                pa_vals.emplace_back(toid_lv);
                 auto [_pa, paf] = actor_zeta::send(
                     ctx->disk_address,
                     &services::disk::manager_disk_t::read_rows_by_key,
                     exec_ctx, kPgAttribute,
-                    std::vector<std::string>{"attrelid"},
-                    std::vector<types::logical_value_t>{toid_lv});
+                    std::move(pa_keys),
+                    std::move(pa_vals));
                 auto pa_rows = co_await std::move(paf);
 
                 col_types.reserve(pa_rows.size());
@@ -186,7 +207,7 @@ namespace components::operators {
                 // Sort by attnum (ordinal position) for deterministic order.
                 // We collect row indexes paired with attnum for sorting without
                 // copying full row vectors.
-                std::vector<std::pair<std::int32_t, std::size_t>> ordering;
+                std::pmr::vector<std::pair<std::int32_t, std::size_t>> ordering(resource_);
                 ordering.reserve(pa_rows.size());
                 for (std::size_t i = 0; i < pa_rows.size(); ++i) {
                     if (pa_rows[i].size() < 8) continue;
@@ -203,18 +224,19 @@ namespace components::operators {
 
                 for (const auto& [_attnum, idx] : ordering) {
                     const auto& row = pa_rows[idx];
-                    std::string attname{row[2].is_null() ? std::string_view{}
-                                                          : row[2].value<std::string_view>()};
+                    std::pmr::string attname{row[2].is_null() ? std::string_view{}
+                                                              : row[2].value<std::string_view>(),
+                                              resource_};
                     catalog::oid_t atttypid = row[3].is_null()
                                                   ? catalog::INVALID_OID
                                                   : static_cast<catalog::oid_t>(
                                                         row[3].value<std::uint32_t>());
-                    std::string atttypspec;
+                    std::pmr::string atttypspec{resource_};
                     if (row.size() > 8 && !row[8].is_null()) {
                         atttypspec.assign(row[8].value<std::string_view>());
                     }
                     auto t = column_type_from_attribute(resource_, atttypspec, atttypid);
-                    t.set_alias(attname);
+                    t.set_alias(std::string{attname});
                     col_types.push_back(std::move(t));
                 }
             }

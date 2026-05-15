@@ -76,17 +76,17 @@ namespace services::disk {
         actor_zeta::unique_future<std::pmr::vector<std::int64_t>>
         scan_by_key(execution_context_t ctx,
                     components::catalog::oid_t table_oid,
-                    std::vector<std::string> key_col_names,
-                    std::vector<components::types::logical_value_t> key_values);
+                    std::pmr::vector<std::string> key_col_names,
+                    std::pmr::vector<components::types::logical_value_t> key_values);
 
         // Pure row-data scan: returns the full column values for every txn-visible row
         // in the table with the given OID where key_col_names[i] == key_values[i].
         // Outer vector = rows, inner vector = column values in schema order.
-        actor_zeta::unique_future<std::vector<std::vector<components::types::logical_value_t>>>
+        actor_zeta::unique_future<std::pmr::vector<std::pmr::vector<components::types::logical_value_t>>>
         read_rows_by_key(execution_context_t ctx,
                          components::catalog::oid_t table_oid,
-                         std::vector<std::string> key_col_names,
-                         std::vector<components::types::logical_value_t> key_values);
+                         std::pmr::vector<std::string> key_col_names,
+                         std::pmr::vector<components::types::logical_value_t> key_values);
 
         // Phase 7.5b — physical column compaction for an IN_MEMORY relkind='g'
         // table_storage_t.

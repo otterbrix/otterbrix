@@ -269,16 +269,16 @@ namespace services::disk {
         unique_future<std::pmr::vector<std::int64_t>>
         scan_by_key(execution_context_t ctx,
                     components::catalog::oid_t table_oid,
-                    std::vector<std::string> key_col_names,
-                    std::vector<components::types::logical_value_t> key_values);
+                    std::pmr::vector<std::string> key_col_names,
+                    std::pmr::vector<components::types::logical_value_t> key_values);
 
         // Full row-data scan: returns all column values for every txn-visible row
         // where key_col_names[i] == key_values[i].
-        unique_future<std::vector<std::vector<components::types::logical_value_t>>>
+        unique_future<std::pmr::vector<std::pmr::vector<components::types::logical_value_t>>>
         read_rows_by_key(execution_context_t ctx,
                           components::catalog::oid_t table_oid,
-                          std::vector<std::string> key_col_names,
-                          std::vector<components::types::logical_value_t> key_values);
+                          std::pmr::vector<std::string> key_col_names,
+                          std::pmr::vector<components::types::logical_value_t> key_values);
 
         // Phase 7.5b physical column compaction. For an IN_MEMORY relkind='g' storage,
         // drop every physical column whose name is NOT in `live_attnames`. Called by

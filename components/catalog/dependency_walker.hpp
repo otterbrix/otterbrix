@@ -3,7 +3,7 @@
 #include <components/catalog/catalog_oids.hpp>
 
 #include <functional>
-#include <stdexcept>
+#include <memory_resource>
 #include <unordered_set>
 #include <vector>
 
@@ -41,27 +41,23 @@ namespace components::catalog {
         char deptype{'n'};   // 'n' normal, 'a' auto
     };
 
-    class cycle_detected_error : public std::runtime_error {
-    public:
-        explicit cycle_detected_error(oid_t at)
-            : std::runtime_error("pg_depend cycle detected at oid " + std::to_string(at))
-            , offending_oid_(at) {}
-        oid_t offending_oid() const noexcept { return offending_oid_; }
-
-    private:
-        oid_t offending_oid_;
-    };
-
     // The fetch_deps callback should return all pg_depend rows where (refclassid, refobjid)
     // matches the supplied (cls, oid). Implemented over manager_disk_t::collect_dependents.
+    // The memory_resource* is the arena the caller wants the returned vector to live in.
     using fetch_deps_fn =
-        std::function<std::vector<dependency_t>(oid_t cls, oid_t oid)>;
+        std::function<std::pmr::vector<dependency_t>(std::pmr::memory_resource* resource,
+                                                      oid_t cls,
+                                                      oid_t oid)>;
 
     // Walk from (seed_cls, seed_oid). Returns dependents in reverse topological order:
-    // children before parents, seed at end. Throws cycle_detected_error on back-edges.
-    std::vector<dependency_t>
-    topological_drop_order(oid_t seed_cls,
+    // children before parents, seed at end. On pg_depend back-edge, sets \p cycle_at
+    // to the offending oid and returns a partial order — caller must check
+    // `cycle_at == INVALID_OID` before using the result. INVALID_OID = success.
+    std::pmr::vector<dependency_t>
+    topological_drop_order(std::pmr::memory_resource* resource,
+                           oid_t seed_cls,
                            oid_t seed_oid,
-                           const fetch_deps_fn& fetch_deps);
+                           const fetch_deps_fn& fetch_deps,
+                           oid_t& cycle_at);
 
 } // namespace components::catalog

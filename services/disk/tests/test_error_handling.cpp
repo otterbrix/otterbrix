@@ -115,18 +115,17 @@ TEST_CASE("services::disk::error::duplicate_namespace_name_two_rows") {
     REQUIRE(r.found);
 }
 
-// 11. cycle_detected_error type is constructible and carries the offending oid.
-TEST_CASE("services::disk::error::cycle_detected_error_has_oid") {
-    cycle_detected_error e(oid_t{12345});
-    REQUIRE(std::string(e.what()).find("cycle") != std::string::npos);
-}
-
 // 12. topological_drop_order on an empty seed returns empty vector — caller pushes the seed.
 TEST_CASE("services::disk::error::topological_drop_empty") {
-    auto edges = [](oid_t /*cls*/, oid_t /*oid*/) { return std::vector<dependency_t>{}; };
-    auto order = topological_drop_order(well_known_oid::pg_namespace_table, oid_t{16384},
-                                         edges);
+    std::pmr::synchronized_pool_resource resource;
+    auto edges = [](std::pmr::memory_resource* mr, oid_t /*cls*/, oid_t /*oid*/) {
+        return std::pmr::vector<dependency_t>{mr};
+    };
+    oid_t cycle_at = INVALID_OID;
+    auto order = topological_drop_order(&resource, well_known_oid::pg_namespace_table,
+                                         oid_t{16384}, edges, cycle_at);
     REQUIRE(order.empty());
+    REQUIRE(cycle_at == INVALID_OID);
 }
 
 // 13. CREATE NAMESPACE with a long name (PostgreSQL's typical 63-byte limit isn't

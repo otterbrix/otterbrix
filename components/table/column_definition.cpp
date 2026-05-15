@@ -1,6 +1,7 @@
 #include "column_definition.hpp"
 #include "table_state.hpp"
 
+#include <cassert>
 #include <sstream>
 #include <stdexcept>
 
@@ -67,11 +68,13 @@ namespace components::table {
     void column_definition_t::set_oid(uint64_t oid) { oid_ = oid; }
 
     void column_definition_t::set_attoid(std::uint32_t v) {
+        // attoid is immutable after first assignment — programmer-error precondition.
+        // Hot DDL/resolve path: drop the throw, assert in debug, no-op in release if
+        // someone tries to reassign with a different value.
+        assert((attoid_ == 0 || attoid_ == v)
+               && "column_definition_t::set_attoid: attoid is immutable after assignment");
         if (attoid_ != 0 && attoid_ != v) {
-            std::ostringstream oss;
-            oss << "column_definition_t::set_attoid: attoid is immutable after assignment "
-                << "(column=\"" << name_ << "\", current=" << attoid_ << ", attempted=" << v << ")";
-            throw std::logic_error(oss.str());
+            return;
         }
         attoid_ = v;
     }

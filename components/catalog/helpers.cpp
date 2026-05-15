@@ -1,5 +1,6 @@
 #include "helpers.hpp"
 
+#include <charconv>
 #include <string_view>
 
 namespace components::catalog {
@@ -11,10 +12,10 @@ namespace components::catalog {
             std::size_t j = s.find(',', i);
             std::string_view tok(s.data() + i, (j == std::string::npos ? s.size() : j) - i);
             if (!tok.empty()) {
-                try {
-                    out.push_back(static_cast<oid_t>(std::stoul(std::string(tok))));
-                } catch (...) {
-                    // malformed token — skip
+                unsigned long v{};
+                auto [ptr, ec] = std::from_chars(tok.data(), tok.data() + tok.size(), v);
+                if (ec == std::errc{}) {
+                    out.push_back(static_cast<oid_t>(v));
                 }
             }
             if (j == std::string::npos) break;
@@ -33,7 +34,7 @@ namespace components::catalog {
     }
 
     std::vector<std::string>
-    attoids_to_names(const std::vector<std::vector<components::types::logical_value_t>>& attr_rows,
+    attoids_to_names(const std::pmr::vector<std::pmr::vector<components::types::logical_value_t>>& attr_rows,
                      const std::vector<oid_t>& attoids) {
         std::vector<std::string> out;
         out.reserve(attoids.size());

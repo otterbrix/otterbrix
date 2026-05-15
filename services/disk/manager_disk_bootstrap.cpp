@@ -1,5 +1,7 @@
 #include "manager_disk_impl.hpp"
 
+#include <charconv>
+
 namespace services::disk {
 
     using namespace core::filesystem;
@@ -42,7 +44,10 @@ namespace services::disk {
 
         std::vector<type_seed_row_t> builtin_type_rows() {
             return {
-                // Canonical otterbrix names
+                // Canonical otterbrix names. Note: int8_type is the 1-byte (8-bit) signed
+                // integer in otterbrix's vocabulary, so its canonical name is "int1" — NOT
+                // PostgreSQL's "int8" which means 8 bytes (64-bit). PG's "int8" alias is
+                // listed below under "PostgreSQL internal typnames" and maps to int64_type.
                 {wk::boolean_type,   "bool"},
                 {wk::int8_type,      "int1"},
                 {wk::int16_type,     "int16"},
@@ -324,20 +329,20 @@ namespace services::disk {
             if (!db_entry.is_directory()) continue;
             const auto db_name = db_entry.path().filename().string();
             std::uint64_t db_oid_raw = 0;
-            try {
-                db_oid_raw = std::stoull(db_name);
-            } catch (...) {
-                continue; // non-numeric (e.g. wal segment dirs at the same level)
+            {
+                auto [ptr, ec] = std::from_chars(
+                    db_name.data(), db_name.data() + db_name.size(), db_oid_raw);
+                if (ec != std::errc{}) continue; // non-numeric (e.g. wal segment dirs at the same level)
             }
             const auto db_oid = static_cast<catalog::oid_t>(db_oid_raw);
             for (const auto& tbl_entry : std::filesystem::directory_iterator(db_entry.path())) {
                 if (!tbl_entry.is_directory()) continue;
                 const auto tbl_name = tbl_entry.path().filename().string();
                 std::uint64_t tbl_oid_raw = 0;
-                try {
-                    tbl_oid_raw = std::stoull(tbl_name);
-                } catch (...) {
-                    continue;
+                {
+                    auto [ptr, ec] = std::from_chars(
+                        tbl_name.data(), tbl_name.data() + tbl_name.size(), tbl_oid_raw);
+                    if (ec != std::errc{}) continue;
                 }
                 const auto tbl_oid = static_cast<catalog::oid_t>(tbl_oid_raw);
                 if (tbl_oid < catalog::FIRST_USER_OID) continue;

@@ -163,12 +163,12 @@ TEST_CASE("services::disk::pg_depend::drop_type_restrict_no_deps") {
                                                                std::string("standalone_type"), std::string{});
     // Drop the type via pg_catalog rows (no restrict/cascade distinction in helper API).
     {
-        const qualified_name_t pg_type{"pg_catalog", "main", "pg_type"};
-        const qualified_name_t pg_dep{"pg_catalog", "main", "pg_depend"};
+        constexpr catalog::oid_t pg_type = catalog::well_known_oid::pg_type_table;
+        constexpr catalog::oid_t pg_dep  = catalog::well_known_oid::pg_depend_table;
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, disk_test_helpers::txn_ctx(), pg_type, std::int64_t{0}, type_oid);
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, disk_test_helpers::txn_ctx(), pg_dep,  std::int64_t{1}, type_oid);
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, disk_test_helpers::txn_ctx(), pg_dep,  std::int64_t{3}, type_oid);
-        std::set<qualified_name_t> deletes_local{pg_type, pg_dep};
+        std::set<catalog::oid_t> deletes_local{pg_type, pg_dep};
         fx.invoke(&manager_disk_t::storage_commit_deletes, disk_test_helpers::txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
     }
     auto rr = fx.invoke(&manager_disk_t::resolve_type, fx.ctx(), ns_oid,
@@ -216,8 +216,8 @@ TEST_CASE("services::disk::pg_depend::drop_table_restrict_vs_cascade") {
 
 // ===========================================================================
 // 9. test_circular_dependency_detection
-//    topological_drop_order throws cycle_detected_error when pg_depend forms
-//    a cycle (A→B, B→A). Tests the DFS back-edge detection path.
+//    topological_drop_order surfaces a back-edge via cycle_at out-param
+//    when pg_depend forms a cycle (A→B, B→A). Tests the DFS detection path.
 // ===========================================================================
 TEST_CASE("services::disk::pg_depend::test_circular_dependency_detection") {
     using namespace services::disk;
@@ -227,17 +227,25 @@ namespace catalog = components::catalog;
     constexpr components::catalog::oid_t OID_A = 100;
     constexpr components::catalog::oid_t OID_B = 200;
 
+    std::pmr::synchronized_pool_resource resource;
     // A depends on B and B depends on A — a minimal 2-node cycle.
-    auto fetch = [&](components::catalog::oid_t /*cls*/, components::catalog::oid_t oid)
-                     -> std::vector<dependency_t> {
+    auto fetch = [&](std::pmr::memory_resource* mr,
+                     components::catalog::oid_t /*cls*/, components::catalog::oid_t oid)
+                     -> std::pmr::vector<dependency_t> {
+        std::pmr::vector<dependency_t> out{mr};
         if (oid == OID_A)
-            return {{CLS, OID_B, deptype::normal}};
-        if (oid == OID_B)
-            return {{CLS, OID_A, deptype::normal}};
-        return {};
+            out.push_back({CLS, OID_B, deptype::normal});
+        else if (oid == OID_B)
+            out.push_back({CLS, OID_A, deptype::normal});
+        return out;
     };
 
-    REQUIRE_THROWS_AS(topological_drop_order(CLS, OID_A, fetch), cycle_detected_error);
+    components::catalog::oid_t cycle_at = components::catalog::INVALID_OID;
+    auto order = topological_drop_order(&resource, CLS, OID_A, fetch, cycle_at);
+    REQUIRE(cycle_at != components::catalog::INVALID_OID);
+    // Cycle was hit on the back-edge before either node was committed to the
+    // order; the partial vector must be empty.
+    REQUIRE(order.empty());
 }
 
 // ===========================================================================
@@ -254,18 +262,22 @@ namespace catalog = components::catalog;
     constexpr components::catalog::oid_t OID_B = 200; // depends on A
     constexpr components::catalog::oid_t OID_C = 300; // depends on B
 
+    std::pmr::synchronized_pool_resource resource;
     // fetch_deps(cls, X) → objects that depend ON X.
-    auto fetch = [&](components::catalog::oid_t /*cls*/, components::catalog::oid_t oid)
-                     -> std::vector<dependency_t> {
+    auto fetch = [&](std::pmr::memory_resource* mr,
+                     components::catalog::oid_t /*cls*/, components::catalog::oid_t oid)
+                     -> std::pmr::vector<dependency_t> {
+        std::pmr::vector<dependency_t> out{mr};
         if (oid == OID_A)
-            return {{CLS, OID_B, 'a'}};
-        if (oid == OID_B)
-            return {{CLS, OID_C, 'a'}};
-        return {};
+            out.push_back({CLS, OID_B, 'a'});
+        else if (oid == OID_B)
+            out.push_back({CLS, OID_C, 'a'});
+        return out;
     };
 
-    std::vector<dependency_t> order;
-    REQUIRE_NOTHROW(order = topological_drop_order(CLS, OID_A, fetch));
+    components::catalog::oid_t cycle_at = components::catalog::INVALID_OID;
+    auto order = topological_drop_order(&resource, CLS, OID_A, fetch, cycle_at);
+    REQUIRE(cycle_at == components::catalog::INVALID_OID);
     // C and B must both appear; C (deepest) before B.
     REQUIRE(order.size() == 2);
     REQUIRE(order[0].objid == OID_C);

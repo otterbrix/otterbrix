@@ -74,7 +74,7 @@ namespace components::types {
                                            const complex_logical_type& type,
                                            const std::vector<logical_value_t>& values);
         static logical_value_t create_union(std::pmr::memory_resource* r,
-                                            std::vector<complex_logical_type> types,
+                                            std::pmr::vector<complex_logical_type> types,
                                             uint8_t tag,
                                             logical_value_t value);
         static logical_value_t create_variant(std::pmr::memory_resource* r, std::vector<logical_value_t> values);

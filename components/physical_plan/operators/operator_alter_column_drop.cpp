@@ -57,12 +57,16 @@ namespace components::operators {
         }
 
         components::types::logical_value_t attoid_lv(resource_, attoid_);
+        std::pmr::vector<std::string> pa_keys(resource_);
+        pa_keys.emplace_back("attoid");
+        std::pmr::vector<components::types::logical_value_t> pa_vals(resource_);
+        pa_vals.emplace_back(attoid_lv);
         auto [_pa, paf] = actor_zeta::send(
             ctx->disk_address,
             &services::disk::manager_disk_t::read_rows_by_key,
             exec_ctx, pg_attr_oid,
-            std::vector<std::string>{"attoid"},
-            std::vector<components::types::logical_value_t>{attoid_lv});
+            std::move(pa_keys),
+            std::move(pa_vals));
         auto attr_rows = co_await std::move(paf);
 
         catalog::oid_t attoid = catalog::INVALID_OID;
@@ -94,12 +98,18 @@ namespace components::operators {
         components::types::logical_value_t att_cls_lv(
             resource_, catalog::well_known_oid::pg_attribute_table);
         components::types::logical_value_t att_oid_lv(resource_, attoid);
+        std::pmr::vector<std::string> pd_keys(resource_);
+        pd_keys.emplace_back("refclassid");
+        pd_keys.emplace_back("refobjid");
+        std::pmr::vector<components::types::logical_value_t> pd_vals(resource_);
+        pd_vals.emplace_back(att_cls_lv);
+        pd_vals.emplace_back(att_oid_lv);
         auto [_pd, pdf] = actor_zeta::send(
             ctx->disk_address,
             &services::disk::manager_disk_t::read_rows_by_key,
             exec_ctx, pg_dep_oid,
-            std::vector<std::string>{"refclassid", "refobjid"},
-            std::vector<components::types::logical_value_t>{att_cls_lv, att_oid_lv});
+            std::move(pd_keys),
+            std::move(pd_vals));
         auto dep_rows = co_await std::move(pdf);
 
         // Step 3 — for RESTRICT, abort if any non-internal dep exists. For CASCADE,
@@ -187,7 +197,18 @@ namespace components::operators {
             &services::disk::manager_disk_t::append_pg_catalog_row,
             exec_ctx, pg_attr_oid, std::move(tombstone));
         auto rng = co_await std::move(wf);
-        if (rng.count > 0) ctx->pg_catalog_appends.push_back(std::move(rng));
+        // The original pg_attribute row is already deleted above (delete_pg_catalog_rows).
+        // If the tombstone append silently produced 0 rows, the column is left in a
+        // half-applied state — invisible to resolve_table but with no MVCC marker for
+        // recovery. Surface this as a hard error rather than letting mark_executed() lie.
+        if (rng.count == 0) {
+            std::string msg = "operator_alter_column_drop: tombstone append produced no rows for attoid ";
+            msg += std::to_string(attoid);
+            set_error(std::move(msg));
+            mark_executed();
+            co_return;
+        }
+        ctx->pg_catalog_appends.push_back(std::move(rng));
 
         // Note: drop_column on a relkind='g' (computing) table is routed to
         // operator_computed_field_unregister_t in planner.cpp::rewrite_alter_table,

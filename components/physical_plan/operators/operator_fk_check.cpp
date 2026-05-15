@@ -64,7 +64,7 @@ namespace components::operators {
             }
 
             // Build key_values from pre-resolved column positions.
-            std::vector<types::logical_value_t> key_values;
+            std::pmr::vector<types::logical_value_t> key_values(resource_);
             key_values.reserve(indices.size());
             bool has_absent = false;
             for (auto idx : indices) {
@@ -73,11 +73,16 @@ namespace components::operators {
             }
             if (has_absent || key_values.empty()) continue;
 
+            std::pmr::vector<std::string> parent_col_names(resource_);
+            parent_col_names.reserve(fk_.parent_col_names.size());
+            for (const auto& n : fk_.parent_col_names) {
+                parent_col_names.emplace_back(n);
+            }
             auto [_, fut] = actor_zeta::send(ctx->disk_address,
                                               &services::disk::manager_disk_t::scan_by_key,
                                               exec_ctx,
                                               fk_.parent_table_oid,
-                                              std::vector<std::string>(fk_.parent_col_names),
+                                              std::move(parent_col_names),
                                               std::move(key_values));
             auto parent_ids = co_await std::move(fut);
             if (parent_ids.empty()) {

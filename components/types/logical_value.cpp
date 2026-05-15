@@ -640,7 +640,8 @@ namespace components::types {
     logical_value_t logical_value_t::create_struct(std::pmr::memory_resource* r,
                                                    std::string name,
                                                    const std::vector<logical_value_t>& fields) {
-        std::vector<complex_logical_type> child_types;
+        std::pmr::vector<complex_logical_type> child_types(r);
+        child_types.reserve(fields.size());
         for (auto& child : fields) {
             child_types.push_back(child.type());
         }
@@ -788,7 +789,7 @@ namespace components::types {
     }
 
     logical_value_t logical_value_t::create_union(std::pmr::memory_resource* r,
-                                                  std::vector<complex_logical_type> types,
+                                                  std::pmr::vector<complex_logical_type> types,
                                                   uint8_t tag,
                                                   logical_value_t value) {
         assert(!types.empty());
@@ -818,7 +819,7 @@ namespace components::types {
         assert(values[1].type().type() == logical_type::LIST);
         assert(values[2].type().type() == logical_type::LIST);
         assert(values[3].type().type() == logical_type::BLOB);
-        return create_struct(r, complex_logical_type::create_variant(), std::move(values));
+        return create_struct(r, complex_logical_type::create_variant(r), std::move(values));
     }
 
     /*

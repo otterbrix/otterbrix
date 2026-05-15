@@ -197,7 +197,7 @@ TEST_CASE("test_recovery_orphaned_uncommitted_ddl") {
         auto writes = components::catalog::build_create_namespace_writes(&fx.resource,
                                                                           std::string("orphaned_ns"), ns_oid);
         for (auto& w : writes)
-            fx.invoke(&manager_disk_t::append_pg_catalog_row, uncommitted_ctx, w.table, std::move(w.row));
+            fx.invoke(&manager_disk_t::append_pg_catalog_row, uncommitted_ctx, w.table_oid, std::move(w.row));
         // Intentionally omit storage_commit_appends — simulates crash before commit.
     }
 
@@ -268,12 +268,16 @@ TEST_CASE("services::disk::recovery::dynamic_schema_persists_across_restart") {
         REQUIRE_NOTHROW(fx_reopen.disk->restore_oid_generator_sync());
 
         // Direct read of pg_computed_column: relid=table_oid → 2 live rows.
-        const qualified_name_t pg_cc{"pg_catalog", "main", "pg_computed_column"};
+        constexpr components::catalog::oid_t pg_cc = components::catalog::well_known_oid::pg_computed_column_table;
         components::types::logical_value_t toid_lv(&fx_reopen.resource, table_oid);
+        std::pmr::vector<std::string> rk{&fx_reopen.resource};
+        rk.emplace_back("relid");
+        std::pmr::vector<components::types::logical_value_t> rv{&fx_reopen.resource};
+        rv.emplace_back(toid_lv);
         auto rows = fx_reopen.invoke(&manager_disk_t::read_rows_by_key, fx_reopen.ctx(),
                                       pg_cc,
-                                      std::vector<std::string>{"relid"},
-                                      std::vector<components::types::logical_value_t>{toid_lv});
+                                      std::move(rk),
+                                      std::move(rv));
         REQUIRE(rows.size() == 2);
         bool saw_a = false;
         bool saw_b = false;

@@ -96,15 +96,15 @@ namespace services::disk {
         /// it (resolve_table reads columns from pg_attribute on every lookup).
         void add_column(components::table::column_definition_t& col);
 
-        /// Phase 7.5b physical column compaction. Drops the column whose name matches
+        /// Physical column compaction. Drops the column whose name matches
         /// `attname` from the IN_MEMORY data_table_t, reclaiming its physical storage.
         /// Implemented via the data_table_t(parent, removed_column) rebuild constructor —
         /// row_groups are rebuilt without the dropped column (collection_t::remove_column
         /// per-segment). Used by VACUUM after pg_computed_column GC: columns that no
         /// longer have any live attrefcount>0 row are physically dead and can be reclaimed.
         ///
-        /// No-op for DISK-backed storages (out of scope for Phase 7.5b — would require
-        /// segment rewrites + checkpoint coordination). No-op if the column is missing.
+        /// No-op for DISK-backed storages (would require segment rewrites + checkpoint
+        /// coordination). No-op if the column is missing.
         ///
         /// Returns true if the column was found and removed; false otherwise (column
         /// missing OR storage is DISK-mode).
@@ -179,7 +179,7 @@ namespace services::disk {
         // resulting `storages_` map — collections are keyed by `pg_catalog.<name>`.
         void bootstrap_system_tables_sync();
         void load_system_tables_sync();
-        // Phase 11.C: walk config_.path looking for user-table .otbx files
+        // Walk config_.path looking for user-table .otbx files
         // (${db_oid}/${tbl_oid}/table.otbx where tbl_oid >= FIRST_USER_OID) and
         // load each into storages_ via load_storage_disk_sync. Called by
         // base_spaces after bootstrap_system_tables_sync so that subsequent
@@ -187,7 +187,7 @@ namespace services::disk {
         // for filtering and (2) avoid synthesising phantom storages with
         // possibly-wrong schemas from a single WAL chunk.
         void load_user_table_storages_sync();
-        // Phase 11.C: synchronous scan of pg_class.oid column, returning the set
+        // Synchronous scan of pg_class.oid column, returning the set
         // of user-table OIDs (oid >= FIRST_USER_OID) currently alive in the
         // catalog. Called by base_spaces between system-record replay and
         // user-record replay so user WAL records targeting a dropped table
@@ -280,13 +280,13 @@ namespace services::disk {
                           std::pmr::vector<std::string> key_col_names,
                           std::pmr::vector<components::types::logical_value_t> key_values);
 
-        // Phase 7.5b physical column compaction. For an IN_MEMORY relkind='g' storage,
+        // Physical column compaction. For an IN_MEMORY relkind='g' storage,
         // drop every physical column whose name is NOT in `live_attnames`. Called by
-        // operator_vacuum_t step 5b after pg_computed_column GC: columns whose
+        // operator_vacuum_t after pg_computed_column GC: columns whose
         // attrefcount<=0 rows have been deleted are physically dead and can be
         // reclaimed. Returns the number of columns physically dropped (0 if storage
-        // is DISK-mode, missing, or already compact). Out of scope: DISK-backed
-        // storages — that would need segment rewrites + checkpoint coordination.
+        // is DISK-mode, missing, or already compact). DISK-backed storages would
+        // need segment rewrites + checkpoint coordination.
         unique_future<std::uint64_t>
         compact_relkind_g_storage(execution_context_t ctx,
                                    components::catalog::oid_t table_oid,
@@ -397,7 +397,7 @@ namespace services::disk {
                                                    components::catalog::oid_t table_oid,
                                                    uint64_t commit_id);
 
-        // Phase 5b: batched MVCC swap. Each range carries its own table_oid.
+        // Batched MVCC swap. Each range carries its own table_oid.
         unique_future<void>
         storage_commit_appends(execution_context_t ctx,
                                uint64_t commit_id,
@@ -480,12 +480,9 @@ namespace services::disk {
         struct collection_storage_entry_t {
             table_storage_t table_storage;
             std::unique_ptr<components::storage::storage_t> storage;
-            // Phase 11.C: the actual on-disk path for DISK-mode tables. Empty for
-            // IN_MEMORY entries. Used by checkpoint_all (sidecar lands next to .otbx)
-            // and drop_storage (physical file removal). Before this field existed,
-            // checkpoint_all synthesised a path under `main_database/<oid>/` which
-            // was correct only for system tables — user tables silently lost their
-            // sidecar to a non-existent directory, breaking restart filtering.
+            // Actual on-disk path for DISK-mode tables. Empty for IN_MEMORY entries.
+            // Used by checkpoint_all (sidecar lands next to .otbx) and drop_storage
+            // (physical file removal).
             std::filesystem::path otbx_path;
 
             /// In-memory: schema-less
@@ -523,7 +520,7 @@ namespace services::disk {
                 storage = std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), res);
             }
 
-            /// Phase 7.5b physical column compaction: drop column from in-memory table_ and
+            /// Physical column compaction: drop column from in-memory table_ and
             /// recreate the storage adapter (the adapter holds a data_table_t& that becomes
             /// dangling after the rebuild). Returns true if the column was found and removed.
             bool drop_column(const std::string& attname, std::pmr::memory_resource* res) {

@@ -131,8 +131,8 @@ namespace components::operators {
             }
 
             // 3. Scan column source per relkind.
-            //    relkind='g' (Phase 7 dynamic schema): pg_computed_column owns
-            //      the schema (Phase 11.F-B: relid, attoid, attname, atttypid,
+            //    relkind='g' (dynamic schema): pg_computed_column owns
+            //      the schema (relid, attoid, attname, atttypid,
             //      atttypspec, attversion, attrefcount). Resolver picks
             //      max(attversion) per attname where attrefcount > 0.
             //    relkind='r' (static): pg_attribute owns the schema.
@@ -155,7 +155,7 @@ namespace components::operators {
                     std::move(pc_vals));
                 auto cc_rows = co_await std::move(pcf);
                 // Pick latest attversion per attname where refcount > 0.
-                // Phase 11.F-B: schema is now [0=relid, 1=attoid, 2=attname,
+                // pg_computed_column schema: [0=relid, 1=attoid, 2=attname,
                 // 3=atttypid, 4=atttypspec, 5=attversion, 6=attrefcount].
                 struct cc_entry_t {
                     catalog::oid_t    atttypid;

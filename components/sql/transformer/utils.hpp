@@ -39,14 +39,13 @@ namespace components::sql::transform {
 
     std::pmr::string indices_to_str(std::pmr::memory_resource* resource, A_Indices* indices);
 
-    // Phase 10.E: role-named DTO produced by the transformer when reading a RangeVar
-    // (table reference) out of the parser AST. Replaces the historical
-    // `rangevar_to_collection` -> cfn output and the `rangevar_to_dbname_relname` /
-    // `cfn_dbname` interim helpers added in 10.D. Carries each of the four name
-    // components a SQL parser may attach to a qualified table reference: optional
-    // catalog (database), optional schema, the relation (table) name, and an optional
-    // uid. dbname picker logic (catalog with schema as fallback) is applied at
-    // construction so callers see a single role-named field.
+    // Role-named DTO produced by the transformer when reading a RangeVar
+    // (table reference) out of the parser AST. Carries each of the four name
+    // components a SQL parser may attach to a qualified table reference:
+    // optional catalog (database), optional schema, the relation (table) name,
+    // and an optional uid. dbname picker logic (catalog with schema as
+    // fallback) is applied at construction so callers see a single role-named
+    // field.
     struct qualified_name {
         std::string dbname;
         std::string relname;
@@ -187,15 +186,11 @@ namespace components::sql::transform {
                                  PGList& table_elts);
     std::vector<table::table_constraint_t> extract_table_constraints(PGList& table_elts);
 
-    // Phase 13 T13 — transformer catalog-resolve emission.
+    // Transformer catalog-resolve emission.
     //
     // The transformer wraps a main DML/DDL `node_ptr` in
     // `sequence_t(catalog_resolve_*_t..., main_node)` so the planner can
     // treat catalog resolution as a first-class pipeline dependency.
-    // Phase 13 (2026-05-13): wrap is unconditional — the previous
-    // `transformer_emit_catalog_resolve_enabled()` toggle was removed
-    // after the dispatcher/executor/planner cascade learned to descend
-    // through the sequence_t wrapper.
 
     // Wrap `main_node` (an INSERT/SELECT/UPDATE/DELETE-style consumer that
     // targets a specific (dbname, relname)) in

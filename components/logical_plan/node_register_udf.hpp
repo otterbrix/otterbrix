@@ -8,9 +8,7 @@ namespace components::logical_plan {
 
     // REGISTER_UDF — leaf carrying a user-defined function object that should be
     // installed across all executor-local registries, the global default
-    // function_registry_t, and persisted into pg_proc. Phase 4 #55: replaces
-    // inline manager_dispatcher_t::register_udf with the operator pipeline,
-    // mirroring the get_schema migration done in #54.
+    // function_registry_t, and persisted into pg_proc.
     //
     // The function is held by std::shared_ptr<compute::function> rather than the
     // canonical std::unique_ptr alias so the planner can clone/copy the node

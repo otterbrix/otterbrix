@@ -14,11 +14,11 @@ namespace components::logical_plan {
                                const node_match_ptr& match,
                                const node_limit_ptr& limit);
 
-        // Phase 13 Step 3 — table_oid for the USING-clause table (DELETE FROM
-        // tableA USING tableB). enrich_logical_plan stamps this from the sibling
-        // resolve_table for the USING target. create_plan_delete passes it to the
-        // USING-side full_scan operator. Default INVALID_OID — caller must
-        // check before using.
+        // table_oid for the USING-clause table (DELETE FROM tableA USING tableB).
+        // enrich_logical_plan stamps this from the sibling resolve_table for
+        // the USING target. create_plan_delete passes it to the USING-side
+        // full_scan operator. Default INVALID_OID — caller must check before
+        // using.
         components::catalog::oid_t table_oid_from() const noexcept { return table_oid_from_; }
         void set_table_oid_from(components::catalog::oid_t oid) noexcept { table_oid_from_ = oid; }
 

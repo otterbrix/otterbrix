@@ -196,7 +196,7 @@ TEST_CASE("services::index::index_disk::persist_close_reopen") {
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
-    // Phase 1: create, insert 100 values, flush
+    // Create, insert 100 values, flush.
     {
         auto index = index_disk_t(path, &resource);
         for (int i = 1; i <= 100; ++i) {
@@ -205,7 +205,7 @@ TEST_CASE("services::index::index_disk::persist_close_reopen") {
         index.force_flush();
     }
 
-    // Phase 2: reopen from same path, verify data persisted
+    // Reopen from same path, verify data persisted.
     {
         auto index = index_disk_t(path, &resource);
 
@@ -231,7 +231,7 @@ TEST_CASE("services::index::index_disk::remove_flush_reload") {
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
-    // Phase 1: create, insert 100, remove even values, flush
+    // Create, insert 100, remove even values, flush.
     {
         auto index = index_disk_t(path, &resource);
         for (int i = 1; i <= 100; ++i) {
@@ -243,7 +243,7 @@ TEST_CASE("services::index::index_disk::remove_flush_reload") {
         index.force_flush();
     }
 
-    // Phase 2: reopen, verify odd values present, even absent
+    // Reopen, verify odd values present, even absent.
     {
         auto index = index_disk_t(path, &resource);
 

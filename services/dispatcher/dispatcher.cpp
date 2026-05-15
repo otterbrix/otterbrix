@@ -117,7 +117,7 @@ namespace services::dispatcher {
             return path;
         }
 
-        // Phase 13 T18: When the SQL transformer wraps a DML/DDL plan in
+        // When the SQL transformer wraps a DML/DDL plan in
         //   sequence_t(catalog_resolve_namespace_t, catalog_resolve_table_t, <real_root>)
         // the dispatcher needs to route based on <real_root> (insert_t, select_t, ...)
         // not the wrapping sequence_t. This helper descends a sequence_t root and
@@ -129,7 +129,7 @@ namespace services::dispatcher {
         // Note: the planner ALSO wraps in sequence_t later (for DDL primitive_write
         // pipelines and FK/CHECK INSERT pipelines). That wrap happens AFTER
         // original_type is captured at the top of execute_plan_impl, so this helper
-        // is only relevant to transformer-side wraps (Phase 13 T13 toggle).
+        // is only relevant to transformer-side wraps.
         const components::logical_plan::node_t*
         effective_root_node(const components::logical_plan::node_t* n) {
             if (!n) return nullptr;
@@ -175,7 +175,7 @@ namespace services::dispatcher {
             return r ? r->type() : components::logical_plan::node_type::unused;
         }
 
-        // Phase 13 Step 2: mutable-pointer overload so the various
+        // Mutable-pointer overload so the various
         // static_cast<node_X_t*>(logic_plan.get()) call sites can descend
         // through the transformer's catalog_resolve_* wrapper without
         // duplicating the walk logic.
@@ -185,7 +185,7 @@ namespace services::dispatcher {
                 effective_root_node(static_cast<const components::logical_plan::node_t*>(n)));
         }
 
-        // task_3: drop_* nodes no longer carry user-typed dbname/relname; their
+        // drop_* nodes no longer carry user-typed dbname/relname; their
         // sibling resolve_namespace / resolve_table nodes inside the wrapping
         // sequence_t do. Extract (db, rel) from the resolve siblings so
         // routing code that still needs names (qualified_name_t for table_id,
@@ -325,26 +325,25 @@ namespace services::dispatcher {
         params_for_wal->set_parameters(params->parameters());
 
         // All catalog reads go through the plan-tree resolve idx (validate /
-        // enrich / DDL paths). M4.K: deleted the per-execute_plan_impl
-        // rebuild of collections_ — the map is maintained incrementally by
+        // enrich / DDL paths). The collections_ map is maintained incrementally by
         // init_from_state, post-create (line ~1251), and post-drop (line
         // ~1259-1269), so re-fetching pg_namespace + pg_class on every plan
-        // was redundant work.
+        // is unnecessary.
         components::execution_context_t ctx{session, components::table::transaction_data{0, 0}, {}};
 
         // Save original node type — used after planner rewrite to dispatch DDL/DML paths.
-        // Phase 13 T18: when transformer wraps DML/DDL in
+        // When transformer wraps DML/DDL in
         //   sequence_t(catalog_resolve_namespace_t, catalog_resolve_table_t, <consumer>)
         // we route on <consumer>'s type, not the wrapping sequence_t. For non-wrapped
         // plans effective_root_type() is identity (n->type()), so this is a no-op for
-        // the T13-toggle-OFF case and existing DDL flows (planner wraps are applied
-        // AFTER this line — see notes inside the helper).
+        // existing DDL flows (planner wraps are applied AFTER this line — see notes
+        // inside the helper).
         const auto original_type = effective_root_type(plan.get());
         // Capture the drop target before the planner rewrites it into a
         // node_dynamic_cascade_delete_t (which carries only OIDs, not names).
         // Used after successful execution to clean up the in-memory collections_
         // routing map so a subsequent execute_plan does not see a stale entry.
-        // Phase 13 T18: descend through transformer's sequence_t(catalog_resolve_*,
+        // Descend through transformer's sequence_t(catalog_resolve_*,
         // <drop_node>) wrapper to reach the real drop node before casting.
         std::string drop_target_database;
         qualified_name_t drop_target_collection;
@@ -405,7 +404,7 @@ namespace services::dispatcher {
                 stack.pop_back();
                 if (!n) continue;
                 switch (n->type()) {
-                    // task_7: DML consumers no longer carry (db, rel) — names
+                    // DML consumers no longer carry (db, rel) — names
                     // for collection-set tracking come from the sibling
                     // resolve_table inside the wrapping sequence_t (the
                     // catalog_resolve_table_t branch below picks them up).
@@ -430,12 +429,12 @@ namespace services::dispatcher {
                         if (!d->dbname().empty()) wrap_dbs.insert(d->dbname());
                         break;
                     }
-                    // task_6: create_collection_t / create_index_t no longer
+                    // create_collection_t / create_index_t no longer
                     // carry parent dbname/relname; the transformer always wraps
                     // them with sibling catalog_resolve_namespace / resolve_table
                     // so wrap_dbs/wrap_tbls is already populated from
                     // existing_dbs/existing_tbls above.
-                    // task_3: drop_database_t / drop_collection_t / drop_index_t
+                    // drop_database_t / drop_collection_t / drop_index_t
                     // no longer carry names; the transformer always wraps them
                     // with sibling catalog_resolve_* nodes so wrap_dbs/wrap_tbls
                     // already has the (db, rel) covered.
@@ -502,12 +501,12 @@ namespace services::dispatcher {
             }
         }
 
-        // Phase 13 M1: Pass 1 — execute catalog_resolve_*_t front children
+        // Pass 1 — execute catalog_resolve_*_t front children
         // of the transformer's sequence_t wrap BEFORE validate. The
         // operator_resolve_*_t back-pointer constructor stamps
         // namespace_oid / table_oid on the corresponding logical nodes;
         // subsequent validate (via plan_resolve_index_t threaded through
-        // explicitly — M4.H) and enrich (via enrich_resolve_idx_t) read OIDs
+        // explicitly) and enrich (via enrich_resolve_idx_t) read OIDs
         // from the plan tree.
         //
         // The wrap shape is sequence_t(catalog_resolve_*, ..., <consumer>)
@@ -571,12 +570,12 @@ namespace services::dispatcher {
                 // data input — see create_plan_sequence.cpp note).
             }
         }
-        // task_11: Pass 1 stamps OIDs on resolve_* siblings via back-pointer
+        // Pass 1 stamps OIDs on resolve_* siblings via back-pointer
         // but not on the consumer nodes. Propagate now so validate (which
         // reads node->table_oid() via tbl_md_for_oid) sees stamped OIDs.
         // Must run AFTER Pass 1 and BEFORE the dispatcher_idx build below.
         stamp_oids_from_resolves(logic_plan.get());
-        // M5 / M4.H: build plan-tree idx ONCE so the DDL existence checks
+        // Build plan-tree idx ONCE so the DDL existence checks
         // below read ns_oid / table metadata via Pass 1 stamps. The pointer
         // is threaded explicitly into every helper (no thread_local).
         impl::plan_resolve_index_t dispatcher_idx;
@@ -593,7 +592,7 @@ namespace services::dispatcher {
                     auto* d = static_cast<const node_aggregate_t*>(n);
                     return qualified_name_t{d->dbname(), d->relname()};
                 }
-                // task_8: alter_* nodes carry no user-typed names; pull
+                // alter_* nodes carry no user-typed names; pull
                 // (db, rel) from the sibling resolve nodes in the wrapping
                 // sequence_t (transform_alter_table wraps in resolve_table).
                 case node_type::alter_column_add_t:
@@ -635,7 +634,7 @@ namespace services::dispatcher {
                     auto names = drop_target_names_from_resolves(plan_root_for_drop_names);
                     return qualified_name_t{names.first, d->viewname()};
                 }
-                // task_3 / task_7: drop_* and DML (insert/update/delete) nodes
+                // drop_* and DML (insert/update/delete) nodes
                 // carry no user-typed names; pull (db, rel) from the sibling
                 // resolve nodes in the wrapping sequence_t.
                 case node_type::delete_t:
@@ -661,11 +660,11 @@ namespace services::dispatcher {
                     return {};
             }
         };
-        // Phase 13 Step 2: build identification name from the effective
+        // Build identification name from the effective
         // consumer node, not the (potentially transformer-wrapping) sequence_t.
         table_id id(resource(), build_id_cfn(effective_root_node(logic_plan.get())));
         cursor_t_ptr error;
-        // M5 / M4.H: namespace existence is resolved via plan-tree idx
+        // Namespace existence is resolved via plan-tree idx
         // populated by Pass 1 (operator_resolve_namespace_t stamps ns_oid on
         // the resolve node). No async preload needed — check_namespace_exists
         // / ns_oid_for_dbname read from the explicit `dispatcher_idx`.
@@ -685,8 +684,8 @@ namespace services::dispatcher {
                     error =
                         make_cursor(resource(), error_code_t::collection_already_exists, "collection already exists");
                 } else {
-                    // M4.G.3: UDT existence + resolution reads from plan-tree
-                    // idx (transform_create_table M4.G.1 emits resolve_type
+                    // UDT existence + resolution reads from plan-tree
+                    // idx (transform_create_table emits resolve_type
                     // per column UDT). No async catalog preloads needed.
                     const std::string target_db =
                         id.get_namespace().empty() ? std::string{} : std::string(id.get_namespace().front());
@@ -737,7 +736,7 @@ namespace services::dispatcher {
                 break;
             }
             case node_type::drop_collection_t: {
-                // task_3: drop nodes carry no names; (db, rel) lives on the
+                // Drop nodes carry no names; (db, rel) lives on the
                 // sibling resolve nodes already captured in `id` above.
                 if (!collections_.count(qualified_name_t{
                         id.get_namespace().empty() ? std::string{}
@@ -751,14 +750,14 @@ namespace services::dispatcher {
                 break;
             }
             case node_type::create_type_t: {
-                // Phase 13: logic_plan is sequence_t(catalog_resolve_*..., create_type) —
+                // logic_plan is sequence_t(catalog_resolve_*..., create_type) —
                 // descend through the wrap to reach the create_type leaf. The previous
                 // reinterpret_cast<node_create_type_ptr&>(logic_plan) treated the
                 // sequence_t bytes as a create_type_t, yielding garbage from n->type().
                 auto* n = static_cast<node_create_type_t*>(effective_root_node(logic_plan.get()));
-                // M4.G.6: collision detection + nested field resolution read
+                // Collision detection + nested field resolution read
                 // from plan-tree idx (transform_create_type / transform_create_enum_type
-                // M4.G.4/.5 emit resolve_type per UDT name). No view.* preloads.
+                // emit resolve_type per UDT name). No view.* preloads.
                 components::catalog::oid_t target_ns = components::catalog::well_known_oid::public_namespace;
                 const std::string default_path[] = {"public", "pg_catalog"};
                 std::span<const std::string> str_path(default_path);
@@ -807,7 +806,7 @@ namespace services::dispatcher {
                 break;
             }
             case node_type::drop_type_t: {
-                // task_3: drop_type carries no name; pull it from the sibling
+                // drop_type carries no name; pull it from the sibling
                 // catalog_resolve_type_t in the wrapping sequence_t.
                 std::string type_name;
                 if (logic_plan->type() == node_type::sequence_t) {
@@ -835,17 +834,17 @@ namespace services::dispatcher {
             case node_type::drop_macro_t:
                 break;
             case node_type::alter_table_t:
-                // M5: ALTER TABLE target metadata (ns_oid, table_oid, columns)
+                // ALTER TABLE target metadata (ns_oid, table_oid, columns)
                 // is stamped on the plan-tree resolve_table node by Pass 1
                 // (transform_alter_table emits the wrap). enrich_plan reads
                 // from the plan-tree idx.
                 break;
             case node_type::create_constraint_t: {
-                // M5: target + FK ref tables stamped on plan-tree by Pass 1
+                // Target + FK ref tables stamped on plan-tree by Pass 1
                 // (transform_alter_table's CONSTRAINT path uses the multi-target
                 // wrap so both end up in tbl_md_by_qname).
                 error = check_collection_exists(resource(), &dispatcher_idx, id);
-                // Phase 7: reject FK / CHECK on dynamic-schema (relkind='g') tables.
+                // Reject FK / CHECK on dynamic-schema (relkind='g') tables.
                 // FK / CHECK enforcement requires stable column attoids; relkind='g'
                 // attoids may evolve. We probe relkind via the plan-tree idx.
                 if (!error && !id.get_namespace().empty()) {
@@ -872,8 +871,7 @@ namespace services::dispatcher {
                                 "Foreign key constraints are not supported when the referencing or "
                                 "referenced table is dynamic-schema (relkind='g'). FK enforcement "
                                 "requires stable column attoids; dynamic-schema columns may evolve. "
-                                "Convert involved tables to static schema first (see "
-                                "docs/phase7-deferred-items.md section 7.6).");
+                                "Convert involved tables to static schema first.");
                         } else if (cstr->kind() == constraint_kind::check && local_is_g) {
                             error = make_cursor(
                                 resource(),
@@ -881,7 +879,7 @@ namespace services::dispatcher {
                                 "CHECK constraints are not supported on dynamic-schema (relkind='g') "
                                 "tables. CHECK enforcement requires stable column attoids; "
                                 "dynamic-schema columns may evolve. Convert the table to static "
-                                "schema first (see docs/phase7-deferred-items.md section 7.6).");
+                                "schema first.");
                         }
                     }
                 }
@@ -924,16 +922,7 @@ namespace services::dispatcher {
             logic_plan = planner.create_plan(resource(), std::move(logic_plan));
         }
 
-        // Phase 7.4: deleted the adopt-based wrapper that promoted relkind
-        // 'g'->'r' on first INSERT (broke the Mongo-style dynamic-schema
-        // model where relkind='g' is the table's permanent state, with
-        // pg_computed_column tracking columns dynamically). P7.2 will
-        // reintroduce a relkind='g' branch here that wraps the INSERT into
-        // sequence_t(insert, computed_field_register) so pg_computed_column
-        // rows are appended inside the executor's DML txn. Until P7.2 lands,
-        // relkind='g' INSERT falls through to the unmodified executor
-        // pipeline.
-        // Phase 8.F: enrich_plan has already stamped table_oid on the INSERT node
+        // enrich_plan has already stamped table_oid on the INSERT node
         // (and resolved relkind via the (ns_oid, name) primary index). We probe the
         // oid-keyed secondary index instead of re-running the (ns, name) resolution
         // path. Note: planner.create_plan above may have wrapped the INSERT in
@@ -945,7 +934,7 @@ namespace services::dispatcher {
             disk_address_ != actor_zeta::address_t::empty_address()) {
             components::catalog::oid_t resolved_tbl_oid = components::catalog::INVALID_OID;
             bool is_computing = false;
-            // Phase 13 (T13=on): logic_plan may be sequence_t(catalog_resolve_*,
+            // logic_plan may be sequence_t(catalog_resolve_*,
             // ..., insert_t). The table_oid lives on the insert_t consumer,
             // not on the wrapping sequence_t or the resolve_* prefix
             // children. Descend via effective_root_node to reach the real
@@ -961,7 +950,7 @@ namespace services::dispatcher {
                 enriched_oid = logic_plan->children().front()->table_oid();
             }
             if (enriched_oid != components::catalog::INVALID_OID) {
-                // M5: read relkind from plan-tree idx (Pass 1 stamps it).
+                // Read relkind from plan-tree idx (Pass 1 stamps it).
                 if (const auto* tbl = impl::tbl_md_for_oid(&dispatcher_idx, enriched_oid)) {
                     if (tbl->relkind == relkind::computed) {
                         is_computing = true;
@@ -970,7 +959,7 @@ namespace services::dispatcher {
                 }
             }
 
-            // P7.2: relkind='g' INSERT — wrap the user's INSERT plan in
+            // relkind='g' INSERT — wrap the user's INSERT plan in
             // sequence_t(insert, computed_field_register) so pg_computed_column
             // rows are appended inside the executor's DML txn (commit applies
             // the MVCC swap atomically with the data write). The table stays as
@@ -979,7 +968,7 @@ namespace services::dispatcher {
             // (each vector_t::type() carries the field name as alias).
             if (is_computing) {
                 std::vector<components::table::column_definition_t> registered_cols;
-                // Phase 13 (T13=on): logic_plan may be
+                // logic_plan may be
                 // sequence_t(catalog_resolve_*, ..., insert_t). The data_t
                 // chunk we need lives inside the insert_t consumer, not as
                 // a sibling of the wrapping sequence_t. Descend through
@@ -1004,7 +993,7 @@ namespace services::dispatcher {
                     }
                 }
 
-                // task_7: insert_node carries only its OID; (db, rel) names
+                // insert_node carries only its OID; (db, rel) names
                 // travel via the sibling resolve_table inside the wrapping
                 // sequence_t — pull them from there for the register node.
                 auto insert_names = drop_target_names_from_resolves(logic_plan.get());
@@ -1111,27 +1100,26 @@ namespace services::dispatcher {
             catalog::oid_batch_t oid_batch; // intentionally empty
             components::planner::planner_t ddl_planner;
             logic_plan = ddl_planner.create_plan(resource(), std::move(logic_plan), std::move(oid_batch));
-            // Phase 9.A.0: re-run enrich over the planner-emitted sequence so the
+            // Re-run enrich over the planner-emitted sequence so the
             // freshly-constructed alter_column_rename_t / computed_field_unregister_t
             // primitives get their attoid_ resolved (they cannot be resolved before
             // the planner runs because they don't yet exist). The new explicit
             // cases in enrich_plan walk the sequence and stamp attoid via
             // the plan-tree resolved table metadata (rename: tbl->columns) or
-            // pg_computed_column scan (unregister). Foundation only — operators don't read attoid_ yet
-            // (that's 9.B), so this is a behavior-neutral pre-resolution.
+            // pg_computed_column scan (unregister).
             //
-            // Phase 11.F-A: at this point the DDL transaction has not yet been
-            // started (begin_transaction below at line ~924), so `ctx` carries
+            // At this point the DDL transaction has not yet been
+            // started (begin_transaction below), so `ctx` carries
             // transaction_data{0, 0}. The pg_computed_column scan inside the
-            // computed_field_unregister enrich case (enrich_logical_plan.cpp
-            // ~411) reads with zero-txn visibility and misses the INSERT-time
-            // register rows → live_attoid stays INVALID_OID → unregister
-            // no-ops at execute time → no tombstone → DROP COLUMN on relkind='g'
-            // never propagates (dynamic_schema_drop_column failure).
+            // computed_field_unregister enrich case reads with zero-txn
+            // visibility and misses the INSERT-time register rows → live_attoid
+            // stays INVALID_OID → unregister no-ops at execute time → no
+            // tombstone → DROP COLUMN on relkind='g' never propagates
+            // (dynamic_schema_drop_column failure).
             // Begin the DDL txn here. begin_transaction is idempotent per
             // session (returns the existing active txn if one exists — see
             // components/table/transaction_manager.cpp:12), so the unchanged
-            // call at line ~924 reuses this same txn.
+            // call below reuses this same txn.
             auto enrich_txn = txn_manager_.begin_transaction(session).data();
             components::execution_context_t enriched_ctx{session, enrich_txn, ctx.table_oid};
             auto ef2 = enrich_plan(logic_plan, disk_address_, enriched_ctx, resource());
@@ -1142,7 +1130,7 @@ namespace services::dispatcher {
         // node_dynamic_cascade_delete_t. The cascade operator self-walks pg_depend at
         // runtime and performs catalog row deletes + storage drops. No OID batch is
         // needed (drops don't allocate). Resolved seed OIDs were stamped on the
-        // logical drop_X node by enrich_logical_plan above. Phase 2 #49.
+        // logical drop_X node by enrich_logical_plan above.
         if ((original_type == node_type::drop_database_t ||
              original_type == node_type::drop_collection_t ||
              original_type == node_type::drop_type_t ||
@@ -1208,22 +1196,9 @@ namespace services::dispatcher {
         }
 
         collection::executor::execute_result_t exec_result;
-        // Phase 13 Step 2: route execution by the effective consumer type;
+        // Route execution by the effective consumer type;
         // see comments above the validate switch.
         switch (original_type) {
-            // Phase 3 #51: CHECKPOINT now runs through the executor pipeline as
-            // operator_checkpoint_t (planner falls through, create_plan_checkpoint
-            // builds the operator). Inline send to disk::checkpoint_all + wal trim
-            // moved into operator_checkpoint_t::await_async_and_resume — the WAL
-            // recovery boundary semantics (snapshot wal_max_id BEFORE checkpoint,
-            // truncate_before only when min_prev > 0) are preserved verbatim.
-            //
-            // Phase 3 #52: VACUUM now runs through the executor pipeline as
-            // operator_vacuum_t. The operator iterates pg_class (relkind 'r'/'g')
-            // to discover user tables for the per-table index rebuild loop —
-            // this replaces the legacy walk over `collections_`, which is being
-            // removed in Phase 5. lowest_active_start_time is propagated via
-            // pipeline::context_t (set by the executor from txn_manager_t).
             case node_type::alter_table_t: {
                 // ALTER TABLE is normally rewritten by the planner into
                 // sequence_t(alter_column_{add,rename,drop}_t × N). Reaching this
@@ -1231,10 +1206,10 @@ namespace services::dispatcher {
                 // not resolved by enrich (table not found); return no-op success
                 // and let the validate/enrich layer surface a hard error.
                 //
-                // Phase 13 Step 2: this switch now routes by `original_type`,
-                // so we still see alter_table_t here even AFTER the planner has
-                // rewritten the plan into sequence_t. Distinguish the genuine
-                // bailout (logic_plan->type() still alter_table_t) from the
+                // This switch routes by `original_type`, so we still see
+                // alter_table_t here even AFTER the planner has rewritten the
+                // plan into sequence_t. Distinguish the genuine bailout
+                // (logic_plan->type() still alter_table_t) from the
                 // already-rewritten case (logic_plan is sequence_t) — the
                 // latter must run through the executor like every other DDL.
                 if (logic_plan->type() == node_type::alter_table_t) {
@@ -1249,7 +1224,7 @@ namespace services::dispatcher {
                 break;
         }
 
-        // Phase 5b: hand pg_catalog swap-info up to the transaction so commit/abort
+        // Hand pg_catalog swap-info up to the transaction so commit/abort
         // operators (or the inline DDL commit blocks below) can apply
         // storage_commit_appends / storage_revert_appends after txn_manager_.commit()/abort().
         // Skip txn=0 (auto-commit / bootstrap path).
@@ -1277,13 +1252,6 @@ namespace services::dispatcher {
                 trace(log_,
                       "manager_dispatcher_t::execute_plan: DML {} completed by executor",
                       to_string(t));
-                // Phase 7.4: relkind='g' INSERT is unwrapped here — P7.2 will
-                // reintroduce a sequence_t(insert, computed_field_register)
-                // wrapper above, so pg_computed_column appends ride the same
-                // executor DML txn that commits user rows. The previous
-                // adopt-based wrapper (W4-D) was removed because promoting
-                // 'g'->'r' on first INSERT broke the Mongo-style dynamic
-                // schema model.
                 co_return result;
             }
             if (t == node_type::create_collection_t || t == node_type::create_database_t ||
@@ -1301,12 +1269,12 @@ namespace services::dispatcher {
                 t == node_type::drop_view_t ||
                 t == node_type::drop_macro_t ||
                 t == node_type::alter_table_t) {
-                // M4.J: DDL commit goes through operator_commit_transaction_t in
+                // DDL commit goes through operator_commit_transaction_t in
                 // ddl-commit mode. The operator performs flush (durability
                 // barrier) + wal::commit_txn + txn_manager.commit +
-                // storage_commit_appends/deletes (steps 1-6 of the legacy
-                // inline hook). Step 7 (CREATE INDEX backfill commit_insert)
-                // stays inline below because it depends on plan structure.
+                // storage_commit_appends/deletes (steps 1-6). Step 7
+                // (CREATE INDEX backfill commit_insert) stays inline below
+                // because it depends on plan structure.
                 std::uint64_t commit_id = 0;
                 {
                     constexpr auto db_oid = components::catalog::well_known_oid::main_database;
@@ -1386,7 +1354,7 @@ namespace services::dispatcher {
                 // disk, but the dispatcher's in-memory collections_ map is rebuilt from
                 // pg_catalog only on the *next* execute_plan. Clean up here so any
                 // immediate follow-up call (in the same handler chain) does not see a
-                // stale entry. Names captured before the planner rewrite. Phase 2 #49.
+                // stale entry. Names captured before the planner rewrite.
                 if (t == node_type::drop_database_t && !drop_target_database.empty()) {
                     for (auto it = collections_.begin(); it != collections_.end();) {
                         if (it->database == drop_target_database) {
@@ -1419,16 +1387,16 @@ namespace services::dispatcher {
                                        components::compute::function_ptr function) {
         trace(log_, "dispatcher_t::register_udf session: {}, function name: {}", session.data(), function->name());
 
-        // Phase 4 #55 — go through the operator pipeline. The logical leaf
+        // Go through the operator pipeline. The logical leaf
         // node_register_udf_t carries the function payload; create_plan lowers
         // it to operator_register_udf_t which fans out to per-executor
         // registries, mirrors into function_registry_t::get_default(), and
         // persists pg_proc rows.
         //
-        // We invoke the operator directly here (mirroring get_schema after
-        // #54) rather than routing through execute_plan_impl: register_udf has
-        // a custom return type (bool, not cursor) and needs the executor
-        // address list which only the dispatcher has.
+        // We invoke the operator directly here rather than routing through
+        // execute_plan_impl: register_udf has a custom return type (bool, not
+        // cursor) and needs the executor address list which only the
+        // dispatcher has.
 
         // Wrap the unique_ptr function in a shared_ptr so the logical node can
         // copy without consuming. The operator deep-copies via get_copy() when
@@ -1499,7 +1467,7 @@ namespace services::dispatcher {
                                          std::pmr::vector<complex_logical_type> inputs) {
         trace(log_, "dispatcher_t::unregister_udf: session {}, {}", session.data(), function_name);
 
-        // Phase 4 #55 — operator-pipeline replacement. The logical leaf
+        // Operator-pipeline replacement. The logical leaf
         // node_unregister_udf_t carries the (name, inputs) signature; the
         // operator probes function_registry_t::get_default(), removes the
         // matching overload, and purges pg_proc + pg_depend rows.
@@ -1563,7 +1531,7 @@ namespace services::dispatcher {
             co_return make_cursor(resource(), std::move(schemas));
         }
 
-        // Phase 4 #54 — go through the operator pipeline. The logical leaf
+        // Go through the operator pipeline. The logical leaf
         // node_get_schema_t carries the requested ids; create_plan lowers
         // it to operator_get_schema_t which
         // self-resolves namespace / table / columns via async pg_catalog reads
@@ -1645,7 +1613,7 @@ namespace services::dispatcher {
               logical_plan->table_oid(),
               session.data());
 
-        // Phase 8.B: oid-only routing. Plan generators ask context_storage_t
+        // Oid-only routing. Plan generators ask context_storage_t
         // whether a given resolved table_oid is known (i.e. we have an actor
         // for it). Walk the plan, collect every table_oid stamped by enrich,
         // and forward the set to the executor. Wrapper / parser-window / DDL
@@ -1655,7 +1623,7 @@ namespace services::dispatcher {
         for (auto oid : dependency_oids) {
             collections_context_storage.known_oids.insert(oid);
         }
-        // M7 / M4.H: forward resolve_table metadata (relkind + live columns)
+        // Forward resolve_table metadata (relkind + live columns)
         // so plan generators can build transfer_scan with the right
         // projection mask instead of inlining pg_class / pg_computed_column
         // scans. Gather a local index from the plan tree (execute_plan_impl
@@ -1670,7 +1638,7 @@ namespace services::dispatcher {
         }
 
         // Populate index metadata for optimizer-driven index selection.
-        // Phase 8.D: keyed on table_oid (stamped by enrich_logical_plan).
+        // Keyed on table_oid (stamped by enrich_logical_plan).
         if (index_address_ != actor_zeta::address_t::empty_address()) {
             const auto tbl_oid = logical_plan->table_oid();
             if (tbl_oid != components::catalog::INVALID_OID) {
@@ -1682,7 +1650,7 @@ namespace services::dispatcher {
         collections_context_storage.parameters = &parameters;
 
         assert(!executors_.empty());
-        // Phase 8.B: oid-only pool routing. For wrapper nodes (sequence_t etc.)
+        // Oid-only pool routing. For wrapper nodes (sequence_t etc.)
         // table_oid is INVALID at the root; peek at the first child which is
         // the inner DML/DDL bearing the resolved oid. When no oid is resolvable
         // (db/ns DDL — no table involved) we route to executor[0] deterministically.
@@ -1723,7 +1691,7 @@ namespace services::dispatcher {
     manager_dispatcher_t::unique_future<std::vector<components::catalog::oid_t>>
     manager_dispatcher_t::allocate_oids_via_pipeline(components::session::session_id_t session,
                                                        std::size_t count) {
-        // M4.L: route OID allocation through the operator pipeline. Mirrors
+        // Route OID allocation through the operator pipeline. Mirrors
         // the commit_transaction RPC pattern below.
         auto node = components::logical_plan::make_node_allocate_oids(resource(), count);
 
@@ -1767,11 +1735,10 @@ namespace services::dispatcher {
     manager_dispatcher_t::commit_transaction(components::session::session_id_t session) {
         trace(log_, "manager_dispatcher_t::commit_transaction, session: {}", session.data());
 
-        // Phase 4 #56 — go through the operator pipeline instead of inline
+        // Go through the operator pipeline instead of inline
         // txn_manager + disk sends. The leaf node carries no fields; the
         // operator reads txn_manager / disk_address / session off the
-        // pipeline::context_t we build here. Mirrors the get_schema #54 and
-        // register_udf #55 migrations.
+        // pipeline::context_t we build here.
         auto plan = boost::intrusive_ptr(
             new components::logical_plan::node_commit_transaction_t(resource()));
 
@@ -1825,7 +1792,7 @@ namespace services::dispatcher {
     manager_dispatcher_t::abort_transaction(components::session::session_id_t session) {
         trace(log_, "manager_dispatcher_t::abort_transaction, session: {}", session.data());
 
-        // Phase 4 #56 — operator-pipeline replacement (mirrors commit above).
+        // Operator-pipeline replacement (mirrors commit above).
         auto plan = boost::intrusive_ptr(
             new components::logical_plan::node_abort_transaction_t(resource()));
 

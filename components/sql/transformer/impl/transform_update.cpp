@@ -204,16 +204,15 @@ namespace components::sql::transform {
                                                   make_compare_expression(resource_, compare_type::all_true));
         }
 
-        // task_7: identity travels via the catalog-resolve wrap; the update
-        // node itself carries only payload + table_oid() (stamped at enrich
-        // time from the sibling resolve_table for the target, and
-        // table_oid_from() for the UPDATE ... FROM source).
+        // Identity travels via the catalog-resolve wrap; the update node itself
+        // carries only payload + table_oid() (stamped at enrich time from the
+        // sibling resolve_table for the target, and table_oid_from() for the
+        // UPDATE ... FROM source).
         auto upd = logical_plan::make_node_update_many(resource_, match, updates, false);
-        // Phase 13 T13: catalog-resolve wrap for UPDATE target table.
-        // M4.D: emit resolve_constraint(outgoing) so enrich reads FKs from
-        // plan tree (FK info stamped by operator_resolve_constraint_t).
-        // task_7: when UPDATE ... FROM is present, first wrap with the target
-        // resolve (with outgoing constraints for FK enrich), then splice a
+        // Catalog-resolve wrap for UPDATE target table. Emit
+        // resolve_constraint(outgoing) so enrich reads FKs from the plan tree
+        // (FK info stamped by operator_resolve_constraint_t). When UPDATE ...
+        // FROM is present, first wrap with the target resolve, then splice a
         // resolve_table for the FROM source into the wrapping sequence_t so
         // enrich's stamp_drop_oids_from_resolves picks it up as `rt_index` and
         // stamps node->table_oid_from().

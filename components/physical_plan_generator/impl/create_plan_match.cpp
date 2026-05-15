@@ -162,7 +162,6 @@ namespace services::planner::impl {
                         nullptr, node->table_oid(), limit, std::move(live_aliases)));
             }
         } else {
-            // Phase 10.F: index_scan no longer takes cfn — pass table_oid only.
             const auto* match_node = static_cast<const components::logical_plan::node_match_t*>(node.get());
             return create_plan_match_(context, match_node->table_oid(), match_node->expressions()[0], limit);
         }

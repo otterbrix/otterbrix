@@ -10,7 +10,7 @@ namespace components::logical_plan {
 
 namespace components::operators {
 
-    // M4.L — pipeline replacement for dispatcher's inline
+    // Pipeline replacement for dispatcher's inline
     // manager_disk_t::allocate_oids_batch calls. At Pass 1 execute time the
     // operator sends `allocate_oids_batch(count)` to the disk actor and
     // stamps the resulting vector onto the back-pointed logical node so the

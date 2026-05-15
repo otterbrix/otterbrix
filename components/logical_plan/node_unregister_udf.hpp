@@ -12,7 +12,7 @@ namespace components::logical_plan {
     // UNREGISTER_UDF — leaf carrying the function name + argument types that
     // identify a single overload to drop. The operator probes the global
     // default function_registry_t to confirm the overload exists, removes it
-    // from the registry, and purges all matching pg_proc rows. Phase 4 #55.
+    // from the registry, and purges all matching pg_proc rows.
     class node_unregister_udf_t final : public node_t {
     public:
         node_unregister_udf_t(std::pmr::memory_resource* resource,

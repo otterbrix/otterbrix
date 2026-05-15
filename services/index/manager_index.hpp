@@ -55,10 +55,6 @@ namespace services::index {
         unique_future<void> unregister_collection(session_id_t session, components::catalog::oid_t table_oid);
 
         // DML: txn-aware bulk index operations.
-        // Phase 8.D: routing identity is the explicit table_oid param. exec_ctx
-        // still carries the (deprecated) cfn for legacy code; index manager
-        // ignores it. Once exec_ctx grows a table_oid field (Phase 8.B) the
-        // explicit param can be dropped.
         unique_future<void> insert_rows(execution_context_t ctx,
                                         components::catalog::oid_t table_oid,
                                         std::unique_ptr<components::vector::data_chunk_t> data,
@@ -136,7 +132,7 @@ namespace services::index {
         std::filesystem::path path_db_;
         std::mutex mutex_;
 
-        // Per-collection in-memory index engines (Phase 8.D: keyed by table oid)
+        // Per-collection in-memory index engines (keyed by table oid)
         std::pmr::unordered_map<components::catalog::oid_t, components::index::index_engine_ptr> engines_;
 
         // Per-index disk persistence (child actors)

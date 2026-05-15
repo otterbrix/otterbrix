@@ -762,7 +762,6 @@ namespace components::catalog {
             std::pmr::vector<types::complex_logical_type> empty_types(resource);
             return vector::data_chunk_t(resource, empty_types, 1);
         }
-        // Phase 11.F-B: atttypspec at index 4; attversion/attrefcount at 5/6.
         return make_pg_rows(resource, def->columns, 1,
                             [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                                 set_oid(c, 0, 0, table_oid);

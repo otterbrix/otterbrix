@@ -630,15 +630,6 @@ namespace components::sql::transform {
         }
     }
 
-    // -- Phase 13 (T13 finalized 2026-05-13): catalog-resolve wrap helpers --
-    //
-    // Toggle removed — wrapping is unconditional now that all downstream
-    // pipeline stages (dispatcher Pass 1, create_plan_sequence skip,
-    // find_effective_dml_type, limit lookup, relkind='g' detection) properly
-    // descend through the `sequence_t(catalog_resolve_*, ..., consumer)`
-    // shape. See commit history for the four root-cause fixes that closed
-    // the regression suite (M2b diagnosis rounds 1 and 2).
-
     logical_plan::node_ptr maybe_wrap_with_catalog_resolve_table(
         std::pmr::memory_resource* resource,
         const std::string& dbname,

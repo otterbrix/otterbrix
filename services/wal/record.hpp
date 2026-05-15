@@ -24,7 +24,6 @@ namespace services::wal {
         wal_record_type record_type{wal_record_type::COMMIT};
 
         // Physical WAL fields
-        // Phase 8.E: cfn-based addressing replaced by table_oid (4 bytes vs ~30).
         components::catalog::oid_t table_oid{components::catalog::INVALID_OID};
         std::unique_ptr<components::vector::data_chunk_t> physical_data;
         std::pmr::vector<int64_t> physical_row_ids{std::pmr::get_default_resource()};

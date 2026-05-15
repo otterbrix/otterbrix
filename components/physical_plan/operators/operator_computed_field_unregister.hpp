@@ -7,11 +7,10 @@
 
 namespace components::operators {
 
-    // Phase 7.1 — drops one column from a relkind='g' (computing / Mongo-style
-    // dynamic-schema) table by appending a new pg_computed_column row carrying
-    // attrefcount = 0 (a tombstone). The reader in
-    // manager_disk_resolve.cpp:95 already filters refcount<=0 so the column
-    // disappears on the next resolve.
+    // Drops one column from a relkind='g' (computing / Mongo-style
+    // dynamic-schema) table by appending a new pg_computed_column row
+    // carrying attrefcount = 0 (a tombstone). The reader filters refcount<=0
+    // so the column disappears on the next resolve.
     //
     // Choosing append-tombstone (over a delete_pg_catalog_rows physical
     // delete) keeps the audit trail of every (column, version) pair, mirroring

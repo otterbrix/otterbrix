@@ -26,7 +26,7 @@ namespace services::index {
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
 
-        // Collection lifecycle (Phase 8.D: oid-keyed)
+        // Collection lifecycle (oid-keyed)
         unique_future<void> register_collection(session_id_t session, components::catalog::oid_t table_oid);
         unique_future<void> unregister_collection(session_id_t session, components::catalog::oid_t table_oid);
 

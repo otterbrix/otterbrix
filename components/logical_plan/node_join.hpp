@@ -23,7 +23,6 @@ namespace components::logical_plan {
 
         join_type type() const;
 
-        // Phase 9.W/10.D: role-named accessors. Carries left-side join target identity.
         const std::string& relname() const noexcept { return relname_; }
         const std::string& dbname() const noexcept { return dbname_; }
 

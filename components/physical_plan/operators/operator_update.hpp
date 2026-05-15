@@ -22,13 +22,13 @@ namespace components::operators {
 
         components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
 
-        // Phase 5: self-contained DML side-effects. Performs storage_update +
+        // Self-contained DML side-effects. Performs storage_update +
         // WAL physical_update + index::update_rows, populates ctx->dml_*
         // swap-info, then mark_executed.
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
-        // Phase 13 T15 — accept pre-resolved table metadata from an upstream
-        // resolver sibling. See operator_insert::accept_resolved_metadata.
+        // Accept pre-resolved table metadata from an upstream resolver
+        // sibling. See operator_insert::accept_resolved_metadata.
         void accept_resolved_metadata(resolved_table_metadata_t metadata) override;
         bool wants_resolved_metadata() const noexcept override { return true; }
         bool has_resolved_metadata() const noexcept { return resolved_metadata_.has_value(); }

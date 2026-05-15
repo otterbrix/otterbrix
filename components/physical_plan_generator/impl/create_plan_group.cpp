@@ -291,7 +291,7 @@ namespace services::planner::impl {
             }
         }
 
-        // Build select_order: maps SELECT position → internal column index after Phase 5
+        // Build select_order: maps SELECT position → internal column index.
         // Internal layout: [keys | visible_aggs | post_aggs]
         size_t total_keys = key_idx;
         size_t total_visible_aggs = visible_agg_idx;

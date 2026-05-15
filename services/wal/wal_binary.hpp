@@ -20,9 +20,8 @@ namespace services::wal {
     // the CRC32 of the freshly written record (which becomes the
     // "last_crc32" for the next record in the chain).
     //
-    // Phase 8.E: records carry table_oid (4 bytes) instead of (database, collection)
-    // strings (~30 bytes per record). Old WAL files become unreadable — fresh init
-    // required after upgrade.
+    // Records carry table_oid (4 bytes) instead of (database, collection)
+    // strings.
     // -----------------------------------------------------------------------
 
     crc32_t encode_insert(buffer_t& buffer,

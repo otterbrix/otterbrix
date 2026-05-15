@@ -51,7 +51,7 @@ namespace otterbrix {
 
     auto wrapper_dispatcher_t::drop_database(const components::session::session_id_t& session,
                                              const database_name_t& database) -> cursor_t_ptr {
-        // task_3: drop nodes carry no names; the (db) identity travels via a
+        // Drop nodes carry no names; the (db) identity travels via a
         // sibling catalog_resolve_namespace_t wrapped in a sequence_t. Pass 1
         // in the dispatcher resolves namespace_oid and stamps it on the drop.
         auto drop = components::logical_plan::make_node_drop_database(resource());
@@ -78,7 +78,7 @@ namespace otterbrix {
     auto wrapper_dispatcher_t::drop_collection(const components::session::session_id_t& session,
                                                const database_name_t& database,
                                                const collection_name_t& collection) -> cursor_t_ptr {
-        // task_3: drop nodes carry no names; the (db, rel) identity travels via
+        // Drop nodes carry no names; the (db, rel) identity travels via
         // sibling catalog_resolve_namespace / catalog_resolve_table nodes wrapped
         // in a sequence_t. Pass 1 stamps namespace_oid + table_oid on the drop.
         auto drop = components::logical_plan::make_node_drop_collection(resource());
@@ -117,7 +117,7 @@ namespace otterbrix {
               session.data(),
               condition->dbname(),
               condition->relname());
-        // task_7: identity travels via the catalog-resolve wrap; the DML node
+        // Identity travels via the catalog-resolve wrap; the DML node
         // itself carries only payload + table_oid() stamped at enrich time.
         const std::string db = condition->dbname();
         const std::string rel = condition->relname();

@@ -8,8 +8,8 @@
 
 namespace components::operators {
 
-    // Phase 7.1 — runs after an INSERT into a relkind='g' (computing / Mongo-
-    // style dynamic-schema) table; (re)registers the schema columns into
+    // Runs after an INSERT into a relkind='g' (computing / Mongo-style
+    // dynamic-schema) table; (re)registers the schema columns into
     // pg_computed_column.
     //
     // Per column, the operator:

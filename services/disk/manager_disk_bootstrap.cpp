@@ -321,7 +321,7 @@ namespace services::disk {
         if (!std::filesystem::exists(config_.path)) {
             return;
         }
-        // Layout (Phase 8.A): ${config_.path}/${database_oid}/${table_oid}/table.otbx.
+        // Layout: ${config_.path}/${database_oid}/${table_oid}/table.otbx.
         // System tables live under db_oid = main_database (4); user tables under
         // their own db_oid (>= FIRST_USER_OID). bootstrap_system_tables_sync
         // already loaded the system ones — here we walk the rest.

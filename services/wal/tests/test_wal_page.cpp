@@ -59,8 +59,8 @@ namespace {
         return info;
     }
 
-    // Phase 8.E: encoders take table_oid (4 bytes) instead of (database, collection)
-    // strings. Tests pass a placeholder oid; production code uses pg_class.oid.
+    // Encoders take table_oid (4 bytes). Tests pass a placeholder oid;
+    // production code uses pg_class.oid.
     constexpr components::catalog::oid_t kTestTableOid = 16500;
 
     encoded_record_info encode_insert_rec(uint64_t wal_id,

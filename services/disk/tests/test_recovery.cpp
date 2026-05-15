@@ -134,13 +134,13 @@ TEST_CASE("test_recovery_ddl_then_dml") {
     components::catalog::oid_t ns_oid = components::catalog::INVALID_OID;
     {
         recovery_fixture fx(dir);
-        // Phase 1: DDL — create a namespace.
+        // Create a namespace.
         ns_oid = disk_test_helpers::test_create_namespace(fx, std::string("durable_ns"));
         REQUIRE(ns_oid != components::catalog::INVALID_OID);
 
-        // Phase 2: DDL acting like DML — create a table inside that namespace. Both
-        // operations write to pg_catalog.* via append_pg_catalog_row → WAL physical
-        // records + on-disk storage.
+        // Create a table inside that namespace. Both operations write to
+        // pg_catalog.* via append_pg_catalog_row -> WAL physical records +
+        // on-disk storage.
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT}, /*not_null=*/ true);
         const auto table_oid = disk_test_helpers::test_create_table(fx, ns_oid,
@@ -215,7 +215,7 @@ TEST_CASE("test_recovery_orphaned_uncommitted_ddl") {
     cleanup_dir(dir);
 }
 
-// 5. services::disk::recovery::dynamic_schema_persists_across_restart — Phase 7 task #92.
+// 5. services::disk::recovery::dynamic_schema_persists_across_restart.
 //    Dynamic-schema (relkind='g') tables register their fields by appending pg_computed_column
 //    rows. append_pg_catalog_row writes a WAL physical_insert + on-disk storage; bootstrap
 //    on restart replays WAL via direct_append_sync (bypassing the operator pipeline).

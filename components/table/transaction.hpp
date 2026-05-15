@@ -36,7 +36,7 @@ namespace components::table {
         void add_append(int64_t row_start, uint64_t count);
         const std::vector<append_info>& appends() const { return appends_; }
 
-        // Phase 5b: aggregated across all execute_plan_impl calls within this txn.
+        // Aggregated across all execute_plan_impl calls within this txn.
         // Snapshotted by operator_commit_transaction_t / operator_abort_transaction_t
         // before txn_manager_.commit()/abort() to drive storage_commit_appends /
         // storage_revert_appends after the swap point.

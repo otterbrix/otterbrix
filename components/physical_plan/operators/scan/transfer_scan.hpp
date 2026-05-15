@@ -12,9 +12,8 @@ namespace components::operators {
 
     class transfer_scan final : public read_only_operator_t {
     public:
-        // Phase 13 M7: replaces the side-channel that inlined pg_class +
-        // pg_computed_column scans. The plan generator passes the live-columns
-        // projection mask (alias names) computed from the resolve_table node's
+        // The plan generator passes the live-columns projection mask
+        // (alias names) computed from the resolve_table node's
         // resolved_metadata. Empty mask == no projection (pass through).
         transfer_scan(std::pmr::memory_resource* resource,
                       components::catalog::oid_t table_oid,

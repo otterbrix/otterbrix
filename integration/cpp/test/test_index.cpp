@@ -71,10 +71,10 @@ constexpr int kDocuments = 100;
         node->keys().emplace_back(dispatcher->resource(), KEY);                                                        \
         auto res = dispatcher->create_index(session, database_name, collection_name, node);                            \
         REQUIRE(res->is_error() == true);                                                                              \
-        /* Phase 5: DML operators self-contain their I/O; the executor wraps any */                                    \
+        /* DML operators self-contain their I/O; the executor wraps any */                                            \
         /* operator-level set_error into create_physical_plan_error with the */                                        \
         /* original message. operator_create_index_backfill::set_error("index already exists") */                      \
-        /* surfaces here as that wrapped code, not the older catalog-level index_create_fail. */                       \
+        /* surfaces here as that wrapped code. */                                                                      \
         REQUIRE((res->get_error().type == components::cursor::error_code_t::index_create_fail ||                       \
                  res->get_error().type == components::cursor::error_code_t::create_physical_plan_error));              \
     } while (false)
@@ -82,7 +82,7 @@ constexpr int kDocuments = 100;
 #define DROP_INDEX(INDEX_NAME)                                                                                         \
     do {                                                                                                               \
         auto session = otterbrix::session_id_t();                                                                      \
-        /* task_3: drop_index carries no names; wrap with resolve_table siblings so Pass 1 stamps OIDs. */              \
+        /* drop_index carries no names; wrap with resolve_table siblings so Pass 1 stamps OIDs. */                     \
         auto node = components::logical_plan::make_node_drop_index(dispatcher->resource());                            \
         std::vector<std::pair<std::string, std::string>> targets;                                                      \
         targets.emplace_back(database_name, collection_name);                                                          \
@@ -123,11 +123,10 @@ constexpr int kDocuments = 100;
 
 #define CHECK_FIND_COUNT(COMPARE, SIDE, VALUE, COUNT) CHECK_FIND("count", COMPARE, SIDE, VALUE, COUNT)
 
-// Phase 8.A migrated index disk layout from name-keyed
-// (${path}/${db_name}/${coll_name}/${index_name}) to oid-keyed
-// (${path}/${table_oid}/${index_name}). The test fixture creates exactly one
-// user table, so we resolve the table_oid by scanning for the numeric directory
-// that contains the named index dir.
+// Index disk layout is oid-keyed (${path}/${table_oid}/${index_name}).
+// The test fixture creates exactly one user table, so we resolve the
+// table_oid by scanning for the numeric directory that contains the named
+// index dir.
 #define CHECK_EXISTS_INDEX(NAME, EXISTS)                                                                               \
     do {                                                                                                               \
         bool found = false;                                                                                            \

@@ -20,7 +20,7 @@ namespace components::sql::transform {
         for (auto key : node.indexParams->lst) {
             create_index->keys().emplace_back(resource_, pg_ptr_cast<IndexElem>(key.data)->name);
         }
-        // M4.E: wrap with catalog_resolve so Pass 1 stamps ns_oid + table_oid +
+        // Wrap with catalog_resolve so Pass 1 stamps ns_oid + table_oid +
         // columns; enrich_logical_plan reads from the plan-tree idx.
         return maybe_wrap_with_catalog_resolve_table(
             resource_, dbname_for_resolve, relname_for_resolve, std::move(create_index));

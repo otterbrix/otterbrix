@@ -7,15 +7,14 @@ namespace components::logical_plan {
 
     class node_aggregate_t final : public node_t {
     public:
-        // Phase 10.D: ctor takes role-named strings instead of cfn struct.
         explicit node_aggregate_t(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname);
 
         void set_distinct(bool d) { distinct_ = d; }
         bool is_distinct() const { return distinct_; }
 
-        // Phase 9.W/10.D: role-named accessors. The aggregate node carries the
-        // source table identity through the parser-window for downstream
-        // operator dispatch; routing in resolved-stage code uses table_oid().
+        // Role-named accessors. The aggregate node carries the source table
+        // identity through the parser-window for downstream operator dispatch;
+        // routing in resolved-stage code uses table_oid().
         const std::string& relname() const noexcept { return relname_; }
         const std::string& dbname() const noexcept { return dbname_; }
 

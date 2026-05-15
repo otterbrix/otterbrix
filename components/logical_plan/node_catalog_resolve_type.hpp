@@ -10,7 +10,7 @@
 
 namespace components::logical_plan {
 
-    // Phase 13 M4.F — full type metadata stamped by operator_resolve_type_t.
+    // Full type metadata stamped by operator_resolve_type_t.
     // Carries decoded complex_logical_type + raw typdefspec + namespace.
     struct resolved_type_metadata_t {
         components::catalog::oid_t type_oid{components::catalog::INVALID_OID};
@@ -31,7 +31,7 @@ namespace components::logical_plan {
         components::catalog::oid_t type_oid() const noexcept { return type_oid_; }
         void set_type_oid(components::catalog::oid_t oid) noexcept { type_oid_ = oid; }
 
-        // M4.F: stamped by operator_resolve_type_t after pg_type read +
+        // Stamped by operator_resolve_type_t after pg_type read +
         // typdefspec decode. Empty optional means the resolve did not find a
         // matching type (caller treats as not-found).
         const std::optional<resolved_type_metadata_t>& resolved_metadata() const noexcept {

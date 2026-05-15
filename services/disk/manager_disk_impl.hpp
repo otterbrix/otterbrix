@@ -191,13 +191,6 @@ namespace detail {
     inline constexpr components::catalog::oid_t pg_rewrite_oid         = wk::pg_rewrite_table;
     inline constexpr components::catalog::oid_t pg_computed_column_oid = wk::pg_computed_column_table;
 
-    // ---------------------------------------------------------------------------
-    // Phase 8.E: cfn↔oid bridge helpers (resolve_oid_for_cfn_local /
-    // resolve_cfn_for_oid_local) and lookup_oid_by_cfn were removed once WAL
-    // records started carrying table_oid directly. There is no remaining
-    // cfn-keyed routing path that needs to translate to oid (or back).
-    // ---------------------------------------------------------------------------
-
 } // namespace detail
 
 } // namespace services::disk

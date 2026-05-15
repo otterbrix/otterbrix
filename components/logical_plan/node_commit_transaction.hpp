@@ -12,11 +12,11 @@ namespace components::logical_plan {
     // pipeline::context_t::session; transaction lookup is done in
     // operator_commit_transaction_t against the txn_manager on context.
     //
-    // M4.J: optional is_ddl_commit flag — when true, the operator additionally
+    // Optional is_ddl_commit flag — when true, the operator additionally
     // performs manager_disk_t::flush + manager_wal_replicate_t::commit_txn
-    // before the standard MVCC commit (steps 1-2 of the legacy DDL inline
-    // commit hook). txn_id and database_oid carry the WAL coordinates needed
-    // for that prefix; ignored when is_ddl_commit=false (RPC mode).
+    // before the standard MVCC commit. txn_id and database_oid carry the WAL
+    // coordinates needed for that prefix; ignored when is_ddl_commit=false
+    // (RPC mode).
     class node_commit_transaction_t final : public node_t {
     public:
         explicit node_commit_transaction_t(std::pmr::memory_resource* resource);

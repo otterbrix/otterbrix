@@ -14,10 +14,9 @@ namespace services::dispatcher {
     // Returns true if ct.type_name() maps to a known built-in logical type.
     bool resolve_builtin(components::types::complex_logical_type& ct);
 
-    // M4.G.2: resolves a single UNKNOWN type from the plan-tree idx
-    // (passed explicitly — M4.H removed the thread_local). Pure sync —
-    // Pass 1's resolve_type operators must have stamped the relevant
-    // metadata before this is called.
+    // Resolves a single UNKNOWN type from the plan-tree idx (passed
+    // explicitly). Pure sync — Pass 1's resolve_type operators must have
+    // stamped the relevant metadata before this is called.
     void resolve_one_type(components::types::complex_logical_type& ct,
                           const impl::plan_resolve_index_t* idx);
 

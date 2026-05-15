@@ -69,11 +69,11 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                                                false,
                                                types::logical_value_t{dispatcher->resource(), types::logical_type::NA});
         }
-        // Phase 11.E: missing fill loop for columns_value_defaults. Without it the
-        // CREATE TABLE call gets an empty column vector → relkind='g' (computing)
-        // table, and the subsequent explicit-column INSERTs fail validation
-        // because the catalog has UNKNOWN types until the first INSERT registers
-        // pg_computed_column rows.
+        // Fill loop for columns_value_defaults. Without it the CREATE TABLE
+        // call gets an empty column vector → relkind='g' (computing) table,
+        // and the subsequent explicit-column INSERTs fail validation
+        // because the catalog has UNKNOWN types until the first INSERT
+        // registers pg_computed_column rows.
         for (const auto& type : types) {
             columns_value_defaults.emplace_back(type.alias(),
                                                 type,

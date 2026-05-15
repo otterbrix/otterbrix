@@ -28,7 +28,7 @@ static const std::filesystem::path base_mgr_path = "/tmp/otterbrix_test_wal_mana
 
 // ---------------------------------------------------------------------------
 // Fixture: spawns a manager_wal_replicate_t (which creates workers internally
-// keyed by database_oid). Phase 8.E uses main_database for all WAL traffic;
+// keyed by database_oid). Currently main_database is used for all WAL traffic;
 // the manager creates a single worker on demand.
 // ---------------------------------------------------------------------------
 struct test_wal_manager {
@@ -124,8 +124,8 @@ struct test_wal_manager {
 
 // ===========================================================================
 //  1. manager_route_by_database_oid
-//     Phase 8.E: WAL writes are routed by main_database; a single worker
-//     directory ${path}/${main_database}/ holds all WAL.
+//     WAL writes are routed by main_database; a single worker directory
+//     ${path}/${main_database}/ holds all WAL.
 // ===========================================================================
 TEST_CASE("wal_manager::route_by_database_oid") {
     test_wal_manager env(base_mgr_path / "route_db");
@@ -133,7 +133,7 @@ TEST_CASE("wal_manager::route_by_database_oid") {
     env.send_insert(kTestTableOidA, /*txn_id=*/100, /*row_count=*/5);
     env.send_insert(kTestTableOidB, /*txn_id=*/101, /*row_count=*/5);
 
-    // Phase 8.E uses main_database for everything → single worker directory.
+    // main_database is used for everything -> single worker directory.
     bool found_main_db_dir = false;
     auto expected = std::to_string(static_cast<unsigned>(kMainDb));
     for (auto& entry : std::filesystem::recursive_directory_iterator(env.path_)) {

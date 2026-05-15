@@ -12,7 +12,6 @@ namespace services::planner::impl {
                        const components::logical_plan::node_ptr& node,
                        components::logical_plan::limit_t limit,
                        const components::logical_plan::storage_parameters* params) {
-        // Phase 8.B: oid-only DML routing.
         auto plan = boost::intrusive_ptr(
             new components::operators::operator_insert(context.resource,
                                                        context.log.clone(),

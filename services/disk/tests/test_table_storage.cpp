@@ -216,8 +216,8 @@ TEST_CASE("services::disk::table_storage::checkpoint_preserves_multi_column") {
     cleanup_test_dir();
 }
 
-// Phase 7.5b — physical column compaction primitive. table_storage_t::drop_column
-// removes the named column from the IN_MEMORY data_table_t via the rebuild
+// Physical column compaction primitive. table_storage_t::drop_column removes
+// the named column from the IN_MEMORY data_table_t via the rebuild
 // constructor (data_table_t(parent, removed_column) backed by
 // collection_t::remove_column per row_group segment). DISK-mode is out of scope.
 TEST_CASE("services::disk::table_storage::drop_column_in_memory") {
@@ -291,7 +291,7 @@ TEST_CASE("services::disk::table_storage::drop_column_disk_is_noop") {
     REQUIRE(ts.mode() == storage_mode_t::DISK);
     REQUIRE(ts.table().column_count() == 2);
 
-    // DISK-mode: drop_column returns false (out of scope for Phase 7.5b).
+    // DISK-mode: drop_column returns false (out of scope).
     REQUIRE(!ts.drop_column("b"));
     REQUIRE(ts.table().column_count() == 2);
 

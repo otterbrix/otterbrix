@@ -23,7 +23,7 @@ wal_test_types(std::pmr::memory_resource* r) {
     return types;
 }
 
-// Phase 8.E: WAL records carry table_oid (4 bytes) instead of (database, collection)
+// WAL records carry table_oid (4 bytes) instead of (database, collection)
 // strings. Tests pass arbitrary oids to verify the round-trip; production code uses
 // the actual catalog OIDs.
 constexpr components::catalog::oid_t kTestTableOid = 16500;

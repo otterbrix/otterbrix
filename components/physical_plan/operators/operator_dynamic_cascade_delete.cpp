@@ -33,10 +33,7 @@ namespace components::operators {
 
         // Per-classid catalog-row delete fan-out. For each step in the
         // cascade plan we re-issue the same set of (table, oid_col_idx, oid)
-        // deletes that build_drop_sequence() in the dispatcher used to emit.
-        // Mirroring that table here keeps the operator self-contained, so
-        // task #49 can simply replace the dispatcher BFS with a logical
-        // node_dynamic_cascade_delete_t and let the planner route to us.
+        // deletes the planner would emit for explicit drops.
         struct per_step_delete_t {
             catalog::oid_t catalog_table_oid;
             std::int64_t   oid_col_idx;
@@ -190,10 +187,9 @@ namespace components::operators {
         dep_graph.clear();
 
         if (plan.status == catalog::ddl_status::restrict_blocked) {
-            // Surface the blocked status to the executor. Phase #49 upgrades
-            // this to a structured error cursor — for now the string carries
-            // enough info for the dispatcher's catch-all to map back to
-            // make_ddl_error_cursor.
+            // Surface the blocked status to the executor. TODO: structured
+            // error cursor — for now the string carries enough info for the
+            // dispatcher's catch-all to map back to make_ddl_error_cursor.
             std::string msg = "DROP RESTRICT: object has dependents (blocking oid ";
             msg += std::to_string(plan.blocking_oid) + ")";
             set_error(std::move(msg));
@@ -225,8 +221,7 @@ namespace components::operators {
             if (step.classid != catalog::well_known_oid::pg_class_table) continue;
 
             // Read pg_class row for this oid to inspect relkind: (oid, relname, relnamespace, relkind, ...)
-            // Storage routing is by table_oid only — relname/nspname are no longer needed
-            // (Phase 10.F removed the cfn-based routing path).
+            // Storage routing is by table_oid only — relname/nspname are no longer needed.
             types::logical_value_t pcoid_lv(resource_, step.objid);
             std::pmr::vector<std::string> pc_keys(resource_);
             pc_keys.emplace_back("oid");

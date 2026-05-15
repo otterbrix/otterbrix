@@ -8,16 +8,12 @@
 namespace components::sql::transform {
 
     namespace {
-        // Phase 13 T13: at the SELECT top-level call site we know the read
-        // dependency is the FROM-clause table. Peek at the resulting aggregate/
-        // join node to recover (dbname, relname) for the catalog-resolve wrap.
-        // transform_select returns either a node_aggregate_t (single-table FROM)
-        // or a node_aggregate_t whose first child is a join_t — same shape, so
-        // pulling dbname/relname off the root aggregate is sufficient for the
-        // primary table. Other joined-in tables are visible through the join
-        // subtree; emitting one resolve per joined table is left as TODO (would
-        // need a depth walk over the SELECT plan, which is out of scope for the
-        // minimal P12 hookup).
+        // At the SELECT top-level we know the read dependency is the FROM-clause
+        // table. transform_select returns a node_aggregate_t (single-table FROM)
+        // or one whose first child is a join_t — same shape, so pulling
+        // dbname/relname off the root aggregate is sufficient for the primary
+        // table. TODO: emit one resolve per joined table (depth walk over the
+        // SELECT plan).
         std::pair<std::string, std::string>
         select_primary_table_identity(const logical_plan::node_ptr& sel) {
             if (!sel) return {};
@@ -40,9 +36,8 @@ namespace components::sql::transform {
                 auto& n = pg_cast<CreatedbStmt>(node);
                 const std::string dbname = n.dbname ? std::string(n.dbname) : std::string{};
                 log_node = transform_create_database(n);
-                // Phase 13 T13: CREATE DATABASE → resolve the namespace name so
-                // a later patch can use the resolve node to detect duplicates
-                // through the pipeline.
+                // Resolve the namespace name so a later patch can use the
+                // resolve node to detect duplicates through the pipeline.
                 log_node = maybe_wrap_with_catalog_resolve_namespace(
                     resource_, dbname, std::move(log_node));
                 break;
@@ -51,7 +46,6 @@ namespace components::sql::transform {
                 auto& n = pg_cast<DropdbStmt>(node);
                 const std::string dbname = n.dbname ? std::string(n.dbname) : std::string{};
                 log_node = transform_drop_database(n);
-                // Phase 13 T13: DROP DATABASE resolves the namespace before drop.
                 log_node = maybe_wrap_with_catalog_resolve_namespace(
                     resource_, dbname, std::move(log_node));
                 break;
@@ -74,10 +68,10 @@ namespace components::sql::transform {
                 break;
             case T_SelectStmt: {
                 log_node = transform_select(pg_cast<SelectStmt>(node), params.get());
-                // Phase 13 T13: stamp the primary FROM-clause table as a
-                // catalog dependency. The transformer's aggregate wrapper at
-                // the root carries the (dbname, relname); a future patch can
-                // walk joins to add additional resolves.
+                // Stamp the primary FROM-clause table as a catalog dependency.
+                // The transformer's aggregate wrapper at the root carries the
+                // (dbname, relname); a future patch can walk joins to add
+                // additional resolves.
                 auto [db, rel] = select_primary_table_identity(log_node);
                 if (!rel.empty()) {
                     log_node = maybe_wrap_with_catalog_resolve_table(
@@ -95,10 +89,8 @@ namespace components::sql::transform {
                 log_node = transform_delete(pg_cast<DeleteStmt>(node), params.get());
                 break;
             case T_IndexStmt:
-                // Phase 13 T13: CREATE INDEX needs the parent table resolved.
-                // TODO: pull (dbname, relname) out of IndexStmt.relation and
-                // wrap; transform_create_index returns a node_create_index_t
-                // whose children include the indexed table identity.
+                // TODO: CREATE INDEX needs the parent table resolved — pull
+                // (dbname, relname) out of IndexStmt.relation and wrap.
                 log_node = transform_create_index(pg_cast<IndexStmt>(node));
                 break;
             case T_CheckPointStmt:
@@ -117,8 +109,8 @@ namespace components::sql::transform {
                 log_node = transform_create_function(pg_cast<CreateFunctionStmt>(node));
                 break;
             case T_AlterTableStmt:
-                // Phase 13 T13: ALTER TABLE needs target table resolution.
-                // TODO: read the AlterTableStmt.relation RangeVar and wrap.
+                // TODO: ALTER TABLE needs target table resolution — read the
+                // AlterTableStmt.relation RangeVar and wrap.
                 log_node = transform_alter_table(pg_cast<AlterTableStmt>(node));
                 break;
             case T_RenameStmt:

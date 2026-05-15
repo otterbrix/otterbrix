@@ -15,10 +15,6 @@ namespace components::logical_plan {
     // pg_class, pg_attribute) and emits one complex_logical_type per id —
     // either a `schema` STRUCT, a `latest_types` STRUCT (for relkind='g'
     // computed tables), or logical_type::INVALID.
-    //
-    // Phase 4 #54 of the pipeline-unification refactor: services/dispatcher/
-    // dispatcher.cpp::get_schema uses the same operator infrastructure as
-    // every other plan.
     class node_get_schema_t final : public node_t {
     public:
         node_get_schema_t(std::pmr::memory_resource* resource,

@@ -47,10 +47,10 @@ namespace components::operators {
         constexpr catalog::oid_t pg_class_oid = catalog::well_known_oid::pg_class_table;
         constexpr catalog::oid_t pg_con_oid   = catalog::well_known_oid::pg_constraint_table;
 
-        // Step 1 — read the live pg_attribute row by attoid (Phase 9.B: keyed
-        // single-row lookup). attoid_ was pre-stamped by enrich_logical_plan
-        // from the resolved column metadata; if INVALID we simply no-op (matches
-        // the legacy "column not found" behavior of the prior attname scan).
+        // Step 1 — read the live pg_attribute row by attoid (keyed single-row
+        // lookup). attoid_ was pre-stamped by enrich_logical_plan from the
+        // resolved column metadata; if INVALID we simply no-op (matches the
+        // legacy "column not found" behavior of the prior attname scan).
         if (attoid_ == catalog::INVALID_OID) {
             mark_executed();
             co_return;

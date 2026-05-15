@@ -367,10 +367,7 @@ TEST_CASE("services::disk::persistence::test_pg_class_lists_all_objects") {
 // 7. test_computing_table_persists_restart: a computing table plus its
 // pg_computed_column rows survive checkpoint and restart. relkind stays 'g',
 // pg_computed_column rows are reloaded, the table_computes() property holds
-// across the restart boundary. Validates Phase-1 C1 (pg_computed_column)
-// persistence (catalog-migration-to-postgresql-style.md §14). Phase 5: migrated
-// from the deleted ddl_computed_append helper to primitive
-// build_pg_computed_column_row + append_pg_catalog_row writes.
+// across the restart boundary.
 TEST_CASE("services::disk::persistence::test_computing_table_persists_restart") {
     auto dir = persist_dir() + "/computing_persist";
     std::filesystem::remove_all(dir);

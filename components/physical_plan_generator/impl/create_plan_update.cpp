@@ -27,7 +27,7 @@ namespace services::planner::impl {
         }
         auto limit = static_cast<components::logical_plan::node_limit_t*>(node_limit.get())->limit();
         auto table_oid = node->table_oid();
-        // task_7: target the simple (no FROM) path when neither a FROM-side
+        // Target the simple (no FROM) path when neither a FROM-side
         // table_oid nor raw data join input is present.
         if (node_update->table_oid_from() == components::catalog::INVALID_OID && !node_raw_data) {
             auto plan = boost::intrusive_ptr(new components::operators::operator_update(context.resource,
@@ -53,7 +53,7 @@ namespace services::planner::impl {
                                                                                              limit)),
                                    create_plan_data(node_raw_data));
             } else {
-                // task_7: read the FROM-side table_oid from the node (enrich
+                // Read the FROM-side table_oid from the node (enrich
                 // stamps it via the sibling resolve_table for the FROM source).
                 const auto from_oid = node_update->table_oid_from();
                 plan->set_children(boost::intrusive_ptr(new components::operators::full_scan(context.resource,

@@ -18,8 +18,8 @@
 #include <core/operations_helper.hpp>
 #include <variant>
 
-// task_7: DML nodes no longer carry (db, rel); wrap with the catalog-resolve
-// sequence so enrich stamps table_oid()/table_oid_from() at runtime.
+// DML nodes don't carry (db, rel); wrap with the catalog-resolve sequence
+// so enrich stamps table_oid()/table_oid_from() at runtime.
 #define WRAP_DML_TARGET(DB, REL, NODE)                                                                                 \
     components::sql::transform::maybe_wrap_with_catalog_resolve_table(dispatcher->resource(), DB, REL, NODE)
 #define WRAP_DML_TARGETS(DB1, REL1, DB2, REL2, NODE)                                                                   \
@@ -295,7 +295,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                              compare_type::eq,
                                                              key{dispatcher->resource(), "count", side_t::left},
                                                              key{dispatcher->resource(), "count", side_t::right});
-        // task_7: USING-side table_oid is stamped from the second resolve_table.
+        // USING-side table_oid is stamped from the second resolve_table.
         auto del = WRAP_DML_TARGETS(
             table_database_name, table_other_collection_name,
             table_database_name, table_collection_name,

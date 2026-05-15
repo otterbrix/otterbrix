@@ -17,8 +17,8 @@ namespace components::logical_plan {
     using expression_ptr = expressions::expression_ptr;
     using hash_t = expressions::hash_t;
 
-    // Phase 10.C: the polymorphic free helper `cfn_of(node_t*)` was removed.
-    // Generic walkers that operated on `node_t*` and needed the cfn either
+    // The polymorphic free helper `cfn_of(node_t*)` was removed.
+    // Generic walkers that operated on `node_t*` and need the cfn either
     // (a) inline a per-call type switch when truly needed (see
     // validate_logical_plan.cpp::local_node_cfn for the canonical example), or
     // (b) prefer `node->table_oid()` for routing in resolved-stage code.
@@ -29,12 +29,12 @@ namespace components::logical_plan {
         virtual ~node_t() = default;
 
         node_type type() const;
-        // Phase 9.W: virtual cfn accessors REMOVED. Each derived node that
-        // needs a user-typed name at the parser/SQL boundary owns a role-named
-        // string field (relname_, dbname_, viewname_, ...) and exposes it via
-        // role-named accessors (relname(), dbname(), ...). For routing in
-        // resolved-stage code (planner, dispatcher, executor, operators after
-        // enrich), always use `table_oid()` from the base class.
+        // Each derived node that needs a user-typed name at the parser/SQL
+        // boundary owns a role-named string field (relname_, dbname_,
+        // viewname_, ...) and exposes it via role-named accessors (relname(),
+        // dbname(), ...). For routing in resolved-stage code (planner,
+        // dispatcher, executor, operators after enrich), always use
+        // `table_oid()` from the base class.
         const std::string& result_alias() const;
         const std::pmr::vector<node_ptr>& children() const;
         std::pmr::vector<node_ptr>& children();
@@ -48,12 +48,11 @@ namespace components::logical_plan {
         void append_expressions(const std::vector<expression_ptr>& expressions);
         void append_expressions(const std::pmr::vector<expression_ptr>& expressions);
 
-        // Phase 8.B: oid-only equivalent of (removed) collection_dependencies —
-        // walks the node tree and collects the set of resolved table oids
-        // referenced by this plan. INVALID_OID entries are filtered out
-        // (wrapper / parser-window / DDL nodes that don't target a single
-        // table). Used by dispatcher to populate
-        // `context_storage_t::known_oids`.
+        // Oid-only equivalent of collection_dependencies — walks the node
+        // tree and collects the set of resolved table oids referenced by
+        // this plan. INVALID_OID entries are filtered out (wrapper /
+        // parser-window / DDL nodes that don't target a single table).
+        // Used by dispatcher to populate `context_storage_t::known_oids`.
         std::unordered_set<components::catalog::oid_t> table_oid_dependencies();
 
         bool operator==(const node_t& rhs) const;
@@ -61,7 +60,7 @@ namespace components::logical_plan {
 
         hash_t hash() const;
 
-        // Phase 8.A.0: oid-keyed identity for nodes that target a specific table.
+        // Oid-keyed identity for nodes that target a specific table.
         // Stamped by enrich_logical_plan once cfn → oid is resolved. INVALID_OID
         // for nodes that do not target a table (wrappers like sequence_t,
         // db/ns DDL, query-tree internals like sort/limit).
@@ -76,8 +75,7 @@ namespace components::logical_plan {
         std::string result_alias_;
         std::pmr::vector<node_ptr> children_;
         std::pmr::vector<expression_ptr> expressions_;
-        // Phase 8.A.0: see table_oid()/set_table_oid() above. Default INVALID_OID;
-        // existing ctors don't initialize it explicitly to keep diff small. Enrich
+        // See table_oid()/set_table_oid() above. Default INVALID_OID; enrich
         // is responsible for stamping the resolved oid before plan execution.
         components::catalog::oid_t table_oid_{components::catalog::INVALID_OID};
 

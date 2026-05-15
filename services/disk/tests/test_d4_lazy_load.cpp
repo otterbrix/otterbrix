@@ -147,8 +147,8 @@ TEST_CASE("services::disk::d4::drop_unloaded_table") {
     REQUIRE_FALSE(resolved.found);
 }
 
-// 6. test_add_column (post-Phase 5: pure pg_attribute write, no in-memory sync) on
-//    an unloaded user table leaves the storage map untouched. Doc test alias:
+// 6. test_add_column (pure pg_attribute write, no in-memory sync) on an
+//    unloaded user table leaves the storage map untouched. Doc test alias:
 //    test_alter_unloaded_table.
 TEST_CASE("services::disk::d4::alter_unloaded_table_add_column") {
     fixture fx;

@@ -30,7 +30,7 @@ namespace services::collection::executor {
     struct execute_result_t {
         components::cursor::cursor_t_ptr cursor;
         components::operators::operator_write_data_t::updated_types_map_t updates;
-        // Phase 5b: pg_catalog ranges/tables collected during this execute_plan call.
+        // pg_catalog ranges/tables collected during this execute_plan call.
         // Dispatcher merges these into transaction_t when txn_id != 0.
         std::vector<components::pg_catalog_append_range_t>      pg_catalog_appends;
         std::set<components::catalog::oid_t>                    pg_catalog_delete_tables;
@@ -52,11 +52,7 @@ namespace services::collection::executor {
     using plan_storage_t = core::pmr::btree::btree_t<components::session::session_id_t, plan_t>;
 
     // Internal result with MVCC tracking (not exposed to dispatcher).
-    // Phase 5: per-DML swap-info (append_row_*, delete_txn_id, wal_*) used to
-    // live on this struct as `append_row_start`, `append_row_count`,
-    // `delete_txn_id`, `wal_collection` — populated by the now-deleted
-    // intercept_dml_io_. After Phase 5 unification the DML operators
-    // self-contain WAL/storage/index I/O and record swap-info on
+    // DML operators self-contain WAL/storage/index I/O and record swap-info on
     // pipeline::context_t::dml_*. execute_sub_plan_ drains those onto the
     // dml_* fields below so execute_plan can drive storage_commit_append /
     // storage_commit_delete uniformly.
@@ -68,8 +64,8 @@ namespace services::collection::executor {
         uint64_t                    dml_delete_txn_id{0};
         components::catalog::oid_t  dml_table_oid{components::catalog::INVALID_OID};
 
-        // Phase 5b: pg_catalog swap-info drained from each pipeline::context_t
-        // inside execute_sub_plan_. execute_plan moves these into the outer
+        // pg_catalog swap-info drained from each pipeline::context_t inside
+        // execute_sub_plan_. execute_plan moves these into the outer
         // execute_result_t so the dispatcher can push them onto transaction_t.
         std::vector<components::pg_catalog_append_range_t> pg_catalog_appends;
         std::set<components::catalog::oid_t>               pg_catalog_delete_tables;

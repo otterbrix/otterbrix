@@ -14,17 +14,16 @@ namespace services {
     struct context_storage_t {
         std::pmr::memory_resource* resource;
         log_t log;
-        // Phase 8.B: oid-only routing. Plan generators ask "do we know about
-        // this table?" via the resolved table_oid stamped on the logical_plan
-        // node. Wrapper / parser-window paths fall back to the empty set.
+        // oid-only routing. Plan generators ask "do we know about this table?"
+        // via the resolved table_oid stamped on the logical_plan node.
+        // Wrapper / parser-window paths fall back to the empty set.
         std::unordered_set<components::catalog::oid_t> known_oids;
         std::pmr::vector<components::index::keys_base_storage_t> indexed_keys;
         const components::logical_plan::storage_parameters* parameters = nullptr;
-        // M7: oid → resolved_table_metadata_t* stamped by Pass 1's
+        // oid -> resolved_table_metadata_t* stamped by Pass 1's
         // operator_resolve_table_t. Plan generators (transfer_scan in
         // create_plan_match / create_plan_aggregate) use it to forward live
-        // column names + relkind, avoiding the inline pg_class /
-        // pg_computed_column side-channel that transfer_scan used to do.
+        // column names + relkind.
         std::unordered_map<components::catalog::oid_t,
                            const components::logical_plan::resolved_table_metadata_t*>
             table_metadata;

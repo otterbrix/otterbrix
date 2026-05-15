@@ -15,7 +15,7 @@ namespace services::disk {
     using namespace core::filesystem;
     namespace catalog = components::catalog;
 
-    // ---- P1.1: behavior/implements sync check ----
+    // ---- behavior/implements sync check ----
     // Ensures behavior() handles every method registered in dispatch_traits.
     // When adding a new method:
     //   1. Add it to implements<> in manager_disk.hpp
@@ -189,8 +189,8 @@ namespace services::disk {
     }
 
     bool table_storage_t::drop_column(const std::string& attname) {
-        // Phase 7.5b: physical column compaction. DISK is out of scope (would
-        // need segment rewrites + checkpoint coordination); IN_MEMORY only.
+        // Physical column compaction. DISK is out of scope (would need segment
+        // rewrites + checkpoint coordination); IN_MEMORY only.
         if (mode_ != storage_mode_t::IN_MEMORY) {
             return false;
         }

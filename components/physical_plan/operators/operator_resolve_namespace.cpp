@@ -102,8 +102,8 @@ namespace components::operators {
                 ns_rows[0][0].value<std::uint32_t>());
             out_chunk.set_cardinality(1);
             set_uint32(out_chunk, 0, 0, static_cast<std::uint32_t>(oid_val));
-            // Phase 13 Step 3: stamp the resolved oid onto the logical-plan node
-            // so the dispatcher's Pass 2 (validate / enrich / planner) can read
+            // Stamp the resolved oid onto the logical-plan node so the
+            // dispatcher's Pass 2 (validate / enrich / planner) can read
             // it via plan_resolve_index_t.
             if (target_node_) {
                 target_node_->set_namespace_oid(oid_val);

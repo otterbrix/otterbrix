@@ -8,8 +8,6 @@ namespace services::disk {
 
     // Crash-safe pg_catalog row append: WAL is written first so a crash before the
     // storage update can be replayed on restart, then storage is updated.
-    //
-    // Phase 8.E: WAL records carry table_oid directly — no cfn round-trip needed.
     manager_disk_t::unique_future<components::pg_catalog_append_range_t>
     manager_disk_t::append_pg_catalog_row(execution_context_t ctx,
                                             components::catalog::oid_t table_oid,

@@ -20,12 +20,12 @@ namespace components::operators {
                 return;
             }
 
-            // Phase 13 T15 — when a resolve_table step finishes, forward its
-            // parsed metadata to the next step that asks for it. Callers
-            // (planner / create_plan_sequence) ensure the consumer follows the
-            // resolver directly when this pattern is in use; we still scan
-            // forward defensively so a resolve_namespace stepping in between
-            // doesn't break the hand-off.
+            // When a resolve_table step finishes, forward its parsed
+            // metadata to the next step that asks for it. Callers
+            // (planner / create_plan_sequence) ensure the consumer follows
+            // the resolver directly when this pattern is in use; we still
+            // scan forward defensively so a resolve_namespace stepping in
+            // between doesn't break the hand-off.
             if (step->type() == operator_type::resolve_table && step->is_executed()) {
                 auto* resolver = static_cast<operator_resolve_table_t*>(step.get());
                 auto metadata = parse_resolved_table_metadata(

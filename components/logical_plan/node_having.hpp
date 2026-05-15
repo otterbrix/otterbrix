@@ -9,7 +9,6 @@ namespace components::logical_plan {
     public:
         explicit node_having_t(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname);
 
-        // Phase 9.W/10.D: role-named accessors. Carries source table identity for parser-window.
         const std::string& relname() const noexcept { return relname_; }
         const std::string& dbname() const noexcept { return dbname_; }
 

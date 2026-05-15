@@ -13,7 +13,7 @@ namespace components::expressions {
 
 namespace components::operators {
 
-    // Phase 13 T15 — forward decl: DML operators receive parsed metadata via
+    // Forward decl: DML operators receive parsed metadata via
     // accept_resolved_metadata(). Defined in resolved_table_metadata.hpp.
     struct resolved_table_metadata_t;
 
@@ -60,28 +60,28 @@ namespace components::operators {
         // cleanup index versions, rebuild and re-populate indexes per table.
         // Iterates pg_class to discover user tables (no dispatcher state).
         vacuum,
-        // GET_SCHEMA (Phase 4 #54) — self-resolving leaf operator that returns
+        // GET_SCHEMA — self-resolving leaf operator that returns
         // one complex_logical_type per (database, collection) id by reading
         // pg_namespace+pg_class+pg_attribute. Used by
         // manager_dispatcher_t::get_schema.
         get_schema,
-        // REGISTER_UDF / UNREGISTER_UDF (Phase 4 #55) — operator-pipeline
-        // replacements for inline manager_dispatcher_t::{register,unregister}_udf.
+        // REGISTER_UDF / UNREGISTER_UDF — operator-pipeline replacements
+        // for inline manager_dispatcher_t::{register,unregister}_udf.
         // operator_register_udf_t fans out to per-executor registries, mirrors
         // into function_registry_t::get_default(), and persists pg_proc rows.
         // operator_unregister_udf_t reverses the registry+pg_proc effects.
         register_udf,
         unregister_udf,
-        // COMMIT / ROLLBACK (Phase 4 #56) — operator-pipeline replacement for
-        // inline manager_dispatcher_t::{commit,abort}_transaction. The
-        // operator drives txn_manager->{commit,abort}() and (for commit) the
+        // COMMIT / ROLLBACK — operator-pipeline replacement for inline
+        // manager_dispatcher_t::{commit,abort}_transaction. The operator
+        // drives txn_manager->{commit,abort}() and (for commit) the
         // pg_catalog MVCC state swap on disk via storage_commit_appends /
         // storage_revert_appends. Invoked directly by the dispatcher
         // (mirrors operator_get_schema_t) since the manager-level state
         // (txn_manager_) lives outside the per-collection executor.
         commit_transaction,
         abort_transaction,
-        // COMPUTED_FIELD_REGISTER / COMPUTED_FIELD_UNREGISTER (Phase 7.1) —
+        // COMPUTED_FIELD_REGISTER / COMPUTED_FIELD_UNREGISTER —
         // maintain pg_computed_column rows for relkind='g' dynamic-schema
         // tables. register: per-column NEW / SAME-TYPE / TYPE-EVOLUTION
         // classification → append fresh row with attrefcount=1 on NEW or
@@ -89,8 +89,8 @@ namespace components::operators {
         // refcount=0 tombstone so the resolver hides the column.
         computed_field_register,
         computed_field_unregister,
-        // RESOLVE_TABLE (Phase 13 T1) — self-resolving catalog read that
-        // mirrors manager_disk_t::resolve_table without using the dedicated
+        // RESOLVE_TABLE — self-resolving catalog read that mirrors
+        // manager_disk_t::resolve_table without using the dedicated
         // resolve_table actor message. Scans pg_class for (oid, relkind,
         // relnamespace), then pg_attribute (relkind='r') or pg_computed_column
         // with tombstone/max-version filter (relkind='g') for column metadata.
@@ -100,12 +100,12 @@ namespace components::operators {
         // (resolved_relkind()) for downstream usage that needs to branch on
         // table flavor.
         resolve_table,
-        // RESOLVE_NAMESPACE (Phase 13 T2) — leaf operator that scans
-        // pg_namespace by nspname and emits the resolved namespace_oid as a
-        // single-row data_chunk (col 0 = UINTEGER oid). Used by name-resolution
+        // RESOLVE_NAMESPACE — leaf operator that scans pg_namespace by
+        // nspname and emits the resolved namespace_oid as a single-row
+        // data_chunk (col 0 = UINTEGER oid). Used by name-resolution
         // pipelines that need to avoid the dispatcher's cached catalog snapshot.
         resolve_namespace,
-        // RESOLVE_TYPE (Phase 13 T3) — leaf operator that scans pg_type by
+        // RESOLVE_TYPE — leaf operator that scans pg_type by
         // (typname, typnamespace) and emits the matching row as a single-row
         // data_chunk_t (cols mirror pg_type_columns: oid, typname,
         // typnamespace, typdefspec). Drives read_rows_by_key only.
@@ -113,20 +113,20 @@ namespace components::operators {
         // out-of-scope; that path stays on the synchronous resolve_type_sync
         // helper until a separate operator covers it.
         resolve_type,
-        // RESOLVE_FUNCTION (Phase 13 T4) — leaf operator that scans pg_proc by
+        // RESOLVE_FUNCTION — leaf operator that scans pg_proc by
         // (proname, pronamespace) and emits matching pg_proc rows as a
         // data_chunk (cols: oid, proname, pronamespace, pronargs, prouid,
         // proargmatchers, prorettype). Mirrors manager_disk_t::resolve_function
         // without the dedicated actor message — drives read_rows_by_key only.
         resolve_function,
-        // RESOLVE_CONSTRAINT (Phase 13 M4.D) — pipeline FK + CHECK constraint
-        // resolution. Reads pg_constraint by (conrelid|confrelid) +
+        // RESOLVE_CONSTRAINT — pipeline FK + CHECK constraint resolution.
+        // Reads pg_constraint by (conrelid|confrelid) +
         // pg_attribute (column-name lookups) + pg_class + pg_namespace
         // (descendant FK reference resolution). Stamps fks() / check_exprs()
         // onto the back-pointed logical node so enrich reads them via the
         // plan_resolve_index.
         resolve_constraint,
-        // ALLOCATE_OIDS (M4.L) — pipeline replacement for inline
+        // ALLOCATE_OIDS — pipeline replacement for inline
         // manager_disk_t::allocate_oids_batch from the dispatcher. At Pass 1
         // execute time, sends one allocate batch request to the disk actor's
         // oid_generator and stamps the resulting vector on the back-pointed
@@ -198,12 +198,12 @@ namespace components::operators {
         bool has_error() const noexcept;
         const std::string& error_message() const noexcept;
 
-        // Phase 13 T15 — sibling-resolve plumbing. When an
-        // operator_resolve_table_t runs as an upstream step inside a
-        // sequence_t (or as a flattened left-child), its output chunk is
-        // parsed into resolved_table_metadata_t and handed to the next
-        // consumer via this hook. Default no-op; DML operators override
-        // (operator_insert / operator_update / operator_delete).
+        // Sibling-resolve plumbing. When an operator_resolve_table_t runs
+        // as an upstream step inside a sequence_t (or as a flattened
+        // left-child), its output chunk is parsed into
+        // resolved_table_metadata_t and handed to the next consumer via this
+        // hook. Default no-op; DML operators override (operator_insert /
+        // operator_update / operator_delete).
         virtual void accept_resolved_metadata(resolved_table_metadata_t metadata);
         // True when accept_resolved_metadata() may meaningfully be invoked
         // on this operator. Used by operator_sequence_t to route the

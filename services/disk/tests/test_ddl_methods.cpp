@@ -74,8 +74,8 @@ namespace {
     };
 } // namespace
 
-// 12. test_add_column writes a pg_attribute row (post-Phase 5: no longer syncs in-memory;
-//     resolve_table reads columns from pg_attribute on every call).
+// 12. test_add_column writes a pg_attribute row (resolve_table reads columns
+//     from pg_attribute on every call; no in-memory sync).
 TEST_CASE("services::disk::ddl::add_column_round_trip") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "nsac");
@@ -93,8 +93,7 @@ TEST_CASE("services::disk::ddl::add_column_round_trip") {
     REQUIRE(rs.columns.size() == 2);
 }
 
-// 20. Phase 7.7 — repurposed from the deleted adopt_computing_schema_bumps_version
-// test. operator_computed_field_register_t allocates a fresh attoid + bumps
+// 20. operator_computed_field_register_t allocates a fresh attoid + bumps
 // attversion when a column's type evolves (e.g. INT → TEXT). resolve_table
 // returns the latest version. Disk-level reproduction via test_computed_register.
 TEST_CASE("services::disk::ddl::computed_register_type_evolution") {
@@ -125,9 +124,8 @@ TEST_CASE("services::disk::ddl::computed_register_type_evolution") {
     REQUIRE(rs.columns[0].atttypid == components::catalog::well_known_oid::string_type);
 }
 
-// 22. Inserting a fresh pg_computed_column row registers the field. Phase 5 cleanup
-// migrated this test from the deleted ddl_computed_append helper to a primitive
-// build_pg_computed_column_row + append_pg_catalog_row write.
+// 22. Inserting a fresh pg_computed_column row registers the field, via
+// primitive build_pg_computed_column_row + append_pg_catalog_row write.
 TEST_CASE("services::disk::ddl::computed_append_new_field") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "nsca");
@@ -139,9 +137,9 @@ TEST_CASE("services::disk::ddl::computed_append_new_field") {
     REQUIRE(attoid >= FIRST_USER_OID);
 }
 
-// 23. Phase 7.7 — repurposed: refcount-bump on duplicate append is gone in the
-// simplified binary-refcount model. Re-registering an already-live (name+type)
-// column is now a no-op (no duplicate row, refcount stays 1).
+// 23. Refcount-bump on duplicate append is gone in the simplified
+// binary-refcount model. Re-registering an already-live (name+type) column
+// is a no-op (no duplicate row, refcount stays 1).
 TEST_CASE("services::disk::ddl::computed_register_same_type_idempotent") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "nsidem");
@@ -179,10 +177,10 @@ TEST_CASE("services::disk::ddl::computed_register_same_type_idempotent") {
     REQUIRE(rs.columns.size() == 1);
 }
 
-// 24. Phase 7.7 — repurposed: drop = append tombstone (refcount=0). After
-// register+unregister, resolve_table must hide the column (the live row +
-// tombstone coexist on disk until a future VACUUM, but the reader filters them
-// via the refcount<=0 / max-version-per-name gate).
+// 24. Drop = append tombstone (refcount=0). After register+unregister,
+// resolve_table must hide the column (the live row + tombstone coexist on
+// disk until a future VACUUM, but the reader filters them via the
+// refcount<=0 / max-version-per-name gate).
 TEST_CASE("services::disk::ddl::computed_unregister_then_resolve_hides_column") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "nshide");
@@ -212,10 +210,10 @@ TEST_CASE("services::disk::ddl::computed_unregister_then_resolve_hides_column") 
     REQUIRE(rs_after.columns.empty());
 }
 
-// 25. Phase 7.7 — repurposed: refcount-decrement is replaced by binary
-// register/unregister + tombstone semantics. Verify that unregister appends a
-// tombstone row with refcount=0 and that the live row + tombstone coexist
-// until VACUUM (i.e. read_rows_by_key sees both).
+// 25. Refcount-decrement is replaced by binary register/unregister +
+// tombstone semantics. Verify that unregister appends a tombstone row with
+// refcount=0 and that the live row + tombstone coexist until VACUUM
+// (i.e. read_rows_by_key sees both).
 TEST_CASE("services::disk::ddl::computed_unregister_marks_dead") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "nstomb");
@@ -258,7 +256,7 @@ TEST_CASE("services::disk::ddl::computed_unregister_marks_dead") {
     REQUIRE(tomb_v > live_v);
 }
 
-// 25b. Phase 7 task #103 — disk-level mirror of the SQL-level
+// 25b. task #103 — disk-level mirror of the SQL-level
 // dynamic_schema_drop_then_readd_preserves_old_data test. Verify the post-
 // register/unregister/register sequence at the pg_computed_column row level:
 //
@@ -393,7 +391,7 @@ TEST_CASE("services::disk::ddl::computed_field_drop_then_readd") {
     }
 }
 
-// 27. Phase 7.7+ — VACUUM GC for pg_computed_column dead rows. After register×3
+// 27. VACUUM GC for pg_computed_column dead rows. After register×3
 // + unregister of one column, pg_computed_column on disk holds 4 rows:
 //   a (live, v=0, rc=1)
 //   b (live, v=0, rc=1)
@@ -504,7 +502,7 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
     REQUIRE(rs.columns.size() == 2);
 }
 
-// Phase 7.5b — physical column compaction primitive at the disk-actor surface.
+// Physical column compaction primitive at the disk-actor surface.
 // compact_relkind_g_storage(name, live_attnames) drops every storage column
 // whose name is NOT in live_attnames; backed by table_storage_t::drop_column
 // (which itself uses the data_table_t(parent, removed_column) rebuild).
@@ -639,7 +637,7 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
     }
 }
 
-// 28. Phase 7.7+ — concurrent INSERT into the same relkind='g' table from
+// 28. Concurrent INSERT into the same relkind='g' table from
 // multiple sessions: MVCC visibility. Skipped: requires a multi-session test
 // fixture (independent dispatchers/sessions sharing the same disk actor) that
 // the current per-test fixture doesn't model.
@@ -647,7 +645,7 @@ TEST_CASE("services::disk::ddl::dynamic_schema_concurrent_insert_skip") {
     WARN("TODO: requires multi-session test fixture; covered indirectly via SQL-level tests today");
 }
 
-// 29. Phase 7.7+ — WAL recovery: restart after INSERT into a relkind='g' table
+// 29. WAL recovery: restart after INSERT into a relkind='g' table
 // mid-flight, replay correctness for pg_computed_column appends. Skipped:
 // needs a restart fixture analogous to the test_recovery.cpp pattern, but
 // that suite predates relkind='g' and doesn't yet model dynamic-schema
@@ -656,7 +654,7 @@ TEST_CASE("services::disk::ddl::dynamic_schema_wal_recovery_skip") {
     WARN("TODO: requires restart fixture; covered by test_recovery.cpp pattern but not yet for relkind='g'");
 }
 
-// 30. Phase 7 (task #91) — verify storage_append behavior for relkind='g'
+// 30. task #91 — verify storage_append behavior for relkind='g'
 // tables with dynamic schema. The premise under test: an INSERT bringing a new
 // column (not yet in the underlying table_storage_t) should silently extend
 // the storage's schema. This documents what storage_append actually does today

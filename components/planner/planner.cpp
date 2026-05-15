@@ -49,10 +49,6 @@ namespace components::planner {
             auto* ins = static_cast<logical_plan::node_insert_t*>(node.get());
             node_ptr cur = node;
 
-            // task_7: DML node carries only its table_oid; constraint wrappers
-            // built here no longer have access to user-typed (db, rel). The
-            // constraint nodes still accept name strings in their ctors for
-            // diagnostic / future-use purposes — pass empty placeholders.
             for (const auto& fk : ins->outgoing_fks()) {
                 auto fk_node = boost::intrusive_ptr(new logical_plan::node_fk_check_t(
                     r, core::dbname_t{}, core::relname_t{}, fk));
@@ -117,13 +113,10 @@ namespace components::planner {
                 return rewrite_update(r, node);
             case node_type::delete_t:
                 return rewrite_delete(r, node);
-            // Phase 13 T14: catalog_resolve_* nodes are emitted by the SQL
-            // transformer (gated by set_transformer_emit_catalog_resolve) as
-            // leaf sub-plans inside a sequence_t. They carry only identifier
-            // strings — physical_plan_generator lowers them to operator_resolve_*_t
-            // which performs the actual pg_catalog lookup at execute time.
-            // The planner must NOT rewrite, drop, or duplicate them — pass
-            // through unchanged (they have no children to walk).
+            // catalog_resolve_* nodes are leaf sub-plans emitted by the SQL
+            // transformer; physical_plan_generator lowers them to
+            // operator_resolve_*_t which performs the pg_catalog lookup at
+            // execute time. Pass through unchanged — no children to walk.
             case node_type::catalog_resolve_table_t:
             case node_type::catalog_resolve_namespace_t:
             case node_type::catalog_resolve_type_t:
@@ -162,7 +155,7 @@ namespace components::planner {
         // DDL rewrite: produces sequence_t(create_collection_t, primitive_write×N).
         // The original node is kept as first child so execute_ddl can create physical
         // storage; the primitive_write children carry the pg_catalog rows to insert.
-        // Column types must already be resolved (done by enrich_plan Phase 1.5-A).
+        // Column types must already be resolved (done by enrich_plan).
         node_ptr rewrite_create_table(std::pmr::memory_resource* r,
                                        node_ptr node,
                                        catalog::oid_batch_t& oid_batch) {
@@ -171,7 +164,7 @@ namespace components::planner {
 
             // Schemaless collections (no declared columns) use relkind='g' (computed)
             // so they stay dynamic-schema permanently — INSERTs append rows to
-            // pg_computed_column via operator_computed_field_register_t (P7.2),
+            // pg_computed_column via operator_computed_field_register_t,
             // restoring the Mongo-style behavior where get_schema returns inferred
             // types without flipping the pg_class row to relkind='r'.
             const char rk = cc->column_definitions().empty()
@@ -359,9 +352,9 @@ namespace components::planner {
                         field_cols.emplace_back(fname, field);
                     }
                 }
-                // Phase 9.W: node_create_type_t has no user-typed db name —
-                // namespace is resolved via namespace_oid stamped by enrich.
-                // dbname is irrelevant in builder (namespace_oid is the routing
+                // node_create_type_t has no user-typed db name — namespace is
+                // resolved via namespace_oid stamped by enrich. dbname is
+                // irrelevant in builder (namespace_oid is the routing
                 // identity); pass "public" as a label.
                 const std::string db_name = std::string("public");
                 const catalog::oid_t composite_oid = oid_batch.peek();
@@ -556,10 +549,6 @@ namespace components::planner {
         // operator that performs the pg_attribute / pg_depend / in-memory schema
         // work for that single clause.
         //
-        // Phase 2 #50 migrated DROP COLUMN out of services/dispatcher/ddl.cpp into
-        // operator_alter_column_drop_t, so all three alter_table_kind variants are
-        // now executor-driven.
-        //
         // Pre-conditions: enrich_logical_plan has stamped table_oid on the node.
         // No OIDs are pre-allocated; alter_column_add_t allocates its own attoid at
         // execution time (one per clause) since attnum/attoid are per-row. The
@@ -656,13 +645,10 @@ namespace components::planner {
                 return rewrite_drop_macro(r, node);
             case node_type::alter_table_t:
                 return rewrite_alter_table(r, node);
-            // Phase 13 T14: catalog_resolve_* nodes are leaf sub-plans emitted
-            // by the SQL transformer (gated by
-            // set_transformer_emit_catalog_resolve). They appear as siblings
-            // of DDL/DML consumer nodes inside a sequence_t. The DDL walk must
-            // pass them through unchanged — the actual lookup happens in
-            // operator_resolve_*_t at execute time; T15 wires consumer-side
-            // metadata propagation.
+            // catalog_resolve_* nodes are leaf sub-plans appearing as
+            // siblings of DDL/DML consumer nodes inside a sequence_t. Pass
+            // through unchanged — the actual lookup happens in
+            // operator_resolve_*_t at execute time.
             case node_type::catalog_resolve_table_t:
             case node_type::catalog_resolve_namespace_t:
             case node_type::catalog_resolve_type_t:

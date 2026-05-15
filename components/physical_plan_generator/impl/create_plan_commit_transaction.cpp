@@ -11,10 +11,9 @@ namespace services::planner::impl {
         auto op = boost::intrusive_ptr(new components::operators::operator_commit_transaction_t(
             context.resource,
             context.log.clone()));
-        // M4.J: propagate DDL-commit flag + WAL coordinates from the logical
-        // node into the operator. RPC mode (is_ddl_commit=false) leaves the
-        // operator in its legacy behavior; DDL mode adds the flush + WAL
-        // commit_txn prefix.
+        // Propagate DDL-commit flag + WAL coordinates from the logical
+        // node into the operator. DDL mode adds the flush + WAL commit_txn
+        // prefix; RPC mode keeps the simpler commit.
         auto* n = static_cast<components::logical_plan::node_commit_transaction_t*>(node.get());
         if (n->is_ddl_commit()) {
             op->set_ddl_commit(n->txn_id(), n->database_oid());

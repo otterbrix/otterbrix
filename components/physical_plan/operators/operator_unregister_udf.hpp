@@ -7,9 +7,9 @@
 
 namespace components::operators {
 
-    // Phase 4 #55 — operator implementation of manager_dispatcher_t::unregister_udf.
+    // Operator implementation of manager_dispatcher_t::unregister_udf.
     //
-    // Mirrors the legacy inline path:
+    // Steps:
     //   1. Probe function_registry_t::get_default() for an overload of
     //      `function_name` whose signature matches `inputs`. Bail with
     //      success_=false if no match exists.

@@ -9,9 +9,9 @@ namespace services::planner::impl {
     create_plan_resolve_table(const context_storage_t& context,
                               const components::logical_plan::node_ptr& node) {
         auto* n = static_cast<components::logical_plan::node_catalog_resolve_table_t*>(node.get());
-        // Phase 13 Step 3: pass the back-pointer so the operator stamps
-        // namespace_oid + table_oid onto the logical node after a successful
-        // pg_class scan. plan_resolve_index_t reads them in Pass 2.
+        // Pass the back-pointer so the operator stamps namespace_oid +
+        // table_oid onto the logical node after a successful pg_class scan.
+        // plan_resolve_index_t reads them in Pass 2.
         return boost::intrusive_ptr(new components::operators::operator_resolve_table_t(
             context.resource,
             context.log.clone(),

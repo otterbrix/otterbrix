@@ -11,8 +11,8 @@ namespace components::operators {
     //
     // Steps (in await_async_and_resume):
     //   1. read_rows_by_key on pg_attribute (attoid=attoid_) — keyed single-row
-    //      lookup (Phase 9.B). attoid_ is pre-stamped by enrich_logical_plan
-    //      from the resolved column metadata.
+    //      lookup. attoid_ is pre-stamped by enrich_logical_plan from the
+    //      resolved column metadata.
     //   2. delete_pg_catalog_rows on the matched attoid (idx=0).
     //   3. build_pg_attribute_row reusing attoid/attnum/atttypid but with attname=new_name
     //      and append_pg_catalog_row.

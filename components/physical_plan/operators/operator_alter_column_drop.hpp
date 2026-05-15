@@ -21,7 +21,7 @@ namespace components::operators {
     //        - dep_cls == pg_constraint -> delete pg_constraint/pg_depend rows.
     //   4. Soft-delete the column: delete the original pg_attribute row and
     //      append_pg_catalog_row a tombstone with attisdropped=true. This is the
-    //      same pattern the legacy ddl.cpp drop_column branch used (Phase 2 #50).
+    //      same pattern the legacy ddl.cpp drop_column branch used.
     //
     // No in-memory schema mutation hook is invoked: subsequent resolve_table
     // operator runs pick up the tombstone via pg_attribute reads.

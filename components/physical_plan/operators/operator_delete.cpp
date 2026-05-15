@@ -18,7 +18,7 @@ namespace components::operators {
         , expression_(std::move(expr)) {}
 
     void operator_delete::accept_resolved_metadata(resolved_table_metadata_t metadata) {
-        // Phase 13 T15 — see operator_insert for the contract.
+        // See operator_insert for the contract.
         if (table_oid_ == components::catalog::INVALID_OID &&
             metadata.table_oid != components::catalog::INVALID_OID) {
             table_oid_ = metadata.table_oid;
@@ -108,8 +108,6 @@ namespace components::operators {
 
     actor_zeta::unique_future<void>
     operator_delete::await_async_and_resume(pipeline::context_t* ctx) {
-        // Phase 5: side-effects previously implemented in
-        // executor_t::intercept_dml_io_(::remove) are now self-contained here.
         using components::vector::data_chunk_t;
         using components::vector::vector_t;
 
@@ -122,12 +120,12 @@ namespace components::operators {
         const size_t modified_size = modified_->size();
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, table_oid_};
 
-        // Phase 13 T15 — when a resolver sibling supplied catalog metadata,
-        // build a translation against the scan-output chunk to surface any
-        // alias/schema drift. operator_delete only ships row ids to the disk
-        // actor (no per-column data), so the translation itself isn't fed
-        // downstream — this is purely a diagnostic + wiring hook for future
-        // metadata-aware delete paths (e.g. index-only deletes).
+        // When a resolver sibling supplied catalog metadata, build a
+        // translation against the scan-output chunk to surface any
+        // alias/schema drift. operator_delete only ships row ids to the
+        // disk actor (no per-column data), so the translation itself isn't
+        // fed downstream — this is purely a diagnostic + wiring hook for
+        // future metadata-aware delete paths (e.g. index-only deletes).
         if (resolved_metadata_.has_value() && left_ && left_->output()) {
             auto& scan_chunk = left_->output()->data_chunk();
             if (scan_chunk.column_count() > 0) {

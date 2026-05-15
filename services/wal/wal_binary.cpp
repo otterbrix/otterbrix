@@ -38,14 +38,14 @@ namespace services::wal {
         }
 
         // -----------------------------------------------------------------
-        // DML header (common to INSERT/DELETE/UPDATE) — Phase 8.E layout:
+        // DML header (common to INSERT/DELETE/UPDATE) layout:
         //
         //   [size:4]         <- payload_size (bytes between size and trailing crc32)
         //   [last_crc32:4]
         //   [wal_id:8]
         //   [txn_id:8]
         //   [record_type:1]
-        //   [table_oid:4]      // Phase 8.E — was [db_len:2][coll_len:2] + variable strings
+        //   [table_oid:4]
         //   [row_start:8]
         //   [row_count:8]
         //   [payload_size:4]

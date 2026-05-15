@@ -46,7 +46,7 @@ namespace services::wal {
         void sync(address_pack pack);
         void set_run_fn(run_fn_t fn) { run_fn_ = std::move(fn); }
 
-        // Contract handlers — Phase 8.E: cfn replaced by table_oid / database_oid.
+        // Contract handlers.
         unique_future<std::vector<record_t>> load(session_id_t session, wal::id_t wal_id);
 
         unique_future<wal::id_t> commit_txn(session_id_t session,
@@ -110,10 +110,9 @@ namespace services::wal {
         std::uintmax_t total_wal_bytes() const noexcept;
 
     private:
-        // Phase 8.E: workers keyed by database_oid (not by string database name).
-        // Phase 8.E uses main_database for all WAL records — single worker model;
-        // multi-database support comes when CREATE DATABASE allocates per-namespace
-        // workers.
+        // Workers keyed by database_oid. Currently uses main_database for all WAL
+        // records (single-worker model); multi-database support will come when
+        // CREATE DATABASE allocates per-namespace workers.
         wal_worker_t* get_or_create_worker(components::catalog::oid_t database_oid);
 
         std::pmr::memory_resource* resource_;

@@ -64,7 +64,7 @@ namespace components::operators {
         // Step 3: enumerate user relations via pg_class (relkind 'r' or 'g')
         // and rebuild + repopulate indexes — compact in step 1 invalidates row
         // positions. pg_class is the authoritative source for user relations;
-        // routing is by table_oid only (Phase 10.F dropped the cfn-based path).
+        // routing is by table_oid only.
         constexpr catalog::oid_t kPgClass = catalog::well_known_oid::pg_class_table;
 
         std::unique_ptr<components::vector::data_chunk_t> pg_class_rows;
@@ -170,64 +170,50 @@ namespace components::operators {
 
         // Step 5: GC pg_computed_column rows for relkind='g' tables.
         //
-        // Phase 7 #113: concurrent VACUUM + INSERT race.
-        // Scenario: VACUUM scans pg_computed_column, identifies dead (refcount<=0)
-        // or stale-version rows. Concurrent INSERT registers same attname. If VACUUM
-        // committed before INSERT's snapshot, INSERT sees the GC'd state and
-        // registers fresh. If INSERT committed before VACUUM's snapshot, VACUUM may
-        // attempt to delete a row already-superseded.
-        //
-        // Safety: VACUUM uses ctx->lowest_active_start_time as the snapshot horizon
-        // (see operator_vacuum.cpp line 33, fed into vacuum_all / cleanup_all_versions
-        // at Steps 1-2). The pg_computed_column GC below reads via read_rows_by_key
-        // and deletes via delete_pg_catalog_rows — both go through ctx->txn, so
-        // rows newer than the horizon are NOT GC-eligible. Concurrent INSERT's
-        // writes (under txn_id >= TRANSACTION_ID_START) are invisible to VACUUM
-        // until commit. So the race window is narrow: INSERT commits between
-        // VACUUM's read and delete, with horizon advancing. In practice MVCC tag
-        // flipping is atomic per row, so VACUUM sees consistent state per delete
-        // operation.
-        //
-        // TODO: stress-test with N concurrent INSERTs + parallel VACUUM to verify
-        // (P7.113 stub in test_mvcc_ddl.cpp).
+        // Safety vs. concurrent VACUUM + INSERT: VACUUM uses
+        // ctx->lowest_active_start_time as the snapshot horizon. The
+        // pg_computed_column GC below reads via read_rows_by_key and deletes
+        // via delete_pg_catalog_rows — both go through ctx->txn, so rows
+        // newer than the horizon are NOT GC-eligible. Concurrent INSERT's
+        // writes (under txn_id >= TRANSACTION_ID_START) are invisible to
+        // VACUUM until commit; MVCC tag flipping is atomic per row.
         //
         // Two-pass strategy:
         //  (a) drop tombstones (attrefcount<=0) produced by
         //      operator_computed_field_unregister;
-        //  (b) Phase 7.5a version-GC — for each (relid, attname) group keep
-        //      only the row with max(attversion); delete older versions even
-        //      if their refcount is still positive. The resolver in
-        //      manager_disk_resolve.cpp already picks max version per attname,
-        //      so older rows are invisible to readers but accumulate over
-        //      ALTER COLUMN cycles and bloat pg_computed_column.
+        //  (b) version-GC — for each (relid, attname) group keep only the
+        //      row with max(attversion); delete older versions even if their
+        //      refcount is still positive. The resolver picks max version
+        //      per attname, so older rows are invisible to readers but
+        //      accumulate over ALTER COLUMN cycles and bloat
+        //      pg_computed_column.
         //
-        // Phase 7.5b — physical column compaction for relkind='g' IN_MEMORY tables.
-        // After (a) tombstone GC and (b) version GC above, columns whose every
-        // pg_computed_column row was deleted are physically dead in
-        // table_storage_t.table().column_definitions_ but invisible to readers
-        // (resolve_table reads from pg_computed_column). We reclaim them by
-        // calling compact_relkind_g_storage with the post-GC live attname set.
+        // Physical column compaction for relkind='g' IN_MEMORY tables.
+        // After (a) tombstone GC and (b) version GC above, columns whose
+        // every pg_computed_column row was deleted are physically dead in
+        // table_storage_t.table().column_definitions_ but invisible to
+        // readers (resolve_table reads from pg_computed_column). We reclaim
+        // them by calling compact_relkind_g_storage with the post-GC live
+        // attname set.
         //
         // Implementation: data_table_t has an existing rebuild constructor
         // (parent, removed_column) backed by collection_t::remove_column —
-        // this drops the column from every row_group segment in IN_MEMORY mode
-        // (single-file/disk segments are out of scope; compact_relkind_g_storage
-        // is a no-op for DISK-backed tables).
+        // this drops the column from every row_group segment in IN_MEMORY
+        // mode (compact_relkind_g_storage is a no-op for DISK-backed
+        // tables).
         //
-        // FIXME: storage_append (per #96) auto-extends the IN_MEMORY schema
-        // when an INSERT brings a new attname. After we drop a physical column
+        // FIXME: storage_append auto-extends the IN_MEMORY schema when an
+        // INSERT brings a new attname. After we drop a physical column
         // here, a subsequent INSERT with that attname will trigger schema
         // re-extension. That's correct behavior but does waste work if the
-        // column is being immediately re-added (e.g. drop+readd cycles). We
-        // accept this for now — a heuristic to skip compaction for "recently
-        // touched" columns can come later.
+        // column is being immediately re-added (e.g. drop+readd cycles).
         if (!computing_table_oids.empty()) {
             constexpr catalog::oid_t kPgComputedColumn = catalog::well_known_oid::pg_computed_column_table;
             components::execution_context_t cc_ctx{ctx->session, ctx->txn, {}};
 
             for (const auto table_oid : computing_table_oids) {
-                // pg_computed_column layout (Phase 11.F-B): 0=relid 1=attoid
-                // 2=attname 3=atttypid 4=atttypspec 5=attversion 6=attrefcount.
+                // pg_computed_column layout: 0=relid 1=attoid 2=attname
+                // 3=atttypid 4=atttypspec 5=attversion 6=attrefcount.
                 types::logical_value_t toid_lv(resource_, table_oid);
                 std::pmr::vector<std::string> cc_keys(resource_);
                 cc_keys.emplace_back("relid");
@@ -265,9 +251,9 @@ namespace components::operators {
                     }
                 }
 
-                // Phase 7.5a version-GC: for each (relid, attname) group,
-                // keep only max(attversion). Older versions with refcount>0
-                // are invisible to readers (resolver picks max version) but
+                // version-GC: for each (relid, attname) group, keep only
+                // max(attversion). Older versions with refcount>0 are
+                // invisible to readers (resolver picks max version) but
                 // accumulate over time; delete them to save space.
                 struct version_row_t {
                     catalog::oid_t attoid;
@@ -308,7 +294,7 @@ namespace components::operators {
                     }
                 }
 
-                // Phase 7.5b — physical column compaction step. Re-read
+                // Physical column compaction step. Re-read
                 // pg_computed_column post-GC for this table_oid (the
                 // tombstone + version-GC deletes above ran under ctx->txn so
                 // they're visible here), build the live attname set, and ask

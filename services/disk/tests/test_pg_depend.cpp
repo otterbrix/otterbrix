@@ -312,7 +312,7 @@ TEST_CASE("services::disk::pg_depend::test_column_level_pg_depend_written") {
 
 // 12. Cross-namespace FK: child in ns_b holds a FK referencing parent in ns_a.
 //     DROP TABLE RESTRICT on parent must be blocked by the FK dependency (pg_depend 'n' row).
-//     Regression for P1.1-r2: child_name.schema/database mix-up in fk_validate_parent_delete.
+//     Regression for child_name.schema/database mix-up in fk_validate_parent_delete.
 // NOTE: ddl_create_constraint has no catalog-builder helper yet; test verifies table creation only.
 TEST_CASE("services::disk::pg_depend::cross_namespace_fk_restricts_parent_drop") {
     fixture fx;

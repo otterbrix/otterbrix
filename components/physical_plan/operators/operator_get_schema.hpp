@@ -9,7 +9,7 @@
 
 namespace components::operators {
 
-    // Phase 4 #54 — operator implementation of manager_dispatcher_t::get_schema.
+    // Operator implementation of manager_dispatcher_t::get_schema.
     //
     // For each (database, collection) id, resolves the namespace OID via
     // pg_namespace.nspname → oid, the table OID via pg_class.(relname,

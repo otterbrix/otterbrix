@@ -39,30 +39,26 @@ namespace components::operators {
 
     actor_zeta::unique_future<void>
     operator_computed_field_register_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // Phase 7 #93: concurrent INSERTs registering the same field can produce
-        // duplicate (relid, attname) rows in pg_computed_column. MVCC isolation
-        // (see #98) hides uncommitted writes from other sessions, so each session
-        // sees the field as unregistered and proceeds to allocate a fresh attoid +
-        // append a register row. After both commit, pg_computed_column holds two
-        // rows for the same (relid, attname) with different attoids.
+        // Concurrent INSERTs registering the same field can produce
+        // duplicate (relid, attname) rows in pg_computed_column. MVCC
+        // isolation hides uncommitted writes from other sessions, so each
+        // session sees the field as unregistered and proceeds to allocate a
+        // fresh attoid + append a register row. After both commit,
+        // pg_computed_column holds two rows for the same (relid, attname)
+        // with different attoids.
         //
         // Tolerance path (current):
         //   - Resolver picks max(attversion); ties broken by lowest attoid.
-        //   - VACUUM aggressive (P7.5a) eventually GCs stale (refcount=0)
-        //     versions, so duplicates are short-lived.
-        //   - Storage-side add_column (manager_disk #96 schema-extension) is
-        //     idempotent: the second concurrent INSERT either no-ops (column
-        //     already extended) or fails benignly — caller path is unaffected.
+        //   - VACUUM aggressive eventually GCs stale (refcount=0) versions,
+        //     so duplicates are short-lived.
+        //   - Storage-side add_column (schema-extension) is idempotent: the
+        //     second concurrent INSERT either no-ops (column already
+        //     extended) or fails benignly — caller path is unaffected.
         //
-        // Strict-serialization path (TODO, deferred until benchmark proves the
-        // race causes user-visible problems): introduce per-table_oid lock via a
-        // disk-actor message pair —
-        //     manager_disk_t::lock_pg_computed_column_for_table(oid)
-        //     manager_disk_t::unlock_pg_computed_column_for_table(oid)
-        // — held across the read/classify/allocate/append/depend sequence below.
-        // Cleaner alternative: collapse this whole loop body into one composite
-        // disk-actor handler (single mailbox slot, no co_await interleaving),
-        // which also subsumes #107 pg_depend writes.
+        // TODO Strict-serialization path (deferred until benchmark proves
+        // the race causes user-visible problems): introduce per-table_oid
+        // lock via a disk-actor message pair held across the
+        // read/classify/allocate/append/depend sequence below.
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
         constexpr catalog::oid_t pg_computed_column = catalog::well_known_oid::pg_computed_column_table;
@@ -73,8 +69,8 @@ namespace components::operators {
 
         for (const auto& col : columns_) {
             // Step 1: read existing pg_computed_column rows for (relid, attname).
-            // pg_computed_column layout (Phase 11.F-B): 0=relid 1=attoid
-            // 2=attname 3=atttypid 4=atttypspec 5=attversion 6=attrefcount.
+            // pg_computed_column layout: 0=relid 1=attoid 2=attname
+            // 3=atttypid 4=atttypspec 5=attversion 6=attrefcount.
             types::logical_value_t name_lv(resource_, std::string(col.name()));
             std::pmr::vector<std::string> r_keys(resource_);
             r_keys.emplace_back("relid");
@@ -146,19 +142,19 @@ namespace components::operators {
                 }
             }
 
-            // Phase 11.F-B: encode complex types into atttypspec so resolve_table
-            // for relkind='g' can reconstruct ARRAY/STRUCT/UNION/DECIMAL etc.
-            // exactly. Builtin scalars leave atttypspec empty — atttypid alone
-            // reconstructs them via oid_to_builtin_type.
+            // Encode complex types into atttypspec so resolve_table for
+            // relkind='g' can reconstruct ARRAY/STRUCT/UNION/DECIMAL etc.
+            // exactly. Builtin scalars leave atttypspec empty — atttypid
+            // alone reconstructs them via oid_to_builtin_type.
             std::string atttypspec;
             if (atttypid == catalog::INVALID_OID && col.type().type() != types::logical_type::UNKNOWN) {
                 atttypspec = catalog::encode_type_spec(col.type());
             }
 
             // Step 2: classify and decide.
-            // Phase 11.G: if latest row is a tombstone (refcount<=0), the
-            // column was DROP'd. Treat re-INSERT as is_new so a fresh attoid +
-            // bumped attversion are written and operator_computed_field_register
+            // If latest row is a tombstone (refcount<=0), the column was
+            // DROP'd. Treat re-INSERT as is_new so a fresh attoid + bumped
+            // attversion are written and operator_computed_field_register
             // doesn't short-circuit on stale type info.
             const bool is_new = (max_version < 0) || (latest_refcount <= 0);
             const bool same_type =
@@ -210,8 +206,8 @@ namespace components::operators {
                 ctx->pg_catalog_appends.push_back(std::move(rng));
             }
 
-            // Phase 7 #107: emit pg_depend rows so the dynamic computed-column
-            // mirrors the static ALTER ADD COLUMN dependency graph:
+            // Emit pg_depend rows so the dynamic computed-column mirrors
+            // the static ALTER ADD COLUMN dependency graph:
             //   1) (pg_computed_column, attoid) → (pg_type, atttypid) 'n'
             //      lets DROP TYPE refuse to drop a type still used by a dynamic
             //      column (relkind='g').

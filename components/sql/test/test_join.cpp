@@ -90,9 +90,8 @@ TEST_CASE("components::sql::join") {
                                           "full outer join uid3.db3.sch3.test3 on y = z;"));
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());
         auto join = result.node->children().front();
-        // Phase 10.D: collection_full_name() accessor removed; check role-named
-        // accessors directly. The transformer normalizes (db.schema.tbl) into
-        // dbname=db (db preferred over schema when both are present in cfn).
+        // The transformer normalizes (db.schema.tbl) into dbname=db (db
+        // preferred over schema when both are present in cfn).
         {
             auto* agg = static_cast<const components::logical_plan::node_aggregate_t*>(join->children().back().get());
             REQUIRE(agg->dbname() == "db3");

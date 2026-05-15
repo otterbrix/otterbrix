@@ -8,9 +8,6 @@ namespace components::logical_plan {
     // session id flows through pipeline::context_t::session; operator-side
     // resolution against the txn_manager is done in
     // operator_abort_transaction_t.
-    //
-    // Phase 4 #56: pipeline-unification replacement for the inline
-    // manager_dispatcher_t::abort_transaction body.
     class node_abort_transaction_t final : public node_t {
     public:
         explicit node_abort_transaction_t(std::pmr::memory_resource* resource);

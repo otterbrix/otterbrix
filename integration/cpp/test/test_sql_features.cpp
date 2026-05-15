@@ -955,7 +955,7 @@ TEST_CASE("integration::cpp::test_sql_features::check_constraint") {
 }
 
 TEST_CASE("integration::cpp::test_sql_features::check_constraint_invalid_expr") {
-    // P2.5: Verifies that CHECK constraints with unsupported expression node types
+    // Verifies that CHECK constraints with unsupported expression node types
     // (T_FuncCall) are rejected at creation time with a clear error, not silently stored
     // as empty conexpr and bypassed on INSERT.
     auto config = test_create_config("/tmp/test_sql_features/check_constraint_invalid_expr");
@@ -1527,10 +1527,10 @@ TEST_CASE("integration::cpp::test_sql_features::fk_set_null") {
 }
 
 // ----------------------------------------------------------------------------
-// Phase 7.7 — Mongo-style dynamic schema for relkind='g' (computed) tables.
+// Mongo-style dynamic schema for relkind='g' (computed) tables.
 // Empty CREATE TABLE produces a relkind='g' table; columns are registered on
-// every INSERT via operator_computed_field_register_t (P7.2). The table stays
-// 'g' permanently (no first-INSERT promotion to 'r').
+// every INSERT via operator_computed_field_register_t. The table stays 'g'
+// permanently (no first-INSERT promotion to 'r').
 // ----------------------------------------------------------------------------
 
 namespace {
@@ -1637,7 +1637,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_drop_column") {
         }
         {
             // DROP COLUMN on a relkind='g' table routes through
-            // operator_computed_field_unregister_t (P7.2), which appends a
+            // operator_computed_field_unregister_t, which appends a
             // refcount=0 tombstone so subsequent SELECTs hide the column.
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -1656,12 +1656,12 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_drop_column") {
     }
 }
 
-// Phase 7.7+ — multi-statement workflow: chained INSERTs into a relkind='g'
-// table verify cross-statement aggregation in pg_computed_column. The SQL
-// surface in otterbrix today does not parse explicit BEGIN/COMMIT (the
-// transformer drops TransactionStmt), so this test exercises the auto-commit
-// equivalent: two consecutive INSERTs that grow the dynamic schema, followed
-// by a SELECT that must see both rows and the union of their columns.
+// Multi-statement workflow: chained INSERTs into a relkind='g' table verify
+// cross-statement aggregation in pg_computed_column. The SQL surface in
+// otterbrix today does not parse explicit BEGIN/COMMIT (the transformer
+// drops TransactionStmt), so this test exercises the auto-commit
+// equivalent: two consecutive INSERTs that grow the dynamic schema,
+// followed by a SELECT that must see both rows and the union of their columns.
 TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_multi_statement_txn") {
     auto config = test_create_config("/tmp/test_sql_features/dynamic_schema_multi_stmt");
     test_clear_directory(config);
@@ -1707,24 +1707,23 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_multi_statement_t
     }
 }
 
-// Phase 7.7+ — ROLLBACK undoes pg_computed_column appends via
-// storage_revert_appends. Skipped at SQL level: the SQL transformer in
-// otterbrix does not currently lower TransactionStmt (BEGIN/COMMIT/ROLLBACK)
-// to physical operators, so there is no SQL-level handle to test the
-// rollback path. The disk-level revert path is exercised in
-// services/disk/tests/test_mvcc_ddl.cpp; the SQL coverage here will land
-// after the planner gains a transaction-stmt branch.
+// ROLLBACK undoes pg_computed_column appends via storage_revert_appends.
+// Skipped at SQL level: the SQL transformer in otterbrix does not currently
+// lower TransactionStmt (BEGIN/COMMIT/ROLLBACK) to physical operators, so
+// there is no SQL-level handle to test the rollback path. The disk-level
+// revert path is exercised in services/disk/tests/test_mvcc_ddl.cpp; the
+// SQL coverage here will land after the planner gains a transaction-stmt branch.
 TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_rollback_undoes_register") {
     WARN("TODO: SQL transformer does not lower BEGIN/COMMIT/ROLLBACK yet; "
          "disk-level revert covered by test_mvcc_ddl.cpp");
 }
 
-// Phase 7.7+ — multi-step type evolution. Inserting into the same column with
-// a sequence of incompatible types (INT → TEXT → DOUBLE) bumps attversion
-// each time (P7.2 operator_computed_field_register_t allocates a fresh attoid
-// and writes attversion = prior_max + 1). resolve_table picks the latest
-// version, so SELECT * must report column 'a' with the most recent type
-// (DOUBLE) and 3 rows.
+// Multi-step type evolution. Inserting into the same column with a sequence
+// of incompatible types (INT → TEXT → DOUBLE) bumps attversion each time
+// (operator_computed_field_register_t allocates a fresh attoid and writes
+// attversion = prior_max + 1). resolve_table picks the latest version, so
+// SELECT * must report column 'a' with the most recent type (DOUBLE) and
+// 3 rows.
 TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_type_evolution_multistep") {
     auto config = test_create_config("/tmp/test_sql_features/dynamic_schema_type_evolution");
     test_clear_directory(config);
@@ -1823,10 +1822,10 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_re_add_after_drop
     }
 }
 
-// Phase 7 task #103 — edge case: DROP a column then re-INSERT it on a relkind='g'
-// table while a *different* column stays alive. Existing
-// dynamic_schema_re_add_after_drop covers the all-columns-dropped variant; this
-// case keeps column 'a' across the cycle to verify per-column isolation:
+// Edge case: DROP a column then re-INSERT it on a relkind='g' table while
+// a *different* column stays alive. Existing dynamic_schema_re_add_after_drop
+// covers the all-columns-dropped variant; this case keeps column 'a' across
+// the cycle to verify per-column isolation:
 //
 //   CREATE TABLE foo();
 //   INSERT (a=1, b='x')        -- registers a (BIGINT) + b (STRING)
@@ -1852,8 +1851,8 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_re_add_after_drop
 //     attoid (the type-evolution path), making the column visible again — see
 //     dynamic_schema_type_evolution_multistep.
 //
-// Storage side (manager_disk_storage.cpp #96 fix): storage_append for
-// relkind='g' auto-extends the in-memory schema. Once column 'b' has been added
+// Storage side: storage_append for relkind='g' auto-extends the in-memory
+// schema. Once column 'b' has been added
 // to storage during INSERT 1, subsequent INSERTs with 'b' append to the
 // existing storage column — row 1's stored 'x' and row 2's stored 'y' both
 // persist on disk regardless of catalog visibility.
@@ -1919,7 +1918,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_drop_then_readd_p
             WARN("expected 2 rows after re-INSERT, got " << cur->size());
         }
         // Column 'a' must remain visible across the cycle (it was never
-        // dropped). This is the key isolation property task #103 pins down.
+        // dropped). This is the key per-column isolation property.
         REQUIRE(has_column(*cur, "a"));
 
         // Column 'b' visibility: by the same-type-no-op rule the second
@@ -1930,7 +1929,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_drop_then_readd_p
         if (has_column(*cur, "b")) {
             WARN("operator_computed_field_register_t now revives a same-type "
                  "tombstone (column 'b' visible after re-INSERT); previously "
-                 "this was a no-op and 'b' stayed hidden. Update task #103 "
+                 "this was a no-op and 'b' stayed hidden. Update test "
                  "expectations accordingly.");
         } else {
             // Documented current behavior: same-type re-INSERT after DROP is
@@ -1942,9 +1941,8 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_drop_then_readd_p
     }
 }
 
-// Phase 7 task #105 — DROP DATABASE CASCADE must clean up all tables that live
-// in the dropped namespace, plus their pg_attribute / pg_computed_column /
-// pg_depend rows.
+// DROP DATABASE CASCADE must clean up all tables that live in the dropped
+// namespace, plus their pg_attribute / pg_computed_column / pg_depend rows.
 //
 // Walk: BFS in operator_dynamic_cascade_delete_t starts at
 // (pg_namespace, ns_oid) and follows pg_depend.refclassid/refobjid →
@@ -2098,12 +2096,12 @@ TEST_CASE("integration::cpp::test_sql_features::drop_database_cascade_cleanup") 
 }
 
 // ----------------------------------------------------------------------------
-// Phase 7 task #102 — compound SQL on relkind='g' (dynamic-schema) tables.
-// JOIN, UNION ALL, subquery, GROUP BY, ORDER BY must transparently work over
-// columns registered through pg_computed_column on first INSERT. The transform
+// Compound SQL on relkind='g' (dynamic-schema) tables. JOIN, UNION ALL,
+// subquery, GROUP BY, ORDER BY must transparently work over columns
+// registered through pg_computed_column on first INSERT. The transform
 // pipeline resolves these columns the same way it resolves static-schema
-// (relkind='r') attributes, so the planner / executor downstream do not have
-// to special-case 'g'. These tests exercise that contract end-to-end.
+// (relkind='r') attributes, so the planner / executor downstream do not
+// have to special-case 'g'. These tests exercise that contract end-to-end.
 // ----------------------------------------------------------------------------
 
 TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_join") {
@@ -2387,9 +2385,8 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_orderby") {
 }
 
 // ----------------------------------------------------------------------------
-// Phase 7 task #112 — complex types in dynamic schema (relkind='g').
-// Vision: HTAP + columnar + vector-DB + document-store. Verify that
-// vector-like (float ARRAY), STRUCT (RowExpr), and ARRAY columns can be
+// Complex types in dynamic schema (relkind='g'). Verify that vector-like
+// (float ARRAY), STRUCT (RowExpr), and ARRAY columns can be
 // registered/queried via the Mongo-style path.
 //
 // Notes:
@@ -2629,8 +2626,8 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_mixed_complex") {
 }
 
 TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_stress_1000_random_inserts") {
-    // Phase 7 P7.114: stress-test relkind='g' (Mongo-style dynamic schema) at
-    // scale: 1000 INSERTs, each carrying a random subset of fields drawn from a
+    // Stress-test relkind='g' (Mongo-style dynamic schema) at scale: 1000
+    // INSERTs, each carrying a random subset of fields drawn from a
     // pool of 50 unique field names (f0..f49). Every odd-index field is
     // populated with a string literal; every even-index field with a bigint.
     // The test asserts that the dispatcher accepts all inserts in well-under

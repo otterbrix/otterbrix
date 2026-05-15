@@ -23,7 +23,7 @@ namespace components::operators {
         , upsert_(upsert) {}
 
     void operator_update::accept_resolved_metadata(resolved_table_metadata_t metadata) {
-        // Phase 13 T15 — see operator_insert for the contract.
+        // See operator_insert for the contract.
         if (table_oid_ == components::catalog::INVALID_OID &&
             metadata.table_oid != components::catalog::INVALID_OID) {
             table_oid_ = metadata.table_oid;
@@ -140,8 +140,6 @@ namespace components::operators {
 
     actor_zeta::unique_future<void>
     operator_update::await_async_and_resume(pipeline::context_t* ctx) {
-        // Phase 5: side-effects previously implemented in
-        // executor_t::intercept_dml_io_(::update) are now self-contained here.
         using components::vector::data_chunk_t;
         using components::vector::vector_t;
 
@@ -152,8 +150,8 @@ namespace components::operators {
         auto& out_chunk = output_->data_chunk();
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, table_oid_};
 
-        // Phase 13 T15 — if a resolver sibling supplied catalog metadata,
-        // compute a chunk_position -> table_position translation. See
+        // If a resolver sibling supplied catalog metadata, compute a
+        // chunk_position -> table_position translation. See
         // operator_insert::await_async_and_resume for the rationale; the
         // disk path already aligns by alias, this is the wiring hook.
         if (resolved_metadata_.has_value() && out_chunk.column_count() > 0) {

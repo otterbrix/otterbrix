@@ -9,7 +9,6 @@ namespace components::logical_plan {
     public:
         explicit node_match_t(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname);
 
-        // Phase 9.W/10.D: role-named accessors.
         const std::string& relname() const noexcept { return relname_; }
         const std::string& dbname() const noexcept { return dbname_; }
 

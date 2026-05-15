@@ -41,9 +41,9 @@ namespace components::operators {
                                          ctx->txn);
         auto data = co_await std::move(sf);
 
-        // Phase 13 M7: project the chunk down to live columns when the plan
-        // generator supplied an alias mask. For relkind='g' (dynamic schema)
-        // tables row_group keeps tombstoned columns until VACUUM; resolve_table
+        // Project the chunk down to live columns when the plan generator
+        // supplied an alias mask. For relkind='g' (dynamic schema) tables
+        // row_group keeps tombstoned columns until VACUUM; resolve_table
         // operator filters them out and the planner forwards the surviving
         // alias list here. relkind='r' tables get an empty mask (no filtering).
         if (data && data->column_count() > 0 && has_projection_) {

@@ -87,8 +87,8 @@ TEST_CASE("integration::cpp::test_wal_pool::per_worker_files_created") {
     }
 
     INFO("verify per-worker WAL segment files exist") {
-        // Phase 8.E: WAL creates per-database-oid directories. Otterbrix routes all
-        // DML in this phase to main_database (oid=4) — single worker.
+        // WAL creates per-database-oid directories. Otterbrix routes all
+        // DML in this scenario to main_database (oid=4) — single worker.
         constexpr auto kMainDb = components::catalog::well_known_oid::main_database;
         auto database_wal_directory =
             config.wal.path / std::to_string(static_cast<unsigned>(kMainDb));

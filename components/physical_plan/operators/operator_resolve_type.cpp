@@ -83,7 +83,7 @@ namespace components::operators {
 
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
-        // M4.F: dbname-form (back-pointer ctor) — resolve namespace_oid from
+        // Dbname-form (back-pointer ctor) — resolve namespace_oid from
         // dbname before pg_type scan. "public" / "pg_catalog" are well-known
         // constants and don't need a disk roundtrip; arbitrary names go
         // through pg_namespace.
@@ -148,7 +148,7 @@ namespace components::operators {
                     }
                     chunk.set_cardinality(1);
 
-                    // M4.F: stamp resolved metadata on the logical node so
+                    // Stamp resolved metadata on the logical node so
                     // enrich / validate / resolve_type.cpp can read it via
                     // plan_resolve_index.
                     if (target_node_) {

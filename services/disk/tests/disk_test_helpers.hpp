@@ -33,9 +33,8 @@ inline components::execution_context_t txn_ctx() {
     return {session_id_t{}, components::table::transaction_data{88, 0}, {}};
 }
 
-// Phase 5b helper: append every write returned by a builder, collecting the
-// resulting pg_catalog_append_range_t values for a later batched
-// storage_commit_appends call.
+// Append every write returned by a builder, collecting the resulting
+// pg_catalog_append_range_t values for a later batched storage_commit_appends call.
 template<typename Fx, typename Writes>
 inline void append_writes(Fx& fx,
                           components::execution_context_t ctx,
@@ -96,7 +95,7 @@ catalog::oid_t test_create_index(Fx& fx, catalog::oid_t ns_oid, catalog::oid_t t
     const catalog::oid_t index_oid = oids[0];
     catalog::oid_batch_t batch;
     batch.oids = std::move(oids);
-    (void)col_names; // Phase 9.G: column_names dropped from build_create_index_writes
+    (void)col_names; // column_names dropped from build_create_index_writes
     auto writes = catalog::build_create_index_writes(&fx.resource, index_name, ns_oid, table_oid, index_oid, col_attoids);
     std::vector<components::pg_catalog_append_range_t> appends_local;
     append_writes(fx, auto_ctx(), writes, appends_local);
@@ -310,12 +309,11 @@ catalog::oid_t test_computed_append_simple(Fx& fx, catalog::oid_t table_oid,
     return attoid;
 }
 
-// Phase 7.7: simulate operator_computed_field_register_t at the disk-actor
-// level. Reads existing pg_computed_column rows for (relid, attname); if a
-// live row with the same atttypid already exists this is a no-op (idempotent
-// register). Otherwise allocates a fresh attoid and appends a new row at
-// (max_version+1) with refcount=1. Returns the (new or existing) attoid, or
-// INVALID_OID on no-op.
+// Simulate operator_computed_field_register_t at the disk-actor level.
+// Reads existing pg_computed_column rows for (relid, attname); if a live row
+// with the same atttypid already exists this is a no-op (idempotent register).
+// Otherwise allocates a fresh attoid and appends a new row at (max_version+1)
+// with refcount=1. Returns the (new or existing) attoid, or INVALID_OID on no-op.
 template<typename Fx>
 catalog::oid_t test_computed_register(Fx& fx, catalog::oid_t table_oid,
                                        const std::string& field_name,
@@ -369,8 +367,8 @@ catalog::oid_t test_computed_register(Fx& fx, catalog::oid_t table_oid,
     return attoid;
 }
 
-// Phase 7.7: simulate operator_computed_field_unregister_t at the disk-actor
-// level. Picks the latest live row for (relid, attname) (max attversion AND
+// Simulate operator_computed_field_unregister_t at the disk-actor level.
+// Picks the latest live row for (relid, attname) (max attversion AND
 // refcount>0) and appends a tombstone (same attoid + same atttypid, version =
 // max+1, refcount=0). Returns true if a tombstone was written, false if the
 // column was already absent (idempotent).

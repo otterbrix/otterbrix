@@ -7,7 +7,7 @@
 
 namespace components::operators {
 
-    // Phase 13 T4 — physical operator that resolves a function by
+    // Physical operator that resolves a function by
     // (pronamespace, proname) against pg_proc.
     //
     // Mirrors services::disk::manager_disk_t::resolve_function but lives in

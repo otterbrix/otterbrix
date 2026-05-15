@@ -28,7 +28,7 @@ namespace services::planner::impl {
         }
         auto limit = static_cast<components::logical_plan::node_limit_t*>(node_limit.get())->limit();
         auto table_oid = node->table_oid();
-        // task_7: target the simple (no USING) path when neither a USING-side
+        // Target the simple (no USING) path when neither a USING-side
         // table_oid nor raw data join input is present.
         if (node_delete->table_oid_from() == components::catalog::INVALID_OID && !node_raw_data) {
             auto plan = boost::intrusive_ptr(
@@ -50,10 +50,10 @@ namespace services::planner::impl {
                                                                                              limit)),
                                    create_plan_data(node_raw_data));
             } else {
-                // Phase 13 Step 3: read the USING-side table_oid from the
-                // node (enrich_logical_plan stamps it via the same plan-tree
-                // resolve path as the primary table). INVALID_OID would scan
-                // an empty storage and silently drop the join condition.
+                // Read the USING-side table_oid from the node
+                // (enrich_logical_plan stamps it via the same plan-tree
+                // resolve path as the primary table). INVALID_OID would
+                // scan an empty storage and silently drop the join condition.
                 const auto using_oid = node_delete->table_oid_from();
                 plan->set_children(boost::intrusive_ptr(new components::operators::full_scan(context.resource,
                                                                                              context.log.clone(),

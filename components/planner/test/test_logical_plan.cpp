@@ -40,7 +40,7 @@ TEST_CASE("components::planner::drop_database") {
     auto plan = make_node_drop_database(&resource);
     components::planner::planner_t planner;
     auto node = planner.create_plan(&resource, plan);
-    // task_3: drop nodes carry only OIDs; enrich is not run in this unit test
+    // drop nodes carry only OIDs; enrich is not run in this unit test
     // harness so namespace_oid stays INVALID_OID (== 0).
     REQUIRE(node->to_string() == R"_($drop_database: <oid:0>)_");
 }
@@ -58,7 +58,7 @@ TEST_CASE("components::planner::drop_collection") {
     auto plan = make_node_drop_collection(&resource);
     components::planner::planner_t planner;
     auto node = planner.create_plan(&resource, plan);
-    // task_3: drop nodes carry only OIDs; enrich is not run in this unit test
+    // drop nodes carry only OIDs; enrich is not run in this unit test
     // harness so table_oid stays INVALID_OID (== 0).
     REQUIRE(node->to_string() == R"_($drop_collection: <oid:0>)_");
 }
@@ -174,7 +174,7 @@ TEST_CASE("components::planner::insert") {
         auto plan = make_node_insert(&resource, std::move(chunk));
         components::planner::planner_t planner;
         auto node = planner.create_plan(&resource, plan);
-        // task_7: insert prints OID-based identity; enrich is not run in this
+        // insert prints OID-based identity; enrich is not run in this
         // unit test harness so table_oid stays INVALID_OID (== 0).
         REQUIRE(node->to_string() == R"_($insert: <oid:0> {$raw_data: {$rows: 0}})_");
     }

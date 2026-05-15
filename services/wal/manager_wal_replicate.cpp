@@ -29,7 +29,7 @@ namespace services::wal {
         trace(log_, "manager_wal_replicate start, enabled={}", enabled_);
         if (enabled_ && !config_.path.empty()) {
             std::filesystem::create_directories(config_.path);
-            // Phase 8.E: Discover existing database directories (named after database_oid).
+            // Discover existing database directories (named after database_oid).
             // Recover global_id_, create workers.
             wal::id_t max_recovered_id = 0;
             for (const auto& entry : std::filesystem::directory_iterator(config_.path)) {
@@ -326,10 +326,9 @@ namespace services::wal {
     // -----------------------------------------------------------------------
     // Contract: write_physical_insert
     //
-    // Phase 8.E: callers pass `table_oid` directly. Worker keying uses
-    // `main_database` — single-worker for all WAL traffic in Phase 8.E. Once
-    // multi-database support arrives the routing key will move to per-table
-    // namespace_oid resolution.
+    // Callers pass `table_oid` directly. Worker keying uses `main_database`
+    // (single-worker for all WAL traffic). Once multi-database support arrives
+    // the routing key will move to per-table namespace_oid resolution.
     // -----------------------------------------------------------------------
 
     manager_wal_replicate_t::unique_future<wal::id_t>

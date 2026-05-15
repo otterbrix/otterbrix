@@ -9,7 +9,7 @@
 
 namespace components::logical_plan {
 
-    // M4.L — pipeline replacement for inline manager_disk_t::allocate_oids_batch
+    // Pipeline replacement for inline manager_disk_t::allocate_oids_batch
     // calls in the dispatcher. The node carries the requested count; Pass 1's
     // operator_allocate_oids_t scans/allocates from the disk-side oid_generator
     // atomically and stamps the resulting vector of OIDs on this node so the

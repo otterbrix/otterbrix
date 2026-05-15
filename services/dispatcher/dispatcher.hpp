@@ -102,7 +102,6 @@ namespace services::dispatcher {
 
         static constexpr std::size_t executor_pool_size_ = 4;
 
-        // KEEP per task #76 — see docs/phase7-design-decisions.md.
         // Fast-path membership cache for collections. Read by physical_plan_generator
         // in 8 sites (join, match, aggregate, sort, group) to drive optimizer
         // decisions. Removing would require touching all 8 + replacing with

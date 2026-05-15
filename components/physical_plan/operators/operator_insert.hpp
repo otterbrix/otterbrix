@@ -16,12 +16,12 @@ namespace components::operators {
 
         catalog::oid_t table_oid() const noexcept { return table_oid_; }
 
-        // Phase 5: self-contained DML side-effects. Performs storage_append +
+        // Self-contained DML side-effects. Performs storage_append +
         // WAL physical_insert + index::insert_rows, populates ctx->dml_*
         // swap-info fields, then mark_executed.
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
-        // Phase 13 T15 — accept pre-resolved table metadata from an upstream
+        // Accept pre-resolved table metadata from an upstream
         // operator_resolve_table_t sibling (delivered by operator_sequence_t
         // post-resolve). When present, the insert operator will compute a
         // chunk_position -> table_position translation via alias matching

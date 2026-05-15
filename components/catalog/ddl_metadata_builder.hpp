@@ -82,8 +82,7 @@ namespace components::catalog {
     // Writes pg_class (relkind='i') + pg_index (indisvalid=false) +
     //   pg_depend (index→table 'a') + N×pg_depend (index→column 'i').
     // column_attoids[i] is the pg_attribute.attoid for the i-th indexed column;
-    // routing identity (no name lookup needed). Phase 9.G dropped the
-    // column_names parameter (was unused inside the writer).
+    // routing identity (no name lookup needed).
     // oid_batch must hold at least 1 OID (index_oid).
     std::vector<catalog_write_t>
     build_create_index_writes(
@@ -160,9 +159,9 @@ namespace components::catalog {
         bool                        indisvalid);
 
     // pg_computed_column row builder for tests / primitive-write callers.
-    // Schema (Phase 11.F-B): [relid, attoid, attname, atttypid, atttypspec,
-    // attversion, attrefcount]. atttypspec defaults to "" — only complex
-    // types (ARRAY/STRUCT/UNION/DECIMAL/...) need it; builtin scalars are
+    // Schema: [relid, attoid, attname, atttypid, atttypspec, attversion,
+    // attrefcount]. atttypspec defaults to "" — only complex types
+    // (ARRAY/STRUCT/UNION/DECIMAL/...) need it; builtin scalars are
     // reconstructed from atttypid alone via oid_to_builtin_type.
     vector::data_chunk_t
     build_pg_computed_column_row(

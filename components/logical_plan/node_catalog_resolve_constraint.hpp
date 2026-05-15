@@ -12,7 +12,7 @@
 
 namespace components::logical_plan {
 
-    // Phase 13 M4.D — pipeline FK + CHECK constraint resolution.
+    // Pipeline FK + CHECK constraint resolution.
     // Carries a back-pointer to a sibling node_catalog_resolve_table_t (whose
     // Pass 1 stamp provides the target's table_oid). The corresponding
     // operator_resolve_constraint_t reads pg_constraint (+ pg_attribute /

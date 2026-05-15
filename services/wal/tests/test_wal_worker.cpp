@@ -31,7 +31,7 @@ static const std::filesystem::path base_wal_worker_path = "/tmp/otterbrix_test_w
 // ---------------------------------------------------------------------------
 // Fixture: sets up a scheduler, a manager, and a single wal_worker_t for
 // the main_database.  The manager spawns workers on demand.
-// Phase 8.E: workers keyed by database_oid (single worker for main_database).
+// Workers are keyed by database_oid (single worker for main_database).
 // ---------------------------------------------------------------------------
 struct test_wal_worker {
     test_wal_worker(const std::filesystem::path& path)
@@ -273,7 +273,7 @@ TEST_CASE("wal_worker::commit_marker") {
 TEST_CASE("wal_worker::corruption_stop") {
     auto test_path = base_wal_worker_path / "corruption_stop";
 
-    // Phase 1: write records using standalone manager (no fixture, so files survive).
+    // Write records using standalone manager (no fixture, so files survive).
     {
         std::filesystem::remove_all(test_path);
         std::filesystem::create_directories(test_path);
@@ -315,7 +315,7 @@ TEST_CASE("wal_worker::corruption_stop") {
 
         scheduler->stop();
     }
-    // Phase 1 done -- files on disk remain.
+    // Setup done -- files on disk remain.
 
     // Corrupt one of the WAL segment files: flip some bytes in the middle.
     bool corrupted = false;
@@ -384,7 +384,7 @@ TEST_CASE("wal_worker::crc_chain_startup") {
     auto test_path = base_wal_worker_path / "crc_chain";
     services::wal::id_t last_wal_id = 0;
 
-    // Phase 1: write some records using standalone manager (no fixture, so files survive).
+    // Write some records using standalone manager (no fixture, so files survive).
     {
         std::filesystem::remove_all(test_path);
         std::filesystem::create_directories(test_path);
@@ -435,7 +435,7 @@ TEST_CASE("wal_worker::crc_chain_startup") {
         scheduler->stop();
     }
 
-    // Phase 2: re-open on the same directory (no cleanup).
+    // Re-open on the same directory (no cleanup).
     {
         std::pmr::synchronized_pool_resource resource;
         auto log = initialization_logger("python", "/tmp/docker_logs/");

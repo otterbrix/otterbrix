@@ -213,12 +213,12 @@ namespace components::catalog {
             c.emplace_back("attoid", oid_col(), true);         // 1
             c.emplace_back("attname", str_col(), true);        // 2
             c.emplace_back("atttypid", oid_col(), true);       // 3: builtin scalar oid (complex types use atttypspec)
-            c.emplace_back("atttypspec", str_col(), true);     // 4: Phase 11.F-B — flat-text encoded complex_logical_type
+            c.emplace_back("atttypspec", str_col(), true);     // 4: flat-text encoded complex_logical_type
                                                                 //    for ARRAY / STRUCT / UNION / DECIMAL / fixed-width sub-types.
                                                                 //    Empty for builtin scalars (atttypid alone reconstructs the type).
                                                                 //    Mirrors pg_attribute.atttypspec.
-            c.emplace_back("attversion", i64_col(), true);    // 5: was 4
-            c.emplace_back("attrefcount", i64_col(), true);   // 6: was 5
+            c.emplace_back("attversion", i64_col(), true);    // 5
+            c.emplace_back("attrefcount", i64_col(), true);   // 6
             return c;
         }
     } // namespace

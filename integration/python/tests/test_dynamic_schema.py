@@ -1,13 +1,11 @@
 """
-Phase 7 task #116: Python integration test for dynamic schema (relkind='g').
+Python integration test for dynamic schema (relkind='g').
 
 Verifies that Python bindings handle dynamic-schema tables (created without
 column definitions) correctly: arbitrary keys can be inserted, and SELECT
-returns rows with NULL/None for absent fields.
-
-NOTE: requires Python binding rebuild after Phase 7 changes — this test
-exercises the new `CREATE TABLE foo;` (no column list) syntax and the
-column-union behaviour for relkind='g' tables.
+returns rows with NULL/None for absent fields. Exercises the `CREATE TABLE
+foo;` (no column list) syntax and the column-union behaviour for relkind='g'
+tables.
 """
 
 import os

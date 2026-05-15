@@ -6,8 +6,8 @@
 
 namespace services::planner::impl {
 
-    // Phase 13 T10 — translate a logical CATALOG_RESOLVE_NAMESPACE leaf into
-    // its physical counterpart (operator_resolve_namespace_t).
+    // Translate a logical CATALOG_RESOLVE_NAMESPACE leaf into its physical
+    // counterpart (operator_resolve_namespace_t).
     components::operators::operator_ptr
     create_plan_resolve_namespace(const context_storage_t& context,
                                   const components::logical_plan::node_ptr& node);

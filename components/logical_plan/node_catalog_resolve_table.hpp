@@ -13,7 +13,7 @@
 
 namespace components::logical_plan {
 
-    // Phase 13 M4.A — per-column metadata mirrored from pg_attribute
+    // Per-column metadata mirrored from pg_attribute
     // (relkind='r') or pg_computed_column (relkind='g'), reconstructed at
     // Pass 1 time by operator_resolve_table_t. Carries the full surface
     // enrich_plan / validate_schema read via the plan-tree idx.
@@ -37,8 +37,8 @@ namespace components::logical_plan {
         std::vector<resolved_column_metadata_t> columns;
     };
 
-    // Phase 13 T5: catalog-dependency leaf node carrying "resolve table 'relname'
-    // in namespace 'dbname' (or under ns_oid once enriched)". Built by the
+    // Catalog-dependency leaf node carrying "resolve table 'relname' in
+    // namespace 'dbname' (or under ns_oid once enriched)". Built by the
     // transformer for catalog-touching statements. enrich_logical_plan resolves
     // dbname -> namespace_oid (pg_namespace.oid) so downstream operators can
     // read pg_class/pg_attribute through the pipeline.
@@ -59,9 +59,9 @@ namespace components::logical_plan {
         components::catalog::oid_t namespace_oid() const noexcept { return namespace_oid_; }
         void set_namespace_oid(components::catalog::oid_t oid) noexcept { namespace_oid_ = oid; }
 
-        // Phase 13 M4.A — full table metadata reconstructed by
-        // operator_resolve_table_t at Pass 1 time. Reset / unset state means
-        // the resolve operator did not find the table (or hasn't run yet).
+        // Full table metadata reconstructed by operator_resolve_table_t at
+        // Pass 1 time. Reset / unset state means the resolve operator did
+        // not find the table (or hasn't run yet).
         const std::optional<resolved_table_metadata_t>& resolved_metadata() const noexcept {
             return resolved_metadata_;
         }

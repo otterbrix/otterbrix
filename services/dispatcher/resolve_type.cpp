@@ -16,11 +16,10 @@ namespace services::dispatcher {
         return true;
     }
 
-    // M4.G.2 / M4.H: sync — reads UDT metadata from the supplied plan-tree
-    // idx exclusively. transform_create_table / transform_types emit
-    // resolve_type per UDT before Pass 1; we consume what Pass 1 stamped.
-    // Misses leave the type as UNKNOWN — validate_types_sync surfaces
-    // "type not registered".
+    // Sync — reads UDT metadata from the supplied plan-tree idx exclusively.
+    // transform_create_table / transform_types emit resolve_type per UDT
+    // before Pass 1; we consume what Pass 1 stamped. Misses leave the type
+    // as UNKNOWN — validate_types_sync surfaces "type not registered".
     void resolve_one_type(components::types::complex_logical_type& ct,
                           const impl::plan_resolve_index_t* idx) {
         if (ct.type() != components::types::logical_type::UNKNOWN) return;

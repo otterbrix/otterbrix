@@ -12,7 +12,7 @@
 
 namespace components::operators {
 
-    // Phase 13 T15 — column metadata for a single resolved table column.
+    // Column metadata for a single resolved table column.
     // Mirrors one row of the operator_resolve_table_t output chunk
     // (position int32, attoid uint32, attname string, atttypid uint32,
     //  atttypspec string). Stored in a flat vector keyed by 0-based
@@ -25,7 +25,7 @@ namespace components::operators {
         std::string            atttypspec;
     };
 
-    // Phase 13 T15 — parsed form of operator_resolve_table_t's output chunk.
+    // Parsed form of operator_resolve_table_t's output chunk.
     // Produced once by a resolve sibling and handed to the DML consumer
     // (insert/update/delete) via the set_resolved_metadata hook. The DML
     // operator uses the column list to build a chunk_position -> table_position
@@ -55,22 +55,20 @@ namespace components::operators {
     // equals data_chunk's column_count.
     using column_key_translation_t = std::vector<std::int32_t>;
 
-    // Phase 13 T15 — parse a metadata data_chunk produced by
-    // operator_resolve_table_t into resolved_table_metadata_t. The chunk
-    // layout is fixed: 5 columns [position int32, attoid uint32, attname
-    // string, atttypid uint32, atttypspec string]. Returns std::nullopt
-    // when the chunk shape doesn't match (defensive; we'd rather skip than
-    // crash on shape drift).
+    // Parse a metadata data_chunk produced by operator_resolve_table_t into
+    // resolved_table_metadata_t. The chunk layout is fixed: 5 columns
+    // [position int32, attoid uint32, attname string, atttypid uint32,
+    // atttypspec string]. Returns std::nullopt when the chunk shape doesn't
+    // match (defensive; we'd rather skip than crash on shape drift).
     std::optional<resolved_table_metadata_t>
     parse_resolved_table_metadata(catalog::oid_t                   table_oid,
                                    const operator_data_ptr&        resolve_output);
 
-    // Phase 13 T15 — build a chunk_position -> table_position translation
-    // for `data_chunk` by alias matching against the resolver's column list.
-    // Returns a vector of length data_chunk.column_count with -1 entries for
-    // unmatched chunk columns. When metadata.columns is empty this returns an
-    // all-zero (well, all-(-1)) vector — caller can treat that as "no
-    // translation needed".
+    // Build a chunk_position -> table_position translation for `data_chunk`
+    // by alias matching against the resolver's column list. Returns a vector
+    // of length data_chunk.column_count with -1 entries for unmatched chunk
+    // columns. When metadata.columns is empty this returns an all-(-1)
+    // vector — caller can treat that as "no translation needed".
     column_key_translation_t
     build_column_key_translation(const resolved_table_metadata_t& metadata,
                                   const vector::data_chunk_t&     data_chunk);

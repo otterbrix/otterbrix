@@ -15,9 +15,9 @@ namespace components::sql::transform {
                                               core::dbname_t{qn.dbname},
                                               core::relname_t{qn.relname},
                                               make_compare_expression(resource_, compare_type::all_true)));
-            // Phase 13 T13: tag the target table for catalog resolution.
-            // M4.D: emit resolve_constraint(referencing) so enrich reads
-            // descendant FKs are stamped on the plan tree by Pass 1.
+            // Tag the target table for catalog resolution and emit
+            // resolve_constraint(referencing) so enrich reads descendant FKs
+            // are stamped on the plan tree by Pass 1.
             return maybe_wrap_with_catalog_resolve_table(
                 resource_, qn.dbname, qn.relname, std::move(del),
                 constraint_resolve_kind::referencing);
@@ -42,14 +42,13 @@ namespace components::sql::transform {
                                           core::dbname_t{names.left_name.dbname},
                                           core::relname_t{names.left_name.relname},
                                           where_expr));
-        // Phase 13 T13: wrap with namespace + table resolve nodes for the primary
-        // (LEFT) table. M4.D: emit resolve_constraint(referencing) for FK
-        // cascade enrich.
+        // Wrap with namespace + table resolve nodes for the primary (LEFT)
+        // table and emit resolve_constraint(referencing) for FK cascade enrich.
         auto wrapped = maybe_wrap_with_catalog_resolve_table(
             resource_, names.left_name.dbname, names.left_name.relname, std::move(del),
             constraint_resolve_kind::referencing);
-        // task_7: when DELETE ... USING is present, splice a resolve_table for
-        // the USING source into the wrapping sequence_t so
+        // When DELETE ... USING is present, splice a resolve_table for the
+        // USING source into the wrapping sequence_t so
         // stamp_drop_oids_from_resolves picks it up as `rt_index` and stamps
         // node->table_oid_from() at enrich time.
         if (!names.right_name.empty() &&

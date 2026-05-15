@@ -15,8 +15,8 @@ namespace components::operators {
         , table_oid_(table_oid) {}
 
     void operator_insert::accept_resolved_metadata(resolved_table_metadata_t metadata) {
-        // Phase 13 T15 — capture metadata so await_async_and_resume can build
-        // a chunk_position -> table_position translation before storage_append.
+        // Capture metadata so await_async_and_resume can build a
+        // chunk_position -> table_position translation before storage_append.
         // Adopt table_oid_ from the resolver when this operator was constructed
         // without one (oid-only DML routing typically passes the oid through
         // node_insert, but the resolve-sibling form is the alternative).
@@ -39,8 +39,6 @@ namespace components::operators {
 
     actor_zeta::unique_future<void>
     operator_insert::await_async_and_resume(pipeline::context_t* ctx) {
-        // Phase 5: side-effects previously implemented in
-        // executor_t::intercept_dml_io_(::insert) are now self-contained here.
         using components::vector::data_chunk_t;
 
         if (!output_) {
@@ -50,11 +48,11 @@ namespace components::operators {
         auto& out_chunk = output_->data_chunk();
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, table_oid_};
 
-        // Phase 13 T15 — when a resolver sibling supplied catalog metadata,
-        // compute a chunk_position -> table_position translation via alias
-        // matching. The disk-actor's storage_append already aligns by alias
-        // (with positional fallback), so the translation is built and stashed
-        // for diagnostics today — the field is the wiring hook for a future
+        // When a resolver sibling supplied catalog metadata, compute a
+        // chunk_position -> table_position translation via alias matching.
+        // The disk-actor's storage_append already aligns by alias (with
+        // positional fallback), so the translation is built and stashed for
+        // diagnostics today — the field is the wiring hook for a future
         // storage_append(...,key_translation) signature change. We log
         // mismatches at trace level so resolver/data drift is visible.
         if (resolved_metadata_.has_value() && out_chunk.column_count() > 0) {

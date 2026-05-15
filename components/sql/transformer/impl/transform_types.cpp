@@ -11,10 +11,10 @@
 namespace components::sql::transform {
 
     namespace {
-        // M4.G.4/.5: build a sequence_t that resolves the new type name (for
-        // collision detection) plus every nested UDT referenced by struct
-        // fields. Pass 1 stamps type_md_by_qname for each emitted resolve_type;
-        // dispatcher's check_type_exists / probe_type_in_path then read from idx.
+        // Build a sequence_t that resolves the new type name (for collision
+        // detection) plus every nested UDT referenced by struct fields. Pass 1
+        // stamps type_md_by_qname for each emitted resolve_type; dispatcher's
+        // check_type_exists / probe_type_in_path then read from idx.
         logical_plan::node_ptr wrap_create_type(std::pmr::memory_resource* resource,
                                                  const types::complex_logical_type& type,
                                                  logical_plan::node_ptr main_node) {

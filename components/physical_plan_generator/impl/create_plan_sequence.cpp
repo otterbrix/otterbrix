@@ -157,14 +157,14 @@ namespace services::planner::impl {
         // This is critical for INSERT-then-register semantics where register depends
         // on insert having processed the chunk first.
         if (!node->children().empty()) {
-            // Phase 13 M2b: skip catalog_resolve_*_t children when they
-            // appear alongside a non-resolve consumer (DML/SELECT). Pass 1
-            // has already run them and stamped OIDs on the logical nodes
-            // (visible to validate/enrich via plan-tree gather). Putting
-            // them in the executor's left-chain would chain a resolve
-            // operator as `left_` of the DML consumer — operator_insert
-            // reads `left_->output()` for its data input, and would get
-            // a resolve metadata chunk instead of the VALUES chunk, so
+            // Skip catalog_resolve_*_t children when they appear alongside
+            // a non-resolve consumer (DML/SELECT). Pass 1 has already run
+            // them and stamped OIDs on the logical nodes (visible to
+            // validate/enrich via plan-tree gather). Putting them in the
+            // executor's left-chain would chain a resolve operator as
+            // `left_` of the DML consumer — operator_insert reads
+            // `left_->output()` for its data input, and would get a
+            // resolve metadata chunk instead of the VALUES chunk, so
             // storage_append gets the wrong shape and inserts 0 rows.
             //
             // EXCEPTION: when the sequence_t contains ONLY resolve nodes

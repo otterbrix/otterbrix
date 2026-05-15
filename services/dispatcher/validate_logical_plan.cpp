@@ -71,15 +71,10 @@ namespace services::dispatcher {
     using namespace components::catalog;
 
     namespace impl {
-        // Phase 13 T16 / M2a (2026-05-13): plan_resolve_index_t + helpers
-        // moved to services/dispatcher/plan_resolve_index.hpp so
+        // plan_resolve_index_t + helpers live in
+        // services/dispatcher/plan_resolve_index.hpp so
         // enrich_logical_plan.cpp can use the same probe-then-fallback
-        // pattern. The struct/RAII/walker definitions below are now in
-        // the header — the local declarations were removed.
-        //
-        // Telemetry counter API and ns_oid_for / ns_oid_for_dbname remain
-        // identical to the original local definitions; the header is
-        // header-only inline so there is no link surprise.
+        // pattern.
 
         // V4 function lookup helper. Returns (uid, signature) for the matching overload, or
         // {invalid_function_uid, {{}, {}}} if no match found. name_exists set if any function
@@ -778,7 +773,7 @@ namespace services::dispatcher {
 
     } // namespace impl
 
-    // ---- V4 plan-tree idx-based check_*_exists (M4.I: view side channel removed) ----
+    // ---- V4 plan-tree idx-based check_*_exists ----
 
     cursor_t_ptr
     check_namespace_exists(std::pmr::memory_resource* resource,
@@ -824,9 +819,9 @@ namespace services::dispatcher {
             components::types::logical_type::UNKNOWN) {
             return {};
         }
-        // M4.G.9: probe plan-tree idx via impl::type_md_for. Transformer
-        // (M4.G.1/4/5) emits resolve_type for every (dbname, alias) tuple
-        // we'll search here. Empty search_dbnames defaults to public + pg_catalog.
+        // Probe plan-tree idx via impl::type_md_for. Transformer
+        // emits resolve_type for every (dbname, alias) tuple we'll search
+        // here. Empty search_dbnames defaults to public + pg_catalog.
         static const std::string kPublic{"public"};
         static const std::string kPgCatalog{"pg_catalog"};
         if (search_dbnames.empty()) {
@@ -848,7 +843,7 @@ namespace services::dispatcher {
                             "type: \'" + alias + "\' is not registered in catalog");
     }
 
-    // M4.G.1: walk_user_type_refs moved to components/types/user_type_walk.hpp.
+    // walk_user_type_refs lives in components/types/user_type_walk.hpp.
     // Brought into scope via validate_logical_plan.hpp's using-declaration.
 
     namespace {
@@ -869,10 +864,9 @@ namespace services::dispatcher {
     cursor_t_ptr validate_types_sync(std::pmr::memory_resource* resource,
                                       const impl::plan_resolve_index_t* idx,
                                       node_t* logical_plan) {
-        // M4.H: `idx` is now an explicit parameter supplied by the dispatcher
-        // (no more thread_local). If the caller passed nullptr (legacy
-        // harnesses without a wrap), gather a local index from the plan tree
-        // and use that.
+        // `idx` is an explicit parameter supplied by the dispatcher.
+        // If the caller passed nullptr (legacy harnesses without a wrap),
+        // gather a local index from the plan tree and use that.
         impl::plan_resolve_index_t local_idx;
         if (idx == nullptr) {
             impl::gather_plan_resolve_index(logical_plan, local_idx);
@@ -890,7 +884,7 @@ namespace services::dispatcher {
         cursor_t_ptr result = make_cursor(resource, operation_status_t::success);
 
         auto check_node = [&](node_t* node) {
-            // Phase 10.C: drop-nodes skip existence + type collection here.
+            // Drop-nodes skip existence + type collection here.
             // Their catalog_resolve_* children verify existence at parse time;
             // CASCADE/RESTRICT is enforced by validate_drop_restrict downstream.
             switch (node->type()) {
@@ -927,7 +921,7 @@ namespace services::dispatcher {
             if (node->type() == node_type::data_t) {
                 auto* data_node = reinterpret_cast<node_data_t*>(node);
 
-                // M4.G.10: probe plan-tree idx by dbname strings.
+                // Probe plan-tree idx by dbname strings.
                 auto type_visible = [&](std::string_view name) {
                     for (const auto& db : table_dbnames) {
                         if (impl::type_md_for(idx, std::string_view(db), name)) return true;
@@ -1009,7 +1003,7 @@ namespace services::dispatcher {
                          const impl::plan_resolve_index_t* idx,
                          node_t* node,
                          const components::logical_plan::storage_parameters& parameters) {
-        // M4.H: `idx` is supplied by the dispatcher (no more thread_local).
+        // `idx` is supplied by the dispatcher.
         // Legacy harnesses may pass nullptr — fall back to a locally-gathered
         // index so internal callers still get plan-tree lookups.
         impl::plan_resolve_index_t local_idx;
@@ -1555,7 +1549,7 @@ namespace services::dispatcher {
                 } else {
                     named_schema table_schema(resource);
                     bool is_computed = false;
-                    // task_7: insert node no longer carries relname; pull it
+                    // Insert node no longer carries relname; pull it
                     // from the resolved table metadata (populated by Pass 1).
                     const std::string& target_relname_ins =
                         tbl_ins ? tbl_ins->name : std::string{};
@@ -1571,7 +1565,7 @@ namespace services::dispatcher {
                             table_schema.emplace_back(type_from_t{target_relname_ins, column.type});
                         }
                     }
-                    // Phase 11.E/F: relkind='g' (dynamic-schema) tables accept INSERTs
+                    // relkind='g' (dynamic-schema) tables accept INSERTs
                     // whose shape differs from the catalog's currently-registered columns,
                     // BUT only for simple types. Complex types (ARRAY/STRUCT/UNION/LIST)
                     // crash the storage layer's adopt_schema path — those tests stay
@@ -1589,17 +1583,17 @@ namespace services::dispatcher {
                         }
                         return true;
                     };
-                    // Phase 11.F-B: even on an empty relkind='g' schema we reject
+                    // Even on an empty relkind='g' schema we reject
                     // complex-type INSERTs at validate, because the downstream
                     // storage layer (table_storage_t::adopt_schema → row_group →
                     // array_column_data_t) can't initialise an ARRAY/STRUCT/UNION/
                     // LIST/MAP column without crashing (assert in
                     // complex_logical_type::size() when UNKNOWN child appears,
                     // and other edge cases). atttypspec now correctly preserves
-                    // the type in the catalog (catalog roundtrip works post-11.F-B),
+                    // the type in the catalog (catalog roundtrip works),
                     // but the storage path is a separate scope — even VALUES
-                    // literal sources still SIGSEGV (Phase 11.I attempt
-                    // confirmed it; lifting requires deeper storage layer work).
+                    // literal sources still SIGSEGV; lifting requires deeper
+                    // storage layer work.
                     if (is_computed && !is_simple_chunk()) {
                         return schema_result<named_schema>{
                             resource,
@@ -1721,7 +1715,7 @@ namespace services::dispatcher {
                 named_schema table_schema(resource);
                 named_schema incoming_schema(resource);
                 bool same_schema = false;
-                // task_7: update/delete nodes no longer carry relname; pull
+                // Update/delete nodes no longer carry relname; pull
                 // the target table name from the resolved metadata (populated
                 // by Pass 1 via the sibling resolve_table).
                 const auto* tbl_upd = impl::tbl_md_for_oid(idx, node->table_oid());
@@ -1733,14 +1727,14 @@ namespace services::dispatcher {
                                         column.type});
                     }
                 } else if (tbl_upd && tbl_upd->relkind == 'g') {
-                    // Phase 7 / task #106: on dynamic-schema (relkind='g') tables, UPDATE may
+                    // task #106: on dynamic-schema (relkind='g') tables, UPDATE may
                     // only target columns that have already been registered in
                     // pg_computed_column. tbl_upd->columns reflects the set of LIVE columns
                     // for 'g' tables (resolve_table fills it from pg_computed_column). If the
                     // SET clause references a column not in that set, reject explicitly with
                     // a clear, actionable message.
                     //
-                    // TODO(task #106 / Phase 7+): consider Mongo-style auto-registration of
+                    // TODO(task #106): consider Mongo-style auto-registration of
                     // unknown SET targets on UPDATE (option (a) in the policy decision). That
                     // requires extending the UPDATE coroutine to allocate a new attnum and
                     // append a pg_computed_column row before the row-level update is applied.
@@ -1852,15 +1846,13 @@ namespace services::dispatcher {
                 }
 
                 named_schema table_schema{resource};
-                // Phase 7 / Group 3: previously rejected ALL relkind='g'. Relax
-                // to "reject only when no columns are registered yet" — once
-                // at least one INSERT has populated pg_computed_column, attoids
-                // are stable (P7.2 register path mints fresh attoids only for
-                // new / type-evolved columns). Subsequent type evolution
-                // bumping attoids on an indexed column is the caller's
-                // responsibility (no automatic index rebuild today, see
-                // docs/phase7-deferred-items.md §7.6). docs/groups-1-2-3-design.md
-                // Group 3 Part A.
+                // For relkind='g' we reject only when no columns are
+                // registered yet — once at least one INSERT has populated
+                // pg_computed_column, attoids are stable (register path
+                // mints fresh attoids only for new / type-evolved columns).
+                // Subsequent type evolution bumping attoids on an indexed
+                // column is the caller's responsibility (no automatic index
+                // rebuild today).
                 if (tbl_idx && tbl_idx->relkind == 'g' && tbl_idx->columns.empty()) {
                     return schema_result<named_schema>{
                         resource,
@@ -1887,12 +1879,11 @@ namespace services::dispatcher {
                 // nothing to check here
                 break;
             case node_type::sequence_t: {
-                // Phase 13: the SQL transformer wraps DML/DDL in
+                // The SQL transformer wraps DML/DDL in
                 //   sequence_t(catalog_resolve_*…, consumer)
-                // (gated by set_transformer_emit_catalog_resolve). The catalog
-                // resolve children are leaves that don't carry a schema, so
-                // we descend to the last non-catalog_resolve_* child — the
-                // real consumer (insert_t/update_t/aggregate_t/...).
+                // The catalog resolve children are leaves that don't carry a
+                // schema, so we descend to the last non-catalog_resolve_* child
+                // — the real consumer (insert_t/update_t/aggregate_t/...).
                 auto is_catalog_resolve = [](node_type t) {
                     return t == node_type::catalog_resolve_namespace_t ||
                            t == node_type::catalog_resolve_table_t ||
@@ -1988,7 +1979,7 @@ namespace services::dispatcher {
             }
             visited.insert(name);
 
-            // M4.G.11: probe the plan-tree idx (public first, then pg_catalog).
+            // Probe the plan-tree idx (public first, then pg_catalog).
             const components::logical_plan::resolved_type_metadata_t* md = nullptr;
             for (std::string_view db : {std::string_view{"public"}, std::string_view{"pg_catalog"}}) {
                 md = impl::type_md_for(idx, db, std::string_view(name));

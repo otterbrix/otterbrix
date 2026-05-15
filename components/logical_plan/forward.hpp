@@ -56,45 +56,43 @@ namespace components::logical_plan {
         // at runtime starting from a (classid, oid) seed and deletes the
         // transitive closure. Subsumes the dispatcher BFS in execute_ddl.
         dynamic_cascade_delete_t,
-        // GET_SCHEMA (Phase 4 #54): self-resolving leaf that returns one
+        // GET_SCHEMA: self-resolving leaf that returns one
         // complex_logical_type per (database, collection) id by reading
         // pg_namespace+pg_class+pg_attribute through the operator pipeline.
         get_schema_t,
-        // REGISTER_UDF / UNREGISTER_UDF (Phase 4 #55): operator-pipeline
+        // REGISTER_UDF / UNREGISTER_UDF: operator-pipeline
         // replacement for inline manager_dispatcher_t::{register,unregister}_udf.
         // Carries the UDF function payload (or name + arg-type signature for
         // unregister); the operator fans out to per-executor registries, the
         // global default function_registry_t, and pg_proc.
         register_udf_t,
         unregister_udf_t,
-        // COMMIT / ROLLBACK (Phase 4 #56): operator-pipeline replacement for
-        // inline manager_dispatcher_t::{commit,abort}_transaction. The leaf
+        // COMMIT / ROLLBACK: operator-pipeline replacement for inline
+        // manager_dispatcher_t::{commit,abort}_transaction. The leaf
         // node carries no fields (session is on pipeline::context_t); the
         // operator drives txn_manager.commit/abort + pg_catalog MVCC swap on
         // disk via storage_commit_appends / storage_revert_appends.
         commit_transaction_t,
         abort_transaction_t,
-        // COMPUTED_FIELD_REGISTER / COMPUTED_FIELD_UNREGISTER (Phase 7.1):
-        // pipeline operators that maintain pg_computed_column rows for
-        // relkind='g' (Mongo-style dynamic-schema) tables. The register
-        // variant runs after an INSERT and adds rows for any newly-seen
-        // columns (or bumps attversion on type evolution); the unregister
-        // variant appends a refcount=0 tombstone for one column. Wiring
-        // into the dispatcher happens in P7.2.
+        // COMPUTED_FIELD_REGISTER / COMPUTED_FIELD_UNREGISTER: pipeline
+        // operators that maintain pg_computed_column rows for relkind='g'
+        // (Mongo-style dynamic-schema) tables. The register variant runs
+        // after an INSERT and adds rows for any newly-seen columns (or bumps
+        // attversion on type evolution); the unregister variant appends a
+        // refcount=0 tombstone for one column.
         computed_field_register_t,
         computed_field_unregister_t,
-        // Phase 13: catalog-resolve leaf nodes. Each carries a name reference
-        // and is replaced by the corresponding operator_resolve_*_t during
-        // physical plan generation. Resolves through standard pipeline
-        // (logical_plan → planner → optimizer → physical_plan_generator →
-        // executor → disk).
+        // Catalog-resolve leaf nodes. Each carries a name reference and is
+        // replaced by the corresponding operator_resolve_*_t during physical
+        // plan generation. Resolves through standard pipeline (logical_plan →
+        // planner → optimizer → physical_plan_generator → executor → disk).
         catalog_resolve_table_t,
         catalog_resolve_namespace_t,
         catalog_resolve_type_t,
         catalog_resolve_function_t,
         catalog_resolve_constraint_t,
-        // M4.L: leaf that allocates a batch of OIDs from the disk-side
-        // oid_generator at Pass 1 time. Replaces inline dispatcher calls to
+        // Leaf that allocates a batch of OIDs from the disk-side oid_generator
+        // at Pass 1 time. Replaces inline dispatcher calls to
         // manager_disk_t::allocate_oids_batch — DDL planner reads the
         // resulting batch via node_allocate_oids_t::oids().
         allocate_oids_t,

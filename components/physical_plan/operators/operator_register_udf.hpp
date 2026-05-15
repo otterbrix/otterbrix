@@ -11,9 +11,9 @@
 
 namespace components::operators {
 
-    // Phase 4 #55 — operator implementation of manager_dispatcher_t::register_udf.
+    // Operator implementation of manager_dispatcher_t::register_udf.
     //
-    // Mirrors the legacy inline path:
+    // Steps:
     //   1. resolve_function_by_name across all namespaces (cross-namespace
     //      conflict detection — bail with success_=false if any match).
     //   2. fan out the function to every executor's local function_registry_

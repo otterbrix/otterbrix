@@ -15,13 +15,11 @@ namespace components::operators {
     //   2. ctx->txn_manager->commit(session) → commit_id.
     //   3. storage_commit_appends / storage_commit_deletes via disk actor.
     //
-    // DDL-commit mode (is_ddl_commit=true) — M4.J: same as RPC mode plus a
+    // DDL-commit mode (is_ddl_commit=true): same as RPC mode plus a
     // prefix of:
     //   0a. manager_disk_t::flush(session, wal::id_t{0}) — durability barrier.
     //   0b. manager_wal_replicate_t::commit_txn(session, txn_id, FULL,
     //       database_oid) — emit WAL commit record.
-    // The DDL flow used to inline these in the dispatcher; M4.J folds them
-    // here so every commit (RPC or DDL) goes through the operator pipeline.
     //
     // commit_id is exposed via commit_id() so the dispatcher can fulfil its
     // unique_future<uint64_t> public API.

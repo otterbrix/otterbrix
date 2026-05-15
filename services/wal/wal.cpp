@@ -9,7 +9,7 @@
 namespace services::wal {
 
     // -----------------------------------------------------------------------
-    // Segment file naming — Phase 8.E
+    // Segment file naming
     //
     //   wal_<database_oid>_000000
     //   wal_<database_oid>_000001

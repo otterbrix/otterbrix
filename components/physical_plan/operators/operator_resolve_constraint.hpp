@@ -9,7 +9,7 @@ namespace components::logical_plan {
 
 namespace components::operators {
 
-    // Phase 13 M4.D — pipeline FK + CHECK constraint resolution.
+    // Pipeline FK + CHECK constraint resolution.
     // Reads pg_constraint (+ pg_attribute / pg_class / pg_namespace for FK
     // metadata) and stamps the result vectors on the back-pointed logical node
     // so enrich_logical_plan can consume them via plan_resolve_index_t.

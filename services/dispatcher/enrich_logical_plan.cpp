@@ -59,7 +59,7 @@ namespace services::dispatcher {
 
     namespace {
 
-        // M4.D helpers: probe enrich_resolve_idx_t (plan-tree resolves
+        // Helpers: probe enrich_resolve_idx_t (plan-tree resolves
         // stamped by operator_resolve_*_t Pass 1). All catalog reads in
         // enrich flow through these.
         components::catalog::oid_t lookup_ns_oid_local(const enrich_resolve_idx_t* idx,
@@ -115,7 +115,7 @@ namespace services::dispatcher {
 
         void enrich_insert_sync(components::logical_plan::node_insert_t* node,
                                 const enrich_resolve_idx_t* idx) {
-            // task_7: insert node carries only its table_oid (stamped by
+            // Insert node carries only its table_oid (stamped by
             // stamp_drop_oids_from_resolves from the sibling resolve_table);
             // look up table metadata by OID rather than (db, rel) strings.
             if (node->table_oid() == components::catalog::INVALID_OID) return;
@@ -197,7 +197,7 @@ namespace services::dispatcher {
 
         void enrich_update_sync(components::logical_plan::node_update_t* node,
                                 const enrich_resolve_idx_t* idx) {
-            // task_7: lookup by table_oid stamped from the sibling resolve_table.
+            // Lookup by table_oid stamped from the sibling resolve_table.
             if (node->table_oid() == components::catalog::INVALID_OID) return;
             const auto* md = lookup_table_md_by_oid_local(idx, node->table_oid());
             if (!md) return;
@@ -213,11 +213,11 @@ namespace services::dispatcher {
             (void)node;
         }
 
-        // Phase 13 Step 3 — walk the plan tree, harvest namespace_oid /
-        // table_oid stamped by operator_resolve_*_t (Pass 1) into a flat
-        // hashmap. Empty when the plan has no resolve wrap (DDL paths,
-        // disk-less harnesses). The caller (enrich_plan top-level) builds
-        // this once and threads the const-ptr through recursive calls.
+        // Walk the plan tree, harvest namespace_oid / table_oid stamped
+        // by operator_resolve_*_t (Pass 1) into a flat hashmap. Empty when
+        // the plan has no resolve wrap (DDL paths, disk-less harnesses).
+        // The caller (enrich_plan top-level) builds this once and threads
+        // the const-ptr through recursive calls.
         void gather_enrich_resolve_idx(components::logical_plan::node_t* root,
                                         enrich_resolve_idx_t& out) {
             using namespace components::logical_plan;
@@ -246,7 +246,7 @@ namespace services::dispatcher {
                             key.append(rt->dbname()).push_back('|');
                             key.append(rt->relname());
                             out.tbl_oid_by_qname[key] = rt->table_oid();
-                            // M4.C: stamp the full metadata pointer too when
+                            // Stamp the full metadata pointer too when
                             // operator_resolve_table_t populated it.
                             if (rt->resolved_metadata().has_value()) {
                                 const auto* md_ptr = &rt->resolved_metadata().value();
@@ -469,7 +469,7 @@ namespace services::dispatcher {
                                 }
                                 break;
                             }
-                            // task_7: DML consumers carry only OIDs now; stamp
+                            // DML consumers carry only OIDs now; stamp
                             // table_oid (and table_oid_from for update/delete
                             // with UPDATE FROM / DELETE USING) from the sibling
                             // resolve_table nodes inside the same sequence_t.
@@ -500,7 +500,7 @@ namespace services::dispatcher {
                                 }
                                 break;
                             }
-                            // task_8: alter_* nodes carry only OIDs now; stamp
+                            // alter_* nodes carry only OIDs now; stamp
                             // table_oid from the sibling resolve_table inside
                             // the wrapping sequence_t. The child-emitting
                             // planner cases (alter_column_*) keep their own
@@ -534,14 +534,13 @@ namespace services::dispatcher {
                 const enrich_resolve_idx_t* idx) {
         using namespace components::logical_plan;
         if (!root) co_return;
-        // Phase 13 Step 3 — top-level entry: gather plan-tree resolve index
-        // once, then re-enter with the gathered pointer. Recursive callers
-        // already supply a non-null `idx` so this gather runs at most once
-        // per public enrich_plan call.
+        // Top-level entry: gather plan-tree resolve index once, then re-enter
+        // with the gathered pointer. Recursive callers already supply a non-null
+        // `idx` so this gather runs at most once per public enrich_plan call.
         if (idx == nullptr) {
             enrich_resolve_idx_t local_idx;
             gather_enrich_resolve_idx(root.get(), local_idx);
-            // task_3: drop_* nodes no longer carry user-typed names; copy OIDs
+            // drop_* nodes no longer carry user-typed names; copy OIDs
             // from their sibling catalog_resolve_* nodes inside each sequence_t
             // before the per-node enrich cases run.
             stamp_oids_from_resolves(root.get());
@@ -552,7 +551,7 @@ namespace services::dispatcher {
         // (db, rel) on the node body (aggregate/match/group/sort/join/limit/
         // having). DML consumers (insert/update/delete) have already been
         // stamped by stamp_drop_oids_from_resolves from their sibling
-        // resolve_table inside the wrapping sequence_t — see task_7.
+        // resolve_table inside the wrapping sequence_t.
         {
             std::string_view db;
             std::string_view rel;
@@ -607,7 +606,7 @@ namespace services::dispatcher {
             auto* node = static_cast<node_insert_t*>(root.get());
             enrich_insert_sync(node, idx);
             const auto tbl_oid = node->table_oid();
-            // M4.D: FK + CHECK populated by operator_resolve_constraint_t
+            // FK + CHECK populated by operator_resolve_constraint_t
             // (Pass 1, direction=outgoing) and gathered into idx. No catalog
             // probe here — pure plan-tree read.
             if (tbl_oid != components::catalog::INVALID_OID && idx) {
@@ -648,7 +647,7 @@ namespace services::dispatcher {
         }
         case node_type::delete_t: {
             auto* node = static_cast<node_delete_t*>(root.get());
-            // M4.D: parent table metadata + referencing FK rows are both stamped
+            // Parent table metadata + referencing FK rows are both stamped
             // by Pass 1 (operator_resolve_table_t + operator_resolve_constraint_t,
             // direction=referencing). Descendant child column positions and
             // defspecs are pre-populated by the resolve_constraint operator
@@ -683,8 +682,8 @@ namespace services::dispatcher {
         case node_type::create_collection_t: {
             auto* node = static_cast<node_create_collection_t*>(root.get());
             enrich_create_collection_sync(node, idx);
-            // M4.H: resolve_column_definitions now takes an explicit plan-tree
-            // idx. enrich's `enrich_resolve_idx_t` is a different shape; build
+            // resolve_column_definitions takes an explicit plan-tree idx.
+            // enrich's `enrich_resolve_idx_t` is a different shape; build
             // a small plan_resolve_index_t locally from the same root tree so
             // UDT columns get resolved without thread_local state.
             impl::plan_resolve_index_t local_plan_idx;
@@ -725,12 +724,12 @@ namespace services::dispatcher {
             break;
         }
         case node_type::drop_index_t: {
-            // task_3: OIDs are stamped by stamp_drop_oids_from_resolves at the
+            // OIDs are stamped by stamp_drop_oids_from_resolves at the
             // top of enrich_plan from sibling resolve nodes; no per-node work.
             break;
         }
         case node_type::create_constraint_t: {
-            // M4.E: idx provides ns/table metadata for the target. The FK
+            // idx provides ns/table metadata for the target. The FK
             // reference table (when constraint is FK) needs a separate
             // resolve_table emitted by the transformer.
             auto* node = static_cast<node_create_constraint_t*>(root.get());
@@ -773,7 +772,7 @@ namespace services::dispatcher {
             break;
         }
         case node_type::alter_table_t: {
-            // task_8: table_oid stamped by stamp_drop_oids_from_resolves from
+            // table_oid stamped by stamp_drop_oids_from_resolves from
             // the sibling resolve_table; we only need to look up relkind for
             // the planner rewrite (computed-vs-regular routing).
             auto* node = static_cast<node_alter_table_t*>(root.get());
@@ -791,20 +790,20 @@ namespace services::dispatcher {
         case node_type::drop_sequence_t:
         case node_type::drop_view_t:
         case node_type::drop_macro_t: {
-            // task_3: OIDs are stamped by stamp_drop_oids_from_resolves at the
+            // OIDs are stamped by stamp_drop_oids_from_resolves at the
             // top of enrich_plan from sibling resolve nodes; no per-node work.
             break;
         }
         default:
             break;
         }
-        // Phase 13 Step 3 — recurse into ALL children after the per-type
-        // enrichment, regardless of which case ran. DML cases (insert/update/
-        // delete) own a match_t / data_t child that itself carries (db, rel)
-        // and needs its own table_oid stamp for create_plan_match / scan
-        // operators to route to the right storage. The previous pattern (each
-        // case's `break;` exits the function without descending) left those
-        // sub-nodes at INVALID_OID — DELETE WHERE was then a no-op.
+        // Recurse into ALL children after the per-type enrichment, regardless
+        // of which case ran. DML cases (insert/update/delete) own a match_t /
+        // data_t child that itself carries (db, rel) and needs its own
+        // table_oid stamp for create_plan_match / scan operators to route to
+        // the right storage. The previous pattern (each case's `break;` exits
+        // the function without descending) left those sub-nodes at
+        // INVALID_OID — DELETE WHERE was then a no-op.
         for (auto& child : root->children()) {
             if (!child) continue;
             co_await enrich_plan(child, disk_address, ctx, resource, idx);

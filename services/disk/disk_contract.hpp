@@ -88,7 +88,7 @@ namespace services::disk {
                          std::pmr::vector<std::string> key_col_names,
                          std::pmr::vector<components::types::logical_value_t> key_values);
 
-        // Phase 7.5b — physical column compaction for an IN_MEMORY relkind='g'
+        // Physical column compaction for an IN_MEMORY relkind='g'
         // table_storage_t.
         actor_zeta::unique_future<std::uint64_t>
         compact_relkind_g_storage(execution_context_t ctx,
@@ -167,7 +167,7 @@ namespace services::disk {
                                                                components::catalog::oid_t table_oid,
                                                                uint64_t commit_id);
 
-        // Phase 5b: batched MVCC swap. Each range carries its own table_oid.
+        // Batched MVCC swap. Each range carries its own table_oid.
         actor_zeta::unique_future<void>
         storage_commit_appends(execution_context_t ctx,
                                uint64_t commit_id,

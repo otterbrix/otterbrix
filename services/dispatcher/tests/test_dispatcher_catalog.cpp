@@ -223,7 +223,7 @@ TEST_CASE("services::dispatcher::computed_operations") {
 
     test.execute_sql(query.str());
     // INSERT into a relkind='g' table — columns visible on next resolve via
-    // pg_computed_column (operator_computed_field_register_t, wired in P7.2).
+    // pg_computed_column (operator_computed_field_register_t).
     {
         auto cur = test.take_result();
         REQUIRE(cur->is_success());

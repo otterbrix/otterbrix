@@ -16,16 +16,13 @@
 #include <filesystem>
 #include <unistd.h>
 
-// MVCC visibility tests for DDL. Plan §M6 Risk #1 / E2.1A bug.
-// Actual semantics in this codebase (committed_version_operator in row_version_manager.cpp):
+// MVCC visibility tests for DDL.
+// Actual semantics (committed_version_operator in row_version_manager.cpp):
 //   - use_inserted_version always returns true → INSERT is visible immediately.
 //   - use_deleted_version filters out rows whose delete_id is uncommitted (>= TRANSACTION_ID_START)
 //     OR whose committed delete is older than min_start_time.
-//   This means an uncommitted DELETE removes the row from committed-view scans before commit,
-//   which is the inverse of standard PostgreSQL MVCC. The E2.1A fix renamed
-//   commited_version_operator (typo) → committed_version_operator and routed system-table
-//   scans through table_scan_type::COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED — that's the
-//   contract these tests lock in.
+//   System-table scans go through table_scan_type::COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED —
+//   that's the contract these tests lock in.
 
 using namespace services::disk;
 namespace catalog = components::catalog;
@@ -129,7 +126,7 @@ TEST_CASE("services::disk::mvcc::auto_commit_drop_invisible") {
     REQUIRE_FALSE(rr.found);
 }
 
-// 4. E2.1A: an uncommitted DELETE is INVISIBLE to other readers — the row stays visible
+// 4. An uncommitted DELETE is INVISIBLE to other readers — the row stays visible
 //    until the deleting txn commits (PostgreSQL MVCC). committed_version_operator's
 //    use_deleted_version returns true (= "row visible") when delete_id >= TRANSACTION_ID_START
 //    so other-txn readers do not see another in-flight tombstone.
@@ -157,10 +154,9 @@ TEST_CASE("services::disk::mvcc::uncommitted_delete_invisible_to_other_readers")
     REQUIRE(rr.found);
 }
 
-// 5. resolve_namespace mirrors uncommitted-deletion visibility (E2.1A) — an other-txn
+// 5. resolve_namespace mirrors uncommitted-deletion visibility — an other-txn
 //    reader still sees a row whose DROP is uncommitted; once the deleting txn commits,
-//    the next resolve observes the tombstone-applied state. (Replaces former
-//    populate_catalog_snapshot-based test now that populate is retired.)
+//    the next resolve observes the tombstone-applied state.
 TEST_CASE("services::disk::mvcc::resolve_includes_uncommitted_deletes") {
     fixture fx;
     disk_test_helpers::test_create_namespace(fx, std::string("kept_ns"));
@@ -270,7 +266,7 @@ TEST_CASE("services::disk::mvcc::test_ddl_rollback_cleans_up") {
     auto before_other = fx.invoke(&manager_disk_t::resolve_table, fx.auto_ctx(), ns_oid,
                                    std::string("ephemeral"), std::uint64_t{0});
     REQUIRE_FALSE(before_other.found);
-    // Phase 5b: revert via batched API. The test captured append ranges above
+    // Revert via batched API. The test captured append ranges above
     // (from append_pg_catalog_row return values).
     fx.invoke(&manager_disk_t::storage_revert_appends, fx.txn_ctx(txn), std::move(appends_for_test));
     // After rollback: still not found — no orphan rows.
@@ -283,9 +279,9 @@ TEST_CASE("services::disk::mvcc::test_ddl_rollback_cleans_up") {
     REQUIRE_FALSE(after_same.found);
 }
 
-// 11. Drop cascade preserves E2.1A semantics — dropping a parent under an uncommitted txn
-//     leaves both parent and cascaded children visible to other readers (their tombstones
-//     are also uncommitted).
+// 11. Drop cascade preserves uncommitted-deletion semantics — dropping a parent under an
+//     uncommitted txn leaves both parent and cascaded children visible to other readers
+//     (their tombstones are also uncommitted).
 TEST_CASE("services::disk::mvcc::drop_cascade_uncommitted_invisible_to_other_readers") {
     fixture fx;
     const auto ns_oid = disk_test_helpers::test_create_namespace(fx, std::string("ns"));
@@ -314,11 +310,11 @@ TEST_CASE("services::disk::mvcc::drop_cascade_uncommitted_invisible_to_other_rea
     REQUIRE(idx_after.found);
 }
 
-// 12. Phase 7 task #98: pg_computed_column registers obey MVCC visibility.
+// 12. pg_computed_column registers obey MVCC visibility.
 //     resolve_table for relkind='g' tables scans pg_computed_column via the same
 //     inline_scan path that pg_attribute uses, so an uncommitted register is invisible
 //     to readers in other transactions until storage_commit_appends flips the MVCC tag
-//     (insert_id transitions from txn_id ≥ TRANSACTION_ID_START to commit_id < TRANSACTION_ID_START).
+//     (insert_id transitions from txn_id >= TRANSACTION_ID_START to commit_id < TRANSACTION_ID_START).
 //     This mirrors test #2 (uncommitted_insert_invisible_to_other_sessions) for the
 //     pg_computed_column path that operator_computed_field_register_t writes through.
 TEST_CASE("services::disk::mvcc::dynamic_schema_register_invisible_until_commit") {
@@ -363,9 +359,9 @@ TEST_CASE("services::disk::mvcc::dynamic_schema_register_invisible_until_commit"
     REQUIRE(resolved_after.columns[0].atttypid == components::catalog::well_known_oid::int64_type);
 }
 
-// 13. Phase 7 task #98: rollback (storage_revert_appends) of an uncommitted
-//     pg_computed_column register leaves zero rows behind. Mirrors test #10
-//     (test_ddl_rollback_cleans_up) for the dynamic-schema register path.
+// 13. Rollback (storage_revert_appends) of an uncommitted pg_computed_column register
+//     leaves zero rows behind. Mirrors test #10 (test_ddl_rollback_cleans_up) for the
+//     dynamic-schema register path.
 TEST_CASE("services::disk::mvcc::dynamic_schema_register_rollback_undoes") {
     fixture fx;
     auto ns_oid = disk_test_helpers::test_create_namespace(fx, std::string("dyn_ns"));
@@ -407,8 +403,8 @@ TEST_CASE("services::disk::mvcc::dynamic_schema_register_rollback_undoes") {
     REQUIRE(after_same.columns.size() == 0);
 }
 
-// 14. Phase 7 task #98: own-transaction visibility of a pre-commit pg_computed_column
-//     register. NOTE: resolve_table goes through inline_scan, which uses
+// 14. Own-transaction visibility of a pre-commit pg_computed_column register.
+//     NOTE: resolve_table goes through inline_scan, which uses
 //     scan_committed(COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED). row_group_t::
 //     committed_indexing_vector calls vinfo->committed_indexing_vector with
 //     (current_version_, current_version_) — i.e. the row_group's local counter,
@@ -449,16 +445,16 @@ TEST_CASE("services::disk::mvcc::dynamic_schema_register_visible_in_same_txn") {
     REQUIRE(resolved_self.columns.size() == 0);
 }
 
-// Phase 7 #93: concurrent INSERTs into a relkind='g' table can register the
+// Concurrent INSERTs into a relkind='g' table can register the
 // same dynamic field twice. Two sessions A and B each call
 // operator_computed_field_register_t::await_async_and_resume; each reads
 // pg_computed_column under its own txn_id (uncommitted writes from the other
-// session are hidden — see #98), classifies the field as new, allocates a
+// session are hidden), classifies the field as new, allocates a
 // distinct attoid and appends a row. After both commit, pg_computed_column
 // has two rows for (relid, attname).
 //
 // Resolver tolerance: pick max(attversion), break ties by lowest attoid;
-// VACUUM (P7.5a) GCs stale versions later. Strict serialization (per-table
+// VACUUM GCs stale versions later. Strict serialization (per-table
 // lock or composite actor handler) is deferred — a multi-session concurrent
 // fixture is needed to demonstrate the race causes user-visible problems
 // before paying the parallelism cost.
@@ -467,33 +463,32 @@ TEST_CASE("services::disk::mvcc::dynamic_field_register_concurrent_duplicate_TOD
     // simultaneous append flows on a shared disk actor with overlapping
     // mailbox progression). The current scheduler_test_t harness drains
     // each invoke() to completion before returning, which incidentally
-    // serializes register operations and hides the race. See #93.
-    WARN("TODO #93: requires multi-session concurrent test fixture to "
+    // serializes register operations and hides the race.
+    WARN("TODO: requires multi-session concurrent test fixture to "
          "exercise pg_computed_column duplicate-registration race");
 }
 
-// Phase 7 #109: concurrent ALTER DROP COLUMN + INSERT on a relkind='g' table.
+// Concurrent ALTER DROP COLUMN + INSERT on a relkind='g' table.
 // txn1 runs operator_computed_field_unregister_t (appends tombstone row with
 // refcount=0), txn2 concurrently runs operator_computed_field_register_t
-// (sees field as live under its pre-tombstone snapshot, no-ops). Like #93,
-// this is handled by MVCC isolation + resolver max(attversion) filtering;
-// strict serialization is deferred until a concurrent fixture proves user-
-// visible regressions. See #109.
+// (sees field as live under its pre-tombstone snapshot, no-ops). This is
+// handled by MVCC isolation + resolver max(attversion) filtering; strict
+// serialization is deferred until a concurrent fixture proves user-visible
+// regressions.
 TEST_CASE("services::disk::mvcc::dynamic_field_drop_insert_concurrent_TODO") {
-    // Mirror #93 stub style.
     WARN("TODO: requires multi-session concurrent test fixture; the race is "
          "handled by MVCC isolation + resolver max-version filtering — "
-         "stale-version GC by VACUUM #7.5a / physical-compaction by P7.5b");
+         "stale-version GC by VACUUM / physical-compaction later");
 }
 
-// Phase 7 #113: concurrent VACUUM (P7.5a aggressive-GC) + INSERT on a
-// relkind='g' table. VACUUM scans pg_computed_column for dead/stale rows;
-// concurrent INSERT registers the same attname. MVCC isolation prevents the
-// race: VACUUM's ctx->txn snapshot uses lowest_active_start_time as horizon,
-// so uncommitted INSERT writes are invisible. Both read_rows_by_key and
-// delete_pg_catalog_rows funnel through ctx.txn (verified in
-// manager_disk_resolve.cpp / manager_disk_ddl.cpp). See operator_vacuum.cpp
-// Step 5 comment block for full reasoning.
+// Concurrent VACUUM (aggressive-GC) + INSERT on a relkind='g' table.
+// VACUUM scans pg_computed_column for dead/stale rows; concurrent INSERT
+// registers the same attname. MVCC isolation prevents the race: VACUUM's
+// ctx->txn snapshot uses lowest_active_start_time as horizon, so uncommitted
+// INSERT writes are invisible. Both read_rows_by_key and delete_pg_catalog_rows
+// funnel through ctx.txn (verified in manager_disk_resolve.cpp /
+// manager_disk_ddl.cpp). See operator_vacuum.cpp Step 5 comment block for full
+// reasoning.
 TEST_CASE("services::disk::mvcc::vacuum_insert_concurrent_TODO") {
     WARN("TODO: requires multi-session concurrent test fixture; race is "
          "handled by VACUUM's lowest_active_start_time horizon — uncommitted "

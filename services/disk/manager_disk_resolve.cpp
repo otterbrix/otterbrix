@@ -79,15 +79,13 @@ namespace services::disk {
                     std::int64_t attversion;
                 };
                 std::unordered_map<std::string, cc_row_t> latest;
-                // Phase 11.F-A: collect ALL rows (including tombstones with rc=0)
-                // and pick max-version per attname. Then drop entries whose
-                // chosen (max-version) row is a tombstone. Previously this code
-                // skipped tombstones early — a DROP COLUMN write tombstone with
-                // version=N+1 was filtered out before max-version selection,
-                // leaving the lower-version live row visible
-                // (dynamic_schema_drop_column failure).
-                // Phase 11.F-B: also read atttypspec (column 4) for complex
-                // types. attversion / attrefcount shifted to 5 / 6.
+                // Collect ALL rows (including tombstones with rc=0) and pick
+                // max-version per attname. Then drop entries whose chosen
+                // (max-version) row is a tombstone. Skipping tombstones early
+                // would let a lower-version live row survive a DROP COLUMN whose
+                // tombstone has version=N+1.
+                // Read atttypspec (column 4) for complex types — attversion /
+                // attrefcount live at columns 5 / 6.
                 struct cc_row_with_rc_t {
                     cc_row_t base;
                     std::string atttypspec;

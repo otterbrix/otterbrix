@@ -11,7 +11,7 @@ namespace components::logical_plan {
 
 namespace components::operators {
 
-    // operator_resolve_type_t — Phase 13 T3.
+    // operator_resolve_type_t.
     //
     // Self-resolving leaf operator: scans pg_type by (typname, typnamespace) and
     // emits the structural metadata for the matched row. Used by enrichment
@@ -45,8 +45,8 @@ namespace components::operators {
                                   components::catalog::oid_t    namespace_oid,
                                   std::string                   name);
 
-        // Phase 13 M4.F: back-pointer form. dbname is resolved internally
-        // (well_known constants for "public" / "pg_catalog", otherwise scan
+        // back-pointer form. dbname is resolved internally (well_known
+        // constants for "public" / "pg_catalog", otherwise scan
         // pg_namespace) and the operator stamps resolved_metadata + type_oid
         // onto the back-pointed logical node.
         operator_resolve_type_t(std::pmr::memory_resource*    resource,

@@ -62,7 +62,7 @@ TEST_CASE("components::sql::database") {
     TEST_TRANSFORMER_OK("CREATE DATABASE db_name; -- comment", R"_($create_database: db_name)_");
     TEST_TRANSFORMER_OK("CREATE DATABASE db_name; /* multiline\ncomments */", R"_($create_database: db_name)_");
     TEST_TRANSFORMER_OK("CREATE /* comment */ DATABASE db_name;", R"_($create_database: db_name)_");
-    // task_3: DROP DATABASE is wrapped by the transformer in sequence_t(resolve_ns, drop)
+    // DROP DATABASE is wrapped by the transformer in sequence_t(resolve_ns, drop)
     // so result.node->to_string() returns the sequence wrapper. Underlying drop_database
     // carries only namespace_oid (INVALID_OID/0 at parse time).
     TEST_TRANSFORMER_OK("DROP DATABASE db_name;", R"_($sequence[2])_");
@@ -88,9 +88,9 @@ TEST_CASE("components::sql::table") {
     TEST_TRANSFORMER_OK("CREATE TABLE db_name.table_name()", R"_($sequence[2])_");
     TEST_TRANSFORMER_OK("CREATE TABLE table_name()", R"_($create_collection: table_name)_");
 
-    // task_3: DROP TABLE is wrapped in sequence_t(resolve_ns?, resolve_table?, drop_collection).
-    // The drop node itself carries no user-typed names; schema/uuid string fields were removed
-    // entirely (routing is OID-only after enrich stamps namespace_oid + table_oid).
+    // DROP TABLE is wrapped in sequence_t(resolve_ns?, resolve_table?, drop_collection).
+    // The drop node itself carries no user-typed names; routing is OID-only
+    // after enrich stamps namespace_oid + table_oid.
     SECTION("drop with uuid") {
         auto drop = raw_parser(&arena_resource, "DROP TABLE uuid.db_name.schema.table_name")->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(drop)).finalize());
@@ -237,7 +237,7 @@ TEST_CASE("components::sql::index") {
 
     TEST_TRANSFORMER_OK("CREATE INDEX some_idx ON db.table (field);", R"_($sequence[3])_");
 
-    // task_3: DROP INDEX is wrapped in sequence_t(resolve_ns, resolve_table_parent,
+    // DROP INDEX is wrapped in sequence_t(resolve_ns, resolve_table_parent,
     // resolve_table_index, drop_index). The drop node carries no user-typed names.
     SECTION("drop with uuid") {
         auto drop = raw_parser(&arena_resource, "DROP INDEX uuid.db.schema.table.some_idx")->lst.front().data;
@@ -265,13 +265,13 @@ TEST_CASE("components::sql::types") {
     TEST_TRANSFORMER_OK("CREATE TYPE custom_enum AS ENUM ('f1', 'f2', 'f3');",
                         R"_($create_type: name: custom_enum, fields:[ f1=0 f2=1 f3=2 ])_");
 
-    // task_3: DROP TYPE is wrapped in sequence_t(resolve_ns, resolve_type, drop_type).
+    // DROP TYPE is wrapped in sequence_t(resolve_ns, resolve_type, drop_type).
     TEST_TRANSFORMER_OK("DROP TYPE custom_type_name", R"_($sequence[3])_");
 
     TEST_TRANSFORMER_OK("CREATE TABLE table_ (custom_type_name custom_type);", R"_($create_collection: .table_)_");
 
-    // task_7: INSERT is wrapped in sequence_t(resolve_table,
-    // resolve_constraint, insert) — no dbname so no resolve_namespace.
+    // INSERT is wrapped in sequence_t(resolve_table, resolve_constraint,
+    // insert) — no dbname so no resolve_namespace.
     TEST_TRANSFORMER_OK("INSERT INTO table_ (custom_type_name) VALUES (ROW('text', 42))",
                         R"_($sequence[3])_");
 }

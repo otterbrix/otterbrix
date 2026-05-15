@@ -729,7 +729,7 @@ TEST_CASE("integration::cpp::production::corrupted_otbx_recovery") {
     }
 
     INFO("corrupt the .otbx file") {
-        // Phase 8.A on-disk layout is oid-keyed: ${path}/${db_oid}/${tbl_oid}/table.otbx.
+        // On-disk layout is oid-keyed: ${path}/${db_oid}/${tbl_oid}/table.otbx.
         // The test creates exactly one user table (TestDatabase.TestCollection); find
         // its .otbx by walking for the first DB dir whose numeric name is >=
         // FIRST_USER_OID and contains a table dir with table.otbx.

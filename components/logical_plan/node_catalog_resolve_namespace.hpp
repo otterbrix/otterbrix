@@ -9,7 +9,7 @@
 
 namespace components::logical_plan {
 
-    // CATALOG_RESOLVE_NAMESPACE (Phase 13 T6): logical-plan leaf carrying the
+    // CATALOG_RESOLVE_NAMESPACE: logical-plan leaf carrying the
     // catalog dependency "resolve namespace 'X'". Produced when a plan needs
     // a namespace OID before it can be enriched/executed (e.g. a USE/SET
     // namespace, or a DDL that targets a database/schema by name only).
@@ -18,9 +18,6 @@ namespace components::logical_plan {
     // databases map to pg_namespace rows). enrich_logical_plan populates
     // namespace_oid_ via set_namespace_oid() before the planner consumes it.
     // Default value is INVALID_OID so that "not yet resolved" is observable.
-    //
-    // This is a pure leaf — no parser/planner/operator wiring is performed
-    // in T6. T7+ tasks integrate it with the resolve pipeline.
     class node_catalog_resolve_namespace_t final : public node_t {
     public:
         explicit node_catalog_resolve_namespace_t(std::pmr::memory_resource* resource, core::dbname_t dbname);

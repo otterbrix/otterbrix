@@ -4,7 +4,7 @@
 
 namespace components::operators {
 
-    // ABORT (ROLLBACK) TRANSACTION — Phase 4 #56 operator-pipeline replacement
+    // ABORT (ROLLBACK) TRANSACTION — operator-pipeline replacement
     // for manager_dispatcher_t::abort_transaction.
     //
     // Steps (in await_async_and_resume):

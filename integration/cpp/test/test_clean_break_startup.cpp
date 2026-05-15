@@ -79,10 +79,9 @@ TEST_CASE("integration::clean_break_startup::fresh_install_creates_pg_catalog") 
         fresh_disk fd(dir);
         fd.manager->bootstrap_system_tables_sync();
     }
-    // Phase 8.A migrated the on-disk layout from name-keyed
-    // (pg_catalog/main/<name>/table.otbx) to oid-keyed
-    // (<db_oid>/<tbl_oid>/table.otbx) — system tables live under
-    // well_known_oid::main_database. Count .otbx files under that directory.
+    // On-disk layout is oid-keyed (<db_oid>/<tbl_oid>/table.otbx) — system
+    // tables live under well_known_oid::main_database. Count .otbx files
+    // under that directory.
     auto sys = std::filesystem::path(dir) /
                std::to_string(static_cast<unsigned>(well_known_oid::main_database));
     REQUIRE(std::filesystem::exists(sys));

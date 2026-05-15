@@ -21,7 +21,6 @@ namespace components::logical_plan {
         const std::vector<components::table::column_definition_t>& columns() const noexcept { return columns_; }
         std::vector<components::table::column_definition_t>& columns() noexcept { return columns_; }
 
-        // Phase 9.W/10.D: role-named accessors.
         const std::string& relname() const noexcept { return relname_; }
         const std::string& dbname() const noexcept { return dbname_; }
 

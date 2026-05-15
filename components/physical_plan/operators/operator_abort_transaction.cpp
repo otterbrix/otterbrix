@@ -17,7 +17,7 @@ namespace components::operators {
 
     actor_zeta::unique_future<void>
     operator_abort_transaction_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // Phase 5b: snapshot txn_data + swap-appends BEFORE abort() purges the
+        // Snapshot txn_data + swap-appends BEFORE abort() purges the
         // active map. delete_tables on abort: nothing to revert because
         // tombstones written under an uncommitted txn_id stay invisible to
         // readers, so they need no swap-side action.

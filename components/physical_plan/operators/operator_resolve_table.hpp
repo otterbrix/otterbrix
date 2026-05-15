@@ -11,7 +11,7 @@ namespace components::logical_plan {
 
 namespace components::operators {
 
-    // Phase 13 T1 — operator-pipeline replacement for the dedicated
+    // Operator-pipeline replacement for the dedicated
     // manager_disk_t::resolve_table actor message. Self-resolves a table's
     // column schema via standard disk-actor primitives (read_rows_by_key).
     //
@@ -27,8 +27,7 @@ namespace components::operators {
     //   3. relkind='g': read pg_computed_column by relid -> rows. Apply
     //      max-version-per-attname filter, drop entries whose max-version
     //      row is a tombstone (attrefcount<=0), sort by attoid (matches the
-    //      register-order layout used by storage adopt_schema). Mirrors
-    //      manager_disk_resolve.cpp lines 71-160.
+    //      register-order layout used by storage adopt_schema).
     //   4. Build a data_chunk_t with columns
     //      (position int32, attoid uint32, attname string,
     //       atttypid uint32, atttypspec string). Empty when the table is
@@ -53,8 +52,8 @@ namespace components::operators {
                                   components::catalog::oid_t    namespace_oid,
                                   std::string                   relname);
 
-        // Phase 13 Step 3: back-pointer form. After resolving, the operator
-        // stamps namespace_oid + table_oid onto target_node so the dispatcher's
+        // back-pointer form. After resolving, the operator stamps
+        // namespace_oid + table_oid onto target_node so the dispatcher's
         // Pass 2 (validate / enrich) can read it via plan_resolve_index_t.
         operator_resolve_table_t(std::pmr::memory_resource*   resource,
                                   log_t                         log,

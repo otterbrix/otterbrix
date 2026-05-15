@@ -21,8 +21,7 @@ namespace components::operators {
 
     actor_zeta::unique_future<void>
     operator_commit_transaction_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // M4.J: in DDL-commit mode, prepend the durability barrier + WAL
-        // commit record (steps 1-2 of the legacy dispatcher inline hook).
+        // In DDL-commit mode, prepend the durability barrier + WAL commit record.
         if (is_ddl_commit_) {
             if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
                 auto [_f, ff] = actor_zeta::send(
@@ -45,8 +44,8 @@ namespace components::operators {
             }
         }
 
-        // Phase 5b: snapshot txn_data AND swap-info BEFORE commit() purges the
-        // active map; then commit; then dispatch the new batched APIs against
+        // Snapshot txn_data AND swap-info BEFORE commit() purges the
+        // active map; then commit; then dispatch the batched APIs against
         // the post-swap state.
         auto* tm = ctx->txn_manager;
         auto* txn_t = tm ? tm->find_transaction(ctx->session) : nullptr;
@@ -65,8 +64,8 @@ namespace components::operators {
         commit_id_ = tm ? tm->commit(ctx->session) : 0;
 
         // Step 3: flip MVCC state on pg_catalog rows appended/deleted under this
-        // explicit transaction. Phase 5b uses the new batched APIs that consume
-        // the per-txn swap-info aggregated by the dispatcher.
+        // explicit transaction. Uses the batched APIs that consume the
+        // per-txn swap-info aggregated by the dispatcher.
         if (txn_data.transaction_id != 0 && commit_id_ > 0
             && ctx->disk_address != actor_zeta::address_t::empty_address()) {
             components::execution_context_t swap_ctx{ctx->session, txn_data, {}};

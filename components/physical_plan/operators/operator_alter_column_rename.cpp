@@ -34,7 +34,7 @@ namespace components::operators {
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
         constexpr catalog::oid_t pg_attr = catalog::well_known_oid::pg_attribute_table;
 
-        // Phase 9.B: routing by attoid (pre-stamped by enrich_logical_plan).
+        // Routing by attoid (pre-stamped by enrich_logical_plan).
         // INVALID_OID means the resolver couldn't find the column — treat as
         // no-op (matches the prior attname-scan miss behavior).
         if (attoid_ == catalog::INVALID_OID) {

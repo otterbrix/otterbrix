@@ -1,6 +1,6 @@
 #pragma once
 
-// Phase 13: plan-tree catalog lookup index.
+// Plan-tree catalog lookup index.
 //
 // The transformer wraps DML/DDL plans with catalog_resolve_*_t leaf nodes.
 // Pass 1 in the dispatcher runs those leaves through operator_resolve_*_t
@@ -46,7 +46,7 @@ namespace services::dispatcher::impl {
             tbl_md_by_oid;
         // "dbname|typename" -> type_oid (from resolve_type nodes).
         std::unordered_map<std::string, components::catalog::oid_t> type_oid_by_qname;
-        // M4.F: "dbname|typename" -> const resolved_type_metadata_t*. Points
+        // "dbname|typename" -> const resolved_type_metadata_t*. Points
         // into the resolve_type node's resolved_metadata() optional.
         // resolve_type.cpp + enrich(drop_type_t) + dispatcher UDT existence
         // checks read decoded complex_logical_type via this map.
@@ -54,7 +54,7 @@ namespace services::dispatcher::impl {
             type_md_by_qname;
         // "dbname|fnname" -> fn_oid (from resolve_function nodes).
         std::unordered_map<std::string, components::catalog::oid_t> fn_oid_by_qname;
-        // Constraint snapshots keyed by parent table_oid (M4.D).
+        // Constraint snapshots keyed by parent table_oid.
         // outgoing_fks_by_oid: FKs where the target is the CHILD (INSERT/UPDATE).
         // referencing_fks_by_oid: FKs where the target is the PARENT (DELETE).
         // check_exprs_by_oid: CHECK constraint expressions for INSERT/UPDATE.
@@ -102,7 +102,7 @@ namespace services::dispatcher::impl {
                         key.append(rt->dbname()).push_back('|');
                         key.append(rt->relname());
                         out.tbl_ns_by_qname[key] = rt->namespace_oid();
-                        // M5: stamp table metadata pointer so validate /
+                        // Stamp table metadata pointer so validate /
                         // dispatcher can read columns + relkind from the
                         // plan-tree idx.
                         if (rt->resolved_metadata().has_value()) {

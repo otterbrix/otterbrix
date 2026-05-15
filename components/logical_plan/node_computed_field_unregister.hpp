@@ -22,7 +22,6 @@ namespace components::logical_plan {
         components::catalog::oid_t attoid() const noexcept { return attoid_; }
         void set_attoid(components::catalog::oid_t a) noexcept { attoid_ = a; }
 
-        // Phase 9.W/10.D: role-named accessors.
         const std::string& relname() const noexcept { return relname_; }
         const std::string& dbname() const noexcept { return dbname_; }
 

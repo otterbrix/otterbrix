@@ -83,9 +83,9 @@ namespace components::sql::transform {
             }
 
             auto qn = rangevar_to_qualified_name(node.relation);
-            // Phase 13 T13 / task_7: identity travels via the catalog-resolve
-            // wrap; the insert node itself carries only payload + table_oid()
-            // (stamped at enrich time from the sibling resolve_table).
+            // Identity travels via the catalog-resolve wrap; the insert node
+            // itself carries only payload + table_oid() (stamped at enrich
+            // time from the sibling resolve_table).
             logical_plan::node_ptr ins;
             if (has_params) {
                 parameter_insert_rows_ = std::move(chunk);

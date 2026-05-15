@@ -16,7 +16,6 @@ namespace components::logical_plan {
 
         const catalog::fk_info_t& fk() const noexcept { return fk_; }
 
-        // Phase 9.W/10.D: role-named accessors. FK cascade operator-feeder identity.
         const std::string& relname() const noexcept { return relname_; }
         const std::string& dbname() const noexcept { return dbname_; }
 

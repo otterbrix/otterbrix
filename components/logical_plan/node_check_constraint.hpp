@@ -20,7 +20,6 @@ namespace components::logical_plan {
         const std::vector<std::string>& not_null_columns() const { return not_null_columns_; }
         const std::vector<std::pair<std::string, std::string>>& check_exprs() const { return check_exprs_; }
 
-        // Phase 9.W/10.D: role-named accessors. CHECK constraint applied above DML target.
         const std::string& relname() const noexcept { return relname_; }
         const std::string& dbname() const noexcept { return dbname_; }
 

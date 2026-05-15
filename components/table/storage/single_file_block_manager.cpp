@@ -27,7 +27,7 @@ namespace components::table::storage {
         return BLOCK_START + block_id * block_allocation_size();
     }
 
-    // --- Phase 1B: Database lifecycle ---
+    // --- Database lifecycle ---
 
     void single_file_block_manager_t::create_new_database() {
         using namespace core::filesystem;
@@ -99,7 +99,7 @@ namespace components::table::storage {
         }
     }
 
-    // --- Phase 1B: Block I/O ---
+    // --- Block I/O ---
 
     void single_file_block_manager_t::read(block_t& block) {
         auto location = block_location(block.id);
@@ -119,7 +119,7 @@ namespace components::table::storage {
         checksum_and_write(buffer, block_id);
     }
 
-    // --- Phase 1C: Block allocation ---
+    // --- Block allocation ---
 
     uint64_t single_file_block_manager_t::free_block_id() {
         std::lock_guard lock(allocation_lock_);
@@ -195,7 +195,7 @@ namespace components::table::storage {
         return free_list_.size();
     }
 
-    // --- Phase 1C: Checksums ---
+    // --- Checksums ---
 
     void single_file_block_manager_t::checksum_and_write(file_buffer_t& buffer, uint64_t block_id) {
         auto* data = buffer.internal_buffer();
@@ -227,7 +227,7 @@ namespace components::table::storage {
         return stored_checksum == computed;
     }
 
-    // --- Phase 1C: Header write + sync ---
+    // --- Header write + sync ---
 
     void single_file_block_manager_t::write_header(const database_header_t& header) {
         iteration_++;
@@ -262,7 +262,7 @@ namespace components::table::storage {
         }
     }
 
-    // --- Phase 14D: Free List Persistence ---
+    // --- Free List Persistence ---
 
     meta_block_pointer_t single_file_block_manager_t::serialize_free_list() {
         if (free_list_.empty()) {

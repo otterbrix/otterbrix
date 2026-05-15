@@ -14,7 +14,6 @@ namespace components::logical_plan {
 
         const expression_ptr& having() const { return having_; }
 
-        // Phase 9.W/10.D: role-named accessors. Carries source table identity for parser-window.
         const std::string& relname() const noexcept { return relname_; }
         const std::string& dbname() const noexcept { return dbname_; }
 

@@ -87,7 +87,7 @@ namespace {
         }
     };
 
-    // Phase 8.E: WAL records carry table_oid; pg_catalog tables have well-known oids
+    // WAL records carry table_oid; pg_catalog tables have well-known oids
     // (pg_class=11, pg_attribute=12, pg_namespace=10, pg_depend=15, pg_index=17,
     // pg_proc=14, pg_type=13, pg_constraint=16, pg_sequence=34, pg_rewrite=35,
     // pg_computed_column=18, pg_database=19). Anything below FIRST_USER_OID is

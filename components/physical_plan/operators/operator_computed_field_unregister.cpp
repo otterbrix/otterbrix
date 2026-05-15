@@ -31,7 +31,7 @@ namespace components::operators {
 
     actor_zeta::unique_future<void>
     operator_computed_field_unregister_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // Phase 7 #109: concurrent INSERT registering same field while ALTER DROP
+        // Concurrent INSERT registering same field while ALTER DROP
         // is in flight. MVCC isolation: each txn sees its own snapshot of
         // pg_computed_column. Three orderings possible:
         //   1. ALTER commits first, INSERT sees tombstone -> register skips (refcount<=0
@@ -41,13 +41,13 @@ namespace components::operators {
         //   3. Both commit independently — resolver max(attversion) determines visibility.
         //
         // This sometimes produces "ghost data" (storage has values for a column the
-        // reader hides). VACUUM physical-compaction (P7.5b TODO) would reclaim;
-        // until then, ghost data is harmless (invisible to user).
+        // reader hides). VACUUM physical-compaction would reclaim; until then,
+        // ghost data is harmless (invisible to user).
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
         constexpr catalog::oid_t pg_computed_column = catalog::well_known_oid::pg_computed_column_table;
 
-        // Phase 9.B: routing by attoid (pre-stamped by enrich_logical_plan).
+        // Routing by attoid (pre-stamped by enrich_logical_plan).
         // INVALID_OID means the resolver couldn't find a live computed column —
         // treat as idempotent no-op (matches the prior attname-scan miss).
         // Group 1: planner creates this operator directly from ALTER's
@@ -61,7 +61,7 @@ namespace components::operators {
         // per-table, perf OK), filter by attoid in-callback. Cannot read by
         // attoid alone because the same logical (relid, attoid) row may have
         // multiple version entries; we still need max(attversion).
-        // pg_computed_column layout (Phase 11.F-B): 0=relid 1=attoid 2=attname
+        // pg_computed_column layout: 0=relid 1=attoid 2=attname
         // 3=atttypid 4=atttypspec 5=attversion 6=attrefcount.
         types::logical_value_t toid_lv(resource_, table_oid_);
         std::pmr::vector<std::string> r_keys(resource_);
@@ -131,15 +131,15 @@ namespace components::operators {
             ctx->pg_catalog_appends.push_back(std::move(rng));
         }
 
-        // Phase 11.G note: a previous version of this code added an immediate
+        // Note: a previous version of this code added an immediate
         // compact_relkind_g_storage call here (drop physical columns whose
         // tombstones were just written), but the subsequent re-INSERT path
         // (dynamic_schema_re_add_after_drop) crashed row_group::append with
         // column-count mismatch because storage::drop_column doesn't fully
         // reset row_group state when called mid-pipeline. Compaction is
-        // therefore deferred to operator_vacuum_t (Phase 7.5b runs the same
-        // logic asynchronously). For now SELECT * on relkind='g' continues to
-        // leak dropped columns until VACUUM runs — out of scope for 11.G.
+        // therefore deferred to operator_vacuum_t (runs the same logic
+        // asynchronously). For now SELECT * on relkind='g' continues to leak
+        // dropped columns until VACUUM runs.
         mark_executed();
     }
 

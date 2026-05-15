@@ -23,8 +23,8 @@
 #include <components/logical_plan/node_catalog_resolve_type.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/param_storage.hpp>
-// operator_{insert,delete,update}.hpp no longer included — Phase 5 moved
-// the static_cast'd intercept_dml_io_ branches into each operator's
+// operator_{insert,delete,update}.hpp no longer included — the
+// static_cast'd intercept_dml_io_ branches now live in each operator's
 // await_async_and_resume so the executor only sees the base operator_t.
 #include <components/physical_plan/operators/predicates/predicate.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
@@ -39,21 +39,19 @@ namespace {
 // Needed because the planner may wrap insert/update/delete with constraint nodes,
 // changing the top-level type from insert_t to e.g. check_constraint_t.
 //
-// Phase 7.x: dispatcher may wrap INSERT into a sequence_t when the target is
-// a relkind='g' (computing/dynamic-schema) table — e.g. sequence_t(insert,
-// computed_field_register) once P7.2 lands. Recurse through that wrapper so
-// the executor still recognizes the plan as DML and runs the
-// begin_transaction / commit-side pg_catalog swap path.
+// Dispatcher may wrap INSERT into a sequence_t when the target is a
+// relkind='g' (computing/dynamic-schema) table — e.g. sequence_t(insert,
+// computed_field_register). Recurse through that wrapper so the executor
+// still recognizes the plan as DML and runs the begin_transaction /
+// commit-side pg_catalog swap path.
 //
-// Phase 13 (M2b diagnosis 2026-05-13): T13=on, the transformer wraps DML
-// into `sequence_t(catalog_resolve_namespace_t, catalog_resolve_table_t,
-// <dml_consumer>)`. The legacy form (DML as first child) only worked for
-// Phase 7.x's `sequence_t(insert, computed_field_register)`. We now also
-// skip catalog_resolve_* prefix children and probe the FIRST non-resolve
-// child for the DML test. Without this, is_dml=false → no
-// begin_transaction → operator_insert writes invisible at commit (cursor
-// reports 0 rows on subsequent SELECT). Symptom matched the legacy
-// prototype "6/50 rows" regression — true root cause is is_dml gating.
+// The transformer wraps DML into
+//   sequence_t(catalog_resolve_namespace_t, catalog_resolve_table_t,
+//              <dml_consumer>).
+// We skip catalog_resolve_* prefix children and probe the FIRST non-resolve
+// child for the DML test. Without this, is_dml=false → no begin_transaction
+// → operator_insert writes invisible at commit (cursor reports 0 rows on
+// subsequent SELECT).
 components::logical_plan::node_type find_effective_dml_type(
     const components::logical_plan::node_ptr& plan) {
     using namespace components::logical_plan;
@@ -191,12 +189,12 @@ namespace services::collection::executor {
             trace(log_, "executor::execute_plan: began txn {}", txn_data.transaction_id);
         }
 
-        // Phase 13 (T13 emit catalog_resolve_*): with the transformer
-        // wrap, logical_plan may be sequence_t(catalog_resolve_*, ...,
-        // <consumer>). The limit_t node lives as a child of the consumer,
-        // not on the wrapping sequence_t. Search via find_effective_dml_type
-        // first (already understands resolve prefix), then fall back to
-        // iterating the raw children for non-DML / pre-T13 plans.
+        // With the transformer wrap, logical_plan may be
+        // sequence_t(catalog_resolve_*, ..., <consumer>). The limit_t node
+        // lives as a child of the consumer, not on the wrapping sequence_t.
+        // Search via find_effective_dml_type first (already understands
+        // resolve prefix), then fall back to iterating the raw children for
+        // non-DML plans.
         auto limit = components::logical_plan::limit_t::unlimit();
         auto* limit_lookup_node = logical_plan.get();
         if (limit_lookup_node && limit_lookup_node->type() == components::logical_plan::node_type::sequence_t) {
@@ -245,24 +243,23 @@ namespace services::collection::executor {
             // CHECK constraint enforcement is now handled by operator_check_constraint_t
             // (planner-inserted into the physical plan). No post-execution disk round-trip needed.
 
-            // Phase 5: WAL physical_{insert,update,delete} writes used to live
-            // here, but were moved into operator_{insert,delete,update}::
-            // await_async_and_resume so each DML operator is self-contained
-            // (storage_append + WAL + index mirror happen together inside the
-            // operator coroutine, before mark_executed). The flush future is
-            // pushed onto pipeline_context.pending_disk_futures and awaited
-            // by execute_sub_plan_, ordering guarantees stay identical.
+            // WAL physical_{insert,update,delete} writes live in each DML
+            // operator's await_async_and_resume so each DML operator is
+            // self-contained (storage_append + WAL + index mirror happen
+            // together inside the operator coroutine, before mark_executed).
+            // The flush future is pushed onto pipeline_context.pending_disk_futures
+            // and awaited by execute_sub_plan_, ordering guarantees stay identical.
 
             // Step 4: Commit transaction
             uint64_t commit_id = txn_manager_->commit(session);
             trace(log_, "executor::execute_plan: committed txn {}, commit_id {}", txn_data.transaction_id, commit_id);
 
             // Step 5: Commit side-effects on storage and index.
-            // Phase 8.G: routing is by table_oid only — never read cfn from
+            // Routing is by table_oid only — never read cfn from
             // logical_plan, since wrappers (sequence_t etc.) have no cfn and
-            // would shadow the inner DML node's identity (root cause of #132).
-            // result.dml_table_oid is stamped by the inner DML operator; it
-            // identifies the storage/index target unambiguously.
+            // would shadow the inner DML node's identity. result.dml_table_oid
+            // is stamped by the inner DML operator; it identifies the
+            // storage/index target unambiguously.
             if (result.dml_append_row_count > 0 && commit_id > 0) {
                 components::execution_context_t ctx{session, txn_data, result.dml_table_oid};
                 auto [_ca, caf] = actor_zeta::send(disk_address_,
@@ -302,15 +299,14 @@ namespace services::collection::executor {
                 pending_void_.push_back(std::move(gc_fut));
             }
 
-            // Phase 5b Wave 4-D / Phase 7: flip MVCC tags for pg_catalog
-            // rows written during this DML fragment (e.g. pg_computed_column
-            // appends produced by operator_computed_field_register_t once
-            // P7.2 wires it). Same txn; same commit_id; swap inline so the
-            // rows become visible to the next reader without dispatcher
-            // round-trips. Without this block the catalog rows would carry
-            // insert_id == txn_id and be permanently invisible (since
-            // txn_manager has already removed the active txn entry by the
-            // time of return).
+            // Flip MVCC tags for pg_catalog rows written during this DML
+            // fragment (e.g. pg_computed_column appends produced by
+            // operator_computed_field_register_t). Same txn; same commit_id;
+            // swap inline so the rows become visible to the next reader
+            // without dispatcher round-trips. Without this block the catalog
+            // rows would carry insert_id == txn_id and be permanently
+            // invisible (since txn_manager has already removed the active
+            // txn entry by the time of return).
             if (commit_id > 0) {
                 if (!result.pg_catalog_appends.empty()) {
                     components::execution_context_t pgc_ctx{session, txn_data, {}};
@@ -334,9 +330,9 @@ namespace services::collection::executor {
 
             // Step 6: WAL COMMIT marker
             if (wal_address_ != actor_zeta::address_t::empty_address()) {
-                // Phase 8.E: WAL workers keyed by database_oid. Single-worker
-                // model uses main_database for all DML in this phase; multi-database
-                // routing follows once CREATE DATABASE allocates per-namespace workers.
+                // WAL workers keyed by database_oid. Single-worker model uses
+                // main_database for all DML; multi-database routing follows
+                // once CREATE DATABASE allocates per-namespace workers.
                 constexpr auto db_oid = components::catalog::well_known_oid::main_database;
                 auto [_wc, wcf] = actor_zeta::send(wal_address_,
                                                    &wal::manager_wal_replicate_t::commit_txn,
@@ -355,7 +351,7 @@ namespace services::collection::executor {
         } else if (is_dml && result.cursor->is_error()) {
             // Abort path
             trace(log_, "executor::execute_plan: DML error, aborting txn");
-            // Phase 8.G: oid-only routing on abort path; same rationale as commit path.
+            // Oid-only routing on abort path; same rationale as commit path.
             if (result.dml_append_row_count > 0) {
                 components::execution_context_t abort_ctx{session, txn_data, result.dml_table_oid};
                 auto [_ra, raf] = actor_zeta::send(disk_address_,
@@ -373,10 +369,11 @@ namespace services::collection::executor {
                     co_await std::move(rif);
                 }
             }
-            // Phase 5b Wave 4-D: revert pg_catalog appends written in this fragment
-            // before aborting the txn (otherwise the rows linger with insert_id =
-            // txn_id and are unreachable). delete_tables tombstones with delete_id
-            // = txn_id are reverted by storage's abort path on txn_manager_->abort.
+            // Revert pg_catalog appends written in this fragment before
+            // aborting the txn (otherwise the rows linger with
+            // insert_id = txn_id and are unreachable). delete_tables
+            // tombstones with delete_id = txn_id are reverted by storage's
+            // abort path on txn_manager_->abort.
             if (!result.pg_catalog_appends.empty()) {
                 components::execution_context_t pgc_ctx{session, txn_data, {}};
                 auto [_pa, paf] = actor_zeta::send(disk_address_,
@@ -461,7 +458,7 @@ namespace services::collection::executor {
             pipeline_context.index_address = index_address_;
             pipeline_context.wal_address = wal_address_;
             pipeline_context.txn = txn;
-            // VACUUM/MVCC GC threshold (Phase 3 #52). operator_vacuum_t reads
+            // VACUUM/MVCC GC threshold. operator_vacuum_t reads
             // this to gate manager_disk_t::vacuum_all + manager_index_t::
             // cleanup_all_versions. Computed up-front so the operator does not
             // need a back-channel to txn_manager_.
@@ -492,10 +489,10 @@ namespace services::collection::executor {
                     break;
                 }
                 trace(log_, "executor: found waiting operator, type={}", static_cast<int>(waiting_op->type()));
-                // Phase 5: DML operators (insert/remove/update) now self-contain
+                // DML operators (insert/remove/update) self-contain
                 // WAL + storage + index I/O inside their await_async_and_resume.
-                // No more switch-based intercept_dml_io_ — every operator is
-                // dispatched uniformly via the same coroutine entry point.
+                // Every operator is dispatched uniformly via the same
+                // coroutine entry point.
                 co_await waiting_op->await_async_and_resume(&pipeline_context);
                 // Propagate errors set during async resume (fk_check, fk_cascade,
                 // DML on disk failure, etc.)
@@ -592,7 +589,7 @@ namespace services::collection::executor {
                 }
             }
 
-            // Phase 5b: lift pg_catalog swap info from this fragment's pipeline
+            // Lift pg_catalog swap info from this fragment's pipeline
             // context into the per-call sub_plan_result_t accumulated across
             // sub-plan iterations. execute_plan then forwards them into the
             // returned execute_result_t for the dispatcher to aggregate onto
@@ -606,12 +603,11 @@ namespace services::collection::executor {
             pipeline_context.pg_catalog_appends.clear();
             pipeline_context.pg_catalog_delete_tables.clear();
 
-            // Phase 5: lift DML swap-info recorded by operator_insert /
+            // Lift DML swap-info recorded by operator_insert /
             // operator_delete / operator_update inside await_async_and_resume.
             // execute_plan reads these to drive storage_commit_append /
             // storage_commit_delete after txn_manager_->commit. Last DML
-            // fragment wins per call (matches the previous intercept_dml_io_
-            // semantics, where each call rewrote result_tracking).
+            // fragment wins per call.
             if (pipeline_context.dml_append_row_count > 0) {
                 result_tracking.dml_append_row_start = pipeline_context.dml_append_row_start;
                 result_tracking.dml_append_row_count = pipeline_context.dml_append_row_count;

@@ -60,21 +60,20 @@ namespace services::dispatcher {
         components::cursor::error_t error_;
     };
 
-    // M4.G.12 / M4.H: existence checks read from the plan-tree idx supplied
-    // explicitly by the dispatcher (no thread_local). Returns nullptr on
-    // hit, otherwise an error cursor with the standard
-    // "database/collection does not exist" diagnostic.
+    // Existence checks read from the plan-tree idx supplied explicitly by
+    // the dispatcher. Returns nullptr on hit, otherwise an error cursor with
+    // the standard "database/collection does not exist" diagnostic.
     components::cursor::cursor_t_ptr check_namespace_exists(std::pmr::memory_resource* resource,
                                                             const impl::plan_resolve_index_t* idx,
                                                             const components::catalog::table_id& id);
     components::cursor::cursor_t_ptr check_collection_exists(std::pmr::memory_resource* resource,
                                                              const impl::plan_resolve_index_t* idx,
                                                              const components::catalog::table_id& id);
-    // M4.G.9: probe `alias` against the plan-tree idx (impl::type_md_for)
-    // for each dbname in `search_dbnames` in order. Returns success on first
-    // hit. If `search_dbnames` is empty, falls back to {"public", "pg_catalog"}.
-    // The transformer (M4.G.1 / M4.G.4 / M4.G.5) emits resolve_type for every
-    // (dbname, alias) tuple this helper queries.
+    // Probe `alias` against the plan-tree idx (impl::type_md_for) for each
+    // dbname in `search_dbnames` in order. Returns success on first hit.
+    // If `search_dbnames` is empty, falls back to {"public", "pg_catalog"}.
+    // The transformer emits resolve_type for every (dbname, alias) tuple
+    // this helper queries.
     components::cursor::cursor_t_ptr
     check_type_exists(std::pmr::memory_resource* resource,
                        const impl::plan_resolve_index_t* idx,
@@ -82,19 +81,16 @@ namespace services::dispatcher {
                        std::span<const std::string> search_dbnames = {});
 
     // Walk a complex_logical_type tree and visit every nested UDT reference.
-    // Moved to components/types/user_type_walk.hpp (M4.G.1) so transformer +
-    // dispatcher + validate share one impl. The using-declaration keeps
+    // Implementation lives in components/types/user_type_walk.hpp so transformer,
+    // dispatcher and validate share one impl. The using-declaration keeps
     // existing call sites unchanged.
     using ::components::types::walk_user_type_refs;
 
-    // V4 entry points — read referenced catalog metadata from the plan-tree
+    // Entry points — read referenced catalog metadata from the plan-tree
     // resolve idx (populated by Pass 1's operator_resolve_*_t), then delegate
     // to the sync internals. All catalog reads go through the resolve idx.
-    //
-    // Spec ref: docs/v4-catalog-refactoring.md §5 Phase E.3.
-    //
-    // M4.H: `idx` is supplied by the dispatcher (built once after Pass 1).
-    // Recursive validate_schema_sync calls thread the same pointer through.
+    // `idx` is supplied by the dispatcher (built once after Pass 1); recursive
+    // validate_schema_sync calls thread the same pointer through.
     actor_zeta::unique_future<components::cursor::cursor_t_ptr>
     validate_types(std::pmr::memory_resource* resource,
                    components::execution_context_t ctx,
@@ -132,7 +128,7 @@ namespace services::dispatcher {
     // validate_type_recursion: for CREATE TABLE / CREATE TYPE nodes, detect circular user-
     // defined type references (e.g. STRUCT A { b: B } and STRUCT B { a: A }).
     // Returns nullptr on success, error cursor if a cycle is detected.
-    // M4.H: `idx` supplies the plan-tree type metadata index.
+    // `idx` supplies the plan-tree type metadata index.
     components::cursor::cursor_t_ptr
     validate_type_recursion(std::pmr::memory_resource*                      resource,
                             const impl::plan_resolve_index_t*               idx,

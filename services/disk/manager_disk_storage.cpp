@@ -201,13 +201,10 @@ namespace services::disk {
                                                                      catalog::oid_t table_oid) {
         trace(log_, "manager_disk_t::drop_storage , session : {} , oid : {}",
               session.data(), static_cast<unsigned>(table_oid));
-        // Phase 11.C: physically remove the .otbx file (and its sidecar + per-oid
-        // directory) when dropping a DISK-backed storage. Previously drop only
-        // removed the in-memory map entry, leaving the .otbx file behind so a
-        // restart would still see it on disk — disk_drop_table_survives_restart
-        // failed because WAL replay synthesised a phantom storage from the
-        // surviving WAL records, and re-CREATE TABLE then collided with the
-        // recycled oid.
+        // Physically remove the .otbx file (and its sidecar + per-oid directory)
+        // when dropping a DISK-backed storage. Otherwise a restart would see the
+        // surviving .otbx, WAL replay would synthesise a phantom storage, and
+        // re-CREATE TABLE could collide with the recycled oid.
         if (auto it = storages_.find(table_oid); it != storages_.end()) {
             auto otbx_path = it->second->otbx_path;
             storages_.erase(it);

@@ -106,7 +106,7 @@ namespace otterbrix {
         wrapper_dispatcher_ = actor_zeta::spawn<wrapper_dispatcher_t>(&resource, manager_dispatcher_->address(), log_);
         trace(log_, "spaces::manager_dispatcher create dispatcher");
 
-        // P2.2/P2.3: when WAL is disabled, pass empty_address so all wal_address_ != empty()
+        // When WAL is disabled, pass empty_address so all wal_address_ != empty()
         // guards in dispatcher and disk manager skip every WAL round-trip at no cost.
         auto effective_wal_address = config.wal.on
                                          ? manager_wal_address
@@ -127,18 +127,15 @@ namespace otterbrix {
             // load_storage_for_wal_replay_sync on demand; resolve_table lazy-loads
             // anything still missing. Startup is O(system-tables).
             disk_ptr->bootstrap_system_tables_sync();
-            // Phase 11.C: walk config_.path for user-table .otbx files and load each.
-            // Loaded storages bring their .otbx.wal_id sidecar into memory, so the
-            // WAL-replay filter below can correctly skip already-checkpointed
-            // records for user tables (previously the sidecar lived at the wrong
-            // path — under main_database — so peek_from_disk for user tables
-            // always returned 0 and every user record replayed).
+            // Walk config_.path for user-table .otbx files and load each.
+            // Loaded storages bring their .otbx.wal_id sidecar into memory,
+            // so the WAL-replay filter below can correctly skip
+            // already-checkpointed records for user tables.
             disk_ptr->load_user_table_storages_sync();
         }
         if (disk_ptr) {
             // Pass WAL address: disk uses this to write pg_catalog WAL records inline from
-            // append_pg_catalog_row. Previously this was dispatcher's address — only worked
-            // because the runtime_txn check skipped WAL writes.
+            // append_pg_catalog_row.
             disk_ptr->sync(std::make_tuple(effective_wal_address));
         }
 
@@ -149,7 +146,7 @@ namespace otterbrix {
         // (sequential — small volume, mutates the catalog the rest of restore depends on);
         // user-table records run in parallel.
         //
-        // Phase 8.E: WAL records carry table_oid directly — no cfn-resolve roundtrip.
+        // WAL records carry table_oid directly — no cfn-resolve roundtrip.
         if (disk_ptr && !wal_records.empty()) {
             std::unordered_map<components::catalog::oid_t, std::vector<services::wal::record_t*>>
                 system_by_oid;
@@ -157,12 +154,13 @@ namespace otterbrix {
                 user_by_oid;
             constexpr components::catalog::oid_t main_db_oid =
                 components::catalog::well_known_oid::main_database;
-            // Phase 8.A made .otbx + sidecar authoritative for *all* checkpointed
-            // tables (system and user alike). Records at or before sidecar.wal_id
-            // are already absorbed into the loaded storage; replaying them would
-            // duplicate catalog rows — bug #160 (P11.B). Tables without a sidecar
-            // (cp_id == 0, never checkpointed) still replay unconditionally.
-            // Cache the per-table sidecar wal_id to avoid one fs read per record.
+            // .otbx + sidecar are authoritative for *all* checkpointed
+            // tables (system and user alike). Records at or before
+            // sidecar.wal_id are already absorbed into the loaded storage;
+            // replaying them would duplicate catalog rows. Tables without
+            // a sidecar (cp_id == 0, never checkpointed) still replay
+            // unconditionally. Cache the per-table sidecar wal_id to avoid
+            // one fs read per record.
             std::unordered_map<components::catalog::oid_t, services::wal::id_t> cp_cache;
             auto cp_for = [&](components::catalog::oid_t oid) {
                 auto [it, inserted] = cp_cache.try_emplace(oid);
@@ -237,14 +235,14 @@ namespace otterbrix {
                 replay_one(oid, records);
             }
 
-            // Phase 11.C: after system replay, pg_class reflects the final
-            // catalog state. Drop user-table replay buckets whose oid is no
-            // longer alive (table was DROPped — its pg_class row is gone and
-            // its .otbx was physically removed by drop_storage). Without this
-            // filter, surviving WAL INSERT records would resurrect a phantom
-            // storage at the dropped oid; if the oid is later recycled by
-            // re-CREATE TABLE, the new schema collides with the phantom and
-            // queries return stale data — disk_drop_table_survives_restart.
+            // After system replay, pg_class reflects the final catalog
+            // state. Drop user-table replay buckets whose oid is no longer
+            // alive (table was DROPped — its pg_class row is gone and its
+            // .otbx was physically removed by drop_storage). Without this
+            // filter, surviving WAL INSERT records would resurrect a
+            // phantom storage at the dropped oid; if the oid is later
+            // recycled by re-CREATE TABLE, the new schema collides with
+            // the phantom and queries return stale data.
             auto alive_user_oids = disk_ptr->alive_user_oids_sync();
             for (auto it = user_by_oid.begin(); it != user_by_oid.end();) {
                 if (alive_user_oids.count(it->first) == 0) {

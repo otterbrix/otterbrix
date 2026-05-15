@@ -248,7 +248,7 @@ namespace components::operators {
         if (left_ && left_->output()) {
             auto& chunk = left_->output()->data_chunk();
 
-            // Phase 1: Pre-compute arithmetic columns (before grouping)
+            // Pre-compute arithmetic columns (before grouping)
             for (auto& comp : computed_columns_) {
                 auto [result_vec, arith_error] =
                     evaluate_arithmetic(resource_, comp.op, comp.operands, chunk, pipeline_context->parameters);
@@ -270,29 +270,29 @@ namespace components::operators {
                 }
             }
 
-            // Phase 2: Group by keys (columnar, no transpose)
+            // Group by keys (columnar, no transpose)
             create_list_rows();
 
-            // Phase 3: Aggregate per group + build result chunk
+            // Aggregate per group + build result chunk
             auto result = calc_aggregate_values(pipeline_context);
 
-            // Phase 4: Post-aggregate arithmetic (columnar)
+            // Post-aggregate arithmetic (columnar)
             size_t size_before_post = result.data.size();
             calc_post_aggregates(pipeline_context, result);
 
-            // Phase 5: Remove internal aggregate columns by position
+            // Remove internal aggregate columns by position
             if (internal_aggregate_count_ > 0) {
                 auto it_end = result.data.begin() + static_cast<std::ptrdiff_t>(size_before_post);
                 auto it_begin = it_end - static_cast<std::ptrdiff_t>(internal_aggregate_count_);
                 result.data.erase(it_begin, it_end);
             }
 
-            // Phase 6: HAVING filter (columnar)
+            // HAVING filter (columnar)
             if (having_) {
                 filter_having(pipeline_context, result);
             }
 
-            // Phase 7: Reorder columns to match SELECT clause order
+            // Reorder columns to match SELECT clause order
             if (!select_order_.empty()) {
                 std::vector<vector::vector_t> reordered;
                 reordered.reserve(select_order_.size());
@@ -303,7 +303,7 @@ namespace components::operators {
                                    std::make_move_iterator(reordered.end()));
             }
 
-            // Phase 8: Output
+            // Output
             output_ = operators::make_operator_data(left_->output()->resource(), std::move(result));
 
             // Clear temporary grouping state

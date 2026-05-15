@@ -181,7 +181,7 @@ namespace components::operators {
             }
         }
 
-        // Phase 13 Step 3: stamp resolved oids onto the logical-plan node so
+        // Stamp resolved oids onto the logical-plan node so
         // the dispatcher's Pass 2 (validate / enrich / planner) reads them
         // via plan_resolve_index_t.
         // Stamped unconditionally (even when !found_) so callers can detect
@@ -202,7 +202,7 @@ namespace components::operators {
         // Per-row metadata accumulated below, then materialized into the
         // output chunk in one pass. Using a flat struct (instead of separate
         // parallel vectors) keeps sort+filter logic simple.
-        // M4.B: extended with attnotnull / atthasdefault / attdefspec so the
+        // Extended with attnotnull / atthasdefault / attdefspec so the
         // full resolved_table_metadata_t can be stamped on the logical node.
         struct out_row_t {
             catalog::oid_t attoid{catalog::INVALID_OID};
@@ -335,11 +335,11 @@ namespace components::operators {
                        });
         }
 
-        // Phase 13 M4.B: also stamp full resolved_table_metadata_t on the
-        // logical resolve node so enrich/validate can read the columns +
-        // not-null / default flags from the plan tree. Built from the same
-        // `rows` we use for the operator output chunk; decoded type derived
-        // from atttypspec or atttypid via the existing catalog helpers.
+        // Stamp full resolved_table_metadata_t on the logical resolve node
+        // so enrich/validate can read the columns + not-null / default flags
+        // from the plan tree. Built from the same `rows` we use for the
+        // operator output chunk; decoded type derived from atttypspec or
+        // atttypid via the existing catalog helpers.
         if (target_node_) {
             std::fprintf(stderr, "[RT] populate md table_oid=%u ns_oid=%u relkind='%c' rows=%zu relname='%s'\n",
                 static_cast<unsigned>(table_oid_),

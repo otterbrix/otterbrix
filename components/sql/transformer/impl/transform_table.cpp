@@ -204,7 +204,7 @@ namespace components::sql::transform {
                 }
                 std::string type_name = strVal(drop_name.back().data);
                 auto n = logical_plan::make_node_drop_type(resource_);
-                // M4.F: wrap with resolve_type so Pass 1 stamps type_oid +
+                // Wrap with resolve_type so Pass 1 stamps type_oid +
                 // resolved_type_metadata. enrich's drop_type_t branch reads
                 // from plan-tree idx (resolve_type_t stamps it at Pass 1).
                 auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(resource_));

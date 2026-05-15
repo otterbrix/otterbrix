@@ -46,14 +46,10 @@ namespace services::disk {
                 ordered.emplace_back(oid, entry.get());
             }
         }
-        // Phase 11.C: use the actual on-disk path captured at storage-creation time
-        // (entry->otbx_path), NOT a synthesised path. Previously this code hard-coded
-        // `main_database / tbl_oid / table.otbx`, which is correct only for system
-        // tables — user tables live under their own database_oid (passed to
-        // create_storage_disk). The wrong path meant user-table sidecars landed in
-        // a non-existent directory (silent fs failure), so on restart the WAL
-        // replay's sidecar filter could not skip already-checkpointed records →
-        // duplicate replay / phantom storages / schema mismatches.
+        // Use the actual on-disk path captured at storage-creation time
+        // (entry->otbx_path). User-table sidecars must land under their own
+        // database_oid directory so WAL replay's sidecar filter can skip
+        // already-checkpointed records on restart.
         for (auto& [tbl_oid, entry] : ordered) {
             if (entry->table_storage.mode() == storage_mode_t::DISK) {
                 if (entry->otbx_path.empty()) {
@@ -171,10 +167,9 @@ namespace services::disk {
 
     manager_disk_t::unique_future<void> manager_disk_t::maybe_cleanup(execution_context_t ctx,
                                                                       uint64_t lowest_active_start_time) {
-        // Phase 8.B: oid-only routing. ctx.table_oid identifies the table whose
-        // GC threshold the executor wants to check (typically the just-deleted
-        // DML target). INVALID_OID → no-op (executor guards against this but be
-        // defensive).
+        // ctx.table_oid identifies the table whose GC threshold the executor
+        // wants to check (typically the just-deleted DML target). INVALID_OID
+        // -> no-op (executor guards against this but be defensive).
         if (ctx.table_oid == components::catalog::INVALID_OID) {
             co_return;
         }

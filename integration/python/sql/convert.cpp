@@ -350,7 +350,7 @@ auto to_statement(std::pmr::memory_resource* resource,
 
 auto test_to_statement(const py::handle& source) -> py::str {
     auto resource = std::pmr::synchronized_pool_resource();
-    node_aggregate_t aggregate(&resource, "database", "collection");
+    node_aggregate_t aggregate(&resource, core::dbname_t{std::string{"database"}}, core::relname_t{std::string{"collection"}});
     parameter_node_t params(&resource);
     to_statement(&resource, source, &aggregate, &params);
     std::stringstream stream;

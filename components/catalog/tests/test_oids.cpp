@@ -60,15 +60,15 @@ TEST_CASE("test_oid_generation_uniqueness") {
 // 4. Concurrent allocate() from multiple threads — every OID still unique (lock-free atomic).
 TEST_CASE("catalog::oid::allocate_thread_safety") {
     oid_generator gen;
-    constexpr int THREADS = 8;
-    constexpr int PER_THREAD = 5000;
+    constexpr std::size_t THREADS = 8;
+    constexpr std::size_t PER_THREAD = 5000;
 
     std::vector<std::vector<oid_t>> per_thread(THREADS);
     std::vector<std::thread> workers;
-    for (int t = 0; t < THREADS; t++) {
+    for (std::size_t t = 0; t < THREADS; t++) {
         workers.emplace_back([&, t]() {
             per_thread[t].reserve(PER_THREAD);
-            for (int i = 0; i < PER_THREAD; i++) {
+            for (std::size_t i = 0; i < PER_THREAD; i++) {
                 per_thread[t].push_back(gen.allocate());
             }
         });

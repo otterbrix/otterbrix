@@ -62,13 +62,6 @@ namespace services::dispatcher {
         // Helpers: probe enrich_resolve_idx_t (plan-tree resolves
         // stamped by operator_resolve_*_t Pass 1). All catalog reads in
         // enrich flow through these.
-        components::catalog::oid_t lookup_ns_oid_local(const enrich_resolve_idx_t* idx,
-                                                         std::string_view db) {
-            if (!idx) return components::catalog::INVALID_OID;
-            auto it = idx->ns_by_dbname.find(std::string(db));
-            return it != idx->ns_by_dbname.end() ? it->second : components::catalog::INVALID_OID;
-        }
-
         const components::logical_plan::resolved_table_metadata_t*
         lookup_table_md_local(const enrich_resolve_idx_t* idx,
                                std::string_view db,
@@ -88,19 +81,6 @@ namespace services::dispatcher {
             if (!idx) return nullptr;
             auto it = idx->tbl_md_by_oid.find(oid);
             return it != idx->tbl_md_by_oid.end() ? it->second : nullptr;
-        }
-
-        const components::logical_plan::resolved_type_metadata_t*
-        lookup_type_md_local(const enrich_resolve_idx_t* idx,
-                              std::string_view dbname,
-                              std::string_view type_name) {
-            if (!idx) return nullptr;
-            std::string key;
-            key.reserve(dbname.size() + 1 + type_name.size());
-            key.append(dbname.data(), dbname.size()).push_back('|');
-            key.append(type_name.data(), type_name.size());
-            auto it = idx->type_md_by_qname.find(key);
-            return it != idx->type_md_by_qname.end() ? it->second : nullptr;
         }
 
         void fill_not_null(const components::logical_plan::resolved_table_metadata_t& md,

@@ -228,6 +228,8 @@ namespace services::collection::executor {
             }
             co_return execute_result_t{
                 make_cursor(resource(), error_code_t::create_physical_plan_error, "invalid query plan"),
+                {},
+                {},
                 {}};
         }
 

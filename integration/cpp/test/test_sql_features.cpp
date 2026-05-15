@@ -2714,8 +2714,13 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_stress_1000_rando
 
     // Sanity bound: 60 s for 1000 single-row INSERTs is ~60 ms per row, which
     // is roomy for any not-yet-optimized dispatcher path while still catching
-    // a true regression (e.g. quadratic schema-merge cost).
+    // a true regression (e.g. quadratic schema-merge cost). ASan instrumentation
+    // adds ~3× overhead so the threshold is raised in that build only.
+#if defined(__SANITIZE_ADDRESS__) || (defined(__has_feature) && __has_feature(address_sanitizer))
+    REQUIRE(elapsed_ms < 180000);
+#else
     REQUIRE(elapsed_ms < 60000);
+#endif
 
     INFO("SELECT * returns all 1000 rows; dynamic schema unions up to 50 columns") {
         auto session = otterbrix::session_id_t();

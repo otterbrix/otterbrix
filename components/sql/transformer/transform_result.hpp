@@ -51,12 +51,18 @@ namespace components::sql::transform {
             }
 
             bool prev_finalized = std::exchange(finalized_, false);
-            if (node_->type() == logical_plan::node_type::insert_t) {
+            // Transformer wraps INSERT in sequence_t(resolve_*..., insert); descend
+            // to the insert node for binding bookkeeping.
+            auto insert_node = node_;
+            if (insert_node->type() == logical_plan::node_type::sequence_t) {
+                insert_node = insert_node->children().back();
+            }
+            if (insert_node->type() == logical_plan::node_type::insert_t) {
                 if (prev_finalized) {
                     // first bind after finalize - restore "binding" state of data node
                     // cannot move rows out of data node - copy
                     const auto& rows =
-                        reinterpret_cast<logical_plan::node_data_ptr&>(node_->children().front())->data_chunk();
+                        reinterpret_cast<logical_plan::node_data_ptr&>(insert_node->children().front())->data_chunk();
                     vector::data_chunk_t new_rows(rows.resource(), rows.types(), rows.size());
                     rows.copy(new_rows);
                     param_insert_rows_ = std::move(new_rows);

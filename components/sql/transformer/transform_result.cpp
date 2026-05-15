@@ -12,6 +12,21 @@ namespace components::sql::transform {
     bind_error::operator bool() const { return is_error_; }
     const std::string& bind_error::what() const { return what_; }
 
+    namespace {
+        // Transformer wraps DML in sequence_t(resolve_*..., consumer); descend
+        // to the consumer node for bind/finalize bookkeeping.
+        logical_plan::node_ptr unwrap_sequence(const logical_plan::node_ptr& n) {
+            if (n && n->type() == logical_plan::node_type::sequence_t) {
+                return n->children().back();
+            }
+            return n;
+        }
+
+        bool is_insert(const logical_plan::node_ptr& n) {
+            return unwrap_sequence(n)->type() == logical_plan::node_type::insert_t;
+        }
+    } // namespace
+
     transform_result::transform_result(logical_plan::node_ptr&& node,
                                        logical_plan::parameter_node_ptr&& params,
                                        parameter_map_t&& param_map,
@@ -31,7 +46,7 @@ namespace components::sql::transform {
         }
 
         taken_params_ = params_->take_parameters();
-        if (node_->type() == logical_plan::node_type::insert_t) {
+        if (is_insert(node_)) {
             bound_flags_.reserve(param_insert_map_.size());
             for (auto& [id, _] : param_insert_map_) {
                 bound_flags_[id] = false;
@@ -49,7 +64,7 @@ namespace components::sql::transform {
     logical_plan::parameter_node_ptr transform_result::params_ptr() const { return params_; }
 
     size_t transform_result::parameter_count() const {
-        if (node_->type() == logical_plan::node_type::insert_t) {
+        if (is_insert(node_)) {
             return param_insert_map_.size();
         }
 
@@ -85,9 +100,10 @@ namespace components::sql::transform {
         if (parameter_count()) {
             params_->set_parameters(taken_params_);
 
-            if (node_->type() == logical_plan::node_type::insert_t) {
-                node_->children().front() =
-                    logical_plan::make_node_raw_data(node_->resource(), std::move(param_insert_rows_));
+            if (is_insert(node_)) {
+                auto insert_node = unwrap_sequence(node_);
+                insert_node->children().front() =
+                    logical_plan::make_node_raw_data(insert_node->resource(), std::move(param_insert_rows_));
             }
         }
 

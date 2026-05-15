@@ -334,9 +334,9 @@ catalog::oid_t test_computed_register(Fx& fx, catalog::oid_t table_oid,
     std::int64_t   max_version    = -1;
     catalog::oid_t latest_atttypid = catalog::INVALID_OID;
     for (const auto& row : rows) {
-        if (row.size() < 6) continue;
-        if (row[4].is_null()) continue;
-        const auto v = row[4].template value<std::int64_t>();
+        if (row.size() < 7) continue;
+        if (row[5].is_null()) continue;
+        const auto v = row[5].template value<std::int64_t>();
         if (v > max_version) {
             max_version = v;
             latest_atttypid = row[3].is_null()
@@ -393,10 +393,10 @@ bool test_computed_unregister(Fx& fx, catalog::oid_t table_oid,
     catalog::oid_t live_atttypid = catalog::INVALID_OID;
     bool found_live = false;
     for (const auto& row : rows) {
-        if (row.size() < 6) continue;
-        if (row[4].is_null() || row[5].is_null()) continue;
-        const auto v  = row[4].template value<std::int64_t>();
-        const auto rc = row[5].template value<std::int64_t>();
+        if (row.size() < 7) continue;
+        if (row[5].is_null() || row[6].is_null()) continue;
+        const auto v  = row[5].template value<std::int64_t>();
+        const auto rc = row[6].template value<std::int64_t>();
         if (rc <= 0) continue;
         if (v > max_version) {
             max_version    = v;

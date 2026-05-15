@@ -282,14 +282,14 @@ TEST_CASE("services::disk::recovery::dynamic_schema_persists_across_restart") {
         bool saw_a = false;
         bool saw_b = false;
         for (const auto& row : rows) {
-            REQUIRE(row.size() >= 6);
+            REQUIRE(row.size() >= 7);
             // pg_computed_column layout: [0]=relid, [1]=attoid, [2]=attname,
-            // [3]=atttypid, [4]=attversion, [5]=attrefcount.
-            const auto attname = row[2].is_null() ? std::string{} : row[2].value<std::string>();
+            // [3]=atttypid, [4]=atttypspec, [5]=attversion, [6]=attrefcount.
+            const auto attname = row[2].is_null() ? std::string{} : std::string(row[2].value<std::string_view>());
             const auto atttypid = row[3].is_null()
                                       ? components::catalog::INVALID_OID
                                       : static_cast<components::catalog::oid_t>(row[3].value<std::uint32_t>());
-            const auto refcount = row[5].value<std::int64_t>();
+            const auto refcount = row[6].value<std::int64_t>();
             REQUIRE(refcount == 1);
             if (attname == "a") {
                 REQUIRE(atttypid == components::catalog::well_known_oid::int64_type);

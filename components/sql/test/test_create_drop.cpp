@@ -39,6 +39,9 @@ using namespace components::sql::transform;
         auto stmt = linitial(raw_parser(&arena_resource, QUERY));                                                      \
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());             \
         auto node = result.node;                                                                                       \
+        if (node->type() == components::logical_plan::node_type::sequence_t) {                                         \
+            node = node->children().back();                                                                            \
+        }                                                                                                              \
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);                                               \
         const auto& schema = data->schema();                                                                           \
         CHECK_FN(schema);                                                                                              \
@@ -56,12 +59,12 @@ TEST_CASE("components::sql::database") {
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
-    TEST_TRANSFORMER_OK("CREATE DATABASE db_name", R"_($create_database: db_name)_");
-    TEST_TRANSFORMER_OK("CREATE DATABASE db_name;", R"_($create_database: db_name)_");
-    TEST_TRANSFORMER_OK("CREATE DATABASE db_name;          ", R"_($create_database: db_name)_");
-    TEST_TRANSFORMER_OK("CREATE DATABASE db_name; -- comment", R"_($create_database: db_name)_");
-    TEST_TRANSFORMER_OK("CREATE DATABASE db_name; /* multiline\ncomments */", R"_($create_database: db_name)_");
-    TEST_TRANSFORMER_OK("CREATE /* comment */ DATABASE db_name;", R"_($create_database: db_name)_");
+    TEST_TRANSFORMER_OK("CREATE DATABASE db_name", R"_($sequence[2])_");
+    TEST_TRANSFORMER_OK("CREATE DATABASE db_name;", R"_($sequence[2])_");
+    TEST_TRANSFORMER_OK("CREATE DATABASE db_name;          ", R"_($sequence[2])_");
+    TEST_TRANSFORMER_OK("CREATE DATABASE db_name; -- comment", R"_($sequence[2])_");
+    TEST_TRANSFORMER_OK("CREATE DATABASE db_name; /* multiline\ncomments */", R"_($sequence[2])_");
+    TEST_TRANSFORMER_OK("CREATE /* comment */ DATABASE db_name;", R"_($sequence[2])_");
     // DROP DATABASE is wrapped by the transformer in sequence_t(resolve_ns, drop)
     // so result.node->to_string() returns the sequence wrapper. Underlying drop_database
     // carries only namespace_oid (INVALID_OID/0 at parse time).
@@ -259,16 +262,18 @@ TEST_CASE("components::sql::types") {
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
+    // CREATE TYPE is wrapped in sequence_t(resolve_ns?, resolve_field_types..., create_type).
     TEST_TRANSFORMER_OK("CREATE TYPE custom_type_name AS (f1 int, f2 string);",
-                        R"_($create_type: name: custom_type_name, fields:[ f1 f2 ])_");
+                        R"_($sequence[5])_");
 
     TEST_TRANSFORMER_OK("CREATE TYPE custom_enum AS ENUM ('f1', 'f2', 'f3');",
-                        R"_($create_type: name: custom_enum, fields:[ f1=0 f2=1 f3=2 ])_");
+                        R"_($sequence[3])_");
 
     // DROP TYPE is wrapped in sequence_t(resolve_ns, resolve_type, drop_type).
     TEST_TRANSFORMER_OK("DROP TYPE custom_type_name", R"_($sequence[3])_");
 
-    TEST_TRANSFORMER_OK("CREATE TABLE table_ (custom_type_name custom_type);", R"_($create_collection: .table_)_");
+    // CREATE TABLE with a custom type is wrapped in sequence_t(resolve_type, create_collection).
+    TEST_TRANSFORMER_OK("CREATE TABLE table_ (custom_type_name custom_type);", R"_($sequence[2])_");
 
     // INSERT is wrapped in sequence_t(resolve_table, resolve_constraint,
     // insert) — no dbname so no resolve_namespace.

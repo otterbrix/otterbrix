@@ -24,6 +24,8 @@ using vec = std::vector<v>;
         }                                                                                                              \
     }
 
+// Transformer now wraps SELECT/UPDATE in sequence_t(resolve_*..., consumer);
+// descend to the consumer when inspecting its rendered form.
 #define TEST_PARAMS(RESULT, BIND)                                                                                      \
     {                                                                                                                  \
         for (auto i = 0ul; i < BIND.size(); ++i) {                                                                     \
@@ -31,6 +33,9 @@ using vec = std::vector<v>;
         }                                                                                                              \
         auto result = std::get<result_view>(binder.finalize());                                                        \
         auto node = result.node;                                                                                       \
+        if (node->type() == components::logical_plan::node_type::sequence_t) {                                         \
+            node = node->children().back();                                                                            \
+        }                                                                                                              \
         auto agg = result.params;                                                                                      \
         REQUIRE(node->to_string() == RESULT);                                                                          \
         REQUIRE(agg->parameters().parameters.size() == BIND.size());                                                   \
@@ -48,6 +53,9 @@ using vec = std::vector<v>;
         }                                                                                                              \
         auto result = std::get<result_view>(binder.finalize());                                                        \
         auto node = result.node;                                                                                       \
+        if (node->type() == components::logical_plan::node_type::sequence_t) {                                         \
+            node = node->children().back();                                                                            \
+        }                                                                                                              \
         auto agg = result.params;                                                                                      \
         REQUIRE(node->to_string() == RESULT);                                                                          \
         REQUIRE(agg->parameters().parameters.size() == BIND.size());                                                   \
@@ -87,7 +95,7 @@ TEST_CASE("components::sql::update_bind") {
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
 
         TEST_SIMPLE_UPDATE(R"_(UPDATE TestDatabase.TestCollection SET count = $1 WHERE id = $2;)_",
-                           R"_($update: {$upsert: 0, $match: {"id": {$eq: #1}}, $limit: -1})_",
+                           R"_($update: <oid:0> {$upsert: 0, $match: {"id": {$eq: #1}}, $limit: -1})_",
                            vec({v(&resource, 999l), v(&resource, 1l)}),
                            f);
     }
@@ -100,7 +108,7 @@ TEST_CASE("components::sql::update_bind") {
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{1});
 
         TEST_SIMPLE_UPDATE(R"_(UPDATE TestDatabase.TestCollection SET name = $1, flag = $2 WHERE "count" > $3;)_",
-                           R"_($update: {$upsert: 0, $match: {"count": {$gt: #2}}, $limit: -1})_",
+                           R"_($update: <oid:0> {$upsert: 0, $match: {"count": {$gt: #2}}, $limit: -1})_",
                            vec({v(&resource, std::string("ok")), v(&resource, true), v(&resource, 100l)}),
                            f);
     }
@@ -115,7 +123,7 @@ TEST_CASE("components::sql::update_bind") {
         f.back()->left() = std::move(calculate);
 
         TEST_SIMPLE_UPDATE(R"_(UPDATE TestDatabase.TestCollection SET rating = rating + $1 WHERE flag = $2;)_",
-                           R"_($update: {$upsert: 0, $match: {"flag": {$eq: #1}}, $limit: -1})_",
+                           R"_($update: <oid:0> {$upsert: 0, $match: {"flag": {$eq: #1}}, $limit: -1})_",
                            vec({v(&resource, 5l), v(&resource, true)}),
                            f);
     }
@@ -134,8 +142,9 @@ TEST_CASE("components::sql::insert_bind") {
         binder.bind(2, v(&resource, std::string("inserted")));
         auto result = std::get<result_view>(binder.finalize());
         auto node = result.node;
-        REQUIRE(node->dbname() == "testdatabase");
-        REQUIRE(node->relname() == "testcollection");
+        if (node->type() == components::logical_plan::node_type::sequence_t) {
+            node = node->children().back();
+        }
 
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
@@ -155,6 +164,9 @@ TEST_CASE("components::sql::insert_bind") {
 
         auto result = std::get<result_view>(binder.finalize());
         auto node = result.node;
+        if (node->type() == components::logical_plan::node_type::sequence_t) {
+            node = node->children().back();
+        }
 
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
@@ -176,8 +188,10 @@ TEST_CASE("components::sql::insert_bind") {
                                                 .bind(6, v(&resource, 20ul))
                                                 .finalize());
         auto node = result.node;
+        if (node->type() == components::logical_plan::node_type::sequence_t) {
+            node = node->children().back();
+        }
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
-        REQUIRE(node->relname() == "testcollection");
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
         REQUIRE(chunk.size() == 2);
@@ -241,6 +255,9 @@ TEST_CASE("components::sql::transform_result") {
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
         binder.bind(1, v(&resource, 123l)).bind(2, v(&resource, false));
         auto node = std::get<result_view>(binder.finalize()).node;
+        if (node->type() == components::logical_plan::node_type::sequence_t) {
+            node = node->children().back();
+        }
 
         const auto& keys = reinterpret_cast<logical_plan::node_insert_ptr&>(node)->key_translation();
         binder.bind(1, v(&resource, true)).bind(2, v(&resource, std::string("doc 10"))).finalize();

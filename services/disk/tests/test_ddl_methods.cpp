@@ -169,7 +169,7 @@ TEST_CASE("services::disk::ddl::computed_register_same_type_idempotent") {
     auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc,
                           std::move(k1), std::move(v1));
     REQUIRE(rows.size() == 1);
-    REQUIRE(rows[0][5].value<std::int64_t>() == 1);
+    REQUIRE(rows[0][6].value<std::int64_t>() == 1);
 
     auto rs = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid,
                          std::string("agg"), std::uint64_t{0});
@@ -245,9 +245,9 @@ TEST_CASE("services::disk::ddl::computed_unregister_marks_dead") {
     std::int64_t live_v  = -1;
     std::int64_t tomb_v  = -1;
     for (const auto& row : rows) {
-        REQUIRE(row.size() >= 6);
-        const auto v  = row[4].value<std::int64_t>();
-        const auto rc = row[5].value<std::int64_t>();
+        REQUIRE(row.size() >= 7);
+        const auto v  = row[5].value<std::int64_t>();
+        const auto rc = row[6].value<std::int64_t>();
         if (rc > 0) { found_live = true; live_v  = v; }
         if (rc == 0) { found_tomb = true; tomb_v  = v; }
     }
@@ -328,10 +328,10 @@ TEST_CASE("services::disk::ddl::computed_field_drop_then_readd") {
         catalog::oid_t observed_b_live_attoid = catalog::INVALID_OID;
         catalog::oid_t observed_b_tomb_attoid = catalog::INVALID_OID;
         for (const auto& row : rows) {
-            REQUIRE(row.size() >= 6);
+            REQUIRE(row.size() >= 7);
             const auto attname = std::string(row[2].value<std::string_view>());
-            const auto v  = row[4].value<std::int64_t>();
-            const auto rc = row[5].value<std::int64_t>();
+            const auto v  = row[5].value<std::int64_t>();
+            const auto rc = row[6].value<std::int64_t>();
             if (attname == "a") {
                 ++rows_a;
             } else if (attname == "b") {
@@ -457,8 +457,8 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
                               std::move(kk), std::move(vv));
         std::vector<catalog::oid_t> dead_attoids;
         for (const auto& row : rows) {
-            REQUIRE(row.size() >= 6);
-            const auto rc = row[5].value<std::int64_t>();
+            REQUIRE(row.size() >= 7);
+            const auto rc = row[6].value<std::int64_t>();
             if (rc <= 0) {
                 dead_attoids.push_back(static_cast<catalog::oid_t>(row[1].value<std::uint32_t>()));
             }
@@ -578,7 +578,7 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
                               std::move(kk), std::move(vv));
         std::vector<catalog::oid_t> dead_attoids;
         for (const auto& row : rows) {
-            if (row[5].value<std::int64_t>() <= 0) {
+            if (row[6].value<std::int64_t>() <= 0) {
                 dead_attoids.push_back(static_cast<catalog::oid_t>(row[1].value<std::uint32_t>()));
             }
         }

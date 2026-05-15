@@ -17,6 +17,17 @@ using namespace components::types;
 using namespace components::sql::transform;
 using namespace components::table;
 
+namespace {
+    // Transformer now wraps CREATE TABLE in sequence_t(resolve_*..., create_collection);
+    // descend to the create_collection consumer for inspection.
+    components::logical_plan::node_ptr ddl_consumer(components::logical_plan::node_ptr n) {
+        if (n && n->type() == components::logical_plan::node_type::sequence_t) {
+            return n->children().back();
+        }
+        return n;
+    }
+} // namespace
+
 TEST_CASE("components::sql::constraints::not_null_and_default") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
@@ -26,7 +37,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
         auto stmt =
             raw_parser(&arena_resource, "CREATE TABLE db.tbl (id INTEGER NOT NULL, name TEXT)")->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
-        auto node = result.node;
+        auto node = ddl_consumer(result.node);
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);
 
         const auto& col_defs = data->column_definitions();
@@ -42,7 +53,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
                         ->lst.front()
                         .data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
-        auto node = result.node;
+        auto node = ddl_consumer(result.node);
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);
 
         const auto& col_defs = data->column_definitions();
@@ -59,7 +70,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
                         ->lst.front()
                         .data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
-        auto node = result.node;
+        auto node = ddl_consumer(result.node);
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);
 
         const auto& col_defs = data->column_definitions();
@@ -75,7 +86,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
         auto stmt =
             raw_parser(&arena_resource, "CREATE TABLE db.tbl (id INTEGER PRIMARY KEY, name TEXT)")->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
-        auto node = result.node;
+        auto node = ddl_consumer(result.node);
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);
 
         const auto& col_defs = data->column_definitions();
@@ -90,7 +101,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
                         ->lst.front()
                         .data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
-        auto node = result.node;
+        auto node = ddl_consumer(result.node);
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);
 
         const auto& constraints = data->constraints();
@@ -105,7 +116,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
                         ->lst.front()
                         .data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
-        auto node = result.node;
+        auto node = ddl_consumer(result.node);
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);
 
         const auto& constraints = data->constraints();
@@ -124,15 +135,16 @@ TEST_CASE("components::sql::sequence") {
     SECTION("CREATE SEQUENCE basic") {
         auto stmt = raw_parser(&arena_resource, "CREATE SEQUENCE db.my_seq")->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
-        auto node = result.node;
+        auto node = ddl_consumer(result.node);
         REQUIRE(node->type() == node_type::create_sequence_t);
-        REQUIRE(node->to_string() == "$create_sequence: db.my_seq");
+        // CREATE SEQUENCE no longer carries db name in its to_string (namespace resolution is sibling-OID).
+        REQUIRE(node->to_string() == "$create_sequence: my_seq");
     }
 
     SECTION("CREATE SEQUENCE with options") {
         auto stmt = raw_parser(&arena_resource, "CREATE SEQUENCE db.my_seq START 10 INCREMENT 2")->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
-        auto node = result.node;
+        auto node = ddl_consumer(result.node);
         REQUIRE(node->type() == node_type::create_sequence_t);
         auto seq = reinterpret_cast<node_create_sequence_ptr&>(node);
         REQUIRE(seq->start() == 10);
@@ -195,7 +207,8 @@ TEST_CASE("components::sql::check_constraint_whitelist") {
     SECTION("simple comparison is allowed") {
         auto stmt = linitial(raw_parser(&arena_resource, "CREATE TABLE t (x INTEGER, CHECK(x > 0))"));
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
-        auto data = reinterpret_cast<node_create_collection_ptr&>(result.node);
+        auto node = ddl_consumer(result.node);
+        auto data = reinterpret_cast<node_create_collection_ptr&>(node);
         REQUIRE(data->constraints().size() == 1);
         REQUIRE(data->constraints()[0].check_expression == "x > 0");
     }
@@ -203,7 +216,8 @@ TEST_CASE("components::sql::check_constraint_whitelist") {
     SECTION("IS NOT NULL is allowed") {
         auto stmt = linitial(raw_parser(&arena_resource, "CREATE TABLE t (x INTEGER, CHECK(x IS NOT NULL))"));
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
-        auto data = reinterpret_cast<node_create_collection_ptr&>(result.node);
+        auto node = ddl_consumer(result.node);
+        auto data = reinterpret_cast<node_create_collection_ptr&>(node);
         REQUIRE(data->constraints().size() == 1);
         REQUIRE_FALSE(data->constraints()[0].check_expression.empty());
     }
@@ -212,7 +226,8 @@ TEST_CASE("components::sql::check_constraint_whitelist") {
         auto stmt = linitial(raw_parser(&arena_resource,
                                         "CREATE TABLE t (x INTEGER, CHECK(x > 0 AND x < 100))"));
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
-        auto data = reinterpret_cast<node_create_collection_ptr&>(result.node);
+        auto node = ddl_consumer(result.node);
+        auto data = reinterpret_cast<node_create_collection_ptr&>(node);
         REQUIRE(data->constraints().size() == 1);
         REQUIRE_FALSE(data->constraints()[0].check_expression.empty());
     }

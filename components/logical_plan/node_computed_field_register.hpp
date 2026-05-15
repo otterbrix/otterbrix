@@ -1,5 +1,6 @@
 #pragma once
 
+#include "identifier_types.hpp"
 #include "node.hpp"
 
 #include <components/catalog/catalog_oids.hpp>
@@ -12,8 +13,8 @@ namespace components::logical_plan {
     class node_computed_field_register_t final : public node_t {
     public:
         node_computed_field_register_t(std::pmr::memory_resource* resource,
-                                       std::string dbname,
-                                       std::string relname,
+                                       core::dbname_t dbname,
+                                       core::relname_t relname,
                                        components::catalog::oid_t table_oid,
                                        std::vector<components::table::column_definition_t> columns);
 

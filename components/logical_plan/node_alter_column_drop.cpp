@@ -4,17 +4,13 @@ namespace components::logical_plan {
 
     node_alter_column_drop_t::node_alter_column_drop_t(
         std::pmr::memory_resource* resource,
-        std::string dbname,
-        std::string relname,
         components::catalog::oid_t table_oid,
         components::catalog::oid_t namespace_oid,
-        std::string column_name,
+        core::columnname_t column_name,
         components::catalog::drop_behavior_t behavior)
         : node_t(resource, node_type::alter_column_drop_t)
-        , dbname_(std::move(dbname))
-        , relname_(std::move(relname))
         , namespace_oid_(namespace_oid)
-        , column_name_(std::move(column_name))
+        , column_name_(std::move(static_cast<std::string&>(column_name)))
         , behavior_(behavior) {
         set_table_oid(table_oid);
     }

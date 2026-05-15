@@ -1,5 +1,6 @@
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
+#include <components/logical_plan/node_catalog_resolve_table.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/sql/parser/pg_functions.h>
 #include <components/sql/transformer/transformer.hpp>
@@ -193,39 +194,41 @@ namespace components::sql::transform {
                 where_expr = transform_a_expr(pg_ptr_cast<A_Expr>(node.whereClause), names, params);
             }
             match = logical_plan::make_node_match(resource_,
-                                                  names.left_name.dbname,
-                                                  names.left_name.relname,
+                                                  core::dbname_t{names.left_name.dbname},
+                                                  core::relname_t{names.left_name.relname},
                                                   where_expr);
         } else {
             match = logical_plan::make_node_match(resource_,
-                                                  names.left_name.dbname,
-                                                  names.left_name.relname,
+                                                  core::dbname_t{names.left_name.dbname},
+                                                  core::relname_t{names.left_name.relname},
                                                   make_compare_expression(resource_, compare_type::all_true));
         }
 
-        logical_plan::node_ptr upd;
-        if (names.right_name.empty()) {
-            upd = logical_plan::make_node_update_many(resource_,
-                                                       names.left_name.dbname,
-                                                       names.left_name.relname,
-                                                       match,
-                                                       updates,
-                                                       false);
-        } else {
-            upd = logical_plan::make_node_update_many(resource_,
-                                                       names.left_name.dbname,
-                                                       names.left_name.relname,
-                                                       names.right_name.dbname,
-                                                       names.right_name.relname,
-                                                       match,
-                                                       updates,
-                                                       false);
-        }
+        // task_7: identity travels via the catalog-resolve wrap; the update
+        // node itself carries only payload + table_oid() (stamped at enrich
+        // time from the sibling resolve_table for the target, and
+        // table_oid_from() for the UPDATE ... FROM source).
+        auto upd = logical_plan::make_node_update_many(resource_, match, updates, false);
         // Phase 13 T13: catalog-resolve wrap for UPDATE target table.
         // M4.D: emit resolve_constraint(outgoing) so enrich reads FKs from
         // plan tree (FK info stamped by operator_resolve_constraint_t).
-        return maybe_wrap_with_catalog_resolve_table(
+        // task_7: when UPDATE ... FROM is present, first wrap with the target
+        // resolve (with outgoing constraints for FK enrich), then splice a
+        // resolve_table for the FROM source into the wrapping sequence_t so
+        // enrich's stamp_drop_oids_from_resolves picks it up as `rt_index` and
+        // stamps node->table_oid_from().
+        auto wrapped = maybe_wrap_with_catalog_resolve_table(
             resource_, names.left_name.dbname, names.left_name.relname, std::move(upd),
             constraint_resolve_kind::outgoing);
+        if (!names.right_name.empty() &&
+            wrapped->type() == logical_plan::node_type::sequence_t) {
+            auto from_resolve = logical_plan::make_node_catalog_resolve_table(
+                resource_,
+                core::dbname_t{names.right_name.dbname},
+                core::relname_t{names.right_name.relname});
+            auto& kids = wrapped->children();
+            kids.insert(kids.end() - 1, from_resolve);
+        }
+        return wrapped;
     }
 } // namespace components::sql::transform

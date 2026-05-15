@@ -1,14 +1,13 @@
 #pragma once
 
+#include "identifier_types.hpp"
 #include "node.hpp"
 
 namespace components::logical_plan {
 
     class node_create_database_t final : public node_t {
     public:
-        // Phase 10.D: ctor takes role-named string instead of cfn struct.
-        // CREATE DATABASE writes pg_namespace.nspname.
-        explicit node_create_database_t(std::pmr::memory_resource* resource, std::string dbname);
+        explicit node_create_database_t(std::pmr::memory_resource* resource, core::dbname_t dbname);
 
         const std::string& dbname() const noexcept { return dbname_; }
 
@@ -20,6 +19,6 @@ namespace components::logical_plan {
     };
 
     using node_create_database_ptr = boost::intrusive_ptr<node_create_database_t>;
-    node_create_database_ptr make_node_create_database(std::pmr::memory_resource* resource, std::string dbname);
+    node_create_database_ptr make_node_create_database(std::pmr::memory_resource* resource, core::dbname_t dbname);
 
 } // namespace components::logical_plan

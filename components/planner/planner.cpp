@@ -49,18 +49,20 @@ namespace components::planner {
             auto* ins = static_cast<logical_plan::node_insert_t*>(node.get());
             node_ptr cur = node;
 
-            // Wrap with FK check nodes (outermost = last FK, so checks run innermost-first).
+            // task_7: DML node carries only its table_oid; constraint wrappers
+            // built here no longer have access to user-typed (db, rel). The
+            // constraint nodes still accept name strings in their ctors for
+            // diagnostic / future-use purposes — pass empty placeholders.
             for (const auto& fk : ins->outgoing_fks()) {
                 auto fk_node = boost::intrusive_ptr(new logical_plan::node_fk_check_t(
-                    r, ins->dbname(), ins->relname(), fk));
+                    r, core::dbname_t{}, core::relname_t{}, fk));
                 fk_node->append_child(cur);
                 cur = fk_node;
             }
 
-            // Wrap with NOT NULL / CHECK constraint node.
             if (!ins->not_null_cols().empty() || !ins->check_exprs().empty()) {
                 auto cc = boost::intrusive_ptr(new logical_plan::node_check_constraint_t(
-                    r, ins->dbname(), ins->relname(),
+                    r, core::dbname_t{}, core::relname_t{},
                     std::vector<std::string>(ins->not_null_cols()),
                     std::vector<std::pair<std::string, std::string>>(ins->check_exprs())));
                 cc->append_child(cur);
@@ -76,14 +78,14 @@ namespace components::planner {
 
             for (const auto& fk : upd->outgoing_fks()) {
                 auto fk_node = boost::intrusive_ptr(new logical_plan::node_fk_check_t(
-                    r, upd->dbname(), upd->relname(), fk));
+                    r, core::dbname_t{}, core::relname_t{}, fk));
                 fk_node->append_child(cur);
                 cur = fk_node;
             }
 
             if (!upd->not_null_cols().empty()) {
                 auto cc = boost::intrusive_ptr(new logical_plan::node_check_constraint_t(
-                    r, upd->dbname(), upd->relname(),
+                    r, core::dbname_t{}, core::relname_t{},
                     std::vector<std::string>(upd->not_null_cols())));
                 cc->append_child(cur);
                 cur = cc;
@@ -96,11 +98,10 @@ namespace components::planner {
             auto* del = static_cast<logical_plan::node_delete_t*>(node.get());
             if (del->referencing_fks().empty()) return node;
 
-            // Each cascade node wraps the previous (outermost handles last FK first).
             node_ptr cur = node;
             for (const auto& fk : del->referencing_fks()) {
                 auto cascade = boost::intrusive_ptr(new logical_plan::node_fk_cascade_t(
-                    r, del->dbname(), del->relname(), fk));
+                    r, core::dbname_t{}, core::relname_t{}, fk));
                 cascade->append_child(cur);
                 cur = cascade;
             }
@@ -181,7 +182,7 @@ namespace components::planner {
             // physical_plan_generator can pass it to operator_create_collection_t.
             const catalog::oid_t table_oid = oid_batch.peek();
             auto writes = catalog::build_create_table_writes(
-                r, cc->dbname(), cc->relname(), cc->column_definitions(),
+                r, std::string{}, cc->relname(), cc->column_definitions(),
                 cc->is_disk_storage(), ns_oid, oid_batch, rk);
             cc->set_table_oid(table_oid);
 
@@ -572,8 +573,6 @@ namespace components::planner {
             }
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
-            const auto& db = alter->dbname();
-            const auto& rel = alter->relname();
             for (const auto& sub : alter->subcommands()) {
                 if (sub.kind == logical_plan::alter_table_kind::add_column) {
                     auto col = sub.column;
@@ -588,22 +587,24 @@ namespace components::planner {
                         }
                     }
                     seq->append_child(boost::intrusive_ptr(
-                        new logical_plan::node_alter_column_add_t(r, db, rel, table_oid, std::move(col))));
+                        new logical_plan::node_alter_column_add_t(r, table_oid, std::move(col))));
                 } else if (sub.kind == logical_plan::alter_table_kind::rename_column) {
                     seq->append_child(boost::intrusive_ptr(
                         new logical_plan::node_alter_column_rename_t(
-                            r, db, rel, table_oid, sub.column_name, sub.new_column_name)));
+                            r, table_oid,
+                            core::columnname_t{sub.column_name},
+                            core::columnname_t{sub.new_column_name})));
                 } else if (sub.kind == logical_plan::alter_table_kind::drop_column) {
                     if (alter->relkind() == catalog::relkind::computed) {
                         seq->append_child(boost::intrusive_ptr(
                             new logical_plan::node_computed_field_unregister_t(
-                                r, db, rel, table_oid, sub.column_name)));
+                                r, core::dbname_t{}, core::relname_t{}, table_oid, core::columnname_t{sub.column_name})));
                     } else {
                         seq->append_child(boost::intrusive_ptr(
                             new logical_plan::node_alter_column_drop_t(
-                                r, db, rel, table_oid,
+                                r, table_oid,
                                 catalog::INVALID_OID,
-                                sub.column_name,
+                                core::columnname_t{sub.column_name},
                                 catalog::drop_behavior_t::cascade_)));
                     }
                 }

@@ -256,8 +256,8 @@ components::logical_plan::node_group_ptr parse_group(std::pmr::memory_resource* 
             parse_group_expr(resource, py::str(it).cast<std::string>(), condition[it], aggregate, params));
     }
     return components::logical_plan::make_node_group(resource,
-                                                     aggregate->dbname(),
-                                                     aggregate->relname(),
+                                                     core::dbname_t{aggregate->dbname()},
+                                                     core::relname_t{aggregate->relname()},
                                                      expressions);
 }
 
@@ -267,7 +267,7 @@ components::logical_plan::node_sort_ptr parse_sort(std::pmr::memory_resource* re
         expressions.emplace_back(make_sort_expression(ex_key_t(resource, py::str(it).cast<std::string>()),
                                                       sort_order(condition[it].cast<int>())));
     }
-    return components::logical_plan::make_node_sort(resource, std::string{}, std::string{}, expressions);
+    return components::logical_plan::make_node_sort(resource, core::dbname_t{}, core::relname_t{}, expressions);
 }
 
 auto to_statement(std::pmr::memory_resource* resource,
@@ -313,8 +313,8 @@ auto to_statement(std::pmr::memory_resource* resource,
                 case operator_type::match: {
                     aggregate->append_child(components::logical_plan::make_node_match(
                         resource,
-                        aggregate->dbname(),
-                        aggregate->relname(),
+                        core::dbname_t{aggregate->dbname()},
+                        core::relname_t{aggregate->relname()},
                         parse_find_condition_(resource, obj[key], aggregate, params)));
                     break;
                 }

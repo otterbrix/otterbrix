@@ -1,5 +1,6 @@
 #pragma once
 
+#include "identifier_types.hpp"
 #include "node.hpp"
 
 #include <components/catalog/catalog_oids.hpp>
@@ -11,10 +12,10 @@ namespace components::logical_plan {
     class node_computed_field_unregister_t final : public node_t {
     public:
         node_computed_field_unregister_t(std::pmr::memory_resource* resource,
-                                         std::string dbname,
-                                         std::string relname,
+                                         core::dbname_t dbname,
+                                         core::relname_t relname,
                                          components::catalog::oid_t table_oid,
-                                         std::string column_name);
+                                         core::columnname_t column_name);
 
         const std::string& column_name() const noexcept { return column_name_; }
 

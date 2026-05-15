@@ -143,8 +143,9 @@ TEST_CASE("components::sql::sequence") {
         auto stmt = raw_parser(&arena_resource, "DROP SEQUENCE db.my_seq")->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
         auto node = result.node;
-        REQUIRE(node->type() == node_type::drop_sequence_t);
-        REQUIRE(node->to_string() == "$drop_sequence: db.my_seq");
+        // task_3: DROP SEQUENCE is wrapped in sequence_t(resolve_ns, resolve_table, drop_sequence).
+        REQUIRE(node->type() == node_type::sequence_t);
+        REQUIRE(node->to_string() == "$sequence[3]");
     }
 }
 
@@ -157,8 +158,8 @@ TEST_CASE("components::sql::view") {
         auto stmt = raw_parser(&arena_resource, "CREATE VIEW db.my_view AS SELECT * FROM db.tbl")->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
         auto node = result.node;
-        REQUIRE(node->type() == node_type::create_view_t);
-        REQUIRE(node->to_string() == "$create_view: db.my_view");
+        REQUIRE(node->type() == node_type::sequence_t);
+        REQUIRE(node->to_string() == "$sequence[2]");
     }
 
     SECTION("CREATE VIEW with raw_sql extracts query") {
@@ -166,7 +167,8 @@ TEST_CASE("components::sql::view") {
         transform::transformer transformer(&resource, sql);
         auto stmt = raw_parser(&arena_resource, sql)->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
-        auto view_node = boost::static_pointer_cast<node_create_view_t>(result.node);
+        REQUIRE(result.node->type() == node_type::sequence_t);
+        auto view_node = boost::static_pointer_cast<node_create_view_t>(result.node->children().back());
         REQUIRE(view_node->type() == node_type::create_view_t);
         REQUIRE(view_node->query_sql() == "SELECT id, name FROM db.tbl WHERE id > 10");
     }
@@ -176,8 +178,9 @@ TEST_CASE("components::sql::view") {
         auto stmt = raw_parser(&arena_resource, "DROP VIEW db.my_view")->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
         auto node = result.node;
-        REQUIRE(node->type() == node_type::drop_view_t);
-        REQUIRE(node->to_string() == "$drop_view: db.my_view");
+        // task_3: DROP VIEW is wrapped in sequence_t(resolve_ns, resolve_table, drop_view).
+        REQUIRE(node->type() == node_type::sequence_t);
+        REQUIRE(node->to_string() == "$sequence[3]");
     }
 }
 
@@ -250,14 +253,16 @@ TEST_CASE("components::sql::macro") {
         auto stmt = raw_parser(&arena_resource, "DROP FUNCTION db.my_macro()")->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
         auto node = result.node;
-        REQUIRE(node->type() == node_type::drop_macro_t);
-        REQUIRE(node->to_string() == "$drop_macro: db.my_macro");
+        // task_3: DROP FUNCTION is wrapped in sequence_t(resolve_ns, resolve_table, drop_macro).
+        REQUIRE(node->type() == node_type::sequence_t);
+        REQUIRE(node->to_string() == "$sequence[3]");
     }
 
     SECTION("DROP FUNCTION simple name") {
         auto stmt = raw_parser(&arena_resource, "DROP FUNCTION my_macro()")->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
         auto node = result.node;
-        REQUIRE(node->type() == node_type::drop_macro_t);
+        // No db prefix → only resolve_table sibling (no resolve_namespace), so 2 children.
+        REQUIRE(node->type() == node_type::sequence_t);
     }
 }

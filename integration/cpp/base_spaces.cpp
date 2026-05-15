@@ -298,11 +298,7 @@ namespace otterbrix {
             auto session = components::session::session_id_t();
 
             for (auto& index_def : index_definitions) {
-                trace(log_,
-                      "spaces::creating index: {} on {}.{}",
-                      index_def->name(),
-                      index_def->dbname(),
-                      index_def->relname());
+                trace(log_, "spaces::creating index: {}", index_def->name());
                 auto cursor = wrapper_dispatcher_->execute_plan(session, index_def, nullptr);
                 if (cursor->is_error()) {
                     warn(log_, "spaces::failed to create index {}: {}", index_def->name(), cursor->get_error().what);

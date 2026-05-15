@@ -3,16 +3,12 @@
 namespace components::logical_plan {
 
     node_alter_column_rename_t::node_alter_column_rename_t(std::pmr::memory_resource* resource,
-                                                           std::string dbname,
-                                                           std::string relname,
                                                            components::catalog::oid_t table_oid,
-                                                           std::string old_name,
-                                                           std::string new_name)
+                                                           core::columnname_t old_name,
+                                                           core::columnname_t new_name)
         : node_t(resource, node_type::alter_column_rename_t)
-        , dbname_(std::move(dbname))
-        , relname_(std::move(relname))
-        , old_name_(std::move(old_name))
-        , new_name_(std::move(new_name)) {
+        , old_name_(std::move(static_cast<std::string&>(old_name)))
+        , new_name_(std::move(static_cast<std::string&>(new_name))) {
         set_table_oid(table_oid);
     }
 

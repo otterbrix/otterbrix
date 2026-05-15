@@ -5,12 +5,12 @@
 namespace components::logical_plan {
 
     node_fk_cascade_t::node_fk_cascade_t(std::pmr::memory_resource* resource,
-                                         std::string dbname,
-                                         std::string relname,
+                                         core::dbname_t dbname,
+                                         core::relname_t relname,
                                          catalog::fk_info_t fk)
         : node_t(resource, node_type::fk_cascade_t)
-        , dbname_(std::move(dbname))
-        , relname_(std::move(relname))
+        , dbname_(std::move(static_cast<std::string&>(dbname)))
+        , relname_(std::move(static_cast<std::string&>(relname)))
         , fk_(std::move(fk)) {}
 
     hash_t node_fk_cascade_t::hash_impl() const { return 0; }

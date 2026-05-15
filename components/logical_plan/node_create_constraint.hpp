@@ -1,5 +1,6 @@
 #pragma once
 
+#include "identifier_types.hpp"
 #include "node.hpp"
 
 #include <components/catalog/catalog_oids.hpp>
@@ -19,20 +20,16 @@ namespace components::logical_plan {
 
     class node_create_constraint_t final : public node_t {
     public:
-        // Phase 10.D: ctor takes role-named strings instead of cfn struct. ref_dbname/
-        // ref_relname carry the FK referenced table; empty for non-FK kinds.
         node_create_constraint_t(std::pmr::memory_resource* resource,
                                  std::string dbname,
                                  std::string relname,
-                                 std::string name,
+                                 core::constraint_name_t name,
                                  constraint_kind kind,
-                                 std::string ref_dbname = {},
-                                 std::string ref_relname = {});
+                                 std::string ref_dbname = {});
 
         const std::string& name() const noexcept { return name_; }
         constraint_kind kind() const noexcept { return kind_; }
         const std::string& ref_dbname() const noexcept { return ref_dbname_; }
-        const std::string& ref_relname() const noexcept { return ref_relname_; }
 
         const std::vector<std::string>& local_col_names() const noexcept { return local_col_names_; }
         const std::vector<std::string>& ref_col_names() const noexcept { return ref_col_names_; }
@@ -66,7 +63,6 @@ namespace components::logical_plan {
             ref_col_attoids_ = std::move(v);
         }
 
-        // Phase 9.W/10.D: role-named accessors. ALTER TABLE ADD CONSTRAINT target identifiers.
         const std::string& relname() const noexcept { return relname_; }
         const std::string& dbname() const noexcept { return dbname_; }
 
@@ -79,7 +75,6 @@ namespace components::logical_plan {
         std::string name_;
         constraint_kind kind_;
         std::string ref_dbname_;
-        std::string ref_relname_;
         std::vector<std::string> local_col_names_;
         std::vector<std::string> ref_col_names_;
         char match_type_{'s'};
@@ -97,9 +92,8 @@ namespace components::logical_plan {
     make_node_create_constraint(std::pmr::memory_resource* resource,
                                 std::string dbname,
                                 std::string relname,
-                                std::string name,
+                                core::constraint_name_t name,
                                 constraint_kind kind,
-                                std::string ref_dbname = {},
-                                std::string ref_relname = {});
+                                std::string ref_dbname = {});
 
 } // namespace components::logical_plan

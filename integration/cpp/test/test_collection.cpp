@@ -2,6 +2,7 @@
 #include <catch2/catch.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_insert.hpp>
+#include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
 
 static const database_name_t database_name = "testdatabase";
@@ -43,8 +44,9 @@ TEST_CASE("integration::cpp::test_collection") {
     INFO("insert") {
         {
             auto chunk = gen_data_chunk(50, dispatcher->resource());
-            auto ins = components::logical_plan::make_node_insert(dispatcher->resource(), database_name, collection_name,
-                                                                  std::move(chunk));
+            auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+                dispatcher->resource(), database_name, collection_name,
+                components::logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_plan(session, ins);
             REQUIRE(cur->is_success());
@@ -54,8 +56,9 @@ TEST_CASE("integration::cpp::test_collection") {
 
     INFO("insert_more") {
         auto chunk = gen_data_chunk(50, 50, dispatcher->resource());
-        auto ins = components::logical_plan::make_node_insert(dispatcher->resource(), database_name, collection_name,
-                                                              std::move(chunk));
+        auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+            dispatcher->resource(), database_name, collection_name,
+            components::logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_plan(session, ins);
@@ -68,7 +71,7 @@ TEST_CASE("integration::cpp::test_collection") {
         {
             auto session = otterbrix::session_id_t();
             auto plan =
-                components::logical_plan::make_node_aggregate(dispatcher->resource(), database_name, collection_name);
+                components::logical_plan::make_node_aggregate(dispatcher->resource(), core::dbname_t{database_name}, core::relname_t{collection_name});
             auto cur =
                 dispatcher->find(session, plan, components::logical_plan::make_parameter_node(dispatcher->resource()));
             REQUIRE(cur->is_success());
@@ -77,13 +80,13 @@ TEST_CASE("integration::cpp::test_collection") {
         {
             auto session = otterbrix::session_id_t();
             auto plan =
-                components::logical_plan::make_node_aggregate(dispatcher->resource(), database_name, collection_name);
+                components::logical_plan::make_node_aggregate(dispatcher->resource(), core::dbname_t{database_name}, core::relname_t{collection_name});
             auto expr =
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::gt,
                                                                  key{dispatcher->resource(), "count", side_t::left},
                                                                  id_par{1});
-            plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(), database_name, collection_name,
+            plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(), core::dbname_t{database_name}, core::relname_t{collection_name},
                                                                          std::move(expr)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, components::types::logical_value_t(dispatcher->resource(), 90));
@@ -95,13 +98,13 @@ TEST_CASE("integration::cpp::test_collection") {
         {
             auto session = otterbrix::session_id_t();
             auto plan =
-                components::logical_plan::make_node_aggregate(dispatcher->resource(), database_name, collection_name);
+                components::logical_plan::make_node_aggregate(dispatcher->resource(), core::dbname_t{database_name}, core::relname_t{collection_name});
             auto expr =
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::regex,
                                                                  key{dispatcher->resource(), "count_str", side_t::left},
                                                                  id_par{1});
-            plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(), database_name, collection_name,
+            plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(), core::dbname_t{database_name}, core::relname_t{collection_name},
                                                                          std::move(expr)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, components::types::logical_value_t(dispatcher->resource(), "9$"));
@@ -113,7 +116,7 @@ TEST_CASE("integration::cpp::test_collection") {
         {
             auto session = otterbrix::session_id_t();
             auto plan =
-                components::logical_plan::make_node_aggregate(dispatcher->resource(), database_name, collection_name);
+                components::logical_plan::make_node_aggregate(dispatcher->resource(), core::dbname_t{database_name}, core::relname_t{collection_name});
             auto expr =
                 components::expressions::make_compare_union_expression(dispatcher->resource(), compare_type::union_or);
             expr->append_child(
@@ -126,7 +129,7 @@ TEST_CASE("integration::cpp::test_collection") {
                                                                  compare_type::regex,
                                                                  key{dispatcher->resource(), "count_str", side_t::left},
                                                                  id_par{2}));
-            plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(), database_name, collection_name,
+            plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(), core::dbname_t{database_name}, core::relname_t{collection_name},
                                                                          std::move(expr)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, components::types::logical_value_t(dispatcher->resource(), 90));
@@ -139,7 +142,7 @@ TEST_CASE("integration::cpp::test_collection") {
         {
             auto session = otterbrix::session_id_t();
             auto plan =
-                components::logical_plan::make_node_aggregate(dispatcher->resource(), database_name, collection_name);
+                components::logical_plan::make_node_aggregate(dispatcher->resource(), core::dbname_t{database_name}, core::relname_t{collection_name});
             auto expr_and =
                 components::expressions::make_compare_union_expression(dispatcher->resource(), compare_type::union_and);
             auto expr_or =
@@ -161,7 +164,7 @@ TEST_CASE("integration::cpp::test_collection") {
                                                                  key{dispatcher->resource(), "count", side_t::left},
                                                                  id_par{3}));
 
-            plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(), database_name, collection_name,
+            plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(), core::dbname_t{database_name}, core::relname_t{collection_name},
                                                                          std::move(expr_and)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, components::types::logical_value_t(dispatcher->resource(), 90));
@@ -175,7 +178,7 @@ TEST_CASE("integration::cpp::test_collection") {
     INFO("cursor") {
         auto session = otterbrix::session_id_t();
         auto plan =
-            components::logical_plan::make_node_aggregate(dispatcher->resource(), database_name, collection_name);
+            components::logical_plan::make_node_aggregate(dispatcher->resource(), core::dbname_t{database_name}, core::relname_t{collection_name});
         auto cur =
             dispatcher->find(session, plan, components::logical_plan::make_parameter_node(dispatcher->resource()));
         REQUIRE(cur->is_success());
@@ -185,13 +188,13 @@ TEST_CASE("integration::cpp::test_collection") {
         {
             auto session = otterbrix::session_id_t();
             auto plan =
-                components::logical_plan::make_node_aggregate(dispatcher->resource(), database_name, collection_name);
+                components::logical_plan::make_node_aggregate(dispatcher->resource(), core::dbname_t{database_name}, core::relname_t{collection_name});
             auto expr =
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::eq,
                                                                  key{dispatcher->resource(), "count_str", side_t::left},
                                                                  id_par{1});
-            plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(), database_name, collection_name,
+            plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(), core::dbname_t{database_name}, core::relname_t{collection_name},
                                                                          std::move(expr)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, components::types::logical_value_t(dispatcher->resource(), "1"));
@@ -203,13 +206,13 @@ TEST_CASE("integration::cpp::test_collection") {
         {
             auto session = otterbrix::session_id_t();
             auto plan =
-                components::logical_plan::make_node_aggregate(dispatcher->resource(), database_name, collection_name);
+                components::logical_plan::make_node_aggregate(dispatcher->resource(), core::dbname_t{database_name}, core::relname_t{collection_name});
             auto expr =
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::eq,
                                                                  key{dispatcher->resource(), "count", side_t::left},
                                                                  id_par{1});
-            plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(), database_name, collection_name,
+            plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(), core::dbname_t{database_name}, core::relname_t{collection_name},
                                                                          std::move(expr)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, components::types::logical_value_t(dispatcher->resource(), 10));
@@ -221,7 +224,7 @@ TEST_CASE("integration::cpp::test_collection") {
         {
             auto session = otterbrix::session_id_t();
             auto plan =
-                components::logical_plan::make_node_aggregate(dispatcher->resource(), database_name, collection_name);
+                components::logical_plan::make_node_aggregate(dispatcher->resource(), core::dbname_t{database_name}, core::relname_t{collection_name});
             auto expr =
                 components::expressions::make_compare_union_expression(dispatcher->resource(), compare_type::union_and);
             expr->append_child(
@@ -234,7 +237,7 @@ TEST_CASE("integration::cpp::test_collection") {
                                                                  compare_type::regex,
                                                                  key{dispatcher->resource(), "count_str", side_t::left},
                                                                  id_par{2}));
-            plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(), database_name, collection_name,
+            plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(), core::dbname_t{database_name}, core::relname_t{collection_name},
                                                                          std::move(expr)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, components::types::logical_value_t(dispatcher->resource(), 90));

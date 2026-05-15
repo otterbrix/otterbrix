@@ -2,6 +2,7 @@
 
 #include <catch2/catch.hpp>
 #include <components/logical_plan/node_insert.hpp>
+#include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
 #include <core/operations_helper.hpp>
 
@@ -174,8 +175,9 @@ TEST_CASE("integration::cpp::test_udfs") {
 
     INFO("insert") {
         auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
-        auto ins =
-            logical_plan::make_node_insert(dispatcher->resource(), database_name, collection_name, std::move(chunk));
+        auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+            dispatcher->resource(), database_name, collection_name,
+            logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_plan(session, ins);

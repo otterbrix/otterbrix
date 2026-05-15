@@ -100,7 +100,7 @@ namespace services::planner::impl {
                     context.resource,
                     context.log.clone(),
                     di->table_oid(),
-                    di->name(),
+                    di->runtime_index_name(),
                     std::move(deletes)));
         }
 

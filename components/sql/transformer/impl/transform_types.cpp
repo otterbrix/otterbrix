@@ -27,16 +27,16 @@ namespace components::sql::transform {
             }
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(resource));
             seq->append_child(logical_plan::make_node_catalog_resolve_namespace(
-                resource, std::string{"public"}));
+                resource, core::dbname_t{std::string{"public"}}));
             // Resolve the new type's own name → collision detection (Pass 1
             // returns a stamp iff pg_type already has the name).
             seq->append_child(logical_plan::make_node_catalog_resolve_type(
-                resource, std::string{"public"}, std::string(type.type_name())));
+                resource, core::dbname_t{std::string{"public"}}, core::typename_t{std::string(type.type_name())}));
             // Nested STRUCT field UDTs (only those referenced by name).
             for (const auto& nm : nested_names) {
                 if (nm == type.type_name()) continue; // self-ref already emitted
                 seq->append_child(logical_plan::make_node_catalog_resolve_type(
-                    resource, std::string{"public"}, nm));
+                    resource, core::dbname_t{std::string{"public"}}, core::typename_t{nm}));
             }
             seq->append_child(std::move(main_node));
             return seq;

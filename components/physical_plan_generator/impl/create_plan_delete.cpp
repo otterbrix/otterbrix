@@ -28,7 +28,9 @@ namespace services::planner::impl {
         }
         auto limit = static_cast<components::logical_plan::node_limit_t*>(node_limit.get())->limit();
         auto table_oid = node->table_oid();
-        if (node_delete->relname_from().empty() && !node_raw_data) {
+        // task_7: target the simple (no USING) path when neither a USING-side
+        // table_oid nor raw data join input is present.
+        if (node_delete->table_oid_from() == components::catalog::INVALID_OID && !node_raw_data) {
             auto plan = boost::intrusive_ptr(
                 new components::operators::operator_delete(context.resource, context.log.clone(), table_oid));
             plan->set_children(create_plan_match(context, node_match, limit));

@@ -81,4 +81,11 @@ namespace services::dispatcher {
                 std::pmr::memory_resource* resource,
                 const enrich_resolve_idx_t* idx = nullptr);
 
+    // Propagate OIDs from sibling catalog_resolve_* nodes onto their consumer
+    // nodes (drop/create/DML/alter) inside each sequence_t. Idempotent.
+    // Dispatcher invokes this AFTER Pass 1 and BEFORE validate so check_node
+    // and tbl_md_for_oid see stamped OIDs on consumer nodes whose name
+    // fields were removed in tasks 3, 6, 7, 8.
+    void stamp_oids_from_resolves(components::logical_plan::node_t* root);
+
 } // namespace services::dispatcher

@@ -62,7 +62,10 @@ TEST_CASE("components::sql::database") {
     TEST_TRANSFORMER_OK("CREATE DATABASE db_name; -- comment", R"_($create_database: db_name)_");
     TEST_TRANSFORMER_OK("CREATE DATABASE db_name; /* multiline\ncomments */", R"_($create_database: db_name)_");
     TEST_TRANSFORMER_OK("CREATE /* comment */ DATABASE db_name;", R"_($create_database: db_name)_");
-    TEST_TRANSFORMER_OK("DROP DATABASE db_name;", R"_($drop_database: db_name)_");
+    // task_3: DROP DATABASE is wrapped by the transformer in sequence_t(resolve_ns, drop)
+    // so result.node->to_string() returns the sequence wrapper. Underlying drop_database
+    // carries only namespace_oid (INVALID_OID/0 at parse time).
+    TEST_TRANSFORMER_OK("DROP DATABASE db_name;", R"_($sequence[2])_");
 }
 
 TEST_CASE("components::sql::table") {
@@ -73,42 +76,37 @@ TEST_CASE("components::sql::table") {
     SECTION("create with uuid") {
         auto create = raw_parser(&arena_resource, "CREATE TABLE uuid.db_name.schema.table_name()")->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(create)).finalize());
-        auto node = static_cast<components::logical_plan::node_create_collection_t*>(result.node.get());
-        REQUIRE(node->to_string() == R"_($create_collection: db_name.table_name)_");
-        REQUIRE(node->uuid() == "uuid");
-        REQUIRE(node->schemaname() == "schema");
+        REQUIRE(result.node->to_string() == R"_($sequence[2])_");
     }
 
     SECTION("create with schema") {
         auto create = raw_parser(&arena_resource, "CREATE TABLE db_name.schema.table_name()")->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(create)).finalize());
-        auto node = static_cast<components::logical_plan::node_create_collection_t*>(result.node.get());
-        REQUIRE(node->to_string() == R"_($create_collection: db_name.table_name)_");
-        REQUIRE(node->schemaname() == "schema");
+        REQUIRE(result.node->to_string() == R"_($sequence[2])_");
     }
 
-    TEST_TRANSFORMER_OK("CREATE TABLE db_name.table_name()", R"_($create_collection: db_name.table_name)_");
-    TEST_TRANSFORMER_OK("CREATE TABLE table_name()", R"_($create_collection: .table_name)_");
+    TEST_TRANSFORMER_OK("CREATE TABLE db_name.table_name()", R"_($sequence[2])_");
+    TEST_TRANSFORMER_OK("CREATE TABLE table_name()", R"_($create_collection: table_name)_");
 
+    // task_3: DROP TABLE is wrapped in sequence_t(resolve_ns?, resolve_table?, drop_collection).
+    // The drop node itself carries no user-typed names; schema/uuid string fields were removed
+    // entirely (routing is OID-only after enrich stamps namespace_oid + table_oid).
     SECTION("drop with uuid") {
         auto drop = raw_parser(&arena_resource, "DROP TABLE uuid.db_name.schema.table_name")->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(drop)).finalize());
-        auto node = static_cast<components::logical_plan::node_drop_collection_t*>(result.node.get());
-        REQUIRE(node->to_string() == R"_($drop_collection: db_name.table_name)_");
-        REQUIRE(node->uuid() == "uuid");
-        REQUIRE(node->schemaname() == "schema");
+        // result.node is the wrapping sequence_t: 1 resolve_ns + 1 resolve_table + 1 drop = 3 children.
+        REQUIRE(result.node->to_string() == R"_($sequence[3])_");
     }
 
     SECTION("drop with schema") {
         auto drop = raw_parser(&arena_resource, "DROP TABLE db_name.schema.table_name")->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(drop)).finalize());
-        auto node = static_cast<components::logical_plan::node_drop_collection_t*>(result.node.get());
-        REQUIRE(node->to_string() == R"_($drop_collection: db_name.table_name)_");
-        REQUIRE(node->schemaname() == "schema");
+        REQUIRE(result.node->to_string() == R"_($sequence[3])_");
     }
 
-    TEST_TRANSFORMER_OK("DROP TABLE db_name.table_name", R"_($drop_collection: db_name.table_name)_");
-    TEST_TRANSFORMER_OK("DROP TABLE table_name", R"_($drop_collection: .table_name)_");
+    TEST_TRANSFORMER_OK("DROP TABLE db_name.table_name", R"_($sequence[3])_");
+    // No db prefix → only resolve_table sibling (no resolve_namespace), so 2 children.
+    TEST_TRANSFORMER_OK("DROP TABLE table_name", R"_($sequence[2])_");
 
     // Transformer stores types as UNKNOWN(pg_internal_name); OID resolution happens
     // later via pg_type in the disk manager (PostgreSQL-style bind-time resolution).
@@ -227,42 +225,33 @@ TEST_CASE("components::sql::index") {
         auto create =
             raw_parser(&arena_resource, "CREATE INDEX some_idx ON uuid.db.schema.table (field);")->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(create)).finalize());
-        auto node = static_cast<components::logical_plan::node_create_index_t*>(result.node.get());
-        REQUIRE(node->to_string() == R"_($create_index: db.table name:some_idx[ field ] type:single)_");
-        REQUIRE(node->uuid() == "uuid");
-        REQUIRE(node->schemaname() == "schema");
+        REQUIRE(result.node->to_string() == R"_($sequence[3])_");
     }
 
     SECTION("create with schema") {
         auto create =
             raw_parser(&arena_resource, "CREATE INDEX some_idx ON db.schema.table (field);")->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(create)).finalize());
-        auto node = static_cast<components::logical_plan::node_create_index_t*>(result.node.get());
-        REQUIRE(node->to_string() == R"_($create_index: db.table name:some_idx[ field ] type:single)_");
-        REQUIRE(node->schemaname() == "schema");
+        REQUIRE(result.node->to_string() == R"_($sequence[3])_");
     }
 
-    TEST_TRANSFORMER_OK("CREATE INDEX some_idx ON db.table (field);",
-                        R"_($create_index: db.table name:some_idx[ field ] type:single)_");
+    TEST_TRANSFORMER_OK("CREATE INDEX some_idx ON db.table (field);", R"_($sequence[3])_");
 
+    // task_3: DROP INDEX is wrapped in sequence_t(resolve_ns, resolve_table_parent,
+    // resolve_table_index, drop_index). The drop node carries no user-typed names.
     SECTION("drop with uuid") {
         auto drop = raw_parser(&arena_resource, "DROP INDEX uuid.db.schema.table.some_idx")->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(drop)).finalize());
-        auto node = static_cast<components::logical_plan::node_drop_index_t*>(result.node.get());
-        REQUIRE(node->to_string() == R"_($drop_index: db.table name:some_idx)_");
-        REQUIRE(node->uuid() == "uuid");
-        REQUIRE(node->schemaname() == "schema");
+        REQUIRE(result.node->to_string() == R"_($sequence[4])_");
     }
 
     SECTION("drop with schema") {
         auto drop = raw_parser(&arena_resource, "DROP INDEX db.schema.table.some_idx")->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(drop)).finalize());
-        auto node = static_cast<components::logical_plan::node_drop_index_t*>(result.node.get());
-        REQUIRE(node->to_string() == R"_($drop_index: db.table name:some_idx)_");
-        REQUIRE(node->schemaname() == "schema");
+        REQUIRE(result.node->to_string() == R"_($sequence[4])_");
     }
 
-    TEST_TRANSFORMER_OK("DROP INDEX db.table.some_idx", R"_($drop_index: db.table name:some_idx)_");
+    TEST_TRANSFORMER_OK("DROP INDEX db.table.some_idx", R"_($sequence[4])_");
 }
 
 TEST_CASE("components::sql::types") {
@@ -276,10 +265,13 @@ TEST_CASE("components::sql::types") {
     TEST_TRANSFORMER_OK("CREATE TYPE custom_enum AS ENUM ('f1', 'f2', 'f3');",
                         R"_($create_type: name: custom_enum, fields:[ f1=0 f2=1 f3=2 ])_");
 
-    TEST_TRANSFORMER_OK("DROP TYPE custom_type_name", R"_($drop_type: name: custom_type_name)_");
+    // task_3: DROP TYPE is wrapped in sequence_t(resolve_ns, resolve_type, drop_type).
+    TEST_TRANSFORMER_OK("DROP TYPE custom_type_name", R"_($sequence[3])_");
 
     TEST_TRANSFORMER_OK("CREATE TABLE table_ (custom_type_name custom_type);", R"_($create_collection: .table_)_");
 
+    // task_7: INSERT is wrapped in sequence_t(resolve_table,
+    // resolve_constraint, insert) — no dbname so no resolve_namespace.
     TEST_TRANSFORMER_OK("INSERT INTO table_ (custom_type_name) VALUES (ROW('text', 42))",
-                        R"_($insert: {$raw_data: {$rows: 1}})_");
+                        R"_($sequence[3])_");
 }

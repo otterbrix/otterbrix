@@ -15,12 +15,8 @@ namespace components::sql::transform {
         const std::string dbname_for_resolve = qn.dbname;
         const std::string relname_for_resolve = qn.relname;
         auto create_index = logical_plan::make_node_create_index(resource_,
-                                                                 std::move(qn.dbname),
-                                                                 std::move(qn.relname),
-                                                                 std::string(node.idxname),
-                                                                 logical_plan::index_type::single,
-                                                                 std::move(qn.schemaname),
-                                                                 std::move(qn.uuid));
+                                                                 core::indexname_t{std::string(node.idxname)},
+                                                                 logical_plan::index_type::single);
         for (auto key : node.indexParams->lst) {
             create_index->keys().emplace_back(resource_, pg_ptr_cast<IndexElem>(key.data)->name);
         }

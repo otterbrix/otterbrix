@@ -4,10 +4,10 @@
 
 namespace components::logical_plan {
 
-    node_sort_t::node_sort_t(std::pmr::memory_resource* resource, std::string dbname, std::string relname)
+    node_sort_t::node_sort_t(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname)
         : node_t(resource, node_type::sort_t)
-        , dbname_(std::move(dbname))
-        , relname_(std::move(relname)) {}
+        , dbname_(std::move(static_cast<std::string&>(dbname)))
+        , relname_(std::move(static_cast<std::string&>(relname))) {}
 
     hash_t node_sort_t::hash_impl() const { return 0; }
 
@@ -28,8 +28,8 @@ namespace components::logical_plan {
     }
 
     node_sort_ptr make_node_sort(std::pmr::memory_resource* resource,
-                                 std::string dbname,
-                                 std::string relname,
+                                 core::dbname_t dbname,
+                                 core::relname_t relname,
                                  const std::vector<expressions::expression_ptr>& expressions) {
         auto node = new node_sort_t{resource, std::move(dbname), std::move(relname)};
         node->append_expressions(expressions);
@@ -37,8 +37,8 @@ namespace components::logical_plan {
     }
 
     node_sort_ptr make_node_sort(std::pmr::memory_resource* resource,
-                                 std::string dbname,
-                                 std::string relname,
+                                 core::dbname_t dbname,
+                                 core::relname_t relname,
                                  const std::pmr::vector<expressions::expression_ptr>& expressions) {
         auto node = new node_sort_t{resource, std::move(dbname), std::move(relname)};
         node->append_expressions(expressions);

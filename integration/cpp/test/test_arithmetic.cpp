@@ -2,6 +2,7 @@
 
 #include <catch2/catch.hpp>
 #include <components/logical_plan/node_insert.hpp>
+#include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
 #include <core/operations_helper.hpp>
 
@@ -41,8 +42,9 @@ TEST_CASE("integration::cpp::test_arithmetic") {
 
     INFO("insert test data") {
         auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
-        auto ins =
-            logical_plan::make_node_insert(dispatcher->resource(), database_name, collection_name, std::move(chunk));
+        auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+            dispatcher->resource(), database_name, collection_name,
+            logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_plan(session, ins);
@@ -724,8 +726,9 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
         // Insert main collection data
         {
             auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
-            auto ins = logical_plan::make_node_insert(dispatcher->resource(), database_name, collection_name,
-                                                      std::move(chunk));
+            auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+                dispatcher->resource(), database_name, collection_name,
+                logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_plan(session, ins);
             REQUIRE(cur->is_success());
@@ -809,8 +812,9 @@ TEST_CASE("integration::cpp::test_arithmetic::having") {
 
     INFO("insert test data") {
         auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
-        auto ins =
-            logical_plan::make_node_insert(dispatcher->resource(), database_name, collection_name, std::move(chunk));
+        auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+            dispatcher->resource(), database_name, collection_name,
+            logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_plan(session, ins);
         REQUIRE(cur->is_success());
@@ -876,8 +880,9 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
 
     INFO("insert test data") {
         auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
-        auto ins =
-            logical_plan::make_node_insert(dispatcher->resource(), database_name, collection_name, std::move(chunk));
+        auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+            dispatcher->resource(), database_name, collection_name,
+            logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_plan(session, ins);
         REQUIRE(cur->is_success());
@@ -979,8 +984,9 @@ TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
 
     INFO("insert test data") {
         auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
-        auto ins =
-            logical_plan::make_node_insert(dispatcher->resource(), database_name, collection_name, std::move(chunk));
+        auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+            dispatcher->resource(), database_name, collection_name,
+            logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_plan(session, ins);
         REQUIRE(cur->is_success());
@@ -1157,8 +1163,9 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
 
     INFO("insert test data") {
         auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
-        auto ins =
-            logical_plan::make_node_insert(dispatcher->resource(), database_name, collection_name, std::move(chunk));
+        auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+            dispatcher->resource(), database_name, collection_name,
+            logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_plan(session, ins);
         REQUIRE(cur->is_success());

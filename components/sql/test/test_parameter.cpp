@@ -54,8 +54,6 @@ using vec = std::vector<v>;
         for (auto i = 0ul; i < BIND.size(); ++i) {                                                                     \
             REQUIRE(agg->parameter(core::parameter_id_t(uint16_t(i))) == BIND.at(i));                                  \
         }                                                                                                              \
-        REQUIRE(node->dbname() == "testdatabase");                                                              \
-        REQUIRE(node->relname() == "testcollection");                                                          \
     }
 
 TEST_CASE("components::sql::select_bind") {

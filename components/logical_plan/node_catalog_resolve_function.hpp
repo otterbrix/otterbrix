@@ -3,6 +3,7 @@
 #include "node.hpp"
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/logical_plan/identifier_types.hpp>
 
 #include <string>
 
@@ -16,8 +17,8 @@ namespace components::logical_plan {
     class node_catalog_resolve_function_t final : public node_t {
     public:
         explicit node_catalog_resolve_function_t(std::pmr::memory_resource* resource,
-                                                 std::string dbname,
-                                                 std::string function_name);
+                                                 core::dbname_t dbname,
+                                                 core::function_name_t function_name);
 
         const std::string& dbname() const noexcept { return dbname_; }
         const std::string& function_name() const noexcept { return function_name_; }
@@ -37,7 +38,7 @@ namespace components::logical_plan {
 
     node_catalog_resolve_function_ptr
     make_node_catalog_resolve_function(std::pmr::memory_resource* resource,
-                                       std::string dbname,
-                                       std::string function_name);
+                                       core::dbname_t dbname,
+                                       core::function_name_t function_name);
 
 } // namespace components::logical_plan

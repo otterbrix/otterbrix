@@ -50,10 +50,9 @@ namespace components::sql::transform {
 
         const std::string db_for_resolve = qn.dbname;
         auto m = logical_plan::make_node_create_macro(resource_,
-                                                       std::move(qn.dbname),
-                                                       std::move(qn.relname),
+                                                       core::macroname_t{std::move(qn.relname)},
                                                        std::move(params),
-                                                       std::move(body_sql));
+                                                       core::body_sql_t{std::move(body_sql)});
         return maybe_wrap_with_catalog_resolve_namespace(
             resource_, db_for_resolve, std::move(m));
     }

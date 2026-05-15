@@ -4,10 +4,10 @@
 
 namespace components::logical_plan {
 
-    node_aggregate_t::node_aggregate_t(std::pmr::memory_resource* resource, std::string dbname, std::string relname)
+    node_aggregate_t::node_aggregate_t(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname)
         : node_t(resource, node_type::aggregate_t)
-        , dbname_(std::move(dbname))
-        , relname_(std::move(relname)) {}
+        , dbname_(std::move(static_cast<std::string&>(dbname)))
+        , relname_(std::move(static_cast<std::string&>(relname))) {}
 
     hash_t node_aggregate_t::hash_impl() const { return 0; }
 
@@ -28,8 +28,8 @@ namespace components::logical_plan {
     }
 
     node_aggregate_ptr make_node_aggregate(std::pmr::memory_resource* resource,
-                                           std::string dbname,
-                                           std::string relname) {
+                                           core::dbname_t dbname,
+                                           core::relname_t relname) {
         return {new node_aggregate_t(resource, std::move(dbname), std::move(relname))};
     }
 

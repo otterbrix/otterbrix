@@ -33,8 +33,7 @@ namespace components::sql::transform {
         }
 
         auto seq = logical_plan::make_node_create_sequence(resource_,
-                                                            std::move(qn.dbname),
-                                                            std::move(qn.relname),
+                                                            core::seqname_t{std::move(qn.relname)},
                                                             start,
                                                             increment,
                                                             min_value,

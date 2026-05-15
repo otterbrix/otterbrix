@@ -19,12 +19,8 @@ namespace components::logical_plan {
     } // namespace
 
     node_alter_table_t::node_alter_table_t(std::pmr::memory_resource* resource,
-                                           std::string dbname,
-                                           std::string relname,
                                            components::table::column_definition_t column)
-        : node_t(resource, node_type::alter_table_t)
-        , dbname_(std::move(dbname))
-        , relname_(std::move(relname)) {
+        : node_t(resource, node_type::alter_table_t) {
         alter_table_subcommand_t sub;
         sub.kind = alter_table_kind::add_column;
         sub.column_name = column.name();
@@ -33,13 +29,9 @@ namespace components::logical_plan {
     }
 
     node_alter_table_t::node_alter_table_t(std::pmr::memory_resource* resource,
-                                           std::string dbname,
-                                           std::string relname,
                                            alter_table_kind kind,
                                            std::string column_name)
-        : node_t(resource, node_type::alter_table_t)
-        , dbname_(std::move(dbname))
-        , relname_(std::move(relname)) {
+        : node_t(resource, node_type::alter_table_t) {
         alter_table_subcommand_t sub;
         sub.kind = kind;
         sub.column_name = std::move(column_name);
@@ -47,13 +39,9 @@ namespace components::logical_plan {
     }
 
     node_alter_table_t::node_alter_table_t(std::pmr::memory_resource* resource,
-                                           std::string dbname,
-                                           std::string relname,
                                            std::string old_name,
                                            std::string new_name)
-        : node_t(resource, node_type::alter_table_t)
-        , dbname_(std::move(dbname))
-        , relname_(std::move(relname)) {
+        : node_t(resource, node_type::alter_table_t) {
         alter_table_subcommand_t sub;
         sub.kind = alter_table_kind::rename_column;
         sub.column_name = std::move(old_name);
@@ -62,12 +50,8 @@ namespace components::logical_plan {
     }
 
     node_alter_table_t::node_alter_table_t(std::pmr::memory_resource* resource,
-                                           std::string dbname,
-                                           std::string relname,
                                            std::vector<alter_table_subcommand_t> subcommands)
         : node_t(resource, node_type::alter_table_t)
-        , dbname_(std::move(dbname))
-        , relname_(std::move(relname))
         , subcommands_(std::move(subcommands)) {
         if (subcommands_.empty()) {
             subcommands_.emplace_back();
@@ -78,7 +62,7 @@ namespace components::logical_plan {
 
     std::string node_alter_table_t::to_string_impl() const {
         std::stringstream s;
-        s << "$alter_table: " << dbname_ << "." << relname_;
+        s << "$alter_table[oid=" << table_oid() << "]";
         for (size_t i = 0; i < subcommands_.size(); ++i) {
             const auto& sub = subcommands_[i];
             if (i > 0) {
@@ -93,40 +77,28 @@ namespace components::logical_plan {
     }
 
     node_alter_table_ptr make_node_alter_table_add_column(std::pmr::memory_resource* resource,
-                                                          std::string dbname,
-                                                          std::string relname,
                                                           components::table::column_definition_t column) {
-        return {new node_alter_table_t{resource, std::move(dbname), std::move(relname), std::move(column)}};
+        return {new node_alter_table_t{resource, std::move(column)}};
     }
 
     node_alter_table_ptr make_node_alter_table_drop_column(std::pmr::memory_resource* resource,
-                                                           std::string dbname,
-                                                           std::string relname,
                                                            std::string column_name) {
         return {new node_alter_table_t{resource,
-                                       std::move(dbname),
-                                       std::move(relname),
                                        alter_table_kind::drop_column,
                                        std::move(column_name)}};
     }
 
     node_alter_table_ptr make_node_alter_table_rename_column(std::pmr::memory_resource* resource,
-                                                             std::string dbname,
-                                                             std::string relname,
                                                              std::string old_name,
                                                              std::string new_name) {
         return {new node_alter_table_t{resource,
-                                       std::move(dbname),
-                                       std::move(relname),
                                        std::move(old_name),
                                        std::move(new_name)}};
     }
 
     node_alter_table_ptr make_node_alter_table_multi(std::pmr::memory_resource* resource,
-                                                     std::string dbname,
-                                                     std::string relname,
                                                      std::vector<alter_table_subcommand_t> subcommands) {
-        return {new node_alter_table_t{resource, std::move(dbname), std::move(relname), std::move(subcommands)}};
+        return {new node_alter_table_t{resource, std::move(subcommands)}};
     }
 
 } // namespace components::logical_plan

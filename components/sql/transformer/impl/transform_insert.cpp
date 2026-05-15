@@ -83,42 +83,33 @@ namespace components::sql::transform {
             }
 
             auto qn = rangevar_to_qualified_name(node.relation);
-            // Phase 13 T13: capture (dbname, relname) before moving them into the
-            // insert node so the catalog-resolve wrap can name the target table.
-            const std::string dbname_for_resolve = qn.dbname;
-            const std::string relname_for_resolve = qn.relname;
+            // Phase 13 T13 / task_7: identity travels via the catalog-resolve
+            // wrap; the insert node itself carries only payload + table_oid()
+            // (stamped at enrich time from the sibling resolve_table).
             logical_plan::node_ptr ins;
             if (has_params) {
                 parameter_insert_rows_ = std::move(chunk);
                 ins = logical_plan::make_node_insert(resource_,
-                                                      std::move(qn.dbname),
-                                                      std::move(qn.relname),
                                                       vector::data_chunk_t(resource_, {}, 0),
                                                       std::move(key_translation));
             } else {
                 ins = logical_plan::make_node_insert(resource_,
-                                                      std::move(qn.dbname),
-                                                      std::move(qn.relname),
                                                       std::move(chunk),
                                                       std::move(key_translation));
             }
             return maybe_wrap_with_catalog_resolve_table(resource_,
-                                                          dbname_for_resolve,
-                                                          relname_for_resolve,
+                                                          qn.dbname,
+                                                          qn.relname,
                                                           std::move(ins),
                                                           constraint_resolve_kind::outgoing);
         } else {
             auto qn = rangevar_to_qualified_name(node.relation);
-            const std::string dbname_for_resolve = qn.dbname;
-            const std::string relname_for_resolve = qn.relname;
-            auto res = logical_plan::make_node_insert(resource_,
-                                                      std::move(qn.dbname),
-                                                      std::move(qn.relname));
+            auto res = logical_plan::make_node_insert(resource_);
             res->append_child(transform_select(*pg_ptr_cast<SelectStmt>(node.selectStmt), params));
             res->key_translation() = key_translation;
             return maybe_wrap_with_catalog_resolve_table(resource_,
-                                                          dbname_for_resolve,
-                                                          relname_for_resolve,
+                                                          qn.dbname,
+                                                          qn.relname,
                                                           std::move(res),
                                                           constraint_resolve_kind::outgoing);
         }

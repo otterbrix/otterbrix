@@ -12,6 +12,7 @@
 #include <components/logical_plan/node_alter_column_add.hpp>
 #include <components/logical_plan/node_catalog_resolve_namespace.hpp>
 #include <components/logical_plan/node_catalog_resolve_table.hpp>
+#include <components/logical_plan/node_catalog_resolve_type.hpp>
 #include <components/logical_plan/node_alter_column_drop.hpp>
 #include <components/logical_plan/node_alter_column_rename.hpp>
 #include <components/logical_plan/node_alter_table.hpp>
@@ -183,6 +184,33 @@ namespace services::dispatcher {
             return const_cast<components::logical_plan::node_t*>(
                 effective_root_node(static_cast<const components::logical_plan::node_t*>(n)));
         }
+
+        // task_3: drop_* nodes no longer carry user-typed dbname/relname; their
+        // sibling resolve_namespace / resolve_table nodes inside the wrapping
+        // sequence_t do. Extract (db, rel) from the resolve siblings so
+        // routing code that still needs names (qualified_name_t for table_id,
+        // collections_ map keys, etc.) keeps working.
+        std::pair<std::string, std::string>
+        drop_target_names_from_resolves(const components::logical_plan::node_t* plan_root) {
+            using namespace components::logical_plan;
+            if (!plan_root || plan_root->type() != node_type::sequence_t) {
+                return {};
+            }
+            std::string db;
+            std::string rel;
+            for (const auto& c : plan_root->children()) {
+                if (!c) continue;
+                if (c->type() == node_type::catalog_resolve_namespace_t) {
+                    auto* rn = static_cast<const node_catalog_resolve_namespace_t*>(c.get());
+                    if (db.empty()) db = rn->dbname();
+                } else if (c->type() == node_type::catalog_resolve_table_t) {
+                    auto* rt = static_cast<const node_catalog_resolve_table_t*>(c.get());
+                    if (db.empty()) db = rt->dbname();
+                    if (rel.empty()) rel = rt->relname();
+                }
+            }
+            return {std::move(db), std::move(rel)};
+        }
     } // namespace
 
     manager_dispatcher_t::manager_dispatcher_t(std::pmr::memory_resource* resource_ptr,
@@ -320,12 +348,12 @@ namespace services::dispatcher {
         // <drop_node>) wrapper to reach the real drop node before casting.
         std::string drop_target_database;
         qualified_name_t drop_target_collection;
-        const auto* root_for_drop = effective_root_node(plan.get());
         if (original_type == node_type::drop_database_t) {
-            drop_target_database = static_cast<const node_drop_database_t*>(root_for_drop)->dbname();
+            auto names = drop_target_names_from_resolves(plan.get());
+            drop_target_database = std::move(names.first);
         } else if (original_type == node_type::drop_collection_t) {
-            auto* drop_node = static_cast<const node_drop_collection_t*>(root_for_drop);
-            drop_target_collection = qualified_name_t{drop_node->dbname(), drop_node->relname()};
+            auto names = drop_target_names_from_resolves(plan.get());
+            drop_target_collection = qualified_name_t{names.first, names.second};
         }
         auto logic_plan = std::move(plan);
         // Optimizer: constant folding, etc.
@@ -377,22 +405,14 @@ namespace services::dispatcher {
                 stack.pop_back();
                 if (!n) continue;
                 switch (n->type()) {
-                    case node_type::insert_t: {
-                        auto* d = static_cast<const node_insert_t*>(n);
-                        add_dbrel(d->dbname(), d->relname()); break;
-                    }
-                    case node_type::update_t: {
-                        auto* d = static_cast<const node_update_t*>(n);
-                        add_dbrel(d->dbname(), d->relname()); break;
-                    }
-                    case node_type::delete_t: {
-                        auto* d = static_cast<const node_delete_t*>(n);
-                        add_dbrel(d->dbname(), d->relname());
-                        if (!d->dbname_from().empty() && !d->relname_from().empty()) {
-                            add_dbrel(d->dbname_from(), d->relname_from());
-                        }
+                    // task_7: DML consumers no longer carry (db, rel) — names
+                    // for collection-set tracking come from the sibling
+                    // resolve_table inside the wrapping sequence_t (the
+                    // catalog_resolve_table_t branch below picks them up).
+                    case node_type::insert_t:
+                    case node_type::update_t:
+                    case node_type::delete_t:
                         break;
-                    }
                     case node_type::aggregate_t: {
                         auto* d = static_cast<const node_aggregate_t*>(n);
                         add_dbrel(d->dbname(), d->relname()); break;
@@ -405,32 +425,20 @@ namespace services::dispatcher {
                         auto* d = static_cast<const node_join_t*>(n);
                         add_dbrel(d->dbname(), d->relname()); break;
                     }
-                    case node_type::create_collection_t: {
-                        auto* d = static_cast<const node_create_collection_t*>(n);
-                        add_dbrel(d->dbname(), d->relname()); break;
-                    }
-                    case node_type::drop_collection_t: {
-                        auto* d = static_cast<const node_drop_collection_t*>(n);
-                        add_dbrel(d->dbname(), d->relname()); break;
-                    }
-                    case node_type::create_index_t: {
-                        auto* d = static_cast<const node_create_index_t*>(n);
-                        add_dbrel(d->dbname(), d->relname()); break;
-                    }
-                    case node_type::drop_index_t: {
-                        auto* d = static_cast<const node_drop_index_t*>(n);
-                        add_dbrel(d->dbname(), d->relname()); break;
-                    }
                     case node_type::create_database_t: {
                         auto* d = static_cast<const node_create_database_t*>(n);
                         if (!d->dbname().empty()) wrap_dbs.insert(d->dbname());
                         break;
                     }
-                    case node_type::drop_database_t: {
-                        auto* d = static_cast<const node_drop_database_t*>(n);
-                        if (!d->dbname().empty()) wrap_dbs.insert(d->dbname());
-                        break;
-                    }
+                    // task_6: create_collection_t / create_index_t no longer
+                    // carry parent dbname/relname; the transformer always wraps
+                    // them with sibling catalog_resolve_namespace / resolve_table
+                    // so wrap_dbs/wrap_tbls is already populated from
+                    // existing_dbs/existing_tbls above.
+                    // task_3: drop_database_t / drop_collection_t / drop_index_t
+                    // no longer carry names; the transformer always wraps them
+                    // with sibling catalog_resolve_* nodes so wrap_dbs/wrap_tbls
+                    // already has the (db, rel) covered.
                     default: break;
                 }
                 for (const auto& c : n->children()) stack.push_back(c.get());
@@ -445,25 +453,43 @@ namespace services::dispatcher {
                 for (const auto& db : wrap_dbs) {
                     if (resolved_dbs.insert(db).second) {
                         new_resolves.push_back(
-                            components::logical_plan::make_node_catalog_resolve_namespace(resource(), db));
+                            components::logical_plan::make_node_catalog_resolve_namespace(resource(), core::dbname_t{db}));
                     }
                 }
                 for (const auto& [db, rel] : wrap_tbls) {
                     if (resolved_dbs.insert(db).second) {
                         new_resolves.push_back(
-                            components::logical_plan::make_node_catalog_resolve_namespace(resource(), db));
+                            components::logical_plan::make_node_catalog_resolve_namespace(resource(), core::dbname_t{db}));
                     }
                     new_resolves.push_back(
-                        components::logical_plan::make_node_catalog_resolve_table(resource(), db, rel));
+                        components::logical_plan::make_node_catalog_resolve_table(resource(), core::dbname_t{db}, core::relname_t{rel}));
                 }
                 if (logic_plan->type() == node_type::sequence_t) {
-                    // Splice new resolves into existing sequence_t's children at
-                    // the front (Pass 1 only consumes leading resolve_* nodes).
+                    // Splice new resolves AFTER existing leading resolve_*
+                    // siblings but BEFORE the consumer node. Order matters:
+                    // stamp_oids_from_resolves picks the FIRST resolve_table
+                    // as the DML target — preserving original-target priority
+                    // means walker-added scan resolves don't shadow it.
+                    auto is_resolve_local = [](node_type t) {
+                        return t == node_type::catalog_resolve_namespace_t ||
+                               t == node_type::catalog_resolve_table_t ||
+                               t == node_type::catalog_resolve_type_t ||
+                               t == node_type::catalog_resolve_function_t ||
+                               t == node_type::catalog_resolve_constraint_t;
+                    };
                     auto& kids = logic_plan->children();
                     std::vector<components::logical_plan::node_ptr> merged;
                     merged.reserve(kids.size() + new_resolves.size());
+                    std::size_t split = 0;
+                    while (split < kids.size() && kids[split] &&
+                           is_resolve_local(kids[split]->type())) {
+                        merged.push_back(std::move(kids[split]));
+                        ++split;
+                    }
                     for (auto& r : new_resolves) merged.push_back(std::move(r));
-                    for (auto& c : kids) merged.push_back(std::move(c));
+                    for (; split < kids.size(); ++split) {
+                        merged.push_back(std::move(kids[split]));
+                    }
                     kids.clear();
                     for (auto& m : merged) kids.push_back(std::move(m));
                 } else {
@@ -545,6 +571,11 @@ namespace services::dispatcher {
                 // data input — see create_plan_sequence.cpp note).
             }
         }
+        // task_11: Pass 1 stamps OIDs on resolve_* siblings via back-pointer
+        // but not on the consumer nodes. Propagate now so validate (which
+        // reads node->table_oid() via tbl_md_for_oid) sees stamped OIDs.
+        // Must run AFTER Pass 1 and BEFORE the dispatcher_idx build below.
+        stamp_oids_from_resolves(logic_plan.get());
         // M5 / M4.H: build plan-tree idx ONCE so the DDL existence checks
         // below read ns_oid / table metadata via Pass 1 stamps. The pointer
         // is threaded explicitly into every helper (no thread_local).
@@ -554,32 +585,28 @@ namespace services::dispatcher {
         // node owns a (db, rel)-shaped pair; nodes that don't (create_type_t,
         // drop_type_t, wrappers) yield empty identifiers — same outcome as
         // the previous cfn_of() default branch.
-        auto build_id_cfn = [](const node_t* n) -> qualified_name_t {
+        const auto* plan_root_for_drop_names = logic_plan.get();
+        auto build_id_cfn = [plan_root_for_drop_names](const node_t* n) -> qualified_name_t {
             if (!n) return {};
             switch (n->type()) {
                 case node_type::aggregate_t: {
                     auto* d = static_cast<const node_aggregate_t*>(n);
                     return qualified_name_t{d->dbname(), d->relname()};
                 }
-                case node_type::alter_column_add_t: {
-                    auto* d = static_cast<const node_alter_column_add_t*>(n);
-                    return qualified_name_t{d->dbname(), d->relname()};
-                }
-                case node_type::alter_column_drop_t: {
-                    auto* d = static_cast<const node_alter_column_drop_t*>(n);
-                    return qualified_name_t{d->dbname(), d->relname()};
-                }
-                case node_type::alter_column_rename_t: {
-                    auto* d = static_cast<const node_alter_column_rename_t*>(n);
-                    return qualified_name_t{d->dbname(), d->relname()};
-                }
+                // task_8: alter_* nodes carry no user-typed names; pull
+                // (db, rel) from the sibling resolve nodes in the wrapping
+                // sequence_t (transform_alter_table wraps in resolve_table).
+                case node_type::alter_column_add_t:
+                case node_type::alter_column_drop_t:
+                case node_type::alter_column_rename_t:
                 case node_type::alter_table_t: {
-                    auto* d = static_cast<const node_alter_table_t*>(n);
-                    return qualified_name_t{d->dbname(), d->relname()};
+                    auto names = drop_target_names_from_resolves(plan_root_for_drop_names);
+                    return qualified_name_t{names.first, names.second};
                 }
                 case node_type::create_collection_t: {
                     auto* d = static_cast<const node_create_collection_t*>(n);
-                    return qualified_name_t{d->dbname(), d->relname()};
+                    auto names = drop_target_names_from_resolves(plan_root_for_drop_names);
+                    return qualified_name_t{names.first, d->relname()};
                 }
                 case node_type::create_constraint_t: {
                     auto* d = static_cast<const node_create_constraint_t*>(n);
@@ -590,59 +617,44 @@ namespace services::dispatcher {
                     return qualified_name_t{d->dbname(), std::string{}};
                 }
                 case node_type::create_index_t: {
-                    auto* d = static_cast<const node_create_index_t*>(n);
-                    return qualified_name_t{d->dbname(), d->relname()};
+                    auto names = drop_target_names_from_resolves(plan_root_for_drop_names);
+                    return qualified_name_t{names.first, names.second};
                 }
                 case node_type::create_macro_t: {
                     auto* d = static_cast<const node_create_macro_t*>(n);
-                    return qualified_name_t{d->dbname(), d->macroname()};
+                    auto names = drop_target_names_from_resolves(plan_root_for_drop_names);
+                    return qualified_name_t{names.first, d->macroname()};
                 }
                 case node_type::create_sequence_t: {
                     auto* d = static_cast<const node_create_sequence_t*>(n);
-                    return qualified_name_t{d->dbname(), d->seqname()};
+                    auto names = drop_target_names_from_resolves(plan_root_for_drop_names);
+                    return qualified_name_t{names.first, d->seqname()};
                 }
                 case node_type::create_view_t: {
                     auto* d = static_cast<const node_create_view_t*>(n);
-                    return qualified_name_t{d->dbname(), d->viewname()};
+                    auto names = drop_target_names_from_resolves(plan_root_for_drop_names);
+                    return qualified_name_t{names.first, d->viewname()};
                 }
-                case node_type::delete_t: {
-                    auto* d = static_cast<const node_delete_t*>(n);
-                    return qualified_name_t{d->dbname(), d->relname()};
-                }
-                case node_type::drop_collection_t: {
-                    auto* d = static_cast<const node_drop_collection_t*>(n);
-                    return qualified_name_t{d->dbname(), d->relname()};
+                // task_3 / task_7: drop_* and DML (insert/update/delete) nodes
+                // carry no user-typed names; pull (db, rel) from the sibling
+                // resolve nodes in the wrapping sequence_t.
+                case node_type::delete_t:
+                case node_type::insert_t:
+                case node_type::update_t:
+                case node_type::drop_collection_t:
+                case node_type::drop_index_t:
+                case node_type::drop_macro_t:
+                case node_type::drop_sequence_t:
+                case node_type::drop_view_t: {
+                    auto names = drop_target_names_from_resolves(plan_root_for_drop_names);
+                    return qualified_name_t{names.first, names.second};
                 }
                 case node_type::drop_database_t: {
-                    auto* d = static_cast<const node_drop_database_t*>(n);
-                    return qualified_name_t{d->dbname(), std::string{}};
-                }
-                case node_type::drop_index_t: {
-                    auto* d = static_cast<const node_drop_index_t*>(n);
-                    return qualified_name_t{d->dbname(), d->relname()};
-                }
-                case node_type::drop_macro_t: {
-                    auto* d = static_cast<const node_drop_macro_t*>(n);
-                    return qualified_name_t{d->dbname(), d->macroname()};
-                }
-                case node_type::drop_sequence_t: {
-                    auto* d = static_cast<const node_drop_sequence_t*>(n);
-                    return qualified_name_t{d->dbname(), d->seqname()};
-                }
-                case node_type::drop_view_t: {
-                    auto* d = static_cast<const node_drop_view_t*>(n);
-                    return qualified_name_t{d->dbname(), d->viewname()};
-                }
-                case node_type::insert_t: {
-                    auto* d = static_cast<const node_insert_t*>(n);
-                    return qualified_name_t{d->dbname(), d->relname()};
+                    auto names = drop_target_names_from_resolves(plan_root_for_drop_names);
+                    return qualified_name_t{names.first, std::string{}};
                 }
                 case node_type::match_t: {
                     auto* d = static_cast<const node_match_t*>(n);
-                    return qualified_name_t{d->dbname(), d->relname()};
-                }
-                case node_type::update_t: {
-                    auto* d = static_cast<const node_update_t*>(n);
                     return qualified_name_t{d->dbname(), d->relname()};
                 }
                 default:
@@ -725,15 +737,16 @@ namespace services::dispatcher {
                 break;
             }
             case node_type::drop_collection_t: {
-                auto* drop_node = static_cast<node_drop_collection_t*>(effective_root_node(logic_plan.get()));
-                if (!collections_.count(qualified_name_t{drop_node->dbname(), drop_node->relname()})) {
+                // task_3: drop nodes carry no names; (db, rel) lives on the
+                // sibling resolve nodes already captured in `id` above.
+                if (!collections_.count(qualified_name_t{
+                        id.get_namespace().empty() ? std::string{}
+                                                   : std::string(id.get_namespace().front()),
+                        std::string(id.table_name())})) {
                     error = make_cursor(resource(), error_code_t::collection_not_exists,
                                         "collection does not exist");
                     break;
                 }
-                // M5: check_collection_exists reads from plan-tree idx (Pass 1
-                // resolve_table_t for the drop target — see transform_table::
-                // transform_drop case OBJECT_TABLE).
                 error = check_collection_exists(resource(), &dispatcher_idx, id);
                 break;
             }
@@ -794,13 +807,22 @@ namespace services::dispatcher {
                 break;
             }
             case node_type::drop_type_t: {
-                // M4.G.7: existence check reads from plan-tree idx
-                // (transform_table OBJECT_TYPE M4.F emits resolve_type).
-                // No view.* preloads.
-                auto* n = static_cast<node_drop_type_t*>(effective_root_node(logic_plan.get()));
+                // task_3: drop_type carries no name; pull it from the sibling
+                // catalog_resolve_type_t in the wrapping sequence_t.
+                std::string type_name;
+                if (logic_plan->type() == node_type::sequence_t) {
+                    for (const auto& c : logic_plan->children()) {
+                        if (c && c->type() == node_type::catalog_resolve_type_t) {
+                            type_name = static_cast<const components::logical_plan::node_catalog_resolve_type_t*>(
+                                            c.get())
+                                            ->type_name();
+                            break;
+                        }
+                    }
+                }
                 const std::string default_path[] = {"public", "pg_catalog"};
                 std::span<const std::string> str_path(default_path);
-                error = check_type_exists(resource(), &dispatcher_idx, n->name(), str_path);
+                error = check_type_exists(resource(), &dispatcher_idx, type_name, str_path);
                 break;
             }
             case node_type::checkpoint_t:
@@ -837,14 +859,9 @@ namespace services::dispatcher {
                         const bool local_is_g = tbl_local && tbl_local->relkind == 'g';
                         bool ref_is_g = false;
                         if (cstr->kind() == constraint_kind::foreign_key &&
-                            !cstr->ref_relname().empty()) {
-                            const std::string& ref_db = cstr->ref_dbname().empty()
-                                ? std::string(id.get_namespace().front())
-                                : cstr->ref_dbname();
-                            const auto* tbl_ref = impl::tbl_md_for(
-                                &dispatcher_idx,
-                                std::string_view(ref_db),
-                                std::string_view(cstr->ref_relname()));
+                            cstr->ref_table_oid() != components::catalog::INVALID_OID) {
+                            const auto* tbl_ref = impl::tbl_md_for_oid(
+                                &dispatcher_idx, cstr->ref_table_oid());
                             ref_is_g = tbl_ref && tbl_ref->relkind == 'g';
                         }
                         if (cstr->kind() == constraint_kind::foreign_key &&
@@ -987,12 +1004,15 @@ namespace services::dispatcher {
                     }
                 }
 
-                auto* insert_node = static_cast<node_insert_t*>(effective_root_node(logic_plan.get()));
+                // task_7: insert_node carries only its OID; (db, rel) names
+                // travel via the sibling resolve_table inside the wrapping
+                // sequence_t — pull them from there for the register node.
+                auto insert_names = drop_target_names_from_resolves(logic_plan.get());
                 auto register_node = boost::intrusive_ptr(
                     new components::logical_plan::node_computed_field_register_t(
                         resource(),
-                        insert_node->dbname(),
-                        insert_node->relname(),
+                        core::dbname_t{insert_names.first},
+                        core::relname_t{insert_names.second},
                         resolved_tbl_oid,
                         std::move(registered_cols)));
 
@@ -1355,14 +1375,11 @@ namespace services::dispatcher {
                 // first child is the create_collection_t carrying the new collection name.
                 // create_constraint_t and create_database_t have no collection to register.
                 if (t == node_type::create_collection_t) {
-                    // Phase 13 Step 2: peer through the transformer wrap
-                    // (sequence_t(catalog_resolve_*, planner_sequence_t(create_collection_t, ...)))
-                    // to reach the planner-produced sequence whose front child
-                    // is the create_collection_t we need.
                     auto* root_after_plan = effective_root_node(logic_plan.get());
                     if (root_after_plan && !root_after_plan->children().empty()) {
                         auto* cc_child = static_cast<node_create_collection_t*>(root_after_plan->children().front().get());
-                        collections_.insert(qualified_name_t{cc_child->dbname(), cc_child->relname()});
+                        auto names = drop_target_names_from_resolves(logic_plan.get());
+                        collections_.insert(qualified_name_t{names.first, cc_child->relname()});
                     }
                 }
                 // Drop side: the cascade operator removed pg_class/pg_namespace rows on
@@ -1488,7 +1505,7 @@ namespace services::dispatcher {
         // matching overload, and purges pg_proc + pg_depend rows.
         auto plan = boost::intrusive_ptr(
             new components::logical_plan::node_unregister_udf_t(resource(),
-                                                                  std::move(function_name),
+                                                                  core::function_name_t{std::move(function_name)},
                                                                   std::move(inputs)));
 
         services::context_storage_t cstor{resource(), log_.clone()};

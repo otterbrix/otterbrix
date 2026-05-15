@@ -3,6 +3,7 @@
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/logical_plan/node_insert.hpp>
+#include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
 
 #include <catch2/catch.hpp>
@@ -40,7 +41,9 @@ static const collection_name_t collection_name_2 = "testcollection2";
 #define FILL_COLLECTION_WAL(DB, COLL, COUNT)                                                                           \
     do {                                                                                                               \
         auto chunk = gen_data_chunk(COUNT, dispatcher->resource());                                                    \
-        auto ins = components::logical_plan::make_node_insert(dispatcher->resource(), DB, COLL, std::move(chunk));   \
+        auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(                                  \
+            dispatcher->resource(), DB, COLL,                                                                          \
+            components::logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));                     \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
             dispatcher->execute_plan(session, ins);                                                                    \
@@ -50,13 +53,13 @@ static const collection_name_t collection_name_2 = "testcollection2";
 #define CHECK_FIND_WAL(DB, COLL, KEY, COMPARE, VALUE, COUNT)                                                           \
     do {                                                                                                               \
         auto session = otterbrix::session_id_t();                                                                      \
-        auto plan = components::logical_plan::make_node_aggregate(dispatcher->resource(), DB, COLL);                 \
+        auto plan = components::logical_plan::make_node_aggregate(dispatcher->resource(), core::dbname_t{DB}, core::relname_t{COLL}); \
         auto expr = components::expressions::make_compare_expression(dispatcher->resource(),                           \
                                                                      COMPARE,                                          \
                                                                      key{dispatcher->resource(), KEY, side_t::left},   \
                                                                      id_par{1});                                       \
         plan->append_child(                                                                                            \
-            components::logical_plan::make_node_match(dispatcher->resource(), DB, COLL, std::move(expr)));           \
+            components::logical_plan::make_node_match(dispatcher->resource(), core::dbname_t{DB}, core::relname_t{COLL}, std::move(expr))); \
         auto params = components::logical_plan::make_parameter_node(dispatcher->resource());                           \
         params->add_parameter(id_par{1}, VALUE);                                                                       \
         auto c = dispatcher->find(session, plan, params);                                                              \

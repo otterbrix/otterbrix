@@ -1,5 +1,6 @@
 #pragma once
 
+#include "identifier_types.hpp"
 #include "node.hpp"
 
 #include <components/catalog/catalog_oids.hpp>
@@ -12,8 +13,7 @@ namespace components::logical_plan {
     class node_create_sequence_t final : public node_t {
     public:
         node_create_sequence_t(std::pmr::memory_resource* resource,
-                               std::string dbname,
-                               std::string seqname,
+                               core::seqname_t seqname,
                                int64_t start = 1,
                                int64_t increment = 1,
                                int64_t min_value = 1,
@@ -27,15 +27,12 @@ namespace components::logical_plan {
         components::catalog::oid_t namespace_oid() const noexcept { return namespace_oid_; }
         void set_namespace_oid(components::catalog::oid_t oid) noexcept { namespace_oid_ = oid; }
 
-        // Phase 9.W/10.D: role-named accessors. CREATE SEQUENCE writes pg_class.relname (relkind='S').
         const std::string& seqname() const noexcept { return seqname_; }
-        const std::string& dbname() const noexcept { return dbname_; }
 
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
-        std::string dbname_;
         std::string seqname_;
         int64_t start_;
         int64_t increment_;
@@ -46,8 +43,7 @@ namespace components::logical_plan {
 
     using node_create_sequence_ptr = boost::intrusive_ptr<node_create_sequence_t>;
     node_create_sequence_ptr make_node_create_sequence(std::pmr::memory_resource* resource,
-                                                       std::string dbname,
-                                                       std::string seqname,
+                                                       core::seqname_t seqname,
                                                        int64_t start = 1,
                                                        int64_t increment = 1,
                                                        int64_t min_value = 1,

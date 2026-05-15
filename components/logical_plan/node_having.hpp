@@ -1,12 +1,13 @@
 #pragma once
 
+#include "identifier_types.hpp"
 #include "node.hpp"
 
 namespace components::logical_plan {
 
     class node_having_t final : public node_t {
     public:
-        explicit node_having_t(std::pmr::memory_resource* resource, std::string dbname, std::string relname);
+        explicit node_having_t(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname);
 
         // Phase 9.W/10.D: role-named accessors. Carries source table identity for parser-window.
         const std::string& relname() const noexcept { return relname_; }
@@ -22,8 +23,8 @@ namespace components::logical_plan {
     using node_having_ptr = boost::intrusive_ptr<node_having_t>;
 
     node_having_ptr make_node_having(std::pmr::memory_resource* resource,
-                                     std::string dbname,
-                                     std::string relname,
+                                     core::dbname_t dbname,
+                                     core::relname_t relname,
                                      const expressions::expression_ptr& expr);
 
 } // namespace components::logical_plan

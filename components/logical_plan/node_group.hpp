@@ -1,5 +1,6 @@
 #pragma once
 
+#include "identifier_types.hpp"
 #include "node.hpp"
 
 namespace components::logical_plan {
@@ -7,8 +8,8 @@ namespace components::logical_plan {
     class node_group_t final : public node_t {
     public:
         explicit node_group_t(std::pmr::memory_resource* resource,
-                              std::string dbname,
-                              std::string relname,
+                              core::dbname_t dbname,
+                              core::relname_t relname,
                               expression_ptr having = nullptr);
 
         const expression_ptr& having() const { return having_; }
@@ -32,19 +33,19 @@ namespace components::logical_plan {
     using node_group_ptr = boost::intrusive_ptr<node_group_t>;
 
     node_group_ptr make_node_group(std::pmr::memory_resource* resource,
-                                   std::string dbname,
-                                   std::string relname,
+                                   core::dbname_t dbname,
+                                   core::relname_t relname,
                                    expression_ptr having = nullptr);
 
     node_group_ptr make_node_group(std::pmr::memory_resource* resource,
-                                   std::string dbname,
-                                   std::string relname,
+                                   core::dbname_t dbname,
+                                   core::relname_t relname,
                                    const std::vector<expression_ptr>& expressions,
                                    expression_ptr having = nullptr);
 
     node_group_ptr make_node_group(std::pmr::memory_resource* resource,
-                                   std::string dbname,
-                                   std::string relname,
+                                   core::dbname_t dbname,
+                                   core::relname_t relname,
                                    const std::pmr::vector<expression_ptr>& expressions,
                                    expression_ptr having = nullptr);
 

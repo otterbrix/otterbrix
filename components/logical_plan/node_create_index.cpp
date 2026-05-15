@@ -5,18 +5,10 @@
 namespace components::logical_plan {
 
     node_create_index_t::node_create_index_t(std::pmr::memory_resource* resource,
-                                             std::string dbname,
-                                             std::string relname,
-                                             std::string indexname,
-                                             index_type type,
-                                             std::string schemaname,
-                                             std::string uuid)
+                                             core::indexname_t indexname,
+                                             index_type type)
         : node_t(resource, node_type::create_index_t)
-        , dbname_(std::move(dbname))
-        , relname_(std::move(relname))
-        , indexname_(std::move(indexname))
-        , schemaname_(std::move(schemaname))
-        , uuid_(std::move(uuid))
+        , indexname_(std::move(static_cast<std::string&>(indexname)))
         , keys_(resource)
         , index_type_(type) {}
 
@@ -48,7 +40,7 @@ namespace components::logical_plan {
 
     std::string node_create_index_t::to_string_impl() const {
         std::stringstream stream;
-        stream << "$create_index: " << dbname_ << "." << relname_ << " name:" << indexname_ << "[ ";
+        stream << "$create_index: name:" << indexname_ << "[ ";
         for (const auto& key : keys_) {
             stream << key.as_string() << ' ';
         }
@@ -57,19 +49,9 @@ namespace components::logical_plan {
     }
 
     node_create_index_ptr make_node_create_index(std::pmr::memory_resource* resource,
-                                                 std::string dbname,
-                                                 std::string relname,
-                                                 std::string indexname,
-                                                 index_type type,
-                                                 std::string schemaname,
-                                                 std::string uuid) {
-        return {new node_create_index_t{resource,
-                                        std::move(dbname),
-                                        std::move(relname),
-                                        std::move(indexname),
-                                        type,
-                                        std::move(schemaname),
-                                        std::move(uuid)}};
+                                                 core::indexname_t indexname,
+                                                 index_type type) {
+        return {new node_create_index_t{resource, std::move(indexname), type}};
     }
 
 } // namespace components::logical_plan

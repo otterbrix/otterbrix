@@ -1,5 +1,6 @@
 #pragma once
 
+#include "identifier_types.hpp"
 #include "node.hpp"
 
 namespace components::logical_plan {
@@ -7,7 +8,7 @@ namespace components::logical_plan {
     class node_aggregate_t final : public node_t {
     public:
         // Phase 10.D: ctor takes role-named strings instead of cfn struct.
-        explicit node_aggregate_t(std::pmr::memory_resource* resource, std::string dbname, std::string relname);
+        explicit node_aggregate_t(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname);
 
         void set_distinct(bool d) { distinct_ = d; }
         bool is_distinct() const { return distinct_; }
@@ -29,7 +30,7 @@ namespace components::logical_plan {
     using node_aggregate_ptr = boost::intrusive_ptr<node_aggregate_t>;
 
     node_aggregate_ptr make_node_aggregate(std::pmr::memory_resource* resource,
-                                           std::string dbname,
-                                           std::string relname);
+                                           core::dbname_t dbname,
+                                           core::relname_t relname);
 
 } // namespace components::logical_plan

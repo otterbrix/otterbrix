@@ -1,5 +1,6 @@
 #include "utils.hpp"
 
+#include <components/logical_plan/identifier_types.hpp>
 #include <components/logical_plan/node_catalog_resolve_constraint.hpp>
 #include <components/logical_plan/node_catalog_resolve_namespace.hpp>
 #include <components/logical_plan/node_catalog_resolve_table.hpp>
@@ -654,12 +655,12 @@ namespace components::sql::transform {
         // node so the wrapped plan still carries useful structure.
         auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(resource));
         if (!dbname.empty()) {
-            seq->append_child(logical_plan::make_node_catalog_resolve_namespace(resource, dbname));
+            seq->append_child(logical_plan::make_node_catalog_resolve_namespace(resource, core::dbname_t{dbname}));
         }
         logical_plan::node_catalog_resolve_table_t* table_node_ptr = nullptr;
         if (!relname.empty()) {
             auto table_node =
-                logical_plan::make_node_catalog_resolve_table(resource, dbname, relname);
+                logical_plan::make_node_catalog_resolve_table(resource, core::dbname_t{dbname}, core::relname_t{relname});
             table_node_ptr = table_node.get();
             seq->append_child(std::move(table_node));
         }
@@ -685,7 +686,7 @@ namespace components::sql::transform {
             return main_node;
         }
         auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(resource));
-        seq->append_child(logical_plan::make_node_catalog_resolve_namespace(resource, dbname));
+        seq->append_child(logical_plan::make_node_catalog_resolve_namespace(resource, core::dbname_t{dbname}));
         seq->append_child(std::move(main_node));
         return seq;
     }
@@ -708,11 +709,11 @@ namespace components::sql::transform {
             }
             if (already) continue;
             seen_dbs.push_back(db);
-            seq->append_child(logical_plan::make_node_catalog_resolve_namespace(resource, db));
+            seq->append_child(logical_plan::make_node_catalog_resolve_namespace(resource, core::dbname_t{db}));
         }
         for (auto& [db, rel] : targets) {
             if (rel.empty()) continue;
-            seq->append_child(logical_plan::make_node_catalog_resolve_table(resource, db, rel));
+            seq->append_child(logical_plan::make_node_catalog_resolve_table(resource, core::dbname_t{db}, core::relname_t{rel}));
         }
         seq->append_child(std::move(main_node));
         return seq;

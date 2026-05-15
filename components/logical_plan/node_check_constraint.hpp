@@ -1,5 +1,6 @@
 #pragma once
 
+#include "identifier_types.hpp"
 #include "node.hpp"
 
 #include <string>
@@ -11,8 +12,8 @@ namespace components::logical_plan {
     class node_check_constraint_t final : public node_t {
     public:
         explicit node_check_constraint_t(std::pmr::memory_resource* resource,
-                                         std::string dbname,
-                                         std::string relname,
+                                         core::dbname_t dbname,
+                                         core::relname_t relname,
                                          std::vector<std::string> not_null_columns,
                                          std::vector<std::pair<std::string, std::string>> check_exprs = {});
 

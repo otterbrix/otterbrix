@@ -3,6 +3,7 @@
 #include "node.hpp"
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/logical_plan/identifier_types.hpp>
 
 #include <string>
 
@@ -22,7 +23,7 @@ namespace components::logical_plan {
     // in T6. T7+ tasks integrate it with the resolve pipeline.
     class node_catalog_resolve_namespace_t final : public node_t {
     public:
-        explicit node_catalog_resolve_namespace_t(std::pmr::memory_resource* resource, std::string dbname);
+        explicit node_catalog_resolve_namespace_t(std::pmr::memory_resource* resource, core::dbname_t dbname);
 
         const std::string& dbname() const noexcept { return dbname_; }
         components::catalog::oid_t namespace_oid() const noexcept { return namespace_oid_; }
@@ -39,6 +40,6 @@ namespace components::logical_plan {
     using node_catalog_resolve_namespace_ptr = boost::intrusive_ptr<node_catalog_resolve_namespace_t>;
 
     node_catalog_resolve_namespace_ptr
-    make_node_catalog_resolve_namespace(std::pmr::memory_resource* resource, std::string dbname);
+    make_node_catalog_resolve_namespace(std::pmr::memory_resource* resource, core::dbname_t dbname);
 
 } // namespace components::logical_plan

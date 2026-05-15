@@ -3,6 +3,7 @@
 #include "node.hpp"
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/logical_plan/identifier_types.hpp>
 #include <components/types/types.hpp>
 
 #include <cstdint>
@@ -49,8 +50,8 @@ namespace components::logical_plan {
     class node_catalog_resolve_table_t final : public node_t {
     public:
         explicit node_catalog_resolve_table_t(std::pmr::memory_resource* resource,
-                                              std::string dbname,
-                                              std::string relname);
+                                              core::dbname_t dbname,
+                                              core::relname_t relname);
 
         const std::string& dbname() const noexcept { return dbname_; }
         const std::string& relname() const noexcept { return relname_; }
@@ -81,7 +82,7 @@ namespace components::logical_plan {
     using node_catalog_resolve_table_ptr = boost::intrusive_ptr<node_catalog_resolve_table_t>;
 
     node_catalog_resolve_table_ptr make_node_catalog_resolve_table(std::pmr::memory_resource* resource,
-                                                                   std::string dbname,
-                                                                   std::string relname);
+                                                                   core::dbname_t dbname,
+                                                                   core::relname_t relname);
 
 } // namespace components::logical_plan

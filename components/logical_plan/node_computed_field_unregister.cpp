@@ -4,14 +4,14 @@ namespace components::logical_plan {
 
     node_computed_field_unregister_t::node_computed_field_unregister_t(
         std::pmr::memory_resource* resource,
-        std::string dbname,
-        std::string relname,
+        core::dbname_t dbname,
+        core::relname_t relname,
         components::catalog::oid_t table_oid,
-        std::string column_name)
+        core::columnname_t column_name)
         : node_t(resource, node_type::computed_field_unregister_t)
-        , dbname_(std::move(dbname))
-        , relname_(std::move(relname))
-        , column_name_(std::move(column_name)) {
+        , dbname_(std::move(static_cast<std::string&>(dbname)))
+        , relname_(std::move(static_cast<std::string&>(relname)))
+        , column_name_(std::move(static_cast<std::string&>(column_name))) {
         set_table_oid(table_oid);
     }
 

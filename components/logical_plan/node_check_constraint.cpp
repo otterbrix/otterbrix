@@ -6,13 +6,13 @@ namespace components::logical_plan {
 
     node_check_constraint_t::node_check_constraint_t(
         std::pmr::memory_resource* resource,
-        std::string dbname,
-        std::string relname,
+        core::dbname_t dbname,
+        core::relname_t relname,
         std::vector<std::string> not_null_columns,
         std::vector<std::pair<std::string, std::string>> check_exprs)
         : node_t(resource, node_type::check_constraint_t)
-        , dbname_(std::move(dbname))
-        , relname_(std::move(relname))
+        , dbname_(std::move(static_cast<std::string&>(dbname)))
+        , relname_(std::move(static_cast<std::string&>(relname)))
         , not_null_columns_(std::move(not_null_columns))
         , check_exprs_(std::move(check_exprs)) {}
 

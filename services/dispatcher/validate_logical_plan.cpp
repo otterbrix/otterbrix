@@ -852,119 +852,17 @@ namespace services::dispatcher {
     // Brought into scope via validate_logical_plan.hpp's using-declaration.
 
     namespace {
-        // Phase 10.C: file-private replacement for the (removed) free
-        // helper `cfn_of(node_t*)`. Walks polymorphically via node->type() and
-        // returns a stack-allocated cfn assembled from the derived node's
-        // role-named accessors. Used by check_node / gather_cfn_deps below
-        // — the only sites that operate on a generic `node_t*` and need cfn
-        // as a single value (for table_id construction and for the
-        // dependency-set populated by validate_types/_schema). Resolved-
-        // stage routing should use node->table_oid() instead.
-        qualified_name_t local_node_cfn(const node_t* node) {
-            if (!node) return {};
-            switch (node->type()) {
-                case node_type::aggregate_t:
-                    return {static_cast<const node_aggregate_t*>(node)->dbname(),
-                            static_cast<const node_aggregate_t*>(node)->relname()};
-                case node_type::alter_column_add_t:
-                    return {static_cast<const node_alter_column_add_t*>(node)->dbname(),
-                            static_cast<const node_alter_column_add_t*>(node)->relname()};
-                case node_type::alter_column_drop_t:
-                    return {static_cast<const node_alter_column_drop_t*>(node)->dbname(),
-                            static_cast<const node_alter_column_drop_t*>(node)->relname()};
-                case node_type::alter_column_rename_t:
-                    return {static_cast<const node_alter_column_rename_t*>(node)->dbname(),
-                            static_cast<const node_alter_column_rename_t*>(node)->relname()};
-                case node_type::alter_table_t:
-                    return {static_cast<const node_alter_table_t*>(node)->dbname(),
-                            static_cast<const node_alter_table_t*>(node)->relname()};
-                case node_type::check_constraint_t:
-                    return {static_cast<const node_check_constraint_t*>(node)->dbname(),
-                            static_cast<const node_check_constraint_t*>(node)->relname()};
-                case node_type::computed_field_register_t:
-                    return {static_cast<const node_computed_field_register_t*>(node)->dbname(),
-                            static_cast<const node_computed_field_register_t*>(node)->relname()};
-                case node_type::computed_field_unregister_t:
-                    return {static_cast<const node_computed_field_unregister_t*>(node)->dbname(),
-                            static_cast<const node_computed_field_unregister_t*>(node)->relname()};
-                case node_type::create_collection_t:
-                    return {static_cast<const node_create_collection_t*>(node)->dbname(),
-                            static_cast<const node_create_collection_t*>(node)->relname()};
-                case node_type::create_constraint_t:
-                    return {static_cast<const node_create_constraint_t*>(node)->dbname(),
-                            static_cast<const node_create_constraint_t*>(node)->relname()};
-                case node_type::create_database_t: {
-                    const auto* n = static_cast<const node_create_database_t*>(node);
-                    return {n->dbname(), {}};
-                }
-                case node_type::create_index_t:
-                    return {static_cast<const node_create_index_t*>(node)->dbname(),
-                            static_cast<const node_create_index_t*>(node)->relname()};
-                case node_type::create_macro_t:
-                    return {static_cast<const node_create_macro_t*>(node)->dbname(),
-                            static_cast<const node_create_macro_t*>(node)->macroname()};
-                case node_type::create_sequence_t:
-                    return {static_cast<const node_create_sequence_t*>(node)->dbname(),
-                            static_cast<const node_create_sequence_t*>(node)->seqname()};
-                case node_type::create_view_t:
-                    return {static_cast<const node_create_view_t*>(node)->dbname(),
-                            static_cast<const node_create_view_t*>(node)->viewname()};
-                case node_type::delete_t:
-                    return {static_cast<const node_delete_t*>(node)->dbname(),
-                            static_cast<const node_delete_t*>(node)->relname()};
-                case node_type::drop_collection_t:
-                    return {static_cast<const node_drop_collection_t*>(node)->dbname(),
-                            static_cast<const node_drop_collection_t*>(node)->relname()};
-                case node_type::drop_database_t: {
-                    const auto* n = static_cast<const node_drop_database_t*>(node);
-                    return {n->dbname(), {}};
-                }
-                case node_type::drop_index_t: {
-                    const auto* n = static_cast<const node_drop_index_t*>(node);
-                    return {n->dbname(), n->relname()};
-                }
-                case node_type::drop_macro_t:
-                    return {static_cast<const node_drop_macro_t*>(node)->dbname(),
-                            static_cast<const node_drop_macro_t*>(node)->macroname()};
-                case node_type::drop_sequence_t:
-                    return {static_cast<const node_drop_sequence_t*>(node)->dbname(),
-                            static_cast<const node_drop_sequence_t*>(node)->seqname()};
-                case node_type::drop_view_t:
-                    return {static_cast<const node_drop_view_t*>(node)->dbname(),
-                            static_cast<const node_drop_view_t*>(node)->viewname()};
-                case node_type::fk_cascade_t:
-                    return {static_cast<const node_fk_cascade_t*>(node)->dbname(),
-                            static_cast<const node_fk_cascade_t*>(node)->relname()};
-                case node_type::fk_check_t:
-                    return {static_cast<const node_fk_check_t*>(node)->dbname(),
-                            static_cast<const node_fk_check_t*>(node)->relname()};
-                case node_type::group_t:
-                    return {static_cast<const node_group_t*>(node)->dbname(),
-                            static_cast<const node_group_t*>(node)->relname()};
-                case node_type::having_t:
-                    return {static_cast<const node_having_t*>(node)->dbname(),
-                            static_cast<const node_having_t*>(node)->relname()};
-                case node_type::insert_t:
-                    return {static_cast<const node_insert_t*>(node)->dbname(),
-                            static_cast<const node_insert_t*>(node)->relname()};
-                case node_type::join_t:
-                    return {static_cast<const node_join_t*>(node)->dbname(),
-                            static_cast<const node_join_t*>(node)->relname()};
-                case node_type::limit_t:
-                    return {static_cast<const node_limit_t*>(node)->dbname(),
-                            static_cast<const node_limit_t*>(node)->relname()};
-                case node_type::match_t:
-                    return {static_cast<const node_match_t*>(node)->dbname(),
-                            static_cast<const node_match_t*>(node)->relname()};
-                case node_type::sort_t:
-                    return {static_cast<const node_sort_t*>(node)->dbname(),
-                            static_cast<const node_sort_t*>(node)->relname()};
-                case node_type::update_t:
-                    return {static_cast<const node_update_t*>(node)->dbname(),
-                            static_cast<const node_update_t*>(node)->relname()};
-                default:
-                    return {};
+        // Reverse-lookup: namespace_oid -> dbname. Linear scan over the small
+        // plan-resolve index; only invoked when a node carries a valid
+        // table_oid and we need to populate table_dbnames for the UDT type
+        // probe in check_node. Returns empty string_view if not found.
+        std::string_view dbname_for_ns_oid(const impl::plan_resolve_index_t* idx,
+                                            components::catalog::oid_t ns_oid) {
+            if (!idx) return {};
+            for (const auto& [name, oid] : idx->ns_by_dbname) {
+                if (oid == ns_oid) return name;
             }
+            return {};
         }
     } // namespace
 
@@ -992,20 +890,37 @@ namespace services::dispatcher {
         cursor_t_ptr result = make_cursor(resource, operation_status_t::success);
 
         auto check_node = [&](node_t* node) {
-            auto node_cfn = local_node_cfn(node);
-            if (!node_cfn.empty()) {
-                table_id id(resource, node_cfn);
-                if (auto res = check_collection_exists(resource, idx, id); !res) {
-                    const auto* tbl = impl::tbl_md_for(idx, node_cfn.database, node_cfn.collection);
-                    if (tbl && tbl->relkind != 'g') {
-                        for (const auto& column : tbl->columns) {
-                            encountered_types.emplace_back(column.type);
-                        }
-                        table_dbnames.insert(node_cfn.database);
-                    }
-                } else {
-                    result = res;
+            // Phase 10.C: drop-nodes skip existence + type collection here.
+            // Their catalog_resolve_* children verify existence at parse time;
+            // CASCADE/RESTRICT is enforced by validate_drop_restrict downstream.
+            switch (node->type()) {
+                case node_type::drop_collection_t:
+                case node_type::drop_database_t:
+                case node_type::drop_index_t:
+                case node_type::drop_macro_t:
+                case node_type::drop_sequence_t:
+                case node_type::drop_type_t:
+                case node_type::drop_view_t:
+                    return true;
+                default:
+                    break;
+            }
+            if (auto oid = node->table_oid(); oid != components::catalog::INVALID_OID) {
+                const auto* tbl = impl::tbl_md_for_oid(idx, oid);
+                if (!tbl) {
+                    result = make_cursor(resource,
+                                          error_code_t::collection_not_exists,
+                                          "collection does not exist");
                     return false;
+                }
+                if (tbl->relkind != 'g') {
+                    for (const auto& column : tbl->columns) {
+                        encountered_types.emplace_back(column.type);
+                    }
+                    if (auto ns_name = dbname_for_ns_oid(idx, tbl->namespace_oid);
+                        !ns_name.empty()) {
+                        table_dbnames.emplace(ns_name);
+                    }
                 }
             }
             // pull/double-check check format from collection referenced by logical_plan and data stored inside node_data_t
@@ -1161,9 +1076,19 @@ namespace services::dispatcher {
                                                                   column.type});
                         }
                     } else {
+                        // Distinguish missing database from missing collection
+                        // so callers (and tests) get the right error code.
+                        if (impl::ns_oid_for_dbname(idx, std::string_view(agg_node->dbname())) ==
+                            components::catalog::INVALID_OID) {
+                            return schema_result<named_schema>{
+                                resource,
+                                components::cursor::error_t{error_code_t::database_not_exists,
+                                                             "database does not exist"}};
+                        }
                         return schema_result<named_schema>{
                             resource,
-                            components::cursor::error_t{error_code_t::collection_not_exists, ""}};
+                            components::cursor::error_t{error_code_t::collection_not_exists,
+                                                         "collection does not exist"}};
                     }
                 }
                 if (table_schema.empty() && incoming_schema.empty()) {
@@ -1616,9 +1541,12 @@ namespace services::dispatcher {
             // For now next 3 nodes do not support returning clause:
             case node_type::insert_t: {
                 auto* insert_node = reinterpret_cast<node_insert_t*>(node);
-                table_id id(resource, qualified_name_t{insert_node->dbname(), insert_node->relname()});
-                if (auto err = check_collection_exists(resource, idx, id); err) {
-                    return schema_result<named_schema>{resource, err->get_error()};
+                const auto* tbl_ins = impl::tbl_md_for_oid(idx, insert_node->table_oid());
+                if (!tbl_ins) {
+                    return schema_result<named_schema>{
+                        resource,
+                        components::cursor::error_t(error_code_t::collection_not_exists,
+                                                     "collection does not exist")};
                 }
 
                 auto incoming_schema = validate_schema_sync(resource, idx, node->children().front().get(), parameters);
@@ -1627,17 +1555,20 @@ namespace services::dispatcher {
                 } else {
                     named_schema table_schema(resource);
                     bool is_computed = false;
-                    const auto* tbl_ins = impl::tbl_md_for(idx, insert_node->dbname(), insert_node->relname());
+                    // task_7: insert node no longer carries relname; pull it
+                    // from the resolved table metadata (populated by Pass 1).
+                    const std::string& target_relname_ins =
+                        tbl_ins ? tbl_ins->name : std::string{};
                     if (tbl_ins && tbl_ins->relkind != 'g') {
                         for (const auto& column : tbl_ins->columns) {
-                            table_schema.emplace_back(type_from_t{node->result_alias().empty() ? insert_node->relname()
+                            table_schema.emplace_back(type_from_t{node->result_alias().empty() ? target_relname_ins
                                                                                                : node->result_alias(),
                                                                   column.type});
                         }
                     } else if (tbl_ins && tbl_ins->relkind == 'g') {
                         is_computed = true;
                         for (const auto& column : tbl_ins->columns) {
-                            table_schema.emplace_back(type_from_t{insert_node->relname(), column.type});
+                            table_schema.emplace_back(type_from_t{target_relname_ins, column.type});
                         }
                     }
                     // Phase 11.E/F: relkind='g' (dynamic-schema) tables accept INSERTs
@@ -1790,17 +1721,11 @@ namespace services::dispatcher {
                 named_schema table_schema(resource);
                 named_schema incoming_schema(resource);
                 bool same_schema = false;
-                // Phase 10.B: dispatch role-named accessors based on actual node type.
-                // Both node_delete_t and node_update_t expose relname()/dbname() with the
-                // same semantics (target table identity at parser stage).
-                const std::string& target_relname = (node->type() == node_type::update_t)
-                    ? reinterpret_cast<node_update_t*>(node)->relname()
-                    : reinterpret_cast<node_delete_t*>(node)->relname();
-                const std::string& target_dbname = (node->type() == node_type::update_t)
-                    ? reinterpret_cast<node_update_t*>(node)->dbname()
-                    : reinterpret_cast<node_delete_t*>(node)->dbname();
-                table_id id(resource, qualified_name_t{target_dbname, target_relname});
-                const auto* tbl_upd = impl::tbl_md_for(idx, target_dbname, target_relname);
+                // task_7: update/delete nodes no longer carry relname; pull
+                // the target table name from the resolved metadata (populated
+                // by Pass 1 via the sibling resolve_table).
+                const auto* tbl_upd = impl::tbl_md_for_oid(idx, node->table_oid());
+                const std::string target_relname = tbl_upd ? tbl_upd->name : std::string{};
                 if (tbl_upd && tbl_upd->relkind != 'g') {
                     for (const auto& column : tbl_upd->columns) {
                         table_schema.emplace_back(
@@ -1918,13 +1843,15 @@ namespace services::dispatcher {
             }
             case node_type::create_index_t: {
                 auto* idx_node = static_cast<node_create_index_t*>(node);
-                table_id id(resource, qualified_name_t{idx_node->dbname(), idx_node->relname()});
-                if (auto err = check_collection_exists(resource, idx, id); err) {
-                    return schema_result<named_schema>{resource, err->get_error()};
+                const auto* tbl_idx = impl::tbl_md_for_oid(idx, idx_node->table_oid());
+                if (!tbl_idx) {
+                    return schema_result<named_schema>{
+                        resource,
+                        components::cursor::error_t(error_code_t::collection_not_exists,
+                                                     "collection does not exist")};
                 }
 
                 named_schema table_schema{resource};
-                const auto* tbl_idx = impl::tbl_md_for(idx, idx_node->dbname(), idx_node->relname());
                 // Phase 7 / Group 3: previously rejected ALL relkind='g'. Relax
                 // to "reject only when no columns are registered yet" — once
                 // at least one INSERT has populated pg_computed_column, attoids
@@ -1944,7 +1871,7 @@ namespace services::dispatcher {
                             "(relkind='g') table."}};
                 } else if (tbl_idx) {
                     for (const auto& column : tbl_idx->columns) {
-                        table_schema.emplace_back(type_from_t{idx_node->relname(), column.type});
+                        table_schema.emplace_back(type_from_t{tbl_idx->name, column.type});
                     }
                 }
                 auto& keys = idx_node->keys();

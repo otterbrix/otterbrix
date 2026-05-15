@@ -6,11 +6,11 @@
 namespace components::logical_plan {
 
     node_catalog_resolve_function_t::node_catalog_resolve_function_t(std::pmr::memory_resource* resource,
-                                                                     std::string dbname,
-                                                                     std::string function_name)
+                                                                     core::dbname_t dbname,
+                                                                     core::function_name_t function_name)
         : node_t(resource, node_type::catalog_resolve_function_t)
-        , dbname_(std::move(dbname))
-        , function_name_(std::move(function_name)) {}
+        , dbname_(std::move(static_cast<std::string&>(dbname)))
+        , function_name_(std::move(static_cast<std::string&>(function_name))) {}
 
     hash_t node_catalog_resolve_function_t::hash_impl() const { return 0; }
 
@@ -25,8 +25,8 @@ namespace components::logical_plan {
 
     node_catalog_resolve_function_ptr
     make_node_catalog_resolve_function(std::pmr::memory_resource* resource,
-                                       std::string dbname,
-                                       std::string function_name) {
+                                       core::dbname_t dbname,
+                                       core::function_name_t function_name) {
         return {new node_catalog_resolve_function_t{resource, std::move(dbname), std::move(function_name)}};
     }
 

@@ -55,9 +55,9 @@ template<bool on_wal, bool on_disk>
 void create_index(const collection_name_t& collection_name) {
     auto* dispatcher = test_spaces<on_wal, on_disk>::get().dispatcher();
     auto session = otterbrix::session_id_t();
-    auto plan = make_node_create_index(dispatcher->resource(), {database_name, collection_name});
+    auto plan = make_node_create_index(dispatcher->resource());
     plan->keys().emplace_back(dispatcher->resource(), "count");
-    dispatcher->create_index(session, plan);
+    dispatcher->create_index(session, database_name, collection_name, plan);
 }
 
 template<bool on_wal, bool on_disk>
@@ -90,17 +90,19 @@ std::pair<node_aggregate_ptr, parameter_node_ptr> create_aggregate(std::pmr::mem
                                                                    compare_type compare = compare_type::eq,
                                                                    const std::string& key = {},
                                                                    T value = T()) {
-    auto aggregate = make_node_aggregate(resource, {database_name, collection_name});
+    auto aggregate = make_node_aggregate(resource, core::dbname_t{database_name}, core::relname_t{collection_name});
     auto params = make_parameter_node(resource);
     if (key.empty()) {
         params->add_parameter(core::parameter_id_t{1}, value);
         aggregate->append_child(make_node_match(resource,
-                                                {database_name, collection_name},
+                                                core::dbname_t{database_name},
+                                                core::relname_t{collection_name},
                                                 make_compare_expression(resource, compare_type::all_true)));
     } else {
         params->add_parameter(core::parameter_id_t{1}, value);
         aggregate->append_child(make_node_match(resource,
-                                                {database_name, collection_name},
+                                                core::dbname_t{database_name},
+                                                core::relname_t{collection_name},
                                                 make_compare_expression(resource,
                                                                         compare,
                                                                         components::expressions::key_t{resource, key},

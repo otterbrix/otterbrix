@@ -86,6 +86,11 @@ namespace otterbrix {
                             const std::pmr::vector<components::types::complex_logical_type>& inputs) -> bool;
         auto create_index(const session_id_t& session, components::logical_plan::node_create_index_ptr node)
             -> components::cursor::cursor_t_ptr;
+        auto create_index(const session_id_t& session,
+                          const std::string& dbname,
+                          const std::string& relname,
+                          components::logical_plan::node_create_index_ptr node)
+            -> components::cursor::cursor_t_ptr;
         auto drop_index(const session_id_t& session, components::logical_plan::node_drop_index_ptr node)
             -> components::cursor::cursor_t_ptr;
         auto execute_plan(const session_id_t& session,

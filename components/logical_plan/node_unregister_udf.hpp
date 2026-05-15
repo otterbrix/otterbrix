@@ -1,5 +1,6 @@
 #pragma once
 
+#include "identifier_types.hpp"
 #include "node.hpp"
 
 #include <components/types/types.hpp>
@@ -15,7 +16,7 @@ namespace components::logical_plan {
     class node_unregister_udf_t final : public node_t {
     public:
         node_unregister_udf_t(std::pmr::memory_resource* resource,
-                              std::string function_name,
+                              core::function_name_t function_name,
                               std::pmr::vector<types::complex_logical_type> inputs);
 
         const std::string& function_name() const noexcept { return function_name_; }

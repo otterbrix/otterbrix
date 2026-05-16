@@ -15,8 +15,8 @@ namespace components::operators {
         for (std::size_t i = 0; i < steps_.size(); ++i) {
             const auto& step = steps_[i];
             step->on_execute(ctx);
-            if (!step->error_message().empty()) {
-                set_error(step->error_message());
+            if (step->has_error()) {
+                set_error(step->get_error());
                 return;
             }
 

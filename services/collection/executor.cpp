@@ -498,9 +498,7 @@ namespace services::collection::executor {
                 // Propagate errors set during async resume (fk_check, fk_cascade,
                 // DML on disk failure, etc.)
                 if (waiting_op->has_error()) {
-                    cursor = make_cursor(resource(),
-                                         error_code_t::create_physical_plan_error,
-                                         waiting_op->error_message());
+                    cursor = make_cursor(resource(), waiting_op->get_error());
                     break;
                 }
                 trace(log_, "executor: after await completed");
@@ -512,9 +510,7 @@ namespace services::collection::executor {
 
             // Detect errors set asynchronously in operators (e.g. fk_cascade root with RESTRICT).
             if (plan->has_error()) {
-                cursor = make_cursor(resource(),
-                                     error_code_t::create_physical_plan_error,
-                                     plan->error_message());
+                cursor = make_cursor(resource(), plan->get_error());
                 break;
             }
 

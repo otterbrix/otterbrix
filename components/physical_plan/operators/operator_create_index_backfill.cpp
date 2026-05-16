@@ -54,7 +54,7 @@ namespace components::operators {
         const auto id_index = co_await std::move(ixf);
 
         if (id_index == components::index::INDEX_ID_UNDEFINED) {
-            set_error("index already exists");
+            set_error(core::error_t{core::error_code_t::other_error, std::pmr::string{"index already exists", resource_}});
             co_return;
         }
 

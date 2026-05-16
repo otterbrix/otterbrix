@@ -75,7 +75,7 @@ namespace components::operators {
             switch (fk_.del_action) {
             case 'a': // NO ACTION
             case 'r': // RESTRICT
-                set_error("FK constraint violated: child rows reference deleted parent row");
+                set_error(core::error_t{core::error_code_t::other_error, std::pmr::string{"FK constraint violated: child rows reference deleted parent row", resource_}});
                 co_return;
 
             case 'c': { // CASCADE — delete child rows via storage_delete_rows

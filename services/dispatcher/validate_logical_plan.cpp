@@ -360,7 +360,7 @@ namespace services::dispatcher {
                 function_output_types.reserve(fn_lk.signature.output_types.size());
                 for (const auto& output_type : fn_lk.signature.output_types) {
                     auto res = output_type.resolve(function_input_types);
-                    if (res.status() != components::compute::compute_status::ok()) {
+                    if (res.has_error()) {
                         return schema_result<named_schema>{
                             resource,
                             components::cursor::error_t{
@@ -1349,7 +1349,7 @@ namespace services::dispatcher {
                                 function_output_types.reserve(agg_lk.signature.output_types.size());
                                 for (const auto& output_type : agg_lk.signature.output_types) {
                                     auto res = output_type.resolve(function_input_types);
-                                    if (res.status() != components::compute::compute_status::ok()) {
+                                    if (res.has_error()) {
                                         return schema_result<named_schema>{
                                             resource,
                                             components::cursor::error_t{
@@ -1488,7 +1488,7 @@ namespace services::dispatcher {
                     result.reserve(fn_lk.signature.output_types.size());
                     for (const auto& output_type : fn_lk.signature.output_types) {
                         auto res = output_type.resolve(function_input);
-                        if (res.status() != components::compute::compute_status::ok()) {
+                        if (res.has_error()) {
                             return schema_result<named_schema>{
                                 resource,
                                 components::cursor::error_t{

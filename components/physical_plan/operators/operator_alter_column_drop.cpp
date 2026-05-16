@@ -117,7 +117,7 @@ namespace components::operators {
         if (behavior_ == catalog::drop_behavior_t::restrict_) {
             for (const auto& dep_row : dep_rows) {
                 if (dep_row.size() < 2 || dep_row[0].is_null() || dep_row[1].is_null()) continue;
-                set_error("DROP COLUMN RESTRICT: column has dependent objects");
+                set_error(core::error_t{core::error_code_t::other_error, std::pmr::string{"DROP COLUMN RESTRICT: column has dependent objects", resource_}});
                 mark_executed();
                 co_return;
             }

@@ -55,7 +55,7 @@ namespace components::operators {
                 // MATCH FULL: all-NULL → skip; partial-NULL → error; no-NULL → check.
                 if (all_null) continue;
                 if (any_null) {
-                    set_error("FK MATCH FULL: partial null in foreign key columns");
+                    set_error(core::error_t{core::error_code_t::other_error, std::pmr::string{"FK MATCH FULL: partial null in foreign key columns", resource_}});
                     co_return;
                 }
             } else {
@@ -86,7 +86,7 @@ namespace components::operators {
                                               std::move(key_values));
             auto parent_ids = co_await std::move(fut);
             if (parent_ids.empty()) {
-                set_error("FK constraint violated: referenced row not found in parent table");
+                set_error(core::error_t{core::error_code_t::other_error, std::pmr::string{"FK constraint violated: referenced row not found in parent table", resource_}});
                 co_return;
             }
         }

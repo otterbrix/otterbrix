@@ -352,7 +352,7 @@ namespace services::dispatcher {
                 std::pmr::vector<complex_logical_type> function_output_types(resource);
                 function_output_types.reserve(fn_lk.signature.output_types.size());
                 for (const auto& output_type : fn_lk.signature.output_types) {
-                    auto res = output_type.resolve(function_input_types);
+                    auto res = output_type.resolve(resource, function_input_types);
                     if (res.has_error()) {
                         return schema_result<named_schema>{
                             resource,
@@ -508,7 +508,7 @@ namespace services::dispatcher {
                     return res;
                 }
             }
-            return schema_result{type_paths{resource}};
+            return schema_result{resource, type_paths{resource}};
         }
 
         [[nodiscard]] schema_result<type_paths>
@@ -554,7 +554,7 @@ namespace services::dispatcher {
                     }
                 }
             }
-            return schema_result{type_paths{resource}};
+            return schema_result{resource, type_paths{resource}};
         }
 
         [[nodiscard]] schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
@@ -703,7 +703,7 @@ namespace services::dispatcher {
                     for (const auto& column : tbl->columns) {
                         result.emplace_back(type_from_t{node->relname(), column.type});
                     }
-                    return schema_result<named_schema>{std::move(result)};
+                    return schema_result<named_schema>{resource, std::move(result)};
                 }
                 if (tbl && tbl->relkind == 'g') {
                     named_schema result(resource);
@@ -712,11 +712,11 @@ namespace services::dispatcher {
                             type_from_t{node->result_alias().empty() ? node->relname() : node->result_alias(),
                                         column.type});
                     }
-                    return schema_result<named_schema>{std::move(result)};
+                    return schema_result<named_schema>{resource, std::move(result)};
                 } else {
                     return schema_result<named_schema>{
                         resource,
-                        core::error_t{core::error_code_t::collection_not_exists, std::pmr::string{"", resource}}};
+                        core::error_t{core::error_code_t::table_not_exists, std::pmr::string{"", resource}}};
                 }
             } else {
                 assert(node->expressions().size() == 1);
@@ -757,7 +757,7 @@ namespace services::dispatcher {
                     return schema_result<named_schema>{resource, res.error()};
                 }
             }
-            return schema_result{named_schema{resource}};
+            return schema_result{resource, named_schema{resource}};
         }
 
     } // namespace impl
@@ -770,11 +770,11 @@ namespace services::dispatcher {
                             const components::catalog::table_id& id) {
         const auto& ns = id.get_namespace();
         if (ns.empty()) {
-            return make_cursor(resource, error_code_t::database_not_exists, "database does not exist");
+            return make_cursor(resource, core::error_t{core::error_code_t::database_not_exists, std::pmr::string{"database does not exist", resource}});
         }
         if (impl::ns_oid_for_dbname(idx, std::string_view(ns.front())) ==
             components::catalog::INVALID_OID) {
-            return make_cursor(resource, error_code_t::database_not_exists, "database does not exist");
+            return make_cursor(resource, core::error_t{core::error_code_t::database_not_exists, std::pmr::string{"database does not exist", resource}});
         }
         return {};
     }
@@ -789,7 +789,7 @@ namespace services::dispatcher {
             std::string_view(id.get_namespace().front()),
             std::string_view(id.table_name()));
         if (!tbl) {
-            return make_cursor(resource, error_code_t::collection_not_exists, "collection does not exist");
+            return make_cursor(resource, core::error_t{core::error_code_t::table_not_exists, std::pmr::string{"collection does not exist", resource}});
         }
         return {};
     }
@@ -828,7 +828,7 @@ namespace services::dispatcher {
             }
         }
         return make_cursor(resource,
-                            error_code_t::schema_error,
+                            core::error_code_t::schema_error,
                             "type: \'" + alias + "\' is not registered in catalog");
     }
 
@@ -892,7 +892,7 @@ namespace services::dispatcher {
                 const auto* tbl = impl::tbl_md_for_oid(idx, oid);
                 if (!tbl) {
                     result = make_cursor(resource,
-                                          error_code_t::collection_not_exists,
+                                          core::error_code_t::table_not_exists,
                                           "collection does not exist");
                     return false;
                 }
@@ -936,7 +936,7 @@ namespace services::dispatcher {
                                 if (val.type().type() == logical_type::NA) {
                                     result =
                                         make_cursor(resource,
-                                                    error_code_t::schema_error,
+                                                    core::error_code_t::schema_error,
                                                     "couldn't convert parsed ROW to type: \'" + it->alias() + "\'");
                                     return false;
                                 } else {
@@ -951,7 +951,7 @@ namespace services::dispatcher {
                                 auto enum_val = logical_value_t::create_enum(resource, *it, val);
                                 if (enum_val.type().type() == logical_type::NA) {
                                     result = make_cursor(resource,
-                                                         error_code_t::schema_error,
+                                                         core::error_code_t::schema_error,
                                                          "enum: \'" + it->alias() + "\' does not contain value: \'" +
                                                              std::string(val) + "\'");
                                     return false;
@@ -1069,7 +1069,7 @@ namespace services::dispatcher {
                         }
                         return schema_result<named_schema>{
                             resource,
-                            core::error_t{core::error_code_t::collection_not_exists, std::pmr::string{"collection does not exist", resource}}};
+                            core::error_t{core::error_code_t::table_not_exists, std::pmr::string{"collection does not exist", resource}}};
                     }
                 }
                 if (table_schema.empty() && incoming_schema.empty()) {
@@ -1271,7 +1271,7 @@ namespace services::dispatcher {
                                     auto& sub_expr = std::get<expression_ptr>(param);
                                     if (sub_expr->group() == expression_group::scalar) {
                                         auto* sub_scalar = reinterpret_cast<scalar_expression_t*>(sub_expr.get());
-                                        core::error_t resolve_error{error_code_t::none};
+                                        core::error_t resolve_error{core::error_code_t::none};
                                         std::function<complex_logical_type(param_storage&)> resolve_arith_type;
                                         resolve_arith_type = [&](param_storage& p) -> complex_logical_type {
                                             if (std::holds_alternative<components::expressions::key_t>(p)) {
@@ -1305,7 +1305,7 @@ namespace services::dispatcher {
                                         if (sub_scalar->params().size() >= 2) {
                                             auto lt = resolve_arith_type(sub_scalar->params()[0]);
                                             auto rt = resolve_arith_type(sub_scalar->params()[1]);
-                                            if (resolve_error.type != error_code_t::none) {
+                                            if (resolve_error.type != core::error_code_t::none) {
                                                 return schema_result<named_schema>{resource, resolve_error};
                                             }
                                             function_input_types.emplace_back(promote_type(lt.type(), rt.type()));
@@ -1318,7 +1318,7 @@ namespace services::dispatcher {
                                         return schema_result<named_schema>{
                                             resource,
                                             core::error_t{
-                                                error_code_t::invalid_parameter,
+                                                core::error_code_t::invalid_parameter,
                                                 "non-scalar expression param is not supported"}};
                                     }
                                 }
@@ -1333,12 +1333,12 @@ namespace services::dispatcher {
                                 std::pmr::vector<complex_logical_type> function_output_types(resource);
                                 function_output_types.reserve(agg_lk.signature.output_types.size());
                                 for (const auto& output_type : agg_lk.signature.output_types) {
-                                    auto res = output_type.resolve(function_input_types);
+                                    auto res = output_type.resolve(resource, function_input_types);
                                     if (res.has_error()) {
                                         return schema_result<named_schema>{
                                             resource,
                                             core::error_t{
-                                                error_code_t::incorrect_function_argument,
+                                                core::error_code_t::incorrect_function_argument,
                                                 "function: \'" + agg_expr->function_name() +
                                                     "(...)\' was found but there is an error, resolving output types"}};
                                     }
@@ -1373,7 +1373,7 @@ namespace services::dispatcher {
                                 return schema_result<named_schema>{
                                     resource,
                                     core::error_t{
-                                        error_code_t::incorrect_function_argument,
+                                        core::error_code_t::incorrect_function_argument,
                                         "function: \'" + agg_expr->function_name() +
                                             "(...)\' was found but do not except given set of arguments"}};
                             }
@@ -1476,7 +1476,7 @@ namespace services::dispatcher {
                             return schema_result<named_schema>{
                                 resource,
                                 core::error_t{
-                                    error_code_t::incorrect_function_argument,
+                                    core::error_code_t::incorrect_function_argument,
                                     "function: \'" + function_node->name() +
                                         "(...)\' was found but there is an error, resolving output types"}};
                         }
@@ -1522,7 +1522,7 @@ namespace services::dispatcher {
                 if (!tbl_ins) {
                     return schema_result<named_schema>{
                         resource,
-                        core::error_t(core::error_code_t::collection_not_exists, std::pmr::string{"collection does not exist", resource})};
+                        core::error_t(core::error_code_t::table_not_exists, std::pmr::string{"collection does not exist", resource})};
                 }
 
                 auto incoming_schema = validate_schema_sync(resource, idx, node->children().front().get(), parameters);
@@ -1580,7 +1580,7 @@ namespace services::dispatcher {
                         return schema_result<named_schema>{
                             resource,
                             core::error_t{
-                                error_code_t::schema_error,
+                                core::error_code_t::schema_error,
                                 "insert_node: complex types (ARRAY/STRUCT/UNION/LIST/MAP) "
                                 "are not yet supported on relkind='g' (dynamic-schema) tables"}};
                     }
@@ -1650,7 +1650,7 @@ namespace services::dispatcher {
                                             return schema_result<named_schema>{
                                                 resource,
                                                 core::error_t{
-                                                    error_code_t::schema_error,
+                                                    core::error_code_t::schema_error,
                                                     "insert_node: NULL value for NOT NULL column '" +
                                                         cat_cols[tbl_idx].attname + "'"}};
                                         }
@@ -1668,7 +1668,7 @@ namespace services::dispatcher {
                                         return schema_result<named_schema>{
                                             resource,
                                             core::error_t{
-                                                error_code_t::schema_error,
+                                                core::error_code_t::schema_error,
                                                 "insert_node: can not fill column \'" + cat_columns[index].attname +
                                                     "\', because it lacks a default value and do not except null"}};
                                     }
@@ -1739,7 +1739,7 @@ namespace services::dispatcher {
                                 return schema_result<named_schema>{
                                     resource,
                                     core::error_t{
-                                        error_code_t::schema_error,
+                                        core::error_code_t::schema_error,
                                         "UPDATE on dynamic-schema (relkind='g') table '" +
                                             target_relname +
                                             "' references column '" + column_name +
@@ -1756,7 +1756,7 @@ namespace services::dispatcher {
                 } else {
                     return schema_result<named_schema>{
                         resource,
-                        core::error_t{core::error_code_t::collection_not_exists, std::pmr::string{"", resource}}};
+                        core::error_t{core::error_code_t::table_not_exists, std::pmr::string{"", resource}}};
                 }
                 if (node_data) {
                     auto node_data_res = validate_schema_sync(resource, idx, node_data, parameters);
@@ -1775,7 +1775,7 @@ namespace services::dispatcher {
                             return schema_result<named_schema>{
                                 resource,
                                 core::error_t{
-                                    error_code_t::schema_error,
+                                    core::error_code_t::schema_error,
                                     "update_node: computed schema and table schema name missmatch"}};
                         }
                     }
@@ -1818,7 +1818,7 @@ namespace services::dispatcher {
                 if (!tbl_idx) {
                     return schema_result<named_schema>{
                         resource,
-                        core::error_t(core::error_code_t::collection_not_exists, std::pmr::string{"collection does not exist", resource})};
+                        core::error_t(core::error_code_t::table_not_exists, std::pmr::string{"collection does not exist", resource})};
                 }
 
                 named_schema table_schema{resource};
@@ -1833,7 +1833,7 @@ namespace services::dispatcher {
                     return schema_result<named_schema>{
                         resource,
                         core::error_t{
-                            error_code_t::index_create_fail,
+                            core::error_code_t::index_create_fail,
                             "CREATE INDEX requires at least one column registered on the table; "
                             "INSERT data first to register a schema on this dynamic-schema "
                             "(relkind='g') table."}};
@@ -1849,7 +1849,7 @@ namespace services::dispatcher {
                         return schema_result<named_schema>(resource, key_res.error());
                     }
                 }
-                return schema_result{named_schema{resource}};
+                return schema_result{resource, named_schema{resource}};
             }
             case node_type::drop_index_t:
                 // nothing to check here
@@ -1920,10 +1920,9 @@ namespace services::dispatcher {
                               components::catalog::drop_behavior_t::restrict_,
                               fetch_deps);
         if (plan.status == components::catalog::ddl_status::restrict_blocked) {
-            return make_cursor(resource, error_code_t::other_error,
-                               "DROP RESTRICT: object OID " +
+            return make_cursor(resource, core::error_t{core::error_code_t::other_error, std::pmr::string{"DROP RESTRICT: object OID " +
                                    std::to_string(plan.blocking_oid) +
-                                   " depends on the target");
+                                   " depends on the target", resource}});
         }
         return make_cursor(resource, operation_status_t::success);
     }
@@ -1950,8 +1949,7 @@ namespace services::dispatcher {
             auto name = std::move(work.back());
             work.pop_back();
             if (visited.count(name)) {
-                return make_cursor(resource, error_code_t::other_error,
-                                   "type recursion detected: '" + name + "'");
+                return make_cursor(resource, core::error_t{core::error_code_t::other_error, std::pmr::string{"type recursion detected: '" + name + "'", resource}});
             }
             visited.insert(name);
 

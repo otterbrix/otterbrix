@@ -72,7 +72,13 @@ namespace components::operators {
         uids.reserve(executor_count_);
         for (std::size_t i = 0; i < executor_count_; ++i) {
             auto fut = executor_register_fn_(ctx->session, function_->get_copy(resource_), i);
-            uids.push_back(co_await std::move(fut));
+            auto res = co_await std::move(fut);
+            if (!res || res->has_error()) {
+                output_ = nullptr;
+                mark_executed();
+                co_return;
+            }
+            uids.push_back(res->value());
         }
         if (!uids.empty()) {
             const auto first_uid = uids.front();

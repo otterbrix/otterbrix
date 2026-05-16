@@ -1,5 +1,8 @@
 #include "manager_index.hpp"
 
+#include "bitcask_index_disk.hpp"
+#include "btree_index_disk.hpp"
+
 #include <actor-zeta/spawn.hpp>
 #include <components/index/index_engine.hpp>
 #include <components/index/single_field_index.hpp>
@@ -320,11 +323,16 @@ namespace services::index {
             // Create disk agent for persistent storage
             if (!path_db_.empty()) {
                 try {
-                    auto agent = actor_zeta::spawn<index_agent_disk_t>(resource_,
-                                                                       path_db_,
-                                                                       table_oid,
-                                                                       std::string(index_name),
-                                                                       log_);
+                    auto agent = actor_zeta::spawn<index_agent_disk_t>(
+                        resource_,
+                        path_db_,
+                        table_oid,
+                        std::string(index_name),
+                        type,
+                        bitcask_index_disk_t::default_flush_threshold_,
+                        bitcask_index_disk_t::default_segment_record_limit_,
+                        btree_index_disk_t::default_flush_threshold_,
+                        log_);
 
                     // Link disk agent with in-memory index
                     auto* idx = components::index::search_index(engine, keys);

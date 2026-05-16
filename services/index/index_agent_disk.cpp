@@ -1,17 +1,47 @@
 #include "index_agent_disk.hpp"
 
+#include "bitcask_index_disk.hpp"
+#include "btree_index_disk.hpp"
+
 namespace services::index {
+
+    namespace {
+        std::unique_ptr<index_disk_t> make_index_disk(const std::filesystem::path& path,
+                                                     std::pmr::memory_resource* resource,
+                                                     components::logical_plan::index_type type,
+                                                     uint64_t bitcask_flush_threshold,
+                                                     uint64_t bitcask_segment_record_limit,
+                                                     uint64_t btree_flush_threshold) {
+            // index_type::hashed → bitcask LSM. Everything else (single / composite /
+            // multikey / wildcard) → ordered B+tree.
+            if (type == components::logical_plan::index_type::hashed) {
+                return std::make_unique<bitcask_index_disk_t>(path,
+                                                              resource,
+                                                              bitcask_flush_threshold,
+                                                              bitcask_segment_record_limit);
+            }
+            return std::make_unique<btree_index_disk_t>(path, resource, btree_flush_threshold);
+        }
+    } // namespace
 
     index_agent_disk_t::index_agent_disk_t(std::pmr::memory_resource* resource,
                                            const path_t& path_db,
                                            components::catalog::oid_t table_oid,
                                            const index_name_t& index_name,
+                                           components::logical_plan::index_type type,
+                                           uint64_t bitcask_flush_threshold,
+                                           uint64_t bitcask_segment_record_limit,
+                                           uint64_t btree_flush_threshold,
                                            log_t& log)
         : actor_zeta::basic_actor<index_agent_disk_t>(resource)
         , log_(log.clone())
-        , index_disk_(std::make_unique<index_disk_t>(
+        , index_disk_(make_index_disk(
               path_db / std::to_string(static_cast<unsigned>(table_oid)) / index_name,
-              this->resource()))
+              this->resource(),
+              type,
+              bitcask_flush_threshold,
+              bitcask_segment_record_limit,
+              btree_flush_threshold))
         , table_oid_(table_oid) {
         trace(log_, "index_agent_disk::create {} (table_oid={})", index_name, static_cast<unsigned>(table_oid));
     }

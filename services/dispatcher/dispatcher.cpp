@@ -414,15 +414,18 @@ namespace services::dispatcher {
                         break;
                     case node_type::aggregate_t: {
                         auto* d = static_cast<const node_aggregate_t*>(n);
-                        add_dbrel(d->dbname(), d->relname()); break;
+                        add_dbrel(static_cast<const std::string&>(d->dbname()),
+                                  static_cast<const std::string&>(d->relname())); break;
                     }
                     case node_type::match_t: {
                         auto* d = static_cast<const node_match_t*>(n);
-                        add_dbrel(d->dbname(), d->relname()); break;
+                        add_dbrel(static_cast<const std::string&>(d->dbname()),
+                                  static_cast<const std::string&>(d->relname())); break;
                     }
                     case node_type::join_t: {
                         auto* d = static_cast<const node_join_t*>(n);
-                        add_dbrel(d->dbname(), d->relname()); break;
+                        add_dbrel(static_cast<const std::string&>(d->dbname()),
+                                  static_cast<const std::string&>(d->relname())); break;
                     }
                     case node_type::create_database_t: {
                         auto* d = static_cast<const node_create_database_t*>(n);
@@ -590,7 +593,8 @@ namespace services::dispatcher {
             switch (n->type()) {
                 case node_type::aggregate_t: {
                     auto* d = static_cast<const node_aggregate_t*>(n);
-                    return qualified_name_t{d->dbname(), d->relname()};
+                    return qualified_name_t{static_cast<const std::string&>(d->dbname()),
+                                            static_cast<const std::string&>(d->relname())};
                 }
                 // alter_* nodes carry no user-typed names; pull
                 // (db, rel) from the sibling resolve nodes in the wrapping
@@ -605,11 +609,12 @@ namespace services::dispatcher {
                 case node_type::create_collection_t: {
                     auto* d = static_cast<const node_create_collection_t*>(n);
                     auto names = drop_target_names_from_resolves(plan_root_for_drop_names);
-                    return qualified_name_t{names.first, d->relname()};
+                    return qualified_name_t{names.first, static_cast<const std::string&>(d->relname())};
                 }
                 case node_type::create_constraint_t: {
                     auto* d = static_cast<const node_create_constraint_t*>(n);
-                    return qualified_name_t{d->dbname(), d->relname()};
+                    return qualified_name_t{static_cast<const std::string&>(d->dbname()),
+                                            static_cast<const std::string&>(d->relname())};
                 }
                 case node_type::create_database_t: {
                     auto* d = static_cast<const node_create_database_t*>(n);
@@ -654,7 +659,8 @@ namespace services::dispatcher {
                 }
                 case node_type::match_t: {
                     auto* d = static_cast<const node_match_t*>(n);
-                    return qualified_name_t{d->dbname(), d->relname()};
+                    return qualified_name_t{static_cast<const std::string&>(d->dbname()),
+                                            static_cast<const std::string&>(d->relname())};
                 }
                 default:
                     return {};
@@ -671,7 +677,9 @@ namespace services::dispatcher {
         switch (original_type) {
             case node_type::create_database_t:
                 if (!check_namespace_exists(resource(), &dispatcher_idx, id)) {
-                    error = make_cursor(resource(), error_code_t::database_already_exists, "database already exists");
+                    error = make_cursor(resource(),
+                                        core::error_t{core::error_code_t::database_already_exists,
+                                                      std::pmr::string{"database already exists", resource()}});
                 }
                 break;
             case node_type::drop_database_t:
@@ -682,7 +690,9 @@ namespace services::dispatcher {
                 // plan-tree idx (no async preloads).
                 if (!check_collection_exists(resource(), &dispatcher_idx, id)) {
                     error =
-                        make_cursor(resource(), error_code_t::collection_already_exists, "collection already exists");
+                        make_cursor(resource(),
+                                    core::error_t{core::error_code_t::table_already_exists,
+                                                  std::pmr::string{"collection already exists", resource()}});
                 } else {
                     // UDT existence + resolution reads from plan-tree
                     // idx (transform_create_table emits resolve_type
@@ -742,8 +752,9 @@ namespace services::dispatcher {
                         id.get_namespace().empty() ? std::string{}
                                                    : std::string(id.get_namespace().front()),
                         std::string(id.table_name())})) {
-                    error = make_cursor(resource(), error_code_t::collection_not_exists,
-                                        "collection does not exist");
+                    error = make_cursor(resource(),
+                                        core::error_t{core::error_code_t::table_not_exists,
+                                                      std::pmr::string{"collection does not exist", resource()}});
                     break;
                 }
                 error = check_collection_exists(resource(), &dispatcher_idx, id);
@@ -764,9 +775,12 @@ namespace services::dispatcher {
                 // Collision check — if Pass 1 stamped a type_md for the same
                 // name, the type already exists.
                 if (!check_type_exists(resource(), &dispatcher_idx, n->type().type_name(), str_path)) {
-                    error = make_cursor(resource(),
-                                        error_code_t::schema_error,
-                                        "type: \'" + n->type().alias() + "\' already exists");
+                    error = make_cursor(
+                        resource(),
+                        core::error_t{core::error_code_t::schema_error,
+                                      std::pmr::string{
+                                          ("type: \'" + n->type().alias() + "\' already exists").c_str(),
+                                          resource()}});
                     break;
                 }
                 if (n->type().type() == logical_type::STRUCT) {
@@ -867,19 +881,23 @@ namespace services::dispatcher {
                             (local_is_g || ref_is_g)) {
                             error = make_cursor(
                                 resource(),
-                                error_code_t::schema_error,
-                                "Foreign key constraints are not supported when the referencing or "
-                                "referenced table is dynamic-schema (relkind='g'). FK enforcement "
-                                "requires stable column attoids; dynamic-schema columns may evolve. "
-                                "Convert involved tables to static schema first.");
+                                core::error_t{core::error_code_t::schema_error,
+                                              std::pmr::string{
+                                                  "Foreign key constraints are not supported when the referencing or "
+                                                  "referenced table is dynamic-schema (relkind='g'). FK enforcement "
+                                                  "requires stable column attoids; dynamic-schema columns may evolve. "
+                                                  "Convert involved tables to static schema first.",
+                                                  resource()}});
                         } else if (cstr->kind() == constraint_kind::check && local_is_g) {
                             error = make_cursor(
                                 resource(),
-                                error_code_t::schema_error,
-                                "CHECK constraints are not supported on dynamic-schema (relkind='g') "
-                                "tables. CHECK enforcement requires stable column attoids; "
-                                "dynamic-schema columns may evolve. Convert the table to static "
-                                "schema first.");
+                                core::error_t{core::error_code_t::schema_error,
+                                              std::pmr::string{
+                                                  "CHECK constraints are not supported on dynamic-schema (relkind='g') "
+                                                  "tables. CHECK enforcement requires stable column attoids; "
+                                                  "dynamic-schema columns may evolve. Convert the table to static "
+                                                  "schema first.",
+                                                  resource()}});
                         }
                     }
                 }
@@ -899,7 +917,7 @@ namespace services::dispatcher {
                         false, validate_schema(resource(), ctx, &dispatcher_idx, logic_plan.get(), params->parameters())};
                     auto schema_res = co_await std::move(vsf);
                     if (schema_res.is_error()) {
-                        error = make_cursor(resource(), schema_res.error().type, schema_res.error().what);
+                        error = make_cursor(resource(), schema_res.error());
                     }
                 }
             }
@@ -1151,11 +1169,13 @@ namespace services::dispatcher {
             auto* cstr = static_cast<node_create_constraint_t*>(effective_root_node(logic_plan.get()));
             if (cstr->kind() == constraint_kind::check && cstr->check_expr().empty()) {
                 co_return make_cursor(resource(),
-                    error_code_t::other_error,
-                    "CHECK constraint expression is empty or contains unsupported "
-                    "constructs (functions, subqueries, and CASE expressions are not "
-                    "allowed; valid: comparisons, AND/OR/NOT, IS NULL/IS NOT NULL, "
-                    "column references, and constants)");
+                    core::error_t{core::error_code_t::other_error,
+                                  std::pmr::string{
+                                      "CHECK constraint expression is empty or contains unsupported "
+                                      "constructs (functions, subqueries, and CASE expressions are not "
+                                      "allowed; valid: comparisons, AND/OR/NOT, IS NULL/IS NOT NULL, "
+                                      "column references, and constants)",
+                                      resource()}});
             }
             catalog::oid_batch_t oid_batch;
             oid_batch.oids = co_await allocate_oids_via_pipeline(session, std::size_t{1});
@@ -1213,7 +1233,7 @@ namespace services::dispatcher {
                 // already-rewritten case (logic_plan is sequence_t) — the
                 // latter must run through the executor like every other DDL.
                 if (logic_plan->type() == node_type::alter_table_t) {
-                    exec_result = {make_cursor(resource(), operation_status_t::success), {}, {}, {}};
+                    exec_result = {make_cursor(resource()), {}, {}, {}};
                 } else {
                     exec_result = co_await execute_plan_impl(session, logic_plan, params->take_parameters(), txn_data);
                 }
@@ -1285,7 +1305,7 @@ namespace services::dispatcher {
                     ddl_commit_node->set_database_oid(db_oid);
 
                     services::context_storage_t cstor{resource(), log_.clone()};
-                    components::compute::function_registry_t fn_registry;
+                    components::compute::function_registry_t fn_registry{resource()};
                     auto commit_op = services::planner::create_plan(
                         cstor, fn_registry, ddl_commit_node,
                         components::logical_plan::limit_t::unlimit(),
@@ -1412,9 +1432,10 @@ namespace services::dispatcher {
         // drive per-executor register_udf without needing direct scheduler
         // access. needs_sched is honoured here (matching the legacy inline
         // path) so the executor's mailbox is processed.
+        using fanout_result_t = components::operators::operator_register_udf_t::executor_register_result_t;
         auto fanout = [this](components::session::session_id_t s,
                               components::compute::function_ptr fcopy,
-                              std::size_t i) -> actor_zeta::unique_future<components::compute::function_uid> {
+                              std::size_t i) -> actor_zeta::unique_future<std::unique_ptr<fanout_result_t>> {
             auto [needs_sched, future] =
                 actor_zeta::otterbrix::send(executor_addresses_[i],
                                              &collection::executor::executor_t::register_udf,
@@ -1433,7 +1454,7 @@ namespace services::dispatcher {
         op->set_as_root();
 
         components::logical_plan::storage_parameters params(resource());
-        components::compute::function_registry_t fn_registry;
+        components::compute::function_registry_t fn_registry{resource()};
         components::pipeline::context_t pctx{session,
                                               actor_zeta::address_t::empty_address(),
                                               actor_zeta::address_t::empty_address(),
@@ -1477,7 +1498,7 @@ namespace services::dispatcher {
                                                                   std::move(inputs)));
 
         services::context_storage_t cstor{resource(), log_.clone()};
-        components::compute::function_registry_t fn_registry;
+        components::compute::function_registry_t fn_registry{resource()};
         auto op = services::planner::create_plan(
             cstor, fn_registry, plan,
             components::logical_plan::limit_t::unlimit(),
@@ -1551,7 +1572,7 @@ namespace services::dispatcher {
             resource(), std::move(id_pairs)));
 
         services::context_storage_t cstor{resource(), log_.clone()};
-        components::compute::function_registry_t fn_registry;
+        components::compute::function_registry_t fn_registry{resource()};
         auto op = services::planner::create_plan(
             cstor, fn_registry, plan,
             components::logical_plan::limit_t::unlimit(),
@@ -1696,7 +1717,7 @@ namespace services::dispatcher {
         auto node = components::logical_plan::make_node_allocate_oids(resource(), count);
 
         services::context_storage_t cstor{resource(), log_.clone()};
-        components::compute::function_registry_t fn_registry;
+        components::compute::function_registry_t fn_registry{resource()};
         auto op = services::planner::create_plan(
             cstor, fn_registry, node,
             components::logical_plan::limit_t::unlimit(),
@@ -1743,7 +1764,7 @@ namespace services::dispatcher {
             new components::logical_plan::node_commit_transaction_t(resource()));
 
         services::context_storage_t cstor{resource(), log_.clone()};
-        components::compute::function_registry_t fn_registry;
+        components::compute::function_registry_t fn_registry{resource()};
         auto op = services::planner::create_plan(
             cstor, fn_registry, plan,
             components::logical_plan::limit_t::unlimit(),
@@ -1797,7 +1818,7 @@ namespace services::dispatcher {
             new components::logical_plan::node_abort_transaction_t(resource()));
 
         services::context_storage_t cstor{resource(), log_.clone()};
-        components::compute::function_registry_t fn_registry;
+        components::compute::function_registry_t fn_registry{resource()};
         auto op = services::planner::create_plan(
             cstor, fn_registry, plan,
             components::logical_plan::limit_t::unlimit(),

@@ -2,6 +2,7 @@
 
 #include <components/compute/function.hpp>
 #include <components/physical_plan/operators/operator.hpp>
+#include <core/result_wrapper.hpp>
 
 #include <actor-zeta/detail/future.hpp>
 
@@ -39,10 +40,12 @@ namespace components::operators {
         // Number of executor fan-out calls = executor_count. The functor is
         // invoked with (session, function_copy, executor_index); it must be
         // safe to invoke up to `executor_count` times.
-        using executor_register_fn_t = std::function<actor_zeta::unique_future<components::compute::function_uid>(
-            components::session::session_id_t session,
-            components::compute::function_ptr function_copy,
-            std::size_t executor_index)>;
+        using executor_register_result_t = core::result_wrapper_t<components::compute::function_uid>;
+        using executor_register_fn_t =
+            std::function<actor_zeta::unique_future<std::unique_ptr<executor_register_result_t>>(
+                components::session::session_id_t session,
+                components::compute::function_ptr function_copy,
+                std::size_t executor_index)>;
 
         operator_register_udf_t(std::pmr::memory_resource* resource,
                                  log_t log,

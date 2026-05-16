@@ -538,7 +538,7 @@ namespace services::dispatcher {
             switch (root->type()) {
                 case node_type::aggregate_t: {
                     auto* d = static_cast<node_aggregate_t*>(root.get());
-                    db = d->dbname(); rel = d->relname();
+                    db = d->dbname().t; rel = d->relname().t;
                     break;
                 }
                 case node_type::match_t: {

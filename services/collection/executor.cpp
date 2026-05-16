@@ -126,8 +126,7 @@ namespace services::collection::executor {
         , txn_manager_(txn_manager)
         , log_(log)
         , function_registry_(resource)
-        , pending_void_(resource)
-        , pending_execute_(resource) {
+        , pending_void_(resource) {
         register_default_functions(function_registry_);
     }
 

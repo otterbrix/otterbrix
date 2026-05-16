@@ -43,21 +43,21 @@ namespace services::dispatcher {
     template<typename T>
     class schema_result {
     public:
-        explicit schema_result(T&& value)
+        explicit schema_result(std::pmr::memory_resource* resource, T&& value)
             : schema_(std::forward<T>(value))
-            , error_(components::cursor::error_code_t::none) {}
-        explicit schema_result(std::pmr::memory_resource* resource, components::cursor::error_t error)
+            , error_(resource, core::error_code_t::none) {}
+        explicit schema_result(std::pmr::memory_resource* resource, core::error_t error)
             : schema_(resource)
             , error_(std::move(error)) {}
 
-        bool is_error() const { return error_.type != components::cursor::error_code_t::none; }
-        const components::cursor::error_t& error() const { return error_; }
+        bool is_error() const { return error_.type != core::error_code_t::none; }
+        const core::error_t& error() const { return error_; }
         const T& value() const { return schema_; }
         T& value() { return schema_; }
 
     private:
         T schema_;
-        components::cursor::error_t error_;
+        core::error_t error_;
     };
 
     // Existence checks read from the plan-tree idx supplied explicitly by

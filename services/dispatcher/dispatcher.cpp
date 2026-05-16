@@ -356,7 +356,7 @@ namespace services::dispatcher {
         }
         auto logic_plan = std::move(plan);
         // Optimizer: constant folding, etc.
-        logic_plan = components::planner::optimize(resource(), logic_plan, nullptr, params.get());
+        logic_plan = components::planner::optimize(resource(), logic_plan, params.get());
 
         // Wrap the plan with catalog_resolve_namespace + catalog_resolve_table
         // for every (db, rel) pair found in the tree. Validate/enrich consume

@@ -159,7 +159,7 @@ namespace detail {
         components::vector::data_chunk_t local(resource, types, cap);
         local.set_cardinality(0);
         if (n > 0) {
-            local.append(data, true);
+            data.copy(local, 0);
         }
         return local;
     }

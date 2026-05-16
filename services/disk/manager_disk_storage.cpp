@@ -305,7 +305,7 @@ namespace services::disk {
         }
         auto types = s->types();
         auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types);
-        s->scan_segment(start, count, [&result](components::vector::data_chunk_t& chunk) { result->append(chunk); });
+        s->scan_segment(start, count, [&result](components::vector::data_chunk_t& chunk) { chunk.copy(*result, 0); });
         co_return std::move(result);
     }
 

@@ -81,7 +81,7 @@ namespace services::dispatcher {
         // with this name was registered (for "unrecognized function" vs "wrong args" errors).
         struct function_lookup_t {
             components::compute::function_uid uid{components::compute::invalid_function_uid};
-            components::compute::kernel_signature_t signature{{}, {}};
+            components::compute::kernel_signature_t signature{components::compute::function_type_t::invalid, {}, {}};
             bool name_exists{false};
             bool match_found{false};
         };
@@ -146,7 +146,7 @@ namespace services::dispatcher {
                 for (size_t i = 0; i < schema.size(); i++) {
                     result.emplace_back(type_path_t{column_path{{i}, resource}, schema[i].type});
                 }
-                return schema_result{std::move(result)};
+                return schema_result{resource, std::move(result)};
             }
             // removed '*' at the end, if it has one
             components::expressions::key_t truncated_key = key;
@@ -219,24 +219,21 @@ namespace services::dispatcher {
             if (result.size() > 1) {
                 return schema_result<type_paths>(
                     resource,
-                    components::cursor::error_t(error_code_t::ambiguous_name,
-                                                "path: \'" + truncated_key.as_string() +
-                                                    "\' is ambiguous. Use aliases or full path"));
+                    core::error_t(core::error_code_t::ambiguous_name, std::pmr::string{"path: \'" + truncated_key.as_string() +
+                                                    "\' is ambiguous. Use aliases or full path", resource}));
             } else {
                 if (key.storage().back() == "*") {
                     if (!result.front().type.is_nested()) {
                         return schema_result<type_paths>(
                             resource,
-                            components::cursor::error_t(error_code_t::schema_error,
-                                                        "path: \'" + truncated_key.as_string() +
-                                                            "\' is not nested, and \'*\' can not be applied"));
+                            core::error_t(core::error_code_t::schema_error, std::pmr::string{"path: \'" + truncated_key.as_string() +
+                                                            "\' is not nested, and \'*\' can not be applied", resource}));
                     }
                     if (result.front().type.type() == logical_type::LIST) {
                         return schema_result<type_paths>(
                             resource,
-                            components::cursor::error_t(error_code_t::schema_error,
-                                                        "path: \'" + truncated_key.as_string() +
-                                                            "\' is a list type, and \'*\' can not be applied"));
+                            core::error_t(core::error_code_t::schema_error, std::pmr::string{"path: \'" + truncated_key.as_string() +
+                                                            "\' is a list type, and \'*\' can not be applied", resource}));
                     }
                     if (result.front().type.type() == logical_type::STRUCT) {
                         auto parent_type = std::move(result[0]);
@@ -264,12 +261,11 @@ namespace services::dispatcher {
             if (result.empty()) {
                 return schema_result<type_paths>(
                     resource,
-                    components::cursor::error_t(error_code_t::schema_error,
-                                                "path: \'" + key.as_string() + "\' was not found"));
+                    core::error_t(core::error_code_t::schema_error, std::pmr::string{"path: \'" + key.as_string() + "\' was not found", resource}));
             }
             // Store path inside a key, since we will need it later
             key.set_path(result.front().path);
-            return schema_result{std::move(result)};
+            return schema_result{resource, std::move(result)};
         }
 
         [[nodiscard]] schema_result<type_paths> validate_key(std::pmr::memory_resource* resource,
@@ -288,15 +284,13 @@ namespace services::dispatcher {
                 if (column_path_left.is_error() && column_path_right.is_error()) {
                     return schema_result<type_paths>{
                         resource,
-                        components::cursor::error_t{error_code_t::field_not_exists,
-                                                    "path: \'" + key.as_string() + "\' was not found"}};
+                        core::error_t{core::error_code_t::field_not_exists, std::pmr::string{"path: \'" + key.as_string() + "\' was not found", resource}}};
                 }
                 if (!same_schema && !column_path_left.is_error() && !column_path_right.is_error()) {
                     return schema_result<type_paths>{
                         resource,
-                        components::cursor::error_t{error_code_t::ambiguous_name,
-                                                    "path: \'" + key.as_string() +
-                                                        "\' is ambiguous. Use aliases or full path"}};
+                        core::error_t{core::error_code_t::ambiguous_name, std::pmr::string{"path: \'" + key.as_string() +
+                                                        "\' is ambiguous. Use aliases or full path", resource}}};
                 }
                 if (column_path_left.is_error()) {
                     key.set_side(side_t::right);
@@ -353,8 +347,7 @@ namespace services::dispatcher {
             if (!fn_lk.name_exists) {
                 return schema_result<named_schema>{
                     resource,
-                    components::cursor::error_t{error_code_t::unrecognized_function,
-                                                "function: \'" + expr->name() + "(...)\' was not found by the name"}};
+                    core::error_t{core::error_code_t::unrecognized_function, std::pmr::string{"function: \'" + expr->name() + "(...)\' was not found by the name", resource}}};
             } else if (fn_lk.match_found) {
                 std::pmr::vector<complex_logical_type> function_output_types(resource);
                 function_output_types.reserve(fn_lk.signature.output_types.size());
@@ -363,10 +356,10 @@ namespace services::dispatcher {
                     if (res.has_error()) {
                         return schema_result<named_schema>{
                             resource,
-                            components::cursor::error_t{
-                                error_code_t::incorrect_function_argument,
-                                "function: \'" + expr->name() +
-                                    "(...)\' was found but there is an error, resolving output types"}};
+                            core::error_t{
+                                core::error_code_t::incorrect_function_argument,
+                                std::pmr::string{"function: \'" + expr->name() +
+                                    "(...)\' was found but there is an error, resolving output types", resource}}};
                     }
                     function_output_types.emplace_back(res.value());
                 }
@@ -382,12 +375,11 @@ namespace services::dispatcher {
                 // TODO: given arg number and types to error
                 return schema_result<named_schema>{
                     resource,
-                    components::cursor::error_t{error_code_t::incorrect_function_argument,
-                                                "function: \'" + expr->name() +
-                                                    "(...)\' was found but do not except given set of arguments"}};
+                    core::error_t{core::error_code_t::incorrect_function_argument, std::pmr::string{"function: \'" + expr->name() +
+                                                    "(...)\' was found but do not except given set of arguments", resource}}};
             }
 
-            return schema_result{std::move(result)};
+            return schema_result{resource, std::move(result)};
         }
 
         // TODO: validate parameters
@@ -454,7 +446,7 @@ namespace services::dispatcher {
                 default:
                     break;
             }
-            return schema_result<named_schema>{named_schema(resource)};
+            return schema_result<named_schema>{resource, named_schema(resource)};
         }
 
         // Recursively validate keys inside scalar expression params
@@ -482,8 +474,7 @@ namespace services::dispatcher {
                         if (parameters->parameters.find(id) == parameters->parameters.end()) {
                             return schema_result<named_schema>{
                                 resource,
-                                components::cursor::error_t{error_code_t::invalid_parameter,
-                                                            "Unknown parameter id in expression"}};
+                                core::error_t{core::error_code_t::invalid_parameter, std::pmr::string{"Unknown parameter id in expression", resource}}};
                         }
                     }
                 } else if (std::holds_alternative<expression_ptr>(param)) {
@@ -502,7 +493,7 @@ namespace services::dispatcher {
                     }
                 }
             }
-            return schema_result<named_schema>{named_schema(resource)};
+            return schema_result<named_schema>{resource, named_schema(resource)};
         }
 
         [[nodiscard]] schema_result<type_paths>
@@ -527,8 +518,7 @@ namespace services::dispatcher {
                 if (key.storage().empty()) {
                     return schema_result<type_paths>{
                         resource,
-                        components::cursor::error_t{error_code_t::schema_error,
-                                                    "key has empty storage: " + key.as_string()}};
+                        core::error_t{core::error_code_t::schema_error, std::pmr::string{"key has empty storage: " + key.as_string(), resource}}};
                 }
                 return find_types(resource, key, schema);
             } else if (std::holds_alternative<expression_ptr>(param)) {
@@ -695,7 +685,7 @@ namespace services::dispatcher {
                 default:
                     break;
             }
-            return schema_result{std::move(result)};
+            return schema_result{resource, std::move(result)};
         }
 
         [[nodiscard]] schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
@@ -726,7 +716,7 @@ namespace services::dispatcher {
                 } else {
                     return schema_result<named_schema>{
                         resource,
-                        components::cursor::error_t{error_code_t::collection_not_exists, ""}};
+                        core::error_t{core::error_code_t::collection_not_exists, std::pmr::string{"", resource}}};
                 }
             } else {
                 assert(node->expressions().size() == 1);
@@ -745,16 +735,15 @@ namespace services::dispatcher {
                     } else {
                         return schema_result<named_schema>{
                             resource,
-                            components::cursor::error_t{error_code_t::incorrect_function_return_type,
-                                                        "function: \'" + expr->name() +
+                            core::error_t{core::error_code_t::incorrect_function_return_type, std::pmr::string{"function: \'" + expr->name() +
                                                             "(...)\' was found but can not be used in WHERE clause, "
-                                                            "because return type is not a boolean"}};
+                                                            "because return type is not a boolean", resource}}};
                     }
                 } else {
                     assert(false);
                     return schema_result<named_schema>{
                         resource,
-                        components::cursor::error_t{error_code_t::schema_error, "incorrect expr type in node_group"}};
+                        core::error_t{core::error_code_t::schema_error, std::pmr::string{"incorrect expr type in node_group", resource}}};
                 }
             }
         }
@@ -1076,13 +1065,11 @@ namespace services::dispatcher {
                             components::catalog::INVALID_OID) {
                             return schema_result<named_schema>{
                                 resource,
-                                components::cursor::error_t{error_code_t::database_not_exists,
-                                                             "database does not exist"}};
+                                core::error_t{core::error_code_t::database_not_exists, std::pmr::string{"database does not exist", resource}}};
                         }
                         return schema_result<named_schema>{
                             resource,
-                            components::cursor::error_t{error_code_t::collection_not_exists,
-                                                         "collection does not exist"}};
+                            core::error_t{core::error_code_t::collection_not_exists, std::pmr::string{"collection does not exist", resource}}};
                     }
                 }
                 if (table_schema.empty() && incoming_schema.empty()) {
@@ -1116,7 +1103,7 @@ namespace services::dispatcher {
                             return res;
                         }
                     }
-                    return schema_result{std::move(incoming_schema)};
+                    return schema_result{resource, std::move(incoming_schema)};
                 } else {
                     // Pre-expand UDT .* expressions into individual child fields
                     {
@@ -1284,7 +1271,7 @@ namespace services::dispatcher {
                                     auto& sub_expr = std::get<expression_ptr>(param);
                                     if (sub_expr->group() == expression_group::scalar) {
                                         auto* sub_scalar = reinterpret_cast<scalar_expression_t*>(sub_expr.get());
-                                        components::cursor::error_t resolve_error{error_code_t::none};
+                                        core::error_t resolve_error{error_code_t::none};
                                         std::function<complex_logical_type(param_storage&)> resolve_arith_type;
                                         resolve_arith_type = [&](param_storage& p) -> complex_logical_type {
                                             if (std::holds_alternative<components::expressions::key_t>(p)) {
@@ -1325,13 +1312,12 @@ namespace services::dispatcher {
                                         } else {
                                             return schema_result<named_schema>{
                                                 resource,
-                                                components::cursor::error_t{error_code_t::invalid_parameter,
-                                                                            "single-operand scalar is not supported"}};
+                                                core::error_t{core::error_code_t::invalid_parameter, std::pmr::string{"single-operand scalar is not supported", resource}}};
                                         }
                                     } else {
                                         return schema_result<named_schema>{
                                             resource,
-                                            components::cursor::error_t{
+                                            core::error_t{
                                                 error_code_t::invalid_parameter,
                                                 "non-scalar expression param is not supported"}};
                                     }
@@ -1341,9 +1327,8 @@ namespace services::dispatcher {
                             if (!agg_lk.name_exists) {
                                 return schema_result<named_schema>{
                                     resource,
-                                    components::cursor::error_t{error_code_t::unrecognized_function,
-                                                                "function: \'" + agg_expr->function_name() +
-                                                                    "(...)\' was not found by the name"}};
+                                    core::error_t{core::error_code_t::unrecognized_function, std::pmr::string{"function: \'" + agg_expr->function_name() +
+                                                                    "(...)\' was not found by the name", resource}}};
                             } else if (agg_lk.match_found) {
                                 std::pmr::vector<complex_logical_type> function_output_types(resource);
                                 function_output_types.reserve(agg_lk.signature.output_types.size());
@@ -1352,7 +1337,7 @@ namespace services::dispatcher {
                                     if (res.has_error()) {
                                         return schema_result<named_schema>{
                                             resource,
-                                            components::cursor::error_t{
+                                            core::error_t{
                                                 error_code_t::incorrect_function_argument,
                                                 "function: \'" + agg_expr->function_name() +
                                                     "(...)\' was found but there is an error, resolving output types"}};
@@ -1387,7 +1372,7 @@ namespace services::dispatcher {
                             } else {
                                 return schema_result<named_schema>{
                                     resource,
-                                    components::cursor::error_t{
+                                    core::error_t{
                                         error_code_t::incorrect_function_argument,
                                         "function: \'" + agg_expr->function_name() +
                                             "(...)\' was found but do not except given set of arguments"}};
@@ -1481,9 +1466,8 @@ namespace services::dispatcher {
                 if (!fn_lk.name_exists) {
                     return schema_result<named_schema>{
                         resource,
-                        components::cursor::error_t{error_code_t::unrecognized_function,
-                                                    "function: \'" + function_node->name() +
-                                                        "(...)\' was not found by the name"}};
+                        core::error_t{core::error_code_t::unrecognized_function, std::pmr::string{"function: \'" + function_node->name() +
+                                                        "(...)\' was not found by the name", resource}}};
                 } else if (fn_lk.match_found) {
                     result.reserve(fn_lk.signature.output_types.size());
                     for (const auto& output_type : fn_lk.signature.output_types) {
@@ -1491,7 +1475,7 @@ namespace services::dispatcher {
                         if (res.has_error()) {
                             return schema_result<named_schema>{
                                 resource,
-                                components::cursor::error_t{
+                                core::error_t{
                                     error_code_t::incorrect_function_argument,
                                     "function: \'" + function_node->name() +
                                         "(...)\' was found but there is an error, resolving output types"}};
@@ -1502,9 +1486,8 @@ namespace services::dispatcher {
                 } else {
                     return schema_result<named_schema>{
                         resource,
-                        components::cursor::error_t{error_code_t::incorrect_function_argument,
-                                                    "function: \'" + function_node->name() +
-                                                        "(...)\' was found but do not except given set of arguments"}};
+                        core::error_t{core::error_code_t::incorrect_function_argument, std::pmr::string{"function: \'" + function_node->name() +
+                                                        "(...)\' was found but do not except given set of arguments", resource}}};
                 }
                 break;
             }
@@ -1539,8 +1522,7 @@ namespace services::dispatcher {
                 if (!tbl_ins) {
                     return schema_result<named_schema>{
                         resource,
-                        components::cursor::error_t(error_code_t::collection_not_exists,
-                                                     "collection does not exist")};
+                        core::error_t(core::error_code_t::collection_not_exists, std::pmr::string{"collection does not exist", resource})};
                 }
 
                 auto incoming_schema = validate_schema_sync(resource, idx, node->children().front().get(), parameters);
@@ -1597,7 +1579,7 @@ namespace services::dispatcher {
                     if (is_computed && !is_simple_chunk()) {
                         return schema_result<named_schema>{
                             resource,
-                            components::cursor::error_t{
+                            core::error_t{
                                 error_code_t::schema_error,
                                 "insert_node: complex types (ARRAY/STRUCT/UNION/LIST/MAP) "
                                 "are not yet supported on relkind='g' (dynamic-schema) tables"}};
@@ -1612,15 +1594,13 @@ namespace services::dispatcher {
                     } else if (incoming_schema.value().size() > table_schema.size()) {
                         return schema_result<named_schema>{
                             resource,
-                            components::cursor::error_t{error_code_t::schema_error,
-                                                        "insert_node: too many columns in INSERT"}};
+                            core::error_t{core::error_code_t::schema_error, std::pmr::string{"insert_node: too many columns in INSERT", resource}}};
                     } else {
                         if (insert_node->key_translation().size() != incoming_schema.value().size() &&
                             table_schema.size() != incoming_schema.value().size()) {
                             return schema_result<named_schema>{
                                 resource,
-                                components::cursor::error_t{error_code_t::schema_error,
-                                                            "insert_node: number of columns do not match"}};
+                                core::error_t{core::error_code_t::schema_error, std::pmr::string{"insert_node: number of columns do not match", resource}}};
                         } else {
                             // validate key
                             for (auto& key : insert_node->key_translation()) {
@@ -1648,9 +1628,8 @@ namespace services::dispatcher {
                                     !incoming_schema.value()[i].type.is_convertable_to(corresponding_table_type)) {
                                     return schema_result<named_schema>{
                                         resource,
-                                        components::cursor::error_t{error_code_t::schema_error,
-                                                                    "insert_node: can not convert data column[" +
-                                                                        std::to_string(i) + "] type to table type"}};
+                                        core::error_t{core::error_code_t::schema_error, std::pmr::string{"insert_node: can not convert data column[" +
+                                                                        std::to_string(i) + "] type to table type", resource}}};
                                 }
                             }
 
@@ -1670,7 +1649,7 @@ namespace services::dispatcher {
                                         if (!chunk.data[ci].validity().row_is_valid(row)) {
                                             return schema_result<named_schema>{
                                                 resource,
-                                                components::cursor::error_t{
+                                                core::error_t{
                                                     error_code_t::schema_error,
                                                     "insert_node: NULL value for NOT NULL column '" +
                                                         cat_cols[tbl_idx].attname + "'"}};
@@ -1688,7 +1667,7 @@ namespace services::dispatcher {
                                         cat_columns[index].attnotnull) {
                                         return schema_result<named_schema>{
                                             resource,
-                                            components::cursor::error_t{
+                                            core::error_t{
                                                 error_code_t::schema_error,
                                                 "insert_node: can not fill column \'" + cat_columns[index].attname +
                                                     "\', because it lacks a default value and do not except null"}};
@@ -1698,7 +1677,7 @@ namespace services::dispatcher {
                         }
                     }
                 }
-                return schema_result{std::move(result)};
+                return schema_result{resource, std::move(result)};
             }
             case node_type::delete_t:
             case node_type::update_t: {
@@ -1759,7 +1738,7 @@ namespace services::dispatcher {
                             if (live_columns.find(column_name) == live_columns.end()) {
                                 return schema_result<named_schema>{
                                     resource,
-                                    components::cursor::error_t{
+                                    core::error_t{
                                         error_code_t::schema_error,
                                         "UPDATE on dynamic-schema (relkind='g') table '" +
                                             target_relname +
@@ -1777,7 +1756,7 @@ namespace services::dispatcher {
                 } else {
                     return schema_result<named_schema>{
                         resource,
-                        components::cursor::error_t{error_code_t::collection_not_exists, ""}};
+                        core::error_t{core::error_code_t::collection_not_exists, std::pmr::string{"", resource}}};
                 }
                 if (node_data) {
                     auto node_data_res = validate_schema_sync(resource, idx, node_data, parameters);
@@ -1788,15 +1767,14 @@ namespace services::dispatcher {
                     if (incoming_schema.size() != table_schema.size()) {
                         return schema_result<named_schema>{
                             resource,
-                            components::cursor::error_t{error_code_t::schema_error,
-                                                        "update_node: computed schema and table schema missmatch"}};
+                            core::error_t{core::error_code_t::schema_error, std::pmr::string{"update_node: computed schema and table schema missmatch", resource}}};
                     }
                     for (size_t i = 0; i < table_schema.size(); i++) {
                         // ignore aliases, since they do not matter here
                         if (incoming_schema[i].type != table_schema[i].type) {
                             return schema_result<named_schema>{
                                 resource,
-                                components::cursor::error_t{
+                                core::error_t{
                                     error_code_t::schema_error,
                                     "update_node: computed schema and table schema name missmatch"}};
                         }
@@ -1819,8 +1797,7 @@ namespace services::dispatcher {
                 } else {
                     return schema_result<named_schema>{
                         resource,
-                        components::cursor::error_t{error_code_t::schema_error,
-                                                    "update_node: invalid node, node_match is not present"}};
+                        core::error_t{core::error_code_t::schema_error, std::pmr::string{"update_node: invalid node, node_match is not present", resource}}};
                 }
                 if (node->type() == node_type::update_t) {
                     auto* node_update = reinterpret_cast<node_update_t*>(node);
@@ -1833,7 +1810,7 @@ namespace services::dispatcher {
                     }
                 }
                 // TODO: check updates for update_t
-                return schema_result{std::move(result)};
+                return schema_result{resource, std::move(result)};
             }
             case node_type::create_index_t: {
                 auto* idx_node = static_cast<node_create_index_t*>(node);
@@ -1841,8 +1818,7 @@ namespace services::dispatcher {
                 if (!tbl_idx) {
                     return schema_result<named_schema>{
                         resource,
-                        components::cursor::error_t(error_code_t::collection_not_exists,
-                                                     "collection does not exist")};
+                        core::error_t(core::error_code_t::collection_not_exists, std::pmr::string{"collection does not exist", resource})};
                 }
 
                 named_schema table_schema{resource};
@@ -1856,7 +1832,7 @@ namespace services::dispatcher {
                 if (tbl_idx && tbl_idx->relkind == 'g' && tbl_idx->columns.empty()) {
                     return schema_result<named_schema>{
                         resource,
-                        components::cursor::error_t{
+                        core::error_t{
                             error_code_t::index_create_fail,
                             "CREATE INDEX requires at least one column registered on the table; "
                             "INSERT data first to register a schema on this dynamic-schema "
@@ -1906,7 +1882,7 @@ namespace services::dispatcher {
                 assert(false);
         }
 
-        return schema_result{std::move(result)};
+        return schema_result{resource, std::move(result)};
     }
 
     // Thin async wrappers around validate_*_sync. The `ctx` parameter is

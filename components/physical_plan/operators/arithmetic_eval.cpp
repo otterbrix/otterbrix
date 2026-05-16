@@ -1,5 +1,7 @@
 #include "arithmetic_eval.hpp"
 
+#include <core/result_wrapper.hpp>
+
 namespace components::operators {
 
     namespace detail {
@@ -22,7 +24,7 @@ namespace components::operators {
             }
         }
 
-        std::pair<resolved_operand, std::string> resolve_operand(const expressions::param_storage& param,
+        core::result_wrapper_t<resolved_operand> resolve_operand(const expressions::param_storage& param,
                                                                  vector::data_chunk_t& chunk,
                                                                  const logical_plan::storage_parameters& params,
                                                                  std::pmr::memory_resource* resource,
@@ -30,15 +32,19 @@ namespace components::operators {
             resolved_operand result;
             if (std::holds_alternative<expressions::key_t>(param)) {
                 const auto& key = std::get<expressions::key_t>(param);
-                assert(!key.path().empty());
+                assert(!key.path().empty() && "key path must be resolved before execution");
                 result.vec = chunk.at(key.path());
-                if (result.vec)
-                    return {result, {}};
-                throw std::logic_error("Column not found in chunk: " + key.as_string());
+                if (result.vec) {
+                    return result;
+                } else {
+                    return core::error_t(core::error_code_t::arithmetics_failure,
+
+                                         std::pmr::string{"Column not found in chunk: " + key.as_string()});
+                }
             } else if (std::holds_alternative<core::parameter_id_t>(param)) {
                 auto id = std::get<core::parameter_id_t>(param);
                 result.scalar = params.parameters.at(id);
-                return {result, {}};
+                return result;
             } else {
                 const auto& expr_ptr = std::get<expressions::expression_ptr>(param);
                 if (expr_ptr->group() == expressions::expression_group::scalar) {
@@ -48,7 +54,7 @@ namespace components::operators {
                         auto computed = evaluate_case_expr(resource, scalar_expr->params(), chunk, params);
                         temp_vecs.emplace_back(std::move(computed));
                         result.vec = &temp_vecs.back();
-                        return {result, {}};
+                        return result;
                     }
 
                     if (scalar_expr->type() == expressions::scalar_type::unary_minus) {
@@ -57,19 +63,21 @@ namespace components::operators {
                             throw std::logic_error("Unary minus requires 1 operand");
                         }
                         std::deque<vector::vector_t> sub_temps;
-                        auto [inner_op, inner_err] = resolve_operand(operands[0], chunk, params, resource, sub_temps);
-                        if (!inner_err.empty())
-                            return {result, std::move(inner_err)};
+                        auto inner_op = resolve_operand(operands[0], chunk, params, resource, sub_temps);
+                        if (inner_op.has_error()) {
+                            return inner_op;
+                        }
+
                         uint64_t count = chunk.size();
                         vector::vector_t computed(resource,
                                                   types::complex_logical_type(types::logical_type::BIGINT),
                                                   0);
-                        if (inner_op.vec) {
-                            computed = vector::compute_unary_neg(resource, *inner_op.vec, count);
+                        if (inner_op.value().vec) {
+                            computed = vector::compute_unary_neg(resource, *inner_op.value().vec, count);
                         } else {
                             auto neg_val =
                                 types::logical_value_t::subtract(types::logical_value_t(resource, int64_t(0)),
-                                                                 *inner_op.scalar);
+                                                                 *inner_op.value().scalar);
                             uint64_t out_count = count > 0 ? count : 1;
                             computed = vector::vector_t(resource, neg_val.type(), out_count);
                             for (uint64_t i = 0; i < out_count; i++) {
@@ -81,7 +89,7 @@ namespace components::operators {
                         }
                         temp_vecs.emplace_back(std::move(computed));
                         result.vec = &temp_vecs.back();
-                        return {result, {}};
+                        return result;
                     }
 
                     auto op = scalar_to_arithmetic_op(scalar_expr->type());
@@ -91,32 +99,38 @@ namespace components::operators {
                     }
 
                     std::deque<vector::vector_t> sub_temps;
-                    auto [left_op, left_err] = resolve_operand(operands[0], chunk, params, resource, sub_temps);
-                    if (!left_err.empty())
-                        return {result, std::move(left_err)};
-                    auto [right_op, right_err] = resolve_operand(operands[1], chunk, params, resource, sub_temps);
-                    if (!right_err.empty())
-                        return {result, std::move(right_err)};
+                    auto left_op = resolve_operand(operands[0], chunk, params, resource, sub_temps);
+                    if (left_op.has_error()) {
+                        return left_op;
+                    }
+                    auto right_op = resolve_operand(operands[1], chunk, params, resource, sub_temps);
+                    if (right_op.has_error()) {
+                        return right_op;
+                    }
                     uint64_t count = chunk.size();
 
                     vector::vector_t computed(resource, types::complex_logical_type(types::logical_type::BIGINT), 0);
-                    if (left_op.vec && right_op.vec) {
-                        computed = vector::compute_binary_arithmetic(resource, op, *left_op.vec, *right_op.vec, count);
-                    } else if (left_op.vec && right_op.scalar) {
+                    if (left_op.value().vec && right_op.value().vec) {
+                        computed = vector::compute_binary_arithmetic(resource,
+                                                                     op,
+                                                                     *left_op.value().vec,
+                                                                     *right_op.value().vec,
+                                                                     count);
+                    } else if (left_op.value().vec && right_op.value().scalar) {
                         computed = vector::compute_vector_scalar_arithmetic(resource,
                                                                             op,
-                                                                            *left_op.vec,
-                                                                            *right_op.scalar,
+                                                                            *left_op.value().vec,
+                                                                            *right_op.value().scalar,
                                                                             count);
-                    } else if (left_op.scalar && right_op.vec) {
+                    } else if (left_op.value().scalar && right_op.value().vec) {
                         computed = vector::compute_scalar_vector_arithmetic(resource,
                                                                             op,
-                                                                            *left_op.scalar,
-                                                                            *right_op.vec,
+                                                                            *left_op.value().scalar,
+                                                                            *right_op.value().vec,
                                                                             count);
                     } else {
-                        auto lval = *left_op.scalar;
-                        auto rval = *right_op.scalar;
+                        auto lval = *left_op.value().scalar;
+                        auto rval = *right_op.value().scalar;
                         types::logical_value_t result_val(resource,
                                                           types::complex_logical_type{types::logical_type::NA});
                         switch (scalar_expr->type()) {
@@ -149,7 +163,7 @@ namespace components::operators {
                     }
                     temp_vecs.emplace_back(std::move(computed));
                     result.vec = &temp_vecs.back();
-                    return {result, {}};
+                    return result;
                 }
                 throw std::logic_error("Unsupported expression type in arithmetic operand");
             }
@@ -162,13 +176,11 @@ namespace components::operators {
                                                  size_t row_idx) {
             if (std::holds_alternative<expressions::key_t>(param)) {
                 auto& key = std::get<expressions::key_t>(param);
-                // Try path-based lookup first (set during plan validation)
-                if (!key.path().empty()) {
-                    auto* vec = chunk.at(key.path());
-                    if (vec)
-                        return vec->value(row_idx);
+                assert(!key.path().empty() && "key path must be resolved before execution");
+                auto* vec = chunk.at(key.path());
+                if (vec) {
+                    return vec->value(row_idx);
                 }
-                // This error should be caught during validation; defensive check
                 throw std::logic_error("CASE: column not found: " + key.as_string());
             } else if (std::holds_alternative<core::parameter_id_t>(param)) {
                 auto id = std::get<core::parameter_id_t>(param);
@@ -314,78 +326,97 @@ namespace components::operators {
     } // namespace detail
 
     // TODO: validate arithmetic column resolution during plan validation phase
-    std::pair<vector::vector_t, std::string>
+    core::result_wrapper_t<vector::vector_t>
     evaluate_arithmetic(std::pmr::memory_resource* resource,
                         expressions::scalar_type op,
                         const std::pmr::vector<expressions::param_storage>& operands,
                         vector::data_chunk_t& chunk,
                         const logical_plan::storage_parameters& params) {
-        vector::vector_t dummy(resource, types::complex_logical_type(types::logical_type::BIGINT), 0);
-
         if (op == expressions::scalar_type::case_expr) {
-            return {detail::evaluate_case_expr(resource, operands, chunk, params), {}};
+            return detail::evaluate_case_expr(resource, operands, chunk, params);
         }
 
         if (op == expressions::scalar_type::unary_minus) {
             if (operands.empty()) {
-                return {std::move(dummy), "unary minus requires 1 operand"};
+                return core::error_t(core::error_code_t::arithmetics_failure,
+
+                                     std::pmr::string{"unary minus requires 1 operand", resource});
             }
             std::deque<vector::vector_t> temp_vecs;
-            auto [inner_op, inner_err] = detail::resolve_operand(operands[0], chunk, params, resource, temp_vecs);
-            if (!inner_err.empty())
-                return {std::move(dummy), std::move(inner_err)};
+            auto operand_res = detail::resolve_operand(operands[0], chunk, params, resource, temp_vecs);
+            if (operand_res.has_error()) {
+                return operand_res.convert_error<vector::vector_t>();
+            }
             uint64_t count = chunk.size();
-            if (inner_op.vec) {
-                return {vector::compute_unary_neg(resource, *inner_op.vec, count), {}};
+            if (operand_res.value().vec) {
+                return vector::compute_unary_neg(resource, *operand_res.value().vec, count);
             } else {
-                auto neg_val =
-                    types::logical_value_t::subtract(types::logical_value_t(resource, int64_t(0)), *inner_op.scalar);
+                auto neg_val = types::logical_value_t::subtract(types::logical_value_t(resource, int64_t(0)),
+                                                                *operand_res.value().scalar);
                 uint64_t out_count = count > 0 ? count : 1;
                 vector::vector_t output(resource, neg_val.type(), out_count);
                 for (uint64_t i = 0; i < out_count; i++) {
                     output.set_value(i, neg_val);
                 }
-                return {std::move(output), {}};
+                return output;
             }
         }
 
         if (operands.size() < 2) {
-            return {std::move(dummy), "arithmetic expression requires at least 2 operands"};
+            return core::error_t(core::error_code_t::arithmetics_failure,
+
+                                 std::pmr::string{"arithmetic expression requires at least 2 operands", resource});
         }
 
         std::deque<vector::vector_t> temp_vecs;
 
-        auto [left_op, left_err] = detail::resolve_operand(operands[0], chunk, params, resource, temp_vecs);
-        if (!left_err.empty())
-            return {std::move(dummy), std::move(left_err)};
-        auto [right_op, right_err] = detail::resolve_operand(operands[1], chunk, params, resource, temp_vecs);
-        if (!right_err.empty())
-            return {std::move(dummy), std::move(right_err)};
+        auto left_op = detail::resolve_operand(operands[0], chunk, params, resource, temp_vecs);
+        if (left_op.has_error()) {
+            return left_op.convert_error<vector::vector_t>();
+        }
+        auto right_op = detail::resolve_operand(operands[1], chunk, params, resource, temp_vecs);
+        if (right_op.has_error()) {
+            return right_op.convert_error<vector::vector_t>();
+        }
 
         uint64_t count = chunk.size();
         auto arith_op = detail::scalar_to_arithmetic_op(op);
 
-        if (left_op.vec && right_op.vec) {
-            return {vector::compute_binary_arithmetic(resource, arith_op, *left_op.vec, *right_op.vec, count), {}};
-        } else if (left_op.vec && right_op.scalar) {
+        if (left_op.value().vec && right_op.value().vec) {
+            return vector::compute_binary_arithmetic(resource,
+                                                     arith_op,
+                                                     *left_op.value().vec,
+                                                     *right_op.value().vec,
+                                                     count);
+        } else if (left_op.value().vec && right_op.value().scalar) {
             if (arith_op == vector::arithmetic_op::divide || arith_op == vector::arithmetic_op::mod) {
-                types::logical_value_t zero(resource, right_op.scalar->type());
-                if (*right_op.scalar == zero) {
-                    return {std::move(dummy), "division by zero"};
+                types::logical_value_t zero(resource, right_op.value().scalar->type());
+                if (*right_op.value().scalar == zero) {
+                    return core::error_t(core::error_code_t::arithmetics_failure,
+
+                                         std::pmr::string{"division by zero", resource});
                 }
             }
-            return {vector::compute_vector_scalar_arithmetic(resource, arith_op, *left_op.vec, *right_op.scalar, count),
-                    {}};
-        } else if (left_op.scalar && right_op.vec) {
-            return {vector::compute_scalar_vector_arithmetic(resource, arith_op, *left_op.scalar, *right_op.vec, count),
-                    {}};
+            return vector::compute_vector_scalar_arithmetic(resource,
+                                                            arith_op,
+                                                            *left_op.value().vec,
+                                                            *right_op.value().scalar,
+                                                            count);
+        } else if (left_op.value().scalar && right_op.value().vec) {
+            return vector::compute_scalar_vector_arithmetic(resource,
+                                                            arith_op,
+                                                            *left_op.value().scalar,
+                                                            *right_op.value().vec,
+                                                            count);
         } else {
-            auto lval = *left_op.scalar;
-            auto rval = *right_op.scalar;
+            auto lval = *left_op.value().scalar;
+            auto rval = *right_op.value().scalar;
             if (arith_op == vector::arithmetic_op::divide || arith_op == vector::arithmetic_op::mod) {
                 types::logical_value_t zero(resource, rval.type());
                 if (rval == zero) {
-                    return {std::move(dummy), "division by zero"};
+                    return core::error_t(core::error_code_t::arithmetics_failure,
+
+                                         std::pmr::string{"division by zero", resource});
                 }
             }
             types::logical_value_t result_val(resource, types::complex_logical_type{types::logical_type::NA});
@@ -413,7 +444,7 @@ namespace components::operators {
             for (uint64_t i = 0; i < out_count; i++) {
                 output.set_value(i, result_val);
             }
-            return {std::move(output), {}};
+            return output;
         }
     }
 

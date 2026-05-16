@@ -21,6 +21,11 @@ namespace components::logical_plan {
         std::string attname;
         types::complex_logical_type type;
         std::int32_t attnum{0};
+        // Storage chunk column index — position in storage_t::scan_batched output.
+        // For relkind='r' this is attnum-1. For relkind='g' it can differ because
+        // storage retains tombstoned columns between VACUUMs. -1 = unknown
+        // (plan-gen falls back to pass-through).
+        std::int32_t chunk_position{-1};
         components::catalog::oid_t attoid{components::catalog::INVALID_OID};
         components::catalog::oid_t atttypid{components::catalog::INVALID_OID};
         bool attnotnull{false};

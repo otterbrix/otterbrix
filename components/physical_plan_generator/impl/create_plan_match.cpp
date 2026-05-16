@@ -84,7 +84,8 @@ namespace services::planner::impl {
         components::operators::operator_ptr create_plan_match_(const context_storage_t& context,
                                                                components::catalog::oid_t table_oid,
                                                                const components::expressions::expression_ptr& expr,
-                                                               components::logical_plan::limit_t limit) {
+                                                               components::logical_plan::limit_t limit,
+                                                               const std::vector<size_t>& projected_cols) {
             if (context.has_table_oid(table_oid)) {
                 // TODO: function_expr in scans
                 if (is_pure_compare(expr)) {
@@ -113,7 +114,8 @@ namespace services::planner::impl {
                                                                                      context.log.clone(),
                                                                                      table_oid,
                                                                                      comp_expr,
-                                                                                     limit));
+                                                                                     limit,
+                                                                                     projected_cols));
                 } else {
                     // For now we do a full scan and apply function after
                     auto match_operator =
@@ -126,7 +128,8 @@ namespace services::planner::impl {
                                                                                   context.log.clone(),
                                                                                   table_oid,
                                                                                   nullptr,
-                                                                                  limit)));
+                                                                                  limit,
+                                                                                  projected_cols)));
                     return match_operator;
                 }
             } else {
@@ -138,32 +141,43 @@ namespace services::planner::impl {
     components::operators::operator_ptr create_plan_match(const context_storage_t& context,
                                                           const components::logical_plan::node_ptr& node,
                                                           components::logical_plan::limit_t limit) {
+        static const std::vector<size_t> empty_cols;
+        return create_plan_match(context, node, limit, empty_cols);
+    }
+
+    components::operators::operator_ptr create_plan_match(const context_storage_t& context,
+                                                          const components::logical_plan::node_ptr& node,
+                                                          components::logical_plan::limit_t limit,
+                                                          const std::vector<size_t>& projected_cols) {
         if (node->expressions().empty()) {
-            // M7: forward the live-columns projection mask for relkind='g' tables.
-            // resolve_table operator (Pass 1) already filtered tombstones, so we
-            // just pass the resulting column-alias list. relkind='r' → empty mask
-            // (transfer_scan skips projection).
-            std::vector<std::string> live_aliases;
+            // Build projected_cols (storage chunk indices). For relkind='g' read
+            // live columns by their chunk_position (resolved at resolve-table time).
+            // For relkind='r' use caller's projected_cols (column_pruning output).
+            std::vector<size_t> effective_cols;
             if (const auto* md = context.table_metadata_for(node->table_oid())) {
                 if (md->relkind == components::catalog::relkind::computed) {
-                    live_aliases.reserve(md->columns.size());
+                    effective_cols.reserve(md->columns.size());
                     for (const auto& col : md->columns) {
-                        live_aliases.push_back(col.attname);
+                        if (col.chunk_position >= 0) {
+                            effective_cols.push_back(static_cast<size_t>(col.chunk_position));
+                        }
                     }
+                } else {
+                    effective_cols = projected_cols;
                 }
             }
             if (context.has_table_oid(node->table_oid())) {
                 return boost::intrusive_ptr(
                     new components::operators::transfer_scan(
-                        context.resource, node->table_oid(), limit, std::move(live_aliases)));
+                        context.resource, node->table_oid(), limit, std::move(effective_cols)));
             } else {
                 return boost::intrusive_ptr(
                     new components::operators::transfer_scan(
-                        nullptr, node->table_oid(), limit, std::move(live_aliases)));
+                        nullptr, node->table_oid(), limit, std::move(effective_cols)));
             }
         } else {
             const auto* match_node = static_cast<const components::logical_plan::node_match_t*>(node.get());
-            return create_plan_match_(context, match_node->table_oid(), match_node->expressions()[0], limit);
+            return create_plan_match_(context, match_node->table_oid(), match_node->expressions()[0], limit, projected_cols);
         }
     }
 

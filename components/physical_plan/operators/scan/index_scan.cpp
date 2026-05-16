@@ -58,17 +58,18 @@ namespace components::operators {
                                          ctx->txn.transaction_id);
         row_ids_vec = co_await std::move(sf);
 
-        // Apply limit
-        size_t count = row_ids_vec.size();
-        int limit_val = limit_.limit();
-        if (limit_val >= 0) {
-            count = std::min(count, static_cast<size_t>(limit_val));
-        }
+        // Apply offset and limit
+        size_t total = row_ids_vec.size();
+        size_t offset_val = static_cast<size_t>(std::max(int64_t{0}, limit_.offset()));
+        size_t start = std::min(offset_val, total);
+        size_t available = total - start;
+        int64_t limit_val = limit_.limit();
+        size_t count = (limit_val >= 0) ? std::min(available, static_cast<size_t>(limit_val)) : available;
 
         if (count > 0) {
             // Build row_ids vector for fetch
             vector::vector_t row_ids(resource_, types::logical_type::BIGINT, count);
-            std::memcpy(row_ids.data(), row_ids_vec.data(), count * sizeof(int64_t));
+            std::memcpy(row_ids.data(), row_ids_vec.data() + start, count * sizeof(int64_t));
 
             // Fetch from storage
             auto [_f, ff] = actor_zeta::send(ctx->disk_address,
@@ -80,7 +81,7 @@ namespace components::operators {
             auto data = co_await std::move(ff);
 
             if (data) {
-                output_ = make_operator_data(resource_, std::move(*data));
+                output_ = make_operator_data(resource_, split_chunk_into_batches(resource_, std::move(*data)));
             } else {
                 auto [_t2, tf2] = actor_zeta::send(ctx->disk_address,
                                                    &services::disk::manager_disk_t::storage_types,

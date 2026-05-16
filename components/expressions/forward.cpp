@@ -45,6 +45,8 @@ namespace components::expressions {
         switch (type) {
             case scalar_type::get_field:
                 return "get_field";
+            case scalar_type::constant:
+                return "constant";
             case scalar_type::group_field:
                 return "group_field";
             case scalar_type::add:
@@ -77,6 +79,8 @@ namespace components::expressions {
                 return "case_when";
             case scalar_type::unary_minus:
                 return "unary_minus";
+            case scalar_type::star_expand:
+                return "star_expand";
             default:
                 return "invalid";
         }

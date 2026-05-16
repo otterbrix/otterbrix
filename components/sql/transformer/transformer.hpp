@@ -17,7 +17,8 @@ namespace components::sql::transform {
             , raw_sql_(raw_sql)
             , parameter_map_(resource_)
             , parameter_insert_map_(resource_)
-            , parameter_insert_rows_(resource_, {}) {}
+            , parameter_insert_rows_(resource_, {})
+            , error_(core::error_t::no_error()) {}
 
         transform_result transform(Node& node);
 
@@ -32,6 +33,8 @@ namespace components::sql::transform {
         check_expr_result parse_where_expr(const std::string& expr_text);
 
     private:
+        bool has_error() const noexcept;
+
         logical_plan::node_ptr transform_create_database(CreatedbStmt& node);
         logical_plan::node_ptr transform_drop_database(DropdbStmt& node);
         logical_plan::node_ptr transform_checkpoint(CheckPointStmt& node);
@@ -104,6 +107,13 @@ namespace components::sql::transform {
                                         logical_plan::parameter_node_t* params,
                                         logical_plan::node_ptr& group);
 
+        // Build a scalar_expression_ptr (type=case_expr) from a CaseExpr
+        expressions::expression_ptr case_expr_to_scalar(CaseExpr* node,
+                                                        const char* alias,
+                                                        const name_collection_t& names,
+                                                        logical_plan::parameter_node_t* params,
+                                                        logical_plan::node_ptr group);
+
         // Resolve a HAVING operand: FuncCall → aggregate alias key
         expressions::param_storage resolve_having_operand(Node* node,
                                                           const name_collection_t& names,
@@ -142,5 +152,6 @@ namespace components::sql::transform {
         vector::data_chunk_t parameter_insert_rows_;
         size_t aggregate_counter_{0};
         std::pmr::vector<expressions::expression_ptr> pending_internal_aggs_{resource_};
+        core::error_t error_;
     };
 } // namespace components::sql::transform

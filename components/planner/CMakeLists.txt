@@ -4,6 +4,7 @@ set(SOURCE_${PROJECT_NAME}
         planner.cpp
         optimizer.cpp
         optimizer/rules/constant_folding.cpp
+        optimizer/rules/column_pruning.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}
@@ -21,6 +22,7 @@ target_link_libraries(
         otterbrix::logical_plan
         otterbrix::catalog
         otterbrix::vector
+        otterbrix::catalog
 
         absl::int128
         Boost::boost

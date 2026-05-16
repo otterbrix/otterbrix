@@ -18,7 +18,6 @@ namespace components::logical_plan {
         const std::string& dbname() const noexcept { return dbname_; }
 
         size_t internal_aggregate_count{0};
-        size_t visible_select_count{0};
 
     private:
         std::string dbname_;

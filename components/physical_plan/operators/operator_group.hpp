@@ -8,6 +8,7 @@
 
 #include <components/physical_plan/operators/aggregate/operator_aggregate.hpp>
 #include <components/physical_plan/operators/operator.hpp>
+#include <components/physical_plan/operators/operator_data.hpp>
 
 namespace components::operators {
 
@@ -103,7 +104,6 @@ namespace components::operators {
         void add_value(const std::pmr::string& name, aggregate::operator_aggregate_ptr&& aggregator);
         void add_computed_column(computed_column_t&& col);
         void add_post_aggregate(post_aggregate_column_t&& col);
-        void set_select_order(std::pmr::vector<size_t>&& order);
 
     private:
         std::pmr::vector<group_key_t> keys_;
@@ -112,17 +112,21 @@ namespace components::operators {
         std::pmr::vector<post_aggregate_column_t> post_aggregates_;
         expressions::expression_ptr having_;
         size_t internal_aggregate_count_;
-        std::pmr::vector<size_t> select_order_;
 
-        std::pmr::vector<std::pmr::vector<size_t>> row_ids_per_group_;
+        // Multi-chunk row reference: (chunk_idx, row_idx_in_chunk).
+        // Outer index = group id; inner = list of references that fall into this group.
+        using row_ref_t = std::pair<uint32_t, uint32_t>;
+        std::pmr::vector<std::pmr::vector<row_ref_t>> row_refs_per_group_;
         std::pmr::vector<std::pmr::vector<types::logical_value_t>> group_keys_;
         std::pmr::unordered_map<size_t, std::pmr::vector<size_t>> group_index_;
+        std::pmr::vector<types::complex_logical_type> key_col_types_; // source column types for key columns
 
         void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
-        void create_list_rows();
-        vector::data_chunk_t calc_aggregate_values(pipeline::context_t* pipeline_context);
-        vector::data_chunk_t calc_aggregate_values_fallback(pipeline::context_t* pipeline_context);
+        void create_list_rows(const chunks_vector_t& in_chunks);
+        vector::data_chunk_t calc_aggregate_values(pipeline::context_t* pipeline_context, chunks_vector_t& in_chunks);
+        vector::data_chunk_t calc_aggregate_values_fallback(pipeline::context_t* pipeline_context,
+                                                            chunks_vector_t& in_chunks);
         vector::data_chunk_t
         build_result_chunk(size_t num_groups,
                            size_t key_count,

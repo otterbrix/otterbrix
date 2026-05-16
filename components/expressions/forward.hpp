@@ -42,6 +42,7 @@ namespace components::expressions {
     enum class scalar_type : uint8_t
     {
         invalid,
+        constant,
         get_field,
         group_field,
         add,
@@ -58,7 +59,8 @@ namespace components::expressions {
         case_expr,
         coalesce,
         case_when,
-        unary_minus
+        unary_minus,
+        star_expand
     };
 
     enum class sort_order : std::int8_t

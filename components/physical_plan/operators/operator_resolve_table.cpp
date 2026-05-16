@@ -210,6 +210,7 @@ namespace components::operators {
             catalog::oid_t atttypid{catalog::INVALID_OID};
             std::string    atttypspec;
             std::int32_t   attnum{0}; // sort key for relkind='r'
+            std::int32_t   chunk_position{-1}; // storage chunk column index
             bool           attnotnull{false};
             bool           atthasdefault{false};
             std::string    attdefspec;
@@ -285,6 +286,27 @@ namespace components::operators {
                        [](const out_row_t& a, const out_row_t& b) {
                            return a.attoid < b.attoid;
                        });
+
+            // Resolve storage chunk position for each live column. Storage keeps
+            // tombstoned columns until VACUUM, so chunk index in scan_batched
+            // output may differ from attoid ordering. We probe storage for its
+            // current types() list (aliases set at append time) and look up
+            // each row's attname linearly — N is small (column count).
+            auto [_st, stf] = actor_zeta::send(
+                ctx->disk_address,
+                &services::disk::manager_disk_t::storage_types,
+                ctx->session,
+                table_oid_);
+            auto storage_types = co_await std::move(stf);
+            for (auto& r : rows) {
+                for (std::size_t i = 0; i < storage_types.size(); ++i) {
+                    if (storage_types[i].has_alias() &&
+                        storage_types[i].alias() == r.attname) {
+                        r.chunk_position = static_cast<std::int32_t>(i);
+                        break;
+                    }
+                }
+            }
         } else {
             // relkind='r' (and other static-schema kinds): scan pg_attribute.
             // pg_attribute layout: [0=attoid, 1=attrelid, 2=attname,
@@ -318,6 +340,9 @@ namespace components::operators {
                                  ? catalog::INVALID_OID
                                  : static_cast<catalog::oid_t>(row[3].value<std::uint32_t>());
                 r.attnum = row[4].is_null() ? 0 : row[4].value<std::int32_t>();
+                // For relkind='r' storage column order matches pg_attribute attnum
+                // (1-based), so chunk_position is simply attnum-1.
+                r.chunk_position = r.attnum > 0 ? r.attnum - 1 : -1;
                 r.attnotnull    = !row[5].is_null() && row[5].value<bool>();
                 r.atthasdefault = !row[6].is_null() && row[6].value<bool>();
                 if (row.size() > 8 && !row[8].is_null()) {
@@ -356,10 +381,11 @@ namespace components::operators {
             md.columns.reserve(rows.size());
             for (const auto& r : rows) {
                 components::logical_plan::resolved_column_metadata_t cm;
-                cm.attname       = r.attname;
-                cm.attnum        = r.attnum;
-                cm.attoid        = r.attoid;
-                cm.atttypid      = r.atttypid;
+                cm.attname        = r.attname;
+                cm.attnum         = r.attnum;
+                cm.chunk_position = r.chunk_position;
+                cm.attoid         = r.attoid;
+                cm.atttypid       = r.atttypid;
                 cm.attnotnull    = r.attnotnull;
                 cm.atthasdefault = r.atthasdefault;
                 cm.attdefspec    = r.attdefspec;

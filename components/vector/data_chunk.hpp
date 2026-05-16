@@ -9,6 +9,12 @@ namespace components::vector {
         data_chunk_t(std::pmr::memory_resource* resource,
                      const std::pmr::vector<types::complex_logical_type>& types,
                      uint64_t capacity = DEFAULT_VECTOR_CAPACITY);
+        // Projected constructor: allocates buffers only for projected_cols; other columns
+        // are placeholders (no buffer) so that column indices stay stable for downstream operators.
+        data_chunk_t(std::pmr::memory_resource* resource,
+                     const std::pmr::vector<types::complex_logical_type>& all_types,
+                     const std::vector<size_t>& projected_cols,
+                     uint64_t capacity);
         data_chunk_t(const data_chunk_t&) = delete;
         data_chunk_t& operator=(const data_chunk_t&) = delete;
         data_chunk_t(data_chunk_t&&) = default;
@@ -39,11 +45,6 @@ namespace components::vector {
 
         void reference(data_chunk_t& chunk);
 
-        void append(const data_chunk_t& other,
-                    bool resize = false,
-                    indexing_vector_t* indexing = nullptr,
-                    uint64_t count = 0);
-
         void destroy();
 
         void copy(data_chunk_t& other, uint64_t offset = 0) const;
@@ -67,7 +68,7 @@ namespace components::vector {
 
         void slice(std::pmr::memory_resource* resource, uint64_t offset, uint64_t count);
 
-        data_chunk_t slice_contiguous(std::pmr::memory_resource* resource, uint64_t offset, uint64_t count) const;
+        data_chunk_t partial_copy(std::pmr::memory_resource* resource, uint64_t offset, uint64_t count) const;
 
         void reset();
 

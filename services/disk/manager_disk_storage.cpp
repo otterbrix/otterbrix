@@ -261,6 +261,23 @@ namespace services::disk {
         co_return std::move(result);
     }
 
+    manager_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+    manager_disk_t::storage_scan_batched(session_id_t /*session*/,
+                                         catalog::oid_t table_oid,
+                                         std::unique_ptr<components::table::table_filter_t> filter,
+                                         int64_t limit,
+                                         std::vector<size_t> projected_cols,
+                                         components::table::transaction_data txn) {
+        std::pmr::vector<components::vector::data_chunk_t> batches{resource()};
+        auto* s = get_storage(table_oid);
+        if (!s) {
+            co_return std::move(batches);
+        }
+        const std::vector<size_t>* projected_ptr = projected_cols.empty() ? nullptr : &projected_cols;
+        s->scan_batched(batches, filter.get(), limit, projected_ptr, txn);
+        co_return std::move(batches);
+    }
+
     manager_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
     manager_disk_t::storage_fetch(session_id_t /*session*/,
                                   catalog::oid_t table_oid,

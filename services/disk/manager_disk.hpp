@@ -357,6 +357,16 @@ namespace services::disk {
                      std::unique_ptr<components::table::table_filter_t> filter,
                      int limit,
                      components::table::transaction_data txn);
+        // Batched + projected variant: returns a vector of chunks (PR #483 multi-chunk)
+        // and applies index-based column projection at the storage layer (PR #477).
+        // Empty `projected_cols` means "read all columns" (pass-through).
+        unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+        storage_scan_batched(session_id_t session,
+                             components::catalog::oid_t table_oid,
+                             std::unique_ptr<components::table::table_filter_t> filter,
+                             int64_t limit,
+                             std::vector<size_t> projected_cols,
+                             components::table::transaction_data txn);
         unique_future<std::unique_ptr<components::vector::data_chunk_t>>
         storage_fetch(session_id_t session,
                       components::catalog::oid_t table_oid,
@@ -427,6 +437,7 @@ namespace services::disk {
                                                        &manager_disk_t::storage_total_rows,
                                                        // Storage data operations
                                                        &manager_disk_t::storage_scan,
+                                                       &manager_disk_t::storage_scan_batched,
                                                        &manager_disk_t::storage_fetch,
                                                        &manager_disk_t::storage_scan_segment,
                                                        &manager_disk_t::storage_append,

@@ -3,6 +3,8 @@
 #include "identifier_types.hpp"
 #include "node.hpp"
 
+#include <vector>
+
 namespace components::logical_plan {
 
     class node_aggregate_t final : public node_t {
@@ -15,13 +17,21 @@ namespace components::logical_plan {
         // Role-named accessors. The aggregate node carries the source table
         // identity through the parser-window for downstream operator dispatch;
         // routing in resolved-stage code uses table_oid().
-        const std::string& relname() const noexcept { return relname_; }
-        const std::string& dbname() const noexcept { return dbname_; }
+        const core::dbname_t& dbname() const noexcept { return dbname_; }
+        const core::relname_t& relname() const noexcept { return relname_; }
+
+        // Column projection metadata, populated by the post-validate column_pruning pass.
+        // When non-empty, downstream scan operators read only these column indices from
+        // the source table instead of scanning every column. Empty = "no projection"
+        // (scan all columns) — the default.
+        const std::vector<size_t>& projected_cols() const { return projected_cols_; }
+        void set_projected_cols(std::vector<size_t> cols) { projected_cols_ = std::move(cols); }
 
     private:
-        std::string dbname_;
-        std::string relname_;
+        core::dbname_t dbname_;
+        core::relname_t relname_;
         bool distinct_{false};
+        std::vector<size_t> projected_cols_;
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
     };

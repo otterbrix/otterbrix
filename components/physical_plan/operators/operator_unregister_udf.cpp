@@ -54,7 +54,7 @@ namespace components::operators {
 
         // 2. Drop the matching overload from the default registry.
         if (reg) {
-            (void)reg->remove_function_by_signature(function_name_, inputs_);
+            reg->remove_function_by_signature(function_name_, inputs_);
         }
 
         // 3. Purge pg_proc + pg_depend rows. resolve_function_by_name returns

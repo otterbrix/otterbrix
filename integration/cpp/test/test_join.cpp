@@ -239,4 +239,91 @@ TEST_CASE("integration::cpp::test_join") {
             REQUIRE(cur->size() == 101);
         }
     }
+
+    INFO("inner join + group by + aggregates + order + limit") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT c1.name, COUNT(c2.value) AS cnt, AVG(c2.key) AS avg_key "
+                                           "FROM testdatabase.testcollection_1 c1 "
+                                           "INNER JOIN testdatabase.testcollection_2 c2 ON c1.key_1 = c2.key "
+                                           "GROUP BY c1.name "
+                                           "ORDER BY avg_key DESC "
+                                           "LIMIT 10;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 10);
+    }
+
+    INFO("triple inner join with shared-name keys in both joins") {
+        auto session = otterbrix::session_id_t();
+        dispatcher->execute_sql(session, "CREATE TABLE " + database_name + ".col_mid();");
+        dispatcher->execute_sql(session, "CREATE TABLE " + database_name + ".col_end();");
+        {
+            std::stringstream query;
+            query << "INSERT INTO " << database_name << ".col_mid (key_1, linker) VALUES ";
+            for (int num = 0; num < 100; ++num) {
+                query << "(" << (num + 25) * 2 << ", " << (num + 25) * 2 * 10 << ")" << (num == 99 ? ";" : ", ");
+            }
+            auto cur = dispatcher->execute_sql(session, query.str());
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO " + database_name +
+                                                   ".col_end (linker, extra) VALUES "
+                                                   "(500, 1), (700, 2), (1000, 3), (1500, 4), (2000, 5);");
+            REQUIRE(cur->is_success());
+        }
+
+        // First join: 26 rows (key_1 in {50,52,..,100}, linker in {500,520,..,1000}).
+        // Second join: intersect linker with {500,700,1000,1500,2000} → 3 rows.
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT testcollection_1.name, col_end.extra "
+                                           "FROM testdatabase.testcollection_1 "
+                                           "INNER JOIN testdatabase.col_mid "
+                                           "  ON testcollection_1.key_1 = col_mid.key_1 "
+                                           "INNER JOIN testdatabase.col_end "
+                                           "  ON col_mid.linker = col_end.linker "
+                                           "ORDER BY col_end.extra ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+
+    INFO("triple inner join — aliases") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT camp.name, ord.extra "
+                                           "FROM testdatabase.testcollection_1 camp "
+                                           "INNER JOIN testdatabase.col_mid mid "
+                                           "  ON camp.key_1 = mid.key_1 "
+                                           "INNER JOIN testdatabase.col_end ord "
+                                           "  ON mid.linker = ord.linker "
+                                           "ORDER BY ord.extra ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+
+    INFO("triple inner join — second JOIN references first table") {
+        auto session = otterbrix::session_id_t();
+        dispatcher->execute_sql(session, "CREATE TABLE " + database_name + ".col_aux();");
+        {
+            auto cur =
+                dispatcher->execute_sql(session,
+                                        "INSERT INTO " + database_name +
+                                            ".col_aux (k, tag) VALUES (50, 'a'), (54, 'b'), (60, 'c'), (200, 'd');");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT c.name, x.tag "
+                                               "FROM testdatabase.testcollection_1 c "
+                                               "INNER JOIN testdatabase.col_mid m "
+                                               "  ON c.key_1 = m.key_1 "
+                                               "INNER JOIN testdatabase.col_aux x "
+                                               "  ON c.key_1 = x.k "
+                                               "ORDER BY x.tag ASC;");
+            REQUIRE(cur->is_success());
+            // c.key_1 = {50,52,...,100}, x.k = {50,54,60,200} = {50,54,60} → 3 rows.
+            REQUIRE(cur->size() == 3);
+        }
+    }
 }

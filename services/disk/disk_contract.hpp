@@ -124,6 +124,16 @@ namespace services::disk {
                      std::unique_ptr<components::table::table_filter_t> filter,
                      int limit,
                      components::table::transaction_data txn);
+        // Batched + projected variant: returns a vector of chunks (PR #483 multi-chunk)
+        // and applies index-based column projection at the disk layer (PR #477).
+        // Empty `projected_cols` means "read all columns" (pass-through).
+        actor_zeta::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+        storage_scan_batched(session_id_t session,
+                             components::catalog::oid_t table_oid,
+                             std::unique_ptr<components::table::table_filter_t> filter,
+                             int64_t limit,
+                             std::vector<size_t> projected_cols,
+                             components::table::transaction_data txn);
         actor_zeta::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
         storage_fetch(session_id_t session,
                       components::catalog::oid_t table_oid,
@@ -194,6 +204,7 @@ namespace services::disk {
                                                             &disk_contract::storage_total_rows,
                                                             // Storage data operations
                                                             &disk_contract::storage_scan,
+                                                            &disk_contract::storage_scan_batched,
                                                             &disk_contract::storage_fetch,
                                                             &disk_contract::storage_scan_segment,
                                                             &disk_contract::storage_append,

@@ -601,50 +601,59 @@ namespace components::catalog {
     }
 
     std::string encode_proargmatchers(const std::vector<components::compute::input_type>& matchers) {
-        using K = components::compute::type_matcher_kind;
+        using K = components::compute::input_type::kind_t;
         std::string out;
         for (size_t i = 0; i < matchers.size(); ++i) {
             if (i > 0) out += '|';
             const auto& m = matchers[i];
-            switch (m.kind) {
+            switch (m.kind()) {
                 case K::exact:
                     out += "e:";
-                    out += std::to_string(static_cast<int>(m.exact_type));
+                    out += std::to_string(static_cast<int>(m.exact_type()));
                     break;
                 case K::numeric:     out += "n"; break;
                 case K::integer:     out += "i"; break;
                 case K::floating:    out += "f"; break;
                 case K::any_of: {
                     out += "a:";
-                    for (size_t j = 0; j < m.any_of_list.size(); ++j) {
+                    const auto& list = m.any_of_list();
+                    for (size_t j = 0; j < list.size(); ++j) {
                         if (j > 0) out += ',';
-                        out += std::to_string(static_cast<int>(m.any_of_list[j]));
+                        out += std::to_string(static_cast<int>(list[j]));
                     }
                     break;
                 }
                 case K::always_true: out += "t"; break;
+                case K::custom:
+                    // Closure-only matcher (non-introspectable). Persist as a
+                    // placeholder so the row still parses; the on-restart
+                    // restore will need to rebuild the matcher elsewhere or
+                    // skip restoring this overload.
+                    out += "t";
+                    break;
             }
         }
         return out;
     }
 
     std::string encode_prorettype(const std::vector<components::compute::output_type>& outputs) {
-        using K = components::compute::output_kind;
+        using K = components::compute::output_type::kind_t;
         std::string out;
         for (size_t i = 0; i < outputs.size(); ++i) {
             if (i > 0) out += ',';
             const auto& o = outputs[i];
-            switch (o.kind) {
-                case K::fixed:
+            switch (o.kind()) {
+                case K::fixed_value:
                     out += "f:";
-                    out += std::to_string(static_cast<int>(o.fixed_value.type()));
+                    out += std::to_string(static_cast<int>(o.fixed_value().type()));
                     break;
                 case K::same_type_at_index:
                     out += "s:";
-                    out += std::to_string(o.index);
+                    out += std::to_string(o.input_index());
                     break;
-                case K::computed_fn:
-                    // Lossy fallback: persist as same_type_at_index(0).
+                case K::custom:
+                    // Lossy fallback for raw resolver closures: persist as
+                    // same_type_at_index(0).
                     out += "s:0";
                     break;
             }

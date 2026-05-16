@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -35,7 +36,8 @@ private:
                     std::string setup_sql,
                     std::vector<sql_csv_entry_t> csv_entries,
                     std::filesystem::path benchmark_dir,
-                    std::string database);
+                    std::string database,
+                    std::optional<uint64_t> expected_rows);
 
     void execute_sql_block(benchmark_state_t& state, const std::string& sql);
     void load_csv_file(benchmark_state_t& state, const sql_csv_entry_t& entry);
@@ -48,6 +50,7 @@ private:
     std::vector<sql_csv_entry_t> csv_entries_;
     std::filesystem::path benchmark_dir_;
     std::string database_;
+    std::optional<uint64_t> expected_rows_;
 };
 
 } // namespace otterbrix::benchmark

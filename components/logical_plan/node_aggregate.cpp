@@ -6,8 +6,8 @@ namespace components::logical_plan {
 
     node_aggregate_t::node_aggregate_t(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname)
         : node_t(resource, node_type::aggregate_t)
-        , dbname_(std::move(static_cast<std::string&>(dbname)))
-        , relname_(std::move(static_cast<std::string&>(relname))) {}
+        , dbname_(std::move(dbname))
+        , relname_(std::move(relname)) {}
 
     hash_t node_aggregate_t::hash_impl() const { return 0; }
 

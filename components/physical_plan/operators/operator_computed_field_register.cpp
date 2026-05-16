@@ -174,7 +174,8 @@ namespace components::operators {
                 std::size_t{1});
             auto oid_batch = co_await std::move(oaf);
             if (oid_batch.empty()) {
-                set_error("computed_field_register: oid allocation returned empty batch");
+                set_error(core::error_t{core::error_code_t::other_error,
+                                         std::pmr::string{"computed_field_register: oid allocation returned empty batch", resource_}});
                 mark_executed();
                 co_return;
             }

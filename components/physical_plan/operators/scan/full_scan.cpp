@@ -89,11 +89,13 @@ namespace components::operators {
                          log_t log,
                          components::catalog::oid_t table_oid,
                          const expressions::compare_expression_ptr& expression,
-                         logical_plan::limit_t limit)
+                         logical_plan::limit_t limit,
+                         std::vector<size_t> projected_cols)
         : read_only_operator_t(resource, log, operator_type::full_scan)
         , table_oid_(table_oid)
         , expression_(expression)
-        , limit_(limit) {}
+        , limit_(limit)
+        , projected_cols_(std::move(projected_cols)) {}
 
     void full_scan::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
         if (table_oid_ == components::catalog::INVALID_OID)
@@ -121,22 +123,40 @@ namespace components::operators {
         // Build filter from expression
         auto filter = transform_predicate(expression_, types, &ctx->parameters);
 
-        // Scan from storage
-        int limit_val = limit_.limit();
+        // Scan from storage — batched + projected (PR #477+#483).
+        int64_t offset_val = limit_.offset();
+        int64_t limit_val = limit_.limit();
+        int64_t scan_limit = (limit_val < 0) ? limit_val : limit_val + offset_val;
         auto [_s, sf] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::storage_scan,
+                                         &services::disk::manager_disk_t::storage_scan_batched,
                                          ctx->session,
                                          table_oid_,
                                          std::move(filter),
-                                         limit_val,
+                                         scan_limit,
+                                         projected_cols_,
                                          ctx->txn);
-        auto data = co_await std::move(sf);
+        auto batches = co_await std::move(sf);
 
-        if (data) {
-            output_ = make_operator_data(resource_, std::move(*data));
-        } else {
-            output_ = make_operator_data(resource_, std::pmr::vector<types::complex_logical_type>{resource_});
+        // Skip offset rows across batches.
+        if (offset_val > 0) {
+            uint64_t remaining = static_cast<uint64_t>(offset_val);
+            size_t skip_count = 0;
+            for (; skip_count < batches.size() && remaining > 0; ++skip_count) {
+                auto sz = batches[skip_count].size();
+                if (sz <= remaining) {
+                    remaining -= sz;
+                    continue;
+                }
+                batches[skip_count] = batches[skip_count].partial_copy(resource_, remaining, sz - remaining);
+                remaining = 0;
+                break;
+            }
+            if (skip_count > 0) {
+                batches.erase(batches.begin(), batches.begin() + static_cast<std::ptrdiff_t>(skip_count));
+            }
         }
+
+        output_ = make_operator_data(resource_, std::move(batches));
         mark_executed();
         co_return;
     }

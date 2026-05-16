@@ -71,7 +71,7 @@ namespace components::operators {
         std::vector<components::compute::function_uid> uids;
         uids.reserve(executor_count_);
         for (std::size_t i = 0; i < executor_count_; ++i) {
-            auto fut = executor_register_fn_(ctx->session, function_->get_copy(), i);
+            auto fut = executor_register_fn_(ctx->session, function_->get_copy(resource_), i);
             uids.push_back(co_await std::move(fut));
         }
         if (!uids.empty()) {
@@ -92,7 +92,7 @@ namespace components::operators {
         //    lookups (which probe function_registry_t::get_default()) see the
         //    UDF. Match the legacy dispatcher path exactly.
         if (auto* def_reg = components::compute::function_registry_t::get_default()) {
-            (void)def_reg->add_function(function_->get_copy());
+            (void)def_reg->add_function(function_->get_copy(resource_));
         }
 
         // 4. Persist to pg_proc — UDFs registered here are user-namespace

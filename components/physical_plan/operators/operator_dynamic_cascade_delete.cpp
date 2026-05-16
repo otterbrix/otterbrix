@@ -192,14 +192,14 @@ namespace components::operators {
             // dispatcher's catch-all to map back to make_ddl_error_cursor.
             std::string msg = "DROP RESTRICT: object has dependents (blocking oid ";
             msg += std::to_string(plan.blocking_oid) + ")";
-            set_error(std::move(msg));
+            set_error(core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource_}});
             mark_executed();
             co_return;
         }
         if (plan.status == catalog::ddl_status::cycle_detected) {
             std::string msg = "DROP: pg_depend cycle detected at oid ";
             msg += std::to_string(plan.blocking_oid);
-            set_error(std::move(msg));
+            set_error(core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource_}});
             mark_executed();
             co_return;
         }

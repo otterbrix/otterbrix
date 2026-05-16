@@ -101,9 +101,12 @@ namespace services::planner::impl {
                             projected_cols.push_back(static_cast<size_t>(col.chunk_position));
                         }
                     }
-                } else if (!node->projected_cols().empty()) {
-                    projected_cols.assign(node->projected_cols().begin(),
-                                          node->projected_cols().end());
+                } else {
+                    const auto* agg = static_cast<const components::logical_plan::node_aggregate_t*>(node.get());
+                    if (!agg->projected_cols().empty()) {
+                        projected_cols.assign(agg->projected_cols().begin(),
+                                              agg->projected_cols().end());
+                    }
                 }
             }
             executor = match_op ? std::move(match_op)

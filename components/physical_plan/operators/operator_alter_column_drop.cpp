@@ -204,7 +204,7 @@ namespace components::operators {
         if (rng.count == 0) {
             std::string msg = "operator_alter_column_drop: tombstone append produced no rows for attoid ";
             msg += std::to_string(attoid);
-            set_error(std::move(msg));
+            set_error(core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource_}});
             mark_executed();
             co_return;
         }

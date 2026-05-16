@@ -182,8 +182,8 @@ namespace services::planner::impl {
     components::operators::operator_ptr create_plan_select(const context_storage_t& context,
                                                            const components::logical_plan::node_ptr& node,
                                                            const components::logical_plan::storage_parameters* params) {
-        auto coll_name = node->collection_full_name();
-        bool known = context.has_collection(coll_name);
+        auto table_oid = node->table_oid();
+        bool known = context.has_table_oid(table_oid);
         auto plan_resource = known ? context.resource : node->resource();
         auto plan_log = known ? context.log.clone() : log_t{};
 

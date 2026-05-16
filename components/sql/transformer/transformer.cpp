@@ -20,7 +20,8 @@ namespace components::sql::transform {
             using namespace logical_plan;
             if (sel->type() == node_type::aggregate_t) {
                 const auto* agg = static_cast<const node_aggregate_t*>(sel.get());
-                return {agg->dbname(), agg->relname()};
+                return {static_cast<const std::string&>(agg->dbname()),
+                        static_cast<const std::string&>(agg->relname())};
             }
             return {};
         }
@@ -123,7 +124,8 @@ namespace components::sql::transform {
                 throw std::runtime_error("Unsupported node type: " + node_tag_to_string(node.type));
         }
 
-        return {std::move(log_node),
+        return {resource_,
+                std::move(log_node),
                 std::move(params),
                 std::move(parameter_map_),
                 std::move(parameter_insert_map_),

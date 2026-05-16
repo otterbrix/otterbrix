@@ -76,7 +76,7 @@ namespace components::operators {
 
             // NOT (...)
             if (expr.size() > 5 && expr.substr(0, 5) == "NOT (") {
-                std::vector<predicates::predicate_ptr> nested;
+                std::pmr::vector<predicates::predicate_ptr> nested(r);
                 nested.push_back(build_check_predicate(r, strip_outer(expr.substr(4))));
                 return {new predicates::simple_predicate(r, std::move(nested), CT::union_not)};
             }
@@ -95,13 +95,13 @@ namespace components::operators {
                 if (close != std::string_view::npos) {
                     std::string_view after = trim(expr.substr(close + 1));
                     if (after.size() >= 4 && after.substr(0, 4) == "AND ") {
-                        std::vector<predicates::predicate_ptr> nested;
+                        std::pmr::vector<predicates::predicate_ptr> nested(r);
                         nested.push_back(build_check_predicate(r, expr.substr(1, close - 1)));
                         nested.push_back(build_check_predicate(r, strip_outer(after.substr(4))));
                         return {new predicates::simple_predicate(r, std::move(nested), CT::union_and)};
                     }
                     if (after.size() >= 3 && after.substr(0, 3) == "OR ") {
-                        std::vector<predicates::predicate_ptr> nested;
+                        std::pmr::vector<predicates::predicate_ptr> nested(r);
                         nested.push_back(build_check_predicate(r, expr.substr(1, close - 1)));
                         nested.push_back(build_check_predicate(r, strip_outer(after.substr(3))));
                         return {new predicates::simple_predicate(r, std::move(nested), CT::union_or)};
@@ -233,8 +233,10 @@ namespace components::operators {
         // CHECK expression evaluation.
         for (const auto& [name, pred] : check_predicates_) {
             for (uint64_t row = 0; row < chunk.size(); ++row) {
-                if (!pred->check(chunk, row)) {
-                    set_error("CHECK constraint \"" + name + "\" violated");
+                auto check_result = pred->check(chunk, row);
+                if (check_result.has_error() || !check_result.value()) {
+                    set_error(core::error_t{core::error_code_t::other_error,
+                                             std::pmr::string{"CHECK constraint \"" + name + "\" violated", resource_}});
                     return;
                 }
             }

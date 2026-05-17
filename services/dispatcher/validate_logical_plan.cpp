@@ -1229,8 +1229,11 @@ namespace services::dispatcher {
                         auto& expr = node_group->expressions()[i];
                         if (expr->group() == expression_group::scalar) {
                             auto* scalar_expr = reinterpret_cast<scalar_expression_t*>(expr.get());
-                            if (scalar_expr->type() == scalar_type::get_field) {
+                            if (scalar_expr->type() == scalar_type::get_field ||
+                                scalar_expr->type() == scalar_type::group_field) {
                                 // get_field — existing code unchanged
+                                // group_field — GROUP BY <col>: same shape, just mutates
+                                // the same key_t so create_plan_group sees a resolved path.
                                 auto& key =
                                     scalar_expr->params().empty()
                                         ? scalar_expr->key()

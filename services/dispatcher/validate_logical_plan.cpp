@@ -1341,7 +1341,25 @@ namespace services::dispatcher {
                                                 return complex_logical_type(logical_type::INVALID);
                                             }
                                         };
-                                        if (sub_scalar->params().size() >= 2) {
+                                        // CASE WHEN inside an aggregate (e.g. SUM(CASE WHEN cond THEN a ELSE b END)).
+                                        // case_expr params layout (per transform_select_case_expr): pairs of
+                                        // [cond, result, cond, result, ..., default]. We take the type of the
+                                        // first THEN result (params[1]) as the CASE return type. Mixed branch
+                                        // result types would need a wider promote — deferred.
+                                        if (sub_scalar->type() == scalar_type::case_expr) {
+                                            if (sub_scalar->params().size() < 2) {
+                                                return schema_result<named_schema>{
+                                                    resource,
+                                                    core::error_t{
+                                                        core::error_code_t::invalid_parameter,
+                                                        std::pmr::string{"CASE expression with no THEN branch", resource}}};
+                                            }
+                                            auto rt = resolve_arith_type(sub_scalar->params()[1]);
+                                            if (resolve_error.type != core::error_code_t::none) {
+                                                return schema_result<named_schema>{resource, resolve_error};
+                                            }
+                                            function_input_types.emplace_back(rt);
+                                        } else if (sub_scalar->params().size() >= 2) {
                                             auto lt = resolve_arith_type(sub_scalar->params()[0]);
                                             auto rt = resolve_arith_type(sub_scalar->params()[1]);
                                             if (resolve_error.type != core::error_code_t::none) {

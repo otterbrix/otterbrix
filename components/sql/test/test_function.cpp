@@ -16,7 +16,7 @@ using vec = std::vector<v>;
     {                                                                                                                  \
         SECTION(QUERY) {                                                                                               \
             auto select = linitial(raw_parser(&arena_resource, QUERY));                                                \
-            auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());       \
+            auto result = (transformer.transform(pg_cell_to_node_cast(select)).finalize().value());       \
             auto node = result.node;                                                                                   \
             if (node->type() == components::logical_plan::node_type::sequence_t) {                                     \
                 node = node->children().back();                                                                        \

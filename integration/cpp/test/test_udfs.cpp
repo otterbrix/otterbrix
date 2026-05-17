@@ -196,28 +196,28 @@ TEST_CASE("integration::cpp::test_udfs") {
         {
             auto session = otterbrix::session_id_t();
             auto result = dispatcher->register_udf(session, make_concat_func(dispatcher->resource()));
-            REQUIRE_FALSE(result.contains_error());
+            REQUIRE(result);
         }
         {
             auto session = otterbrix::session_id_t();
             auto result = dispatcher->register_udf(session, make_mult_func(dispatcher->resource()));
-            REQUIRE_FALSE(result.contains_error());
+            REQUIRE(result);
         }
         {
             auto session = otterbrix::session_id_t();
             auto result = dispatcher->register_udf(session, make_is_even_func(dispatcher->resource()));
-            REQUIRE_FALSE(result.contains_error());
+            REQUIRE(result);
         }
         {
             auto session = otterbrix::session_id_t();
             auto result = dispatcher->register_udf(session, make_modulo_func(dispatcher->resource()));
-            REQUIRE_FALSE(result.contains_error());
+            REQUIRE(result);
         }
         // Trying to create same function will result in error
         {
             auto session = otterbrix::session_id_t();
             auto result = dispatcher->register_udf(session, make_concat_func(dispatcher->resource()));
-            REQUIRE(result.contains_error());
+            REQUIRE_FALSE(result);
         }
     }
 
@@ -383,7 +383,7 @@ TEST_CASE("integration::cpp::test_udfs") {
         {
             auto session = otterbrix::session_id_t();
             auto result = dispatcher->unregister_udf(session, udf1_name, {types::logical_type::STRING_LITERAL});
-            REQUIRE_FALSE(result.contains_error());
+            REQUIRE(result);
         }
         // Trying to delete function with non-existent signature
         {
@@ -391,7 +391,7 @@ TEST_CASE("integration::cpp::test_udfs") {
             auto result = dispatcher->unregister_udf(session,
                                                      udf2_name,
                                                      {types::logical_type::BIGINT, types::logical_type::SMALLINT});
-            REQUIRE(result.contains_error());
+            REQUIRE_FALSE(result);
         }
     }
 

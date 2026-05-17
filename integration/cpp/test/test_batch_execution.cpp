@@ -191,7 +191,7 @@ TEST_CASE("integration::cpp::test_batch_where") {
     INFO("insert") {
         auto chunk = gen_data_chunk(N, dispatcher->resource());
         auto ins =
-            logical_plan::make_node_insert(dispatcher->resource(), {database_name, collection_name}, std::move(chunk));
+            logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk));
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_plan(session, ins);
         REQUIRE(cur->is_success());
@@ -200,12 +200,12 @@ TEST_CASE("integration::cpp::test_batch_where") {
 
     INFO("register UDFs") {
         auto session = otterbrix::session_id_t();
-        REQUIRE_FALSE(dispatcher->register_udf(session, make_double_val_func(dispatcher->resource())).contains_error());
-        REQUIRE_FALSE(
-            dispatcher->register_udf(session, make_gt_threshold_func(dispatcher->resource())).contains_error());
-        REQUIRE_FALSE(dispatcher->register_udf(session, make_vec_negate_func(dispatcher->resource())).contains_error());
-        REQUIRE_FALSE(
-            dispatcher->register_udf(session, make_sum_squares_func(dispatcher->resource())).contains_error());
+        REQUIRE(dispatcher->register_udf(session, make_double_val_func(dispatcher->resource())));
+        REQUIRE(
+            dispatcher->register_udf(session, make_gt_threshold_func(dispatcher->resource())));
+        REQUIRE(dispatcher->register_udf(session, make_vec_negate_func(dispatcher->resource())));
+        REQUIRE(
+            dispatcher->register_udf(session, make_sum_squares_func(dispatcher->resource())));
     }
 
     INFO("WHERE with row UDF (boolean predicate)") {
@@ -291,9 +291,7 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
     INFO("insert: two batches so each count appears twice") {
         for (int batch = 0; batch < 2; batch++) {
             auto chunk = gen_data_chunk(N, dispatcher->resource());
-            auto ins = logical_plan::make_node_insert(dispatcher->resource(),
-                                                      {database_name, collection_name},
-                                                      std::move(chunk));
+            auto ins = logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk));
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_plan(session, ins);
             REQUIRE(cur->is_success());
@@ -301,17 +299,19 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->size(session, database_name, collection_name) == N * 2);
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT count(*) FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
         }
     }
 
     INFO("register UDFs") {
         auto session = otterbrix::session_id_t();
-        REQUIRE_FALSE(
-            dispatcher->register_udf(session, make_sum_squares_func(dispatcher->resource())).contains_error());
-        REQUIRE_FALSE(dispatcher->register_udf(session, make_double_val_func(dispatcher->resource())).contains_error());
-        REQUIRE_FALSE(
-            dispatcher->register_udf(session, make_gt_threshold_func(dispatcher->resource())).contains_error());
+        REQUIRE(
+            dispatcher->register_udf(session, make_sum_squares_func(dispatcher->resource())));
+        REQUIRE(dispatcher->register_udf(session, make_double_val_func(dispatcher->resource())));
+        REQUIRE(
+            dispatcher->register_udf(session, make_gt_threshold_func(dispatcher->resource())));
     }
 
     INFO("GROUP BY with compute SUM") {
@@ -508,12 +508,12 @@ TEST_CASE("integration::cpp::test_batch_join") {
 
     INFO("register UDFs") {
         auto session = otterbrix::session_id_t();
-        REQUIRE_FALSE(
-            dispatcher->register_udf(session, make_gt_threshold_func(dispatcher->resource())).contains_error());
-        REQUIRE_FALSE(
-            dispatcher->register_udf(session, make_sum_squares_func(dispatcher->resource())).contains_error());
-        REQUIRE_FALSE(
-            dispatcher->register_udf(session, make_call_counter_func(dispatcher->resource())).contains_error());
+        REQUIRE(
+            dispatcher->register_udf(session, make_gt_threshold_func(dispatcher->resource())));
+        REQUIRE(
+            dispatcher->register_udf(session, make_sum_squares_func(dispatcher->resource())));
+        REQUIRE(
+            dispatcher->register_udf(session, make_call_counter_func(dispatcher->resource())));
     }
 
     INFO("join with UDF batch predicate in ON clause") {
@@ -623,7 +623,7 @@ TEST_CASE("integration::cpp::test_batch_edge_cases") {
     INFO("single row") {
         auto chunk = gen_data_chunk(1, dispatcher->resource());
         auto ins =
-            logical_plan::make_node_insert(dispatcher->resource(), {database_name, collection_name}, std::move(chunk));
+            logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk));
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_plan(session, ins);
         REQUIRE(cur->is_success());

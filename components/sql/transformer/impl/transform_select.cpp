@@ -32,6 +32,7 @@ namespace components::sql::transform {
                 sub_query_names.right_name = rangevar_to_qualified_name(table_r);
                 sub_query_names.right_alias = construct_alias(table_r->alias);
                 node_join->append_child(logical_plan::make_node_aggregate(resource,
+                                                                          core::uid_t{sub_query_names.right_name.uuid},
                                                                           core::dbname_t{sub_query_names.right_name.dbname},
                                                                           core::relname_t{sub_query_names.right_name.relname}));
             } else if (nodeTag(join->rarg) == T_RangeFunction) {
@@ -48,6 +49,7 @@ namespace components::sql::transform {
             names.left_alias = construct_alias(table_l->alias);
             node_join = logical_plan::make_node_join(resource, core::dbname_t{}, core::relname_t{}, jointype_to_ql(join));
             node_join->append_child(logical_plan::make_node_aggregate(resource,
+                                                                      core::uid_t{names.left_name.uuid},
                                                                       core::dbname_t{names.left_name.dbname},
                                                                       core::relname_t{names.left_name.relname}));
             if (nodeTag(join->rarg) == T_RangeVar) {
@@ -55,6 +57,7 @@ namespace components::sql::transform {
                 names.right_name = rangevar_to_qualified_name(table_r);
                 names.right_alias = construct_alias(table_r->alias);
                 node_join->append_child(logical_plan::make_node_aggregate(resource,
+                                                                          core::uid_t{names.right_name.uuid},
                                                                           core::dbname_t{names.right_name.dbname},
                                                                           core::relname_t{names.right_name.relname}));
             } else if (nodeTag(join->rarg) == T_RangeFunction) {
@@ -71,6 +74,7 @@ namespace components::sql::transform {
                 names.right_name = rangevar_to_qualified_name(table_r);
                 names.right_alias = construct_alias(table_r->alias);
                 node_join->append_child(logical_plan::make_node_aggregate(resource,
+                                                                          core::uid_t{names.right_name.uuid},
                                                                           core::dbname_t{names.right_name.dbname},
                                                                           core::relname_t{names.right_name.relname}));
             } else if (nodeTag(join->rarg) == T_RangeFunction) {
@@ -127,6 +131,7 @@ namespace components::sql::transform {
                 names.left_name = rangevar_to_qualified_name(table);
                 names.left_alias = construct_alias(table->alias);
                 agg = logical_plan::make_node_aggregate(resource_,
+                                                        core::uid_t{names.left_name.uuid},
                                                         core::dbname_t{names.left_name.dbname},
                                                         core::relname_t{names.left_name.relname});
             } else if (nodeTag(from_first) == T_JoinExpr) {

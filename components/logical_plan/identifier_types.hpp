@@ -6,6 +6,7 @@
 
 STRONG_TYPEDEF_EXPLICIT(std::string, dbname_t);
 STRONG_TYPEDEF_EXPLICIT(std::string, relname_t);
+STRONG_TYPEDEF_EXPLICIT(std::string, uid_t);
 STRONG_TYPEDEF_EXPLICIT(std::string, viewname_t);
 STRONG_TYPEDEF_EXPLICIT(std::string, seqname_t);
 STRONG_TYPEDEF_EXPLICIT(std::string, macroname_t);

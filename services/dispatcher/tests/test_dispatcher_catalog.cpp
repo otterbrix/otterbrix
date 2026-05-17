@@ -102,8 +102,9 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         parser_arena_ = std::make_unique<std::pmr::monotonic_buffer_resource>(resource_);
         auto parse_result = linitial(raw_parser(parser_arena_.get(), query.c_str()));
         components::sql::transform::transformer local_transformer(resource_);
-        auto view = std::get<components::sql::transform::result_view>(
-            local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_result)).finalize());
+        auto _wrap = local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_result)).finalize();
+        REQUIRE(!_wrap.has_error());
+        auto view = _wrap.value();
 
         auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
                                                        &manager_dispatcher_t::execute_plan,

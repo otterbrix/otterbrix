@@ -75,8 +75,8 @@ constexpr int kDocuments = 100;
         /* operator-level set_error into create_physical_plan_error with the */                                        \
         /* original message. operator_create_index_backfill::set_error("index already exists") */                      \
         /* surfaces here as that wrapped code. */                                                                      \
-        REQUIRE((res->get_error().type == components::cursor::error_code_t::index_create_fail ||                       \
-                 res->get_error().type == components::cursor::error_code_t::create_physical_plan_error));              \
+        REQUIRE((res->get_error().type == core::error_code_t::index_create_fail ||                                    \
+                 res->get_error().type == core::error_code_t::create_physical_plan_error));                            \
     } while (false)
 
 #define DROP_INDEX(INDEX_NAME)                                                                                         \

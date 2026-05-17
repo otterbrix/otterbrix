@@ -11,7 +11,7 @@ using namespace components::sql::transform;
 #define TEST_JOIN(QUERY, RESULT, PARAMS)                                                                               \
     SECTION(QUERY) {                                                                                                   \
         auto select = linitial(raw_parser(&arena_resource, QUERY));                                                    \
-        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());           \
+        auto result = (transformer.transform(pg_cell_to_node_cast(select)).finalize().value());           \
         auto node = result.node;                                                                                       \
         auto agg = result.params;                                                                                      \
         REQUIRE(node->to_string() == RESULT);                                                                          \
@@ -88,26 +88,26 @@ TEST_CASE("components::sql::join") {
         auto select = linitial(raw_parser(&arena_resource,
                                           "SELECT * from uid1.db1.sch1.test1 inner join uid2.db2.sch2.test2 on x = y "
                                           "full outer join uid3.db3.sch3.test3 on y = z;"));
-        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());
+        auto result = (transformer.transform(pg_cell_to_node_cast(select)).finalize().value());
         auto join = result.node->children().front();
         // The transformer normalizes (db.schema.tbl) into dbname=db (db
         // preferred over schema when both are present in cfn).
         {
             auto* agg = static_cast<const components::logical_plan::node_aggregate_t*>(join->children().back().get());
-            REQUIRE(agg->dbname() == "db3");
-            REQUIRE(agg->relname() == "test3");
+            REQUIRE(static_cast<const std::string&>(agg->dbname()) == "db3");
+            REQUIRE(static_cast<const std::string&>(agg->relname()) == "test3");
         }
 
         auto nested_join = join->children().front();
         {
             auto* agg = static_cast<const components::logical_plan::node_aggregate_t*>(nested_join->children().front().get());
-            REQUIRE(agg->dbname() == "db1");
-            REQUIRE(agg->relname() == "test1");
+            REQUIRE(static_cast<const std::string&>(agg->dbname()) == "db1");
+            REQUIRE(static_cast<const std::string&>(agg->relname()) == "test1");
         }
         {
             auto* agg = static_cast<const components::logical_plan::node_aggregate_t*>(nested_join->children().back().get());
-            REQUIRE(agg->dbname() == "db2");
-            REQUIRE(agg->relname() == "test2");
+            REQUIRE(static_cast<const std::string&>(agg->dbname()) == "db2");
+            REQUIRE(static_cast<const std::string&>(agg->relname()) == "test2");
         }
     }
 }

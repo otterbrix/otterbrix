@@ -40,13 +40,15 @@ namespace {
         if (!node) {
             return;
         }
-        if (node->type() == logical_plan::node_type::aggregate_t &&
-            !node->collection_full_name().unique_identifier.empty()) {
-            const auto& uid = node->collection_full_name().unique_identifier;
-            auto it = chunks_by_uid.find(uid);
-            if (it != chunks_by_uid.end()) {
-                node = logical_plan::make_node_raw_data(res, it->second());
-                return; // leaf is now data
+        if (node->type() == logical_plan::node_type::aggregate_t) {
+            const auto* agg = static_cast<const logical_plan::node_aggregate_t*>(node.get());
+            const auto& uid_s = static_cast<const std::string&>(agg->uid());
+            if (!uid_s.empty()) {
+                auto it = chunks_by_uid.find(uid_s);
+                if (it != chunks_by_uid.end()) {
+                    node = logical_plan::make_node_raw_data(res, it->second());
+                    return; // leaf is now data
+                }
             }
         }
         for (auto& child : node->children()) {

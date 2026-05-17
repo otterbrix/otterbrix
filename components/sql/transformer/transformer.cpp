@@ -31,7 +31,6 @@ namespace components::sql::transform {
         auto params = logical_plan::make_parameter_node(resource_);
         logical_plan::node_ptr log_node;
 
-        // TODO: Error handling
         switch (node.type) {
             case T_CreatedbStmt: {
                 auto& n = pg_cast<CreatedbStmt>(node);

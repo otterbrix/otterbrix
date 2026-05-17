@@ -1248,8 +1248,26 @@ namespace services::dispatcher {
                                 for (size_t pi = 1; pi < key.path().size(); pi++) {
                                     tp = &tp->child_types()[key.path()[pi]];
                                 }
-                                result.emplace_back(type_from_t{node->result_alias(), *tp});
-                                key_schema.emplace_back(result.back());
+                                // HEAD's transformer emits BOTH the SELECT-list get_field AND a
+                                // GROUP BY group_field for the same column into node_group_t.
+                                // (Main's PR #479 splits these between node_select_t/node_group_t.)
+                                // De-dupe at validate so downstream ORDER BY doesn't see two
+                                // identically-named entries → ambiguous-key error. find_types
+                                // matches on type.alias() (see line 164), so dedupe on that.
+                                const auto& alias_to_dedupe = tp->alias();
+                                bool already_present = false;
+                                if (!alias_to_dedupe.empty()) {
+                                    for (const auto& existing : result) {
+                                        if (existing.type.alias() == alias_to_dedupe) {
+                                            already_present = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (!already_present) {
+                                    result.emplace_back(type_from_t{node->result_alias(), *tp});
+                                    key_schema.emplace_back(result.back());
+                                }
                             } else if (is_case_or_arithmetic(scalar_expr->type())) {
                                 // Try resolve against incoming_schema
                                 auto res =

@@ -105,17 +105,31 @@ namespace detail {
         {
             std::vector<components::table::storage_index_t> col_ids;
             const auto& all_cols = table.columns();
-            std::pmr::vector<components::types::complex_logical_type> col_types(resource);
+            // row_group_t::scan_committed writes to result.data[column.primary_index()] —
+            // i.e. it indexes by storage column position, not by row in `col_ids`. So the
+            // chunk must have a slot at every storage column index that appears in
+            // col_indices. Use the projected_cols ctor to allocate buffers only for the
+            // requested columns (other slots are placeholders, no data buffer).
+            std::pmr::vector<components::types::complex_logical_type> all_types(resource);
+            all_types.reserve(all_cols.size());
+            for (const auto& c : all_cols) {
+                all_types.push_back(c.type());
+            }
+            std::vector<size_t> projected;
+            projected.reserve(static_cast<std::size_t>(std::distance(std::begin(col_indices), std::end(col_indices))));
             for (auto idx : col_indices) {
                 col_ids.emplace_back(static_cast<uint64_t>(idx));
-                col_types.push_back(all_cols[static_cast<std::size_t>(idx)].type());
+                projected.push_back(static_cast<std::size_t>(idx));
             }
 
             components::table::table_scan_state state(resource);
             table.initialize_scan(state, col_ids);
 
             while (true) {
-                components::vector::data_chunk_t chunk(resource, col_types);
+                components::vector::data_chunk_t chunk(resource,
+                                                       all_types,
+                                                       projected,
+                                                       components::vector::DEFAULT_VECTOR_CAPACITY);
                 table.scan_committed(chunk, state);
                 if (chunk.size() == 0) break;
                 for (uint64_t i = 0; i < chunk.size(); ++i) {

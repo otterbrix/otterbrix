@@ -55,8 +55,8 @@ namespace services::disk {
         std::pmr::synchronized_pool_resource scan_resource;
         std::pmr::vector<std::int64_t> row_ids(resource());
         inline_scan(it->second->table_storage.table(), {oid_col_idx}, &scan_resource,
-                    [&](components::vector::data_chunk_t& chunk, uint64_t i) {
-                        auto v = chunk.value(0, i);
+                    [&, oid_col_idx](components::vector::data_chunk_t& chunk, uint64_t i) {
+                        auto v = chunk.value(static_cast<uint64_t>(oid_col_idx), i);
                         if (v.is_null()) return true;
                         if (static_cast<components::catalog::oid_t>(v.value<std::uint32_t>()) == target_oid) {
                             row_ids.push_back(chunk.row_ids.data<std::int64_t>()[i]);

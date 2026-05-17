@@ -16,7 +16,7 @@ using namespace components::sql::transform;
 #define TEST_TRANSFORMER_OK(QUERY, EXPECTED)                                                                           \
     SECTION(QUERY) {                                                                                                   \
         auto stmt = raw_parser(&arena_resource, QUERY)->lst.front().data;                                              \
-        auto result = (transformer.transform(pg_cell_to_node_cast(stmt)).finalize().value());             \
+        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));             \
         auto node = result.node;                                                                                       \
         REQUIRE(node->to_string() == EXPECTED);                                                                        \
     }
@@ -37,7 +37,7 @@ using namespace components::sql::transform;
 #define TEST_TRANSFORMER_EXPECT_SCHEMA(QUERY, CHECK_FN)                                                                \
     SECTION(QUERY) {                                                                                                   \
         auto stmt = linitial(raw_parser(&arena_resource, QUERY));                                                      \
-        auto result = (transformer.transform(pg_cell_to_node_cast(stmt)).finalize().value());             \
+        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));             \
         auto node = result.node;                                                                                       \
         if (node->type() == components::logical_plan::node_type::sequence_t) {                                         \
             node = node->children().back();                                                                            \
@@ -78,13 +78,13 @@ TEST_CASE("components::sql::table") {
 
     SECTION("create with uuid") {
         auto create = raw_parser(&arena_resource, "CREATE TABLE uuid.db_name.schema.table_name()")->lst.front().data;
-        auto result = (transformer.transform(pg_cell_to_node_cast(create)).finalize().value());
+        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
         REQUIRE(result.node->to_string() == R"_($sequence[2])_");
     }
 
     SECTION("create with schema") {
         auto create = raw_parser(&arena_resource, "CREATE TABLE db_name.schema.table_name()")->lst.front().data;
-        auto result = (transformer.transform(pg_cell_to_node_cast(create)).finalize().value());
+        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
         REQUIRE(result.node->to_string() == R"_($sequence[2])_");
     }
 
@@ -96,14 +96,14 @@ TEST_CASE("components::sql::table") {
     // after enrich stamps namespace_oid + table_oid.
     SECTION("drop with uuid") {
         auto drop = raw_parser(&arena_resource, "DROP TABLE uuid.db_name.schema.table_name")->lst.front().data;
-        auto result = (transformer.transform(pg_cell_to_node_cast(drop)).finalize().value());
+        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(drop)).finalize()));
         // result.node is the wrapping sequence_t: 1 resolve_ns + 1 resolve_table + 1 drop = 3 children.
         REQUIRE(result.node->to_string() == R"_($sequence[3])_");
     }
 
     SECTION("drop with schema") {
         auto drop = raw_parser(&arena_resource, "DROP TABLE db_name.schema.table_name")->lst.front().data;
-        auto result = (transformer.transform(pg_cell_to_node_cast(drop)).finalize().value());
+        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(drop)).finalize()));
         REQUIRE(result.node->to_string() == R"_($sequence[3])_");
     }
 
@@ -227,14 +227,14 @@ TEST_CASE("components::sql::index") {
     SECTION("create with uuid") {
         auto create =
             raw_parser(&arena_resource, "CREATE INDEX some_idx ON uuid.db.schema.table (field);")->lst.front().data;
-        auto result = (transformer.transform(pg_cell_to_node_cast(create)).finalize().value());
+        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
         REQUIRE(result.node->to_string() == R"_($sequence[3])_");
     }
 
     SECTION("create with schema") {
         auto create =
             raw_parser(&arena_resource, "CREATE INDEX some_idx ON db.schema.table (field);")->lst.front().data;
-        auto result = (transformer.transform(pg_cell_to_node_cast(create)).finalize().value());
+        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
         REQUIRE(result.node->to_string() == R"_($sequence[3])_");
     }
 
@@ -244,13 +244,13 @@ TEST_CASE("components::sql::index") {
     // resolve_table_index, drop_index). The drop node carries no user-typed names.
     SECTION("drop with uuid") {
         auto drop = raw_parser(&arena_resource, "DROP INDEX uuid.db.schema.table.some_idx")->lst.front().data;
-        auto result = (transformer.transform(pg_cell_to_node_cast(drop)).finalize().value());
+        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(drop)).finalize()));
         REQUIRE(result.node->to_string() == R"_($sequence[4])_");
     }
 
     SECTION("drop with schema") {
         auto drop = raw_parser(&arena_resource, "DROP INDEX db.schema.table.some_idx")->lst.front().data;
-        auto result = (transformer.transform(pg_cell_to_node_cast(drop)).finalize().value());
+        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(drop)).finalize()));
         REQUIRE(result.node->to_string() == R"_($sequence[4])_");
     }
 

@@ -31,7 +31,7 @@ using vec = std::vector<v>;
         for (auto i = 0ul; i < BIND.size(); ++i) {                                                                     \
             binder.bind(i + 1, BIND.at(i));                                                                            \
         }                                                                                                              \
-        auto result = (binder.finalize().value());                                                        \
+        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(binder.finalize()));                                                        \
         auto node = result.node;                                                                                       \
         if (node->type() == components::logical_plan::node_type::sequence_t) {                                         \
             node = node->children().back();                                                                            \
@@ -51,7 +51,7 @@ using vec = std::vector<v>;
         for (auto i = 0ul; i < BIND.size(); ++i) {                                                                     \
             binder.bind(i + 1, BIND.at(i));                                                                            \
         }                                                                                                              \
-        auto result = (binder.finalize().value());                                                        \
+        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(binder.finalize()));                                                        \
         auto node = result.node;                                                                                       \
         if (node->type() == components::logical_plan::node_type::sequence_t) {                                         \
             node = node->children().back();                                                                            \
@@ -140,7 +140,7 @@ TEST_CASE("components::sql::insert_bind") {
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
         binder.bind(1, v(&resource, 42l));
         binder.bind(2, v(&resource, std::string("inserted")));
-        auto result = (binder.finalize().value());
+        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(binder.finalize()));
         auto node = result.node;
         if (node->type() == components::logical_plan::node_type::sequence_t) {
             node = node->children().back();
@@ -162,7 +162,7 @@ TEST_CASE("components::sql::insert_bind") {
         binder.bind(1, v(&resource, 123l));
         REQUIRE(binder.all_bound() == true);
 
-        auto result = (binder.finalize().value());
+        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(binder.finalize()));
         auto node = result.node;
         if (node->type() == components::logical_plan::node_type::sequence_t) {
             node = node->children().back();
@@ -180,13 +180,15 @@ TEST_CASE("components::sql::insert_bind") {
                                           "INSERT INTO TestDatabase.TestCollection (id, name, count) VALUES "
                                           "($1, $2, $3), ($4, $5, $6);"));
         auto binder = transformer.transform(pg_cell_to_node_cast(select));
-        auto result = (binder.bind(1, v(&resource, 1ul))
+        auto _wrap = binder.bind(1, v(&resource, 1ul))
                                                 .bind(2, v(&resource, "Name1"))
                                                 .bind(3, v(&resource, 10ul))
                                                 .bind(4, v(&resource, 2ul))
                                                 .bind(5, v(&resource, "Name2"))
                                                 .bind(6, v(&resource, 20ul))
-                                                .finalize().value());
+                                                .finalize();
+        REQUIRE_FALSE(_wrap.has_error());
+        auto result = _wrap.value();
         auto node = result.node;
         if (node->type() == components::logical_plan::node_type::sequence_t) {
             node = node->children().back();
@@ -242,7 +244,7 @@ TEST_CASE("components::sql::transform_result") {
         auto binder = transformer.transform(pg_cell_to_node_cast(select));
 
         binder.bind(1, v(&resource, "doc"));
-        auto agg = (binder.finalize().value()).params;
+        auto agg = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(binder.finalize())).params;
         REQUIRE(agg->parameter(core::parameter_id_t(uint16_t(0))) == v(&resource, "doc"));
 
         binder.bind(1, v(&resource, 100l)).finalize();
@@ -254,7 +256,7 @@ TEST_CASE("components::sql::transform_result") {
         auto stmt = linitial(raw_parser(&arena_resource, query));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
         binder.bind(1, v(&resource, 123l)).bind(2, v(&resource, false));
-        auto node = (binder.finalize().value()).node;
+        auto node = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(binder.finalize())).node;
         if (node->type() == components::logical_plan::node_type::sequence_t) {
             node = node->children().back();
         }

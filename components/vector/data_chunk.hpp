@@ -72,6 +72,12 @@ namespace components::vector {
 
         void reset();
 
+        // Drop unprojected placeholder columns in-place (data() == nullptr &&
+        // auxiliary() == nullptr) so user-visible iteration sees only real
+        // data. Used at the cursor boundary where placeholder stability for
+        // downstream operators is no longer needed.
+        void drop_unprojected_placeholders();
+
         void hash(vector_t& result);
         void hash(std::vector<uint64_t>& column_ids, vector_t& result);
         void resize(uint64_t new_size);

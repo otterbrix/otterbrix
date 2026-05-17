@@ -1,6 +1,7 @@
 #include "data_chunk.hpp"
 #include "vector_operations.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <stdexcept>
 
@@ -64,6 +65,13 @@ namespace components::vector {
         }
         capacity_ = DEFAULT_VECTOR_CAPACITY;
         set_cardinality(0);
+    }
+
+    void data_chunk_t::drop_unprojected_placeholders() {
+        data.erase(std::remove_if(data.begin(),
+                                  data.end(),
+                                  [](const vector_t& v) { return is_unprojected_placeholder(v); }),
+                   data.end());
     }
 
     void data_chunk_t::destroy() {

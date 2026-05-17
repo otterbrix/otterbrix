@@ -23,7 +23,12 @@ namespace components::cursor {
         : size_(chunk.size())
         , table_data_(std::move(chunk))
         , type_data_(resource)
-        , error_(core::error_t::no_error()) {}
+        , error_(core::error_t::no_error()) {
+        // Strip placeholder columns (created by projected_cols scans to keep
+        // storage indices stable for downstream operators). User-facing
+        // iteration via chunk_data() should only see real data.
+        table_data_.drop_unprojected_placeholders();
+    }
 
     cursor_t::cursor_t(std::pmr::memory_resource* resource, std::pmr::vector<vector::data_chunk_t>&& chunks)
         : table_data_(resource, std::pmr::vector<types::complex_logical_type>{resource})
@@ -39,7 +44,14 @@ namespace components::cursor {
         }
         if (chunks.size() == 1) {
             table_data_ = std::move(chunks.front());
+            table_data_.drop_unprojected_placeholders();
             return;
+        }
+        // For multi-chunk combine, drop placeholders from each chunk first so the
+        // combined chunk only has real columns. All chunks share the same shape
+        // (same scan), so dropping is consistent.
+        for (auto& c : chunks) {
+            c.drop_unprojected_placeholders();
         }
         auto types = chunks.front().types();
         vector::data_chunk_t combined(resource, types, total == 0 ? 1 : total);

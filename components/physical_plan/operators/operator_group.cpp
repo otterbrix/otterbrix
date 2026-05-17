@@ -406,7 +406,7 @@ namespace components::operators {
         bool use_fast_path = true;
         std::pmr::vector<size_t> key_col_indices(resource_);
         for (const auto& key : keys_) {
-            if (key.type != group_key_t::kind::column || key.full_path.size() > 1) {
+            if (key.type != group_key_t::kind::column || key.full_path.size() != 1) {
                 use_fast_path = false;
                 break;
             }

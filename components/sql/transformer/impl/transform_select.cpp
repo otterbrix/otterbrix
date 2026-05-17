@@ -441,25 +441,44 @@ namespace components::sql::transform {
             agg->append_child(logical_plan::make_node_sort(resource_, core::dbname_t{agg->dbname()}, core::relname_t{agg->relname()}, expressions));
         }
 
-        // limit
-        if (node.limitCount) {
-            if (nodeTag(node.limitCount) != T_A_Const) {
-                throw std::runtime_error("Unknown node type in limit clause: " +
-                                         node_tag_to_string(nodeTag(node.limitCount)));
+        // limit / offset
+        int64_t offset_val = 0;
+        if (node.limitOffset) {
+            if (nodeTag(node.limitOffset) != T_A_Const) {
+                throw std::runtime_error("Unknown node type in offset clause: " +
+                                         node_tag_to_string(nodeTag(node.limitOffset)));
             }
-
-            auto* value = &(pg_ptr_cast<A_Const>(node.limitCount)->val);
+            auto* off_value = &(pg_ptr_cast<A_Const>(node.limitOffset)->val);
+            if (nodeTag(off_value) == T_Integer) {
+                offset_val = intVal(off_value);
+            } else if (nodeTag(off_value) != T_Null) {
+                throw std::runtime_error("Forbidden expression in offset clause: allowed only OFFSET <integer>");
+            }
+        }
+        if (node.limitCount || node.limitOffset) {
             logical_plan::limit_t limit;
-            switch (nodeTag(value)) {
-                case T_Null: {
-                    limit = logical_plan::limit_t::unlimit();
-                    break;
+            if (node.limitCount) {
+                if (nodeTag(node.limitCount) != T_A_Const) {
+                    throw std::runtime_error("Unknown node type in limit clause: " +
+                                             node_tag_to_string(nodeTag(node.limitCount)));
                 }
-                case T_Integer:
-                    limit = logical_plan::limit_t(intVal(value));
-                    break;
-                default:
-                    throw std::runtime_error("Forbidden expression in limit clause: allowed only LIMIT <integer>/ALL");
+
+                auto* value = &(pg_ptr_cast<A_Const>(node.limitCount)->val);
+                switch (nodeTag(value)) {
+                    case T_Null: {
+                        limit = logical_plan::limit_t::unlimit();
+                        break;
+                    }
+                    case T_Integer:
+                        limit = logical_plan::limit_t(intVal(value), offset_val);
+                        break;
+                    default:
+                        throw std::runtime_error(
+                            "Forbidden expression in limit clause: allowed only LIMIT <integer>/ALL");
+                }
+            } else {
+                // OFFSET without LIMIT — keep limit unbounded but carry the offset.
+                limit = logical_plan::limit_t(logical_plan::limit_t::unlimit().limit(), offset_val);
             }
 
             agg->append_child(logical_plan::make_node_limit(resource_, core::dbname_t{agg->dbname()}, core::relname_t{agg->relname()}, limit));

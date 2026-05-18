@@ -245,6 +245,12 @@ namespace components::compute {
         static function_registry_t* get_default();
 
         [[nodiscard]] core::result_wrapper_t<function_uid> add_function(function_ptr function);
+        // Insert with a caller-supplied UID. Used when the canonical UID was
+        // chosen by another registry (e.g. the global default) and per-executor
+        // LOCAL registries must agree so validate/predicate lookups are
+        // cross-registry stable.
+        [[nodiscard]] core::result_wrapper_t<function_uid> add_function_with_uid(function_uid uid,
+                                                                                  function_ptr function);
         function* get_function(function_uid uid) const;
         [[nodiscard]] std::vector<std::pair<std::string, function_uid>> get_functions() const;
 

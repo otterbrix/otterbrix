@@ -343,6 +343,21 @@ namespace components::compute {
         return uid;
     }
 
+    core::result_wrapper_t<function_uid> function_registry_t::add_function_with_uid(function_uid uid,
+                                                                                     function_ptr function) {
+        if (!function) {
+            return core::error_t(core::error_code_t::function_registry_error,
+                                 std::pmr::string{"Cannot add null function", resource_});
+        }
+        functions_[uid] = std::move(function);
+        // Keep the auto-increment counter past any caller-stamped UID so future
+        // add_function() calls won't collide with already-registered entries.
+        if (uid >= current_uid_) {
+            current_uid_ = uid + 1;
+        }
+        return uid;
+    }
+
     function* function_registry_t::get_function(function_uid uid) const {
         auto it = functions_.find(uid);
         if (it == functions_.end()) {

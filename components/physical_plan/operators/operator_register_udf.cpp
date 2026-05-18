@@ -96,9 +96,23 @@ namespace components::operators {
 
         // 3. Mirror into the global default registry so validate_logical_plan
         //    lookups (which probe function_registry_t::get_default()) see the
-        //    UDF. Match the legacy dispatcher path exactly.
+        //    UDF. Use the LOCAL-allocated UID (uids.front()) so validate-time
+        //    lookups against the global registry produce the same uid that
+        //    the per-executor registries will resolve at execute time.
+        //    Without this the local registries auto-allocate uid starting at
+        //    last-builtin+1, while the global registry's counter keeps growing
+        //    across tests → expr->function_uid() set from global doesn't match
+        //    any local entry, predicate gets a null function pointer at runtime.
         if (auto* def_reg = components::compute::function_registry_t::get_default()) {
-            (void)def_reg->add_function(function_->get_copy(resource_));
+            auto res = uids.empty()
+                           ? def_reg->add_function(function_->get_copy(resource_))
+                           : def_reg->add_function_with_uid(uids.front(),
+                                                            function_->get_copy(resource_));
+            if (res.has_error()) {
+                output_ = nullptr;
+                mark_executed();
+                co_return;
+            }
         }
 
         // 4. Persist to pg_proc — UDFs registered here are user-namespace

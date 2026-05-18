@@ -174,17 +174,14 @@ TEST_CASE("integration::cpp::test_udfs") {
     }
 
     INFO("insert") {
-        auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
-        auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-            dispatcher->resource(), database_name, collection_name,
-            logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
-        {
-            auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_plan(session, ins);
-            REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == kNumInserts);
-        }
-        {
+        // Each insert needs its own freshly-built plan: the data_chunk is moved
+        // into the insert node and consumed at execute time, so re-running the
+        // same `ins` would replay against an emptied chunk.
+        for (int batch = 0; batch < 2; ++batch) {
+            auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
+            auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+                dispatcher->resource(), database_name, collection_name,
+                logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_plan(session, ins);
             REQUIRE(cur->is_success());

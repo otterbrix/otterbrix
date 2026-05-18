@@ -476,11 +476,11 @@ namespace components::sql::transform {
         return logical_plan::make_node_function(params->parameters().resource(), std::move(funcname), std::move(args));
     }
 
-    void transformer::transform_select_case_expr(CaseExpr* node,
-                                                 const char* alias,
-                                                 const name_collection_t& names,
-                                                 logical_plan::parameter_node_t* params,
-                                                 logical_plan::node_ptr& group) {
+    expression_ptr transformer::case_expr_to_scalar(CaseExpr* node,
+                                                    const char* alias,
+                                                    const name_collection_t& names,
+                                                    logical_plan::parameter_node_t* params,
+                                                    logical_plan::node_ptr group) {
         std::string expr_name = alias ? alias : "case_" + std::to_string(aggregate_counter_++);
         auto expr = make_scalar_expression(resource_,
                                            scalar_type::case_expr,
@@ -524,7 +524,17 @@ namespace components::sql::transform {
             expr->append_param(resolve_select_operand(def_node, names, params, group));
         }
 
-        group->append_expression(expr);
+        return expression_ptr(expr);
+    }
+
+    void transformer::transform_select_case_expr(CaseExpr* node,
+                                                 const char* alias,
+                                                 const name_collection_t& names,
+                                                 logical_plan::parameter_node_t* params,
+                                                 logical_plan::node_ptr& group) {
+        auto scalar_ptr = case_expr_to_scalar(node, alias, names, params, group);
+        group->append_expression(
+            reinterpret_cast<expressions::scalar_expression_ptr&>(scalar_ptr));
     }
 
     // Resolve a HAVING operand: FuncCall → find matching aggregate alias in group

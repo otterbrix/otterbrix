@@ -188,6 +188,16 @@ namespace components::sql::transform {
                                 } else {
                                     args.emplace_back(add_param_value(arg_value, params));
                                 }
+                            } else if (nodeTag(arg_value) == T_CaseExpr) {
+                                // SUM(CASE WHEN ...) and friends — pass the CASE through as a
+                                // scalar expression so validate sees its real param shape and
+                                // the executor can evaluate per row. The pre-existing fallback
+                                // would have wrapped the whole CASE as a constant parameter,
+                                // breaking aggregation.
+                                auto case_expr_node = pg_ptr_cast<CaseExpr>(arg_value);
+                                logical_plan::node_ptr null_group{};
+                                args.emplace_back(
+                                    case_expr_to_scalar(case_expr_node, nullptr, names, params, null_group));
                             } else {
                                 args.emplace_back(add_param_value(arg_value, params));
                             }

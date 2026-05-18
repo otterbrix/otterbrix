@@ -579,14 +579,34 @@ namespace services::dispatcher {
                 case compare_type::union_or:
                 case compare_type::union_not: {
                     for (auto& nested_expr : expr->children()) {
-                        auto nested_res = validate_schema(resource,
-                                                          reinterpret_cast<compare_expression_t*>(nested_expr.get()),
-                                                          parameters,
-                                                          schema_left,
-                                                          schema_right,
-                                                          same_schema);
-                        if (nested_res.is_error()) {
-                            return nested_res;
+                        // Children can be compare_expression (e.g. `col = 1`) OR
+                        // function_expression (e.g. `udf(col) returns bool`). Dispatch
+                        // on group so each child gets the right validator — without
+                        // this, key.path() inside function_expression args stays empty
+                        // and create_value_getter fails at runtime with
+                        // "key path is empty".
+                        if (nested_expr->group() == expression_group::function) {
+                            auto* fn = reinterpret_cast<function_expression_t*>(nested_expr.get());
+                            auto nested_res = validate_schema(resource,
+                                                              fn,
+                                                              parameters,
+                                                              schema_left,
+                                                              schema_right,
+                                                              same_schema);
+                            if (nested_res.is_error()) {
+                                return nested_res;
+                            }
+                        } else {
+                            auto nested_res =
+                                validate_schema(resource,
+                                                reinterpret_cast<compare_expression_t*>(nested_expr.get()),
+                                                parameters,
+                                                schema_left,
+                                                schema_right,
+                                                same_schema);
+                            if (nested_res.is_error()) {
+                                return nested_res;
+                            }
                         }
                     }
                     break;

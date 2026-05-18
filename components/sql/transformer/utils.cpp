@@ -55,13 +55,6 @@ namespace components::sql::transform {
 
     expressions::side_t deduce_side(const name_collection_t& names, const std::string& target_name) {
         if (target_name.empty()) {
-            // Unqualified column ref. In a non-JOIN query (no right table) it can only
-            // refer to the single source — default to left. Predicate evaluators
-            // (create_value_getter) require a concrete side, otherwise queries like
-            // SELECT ... WHERE udf(col, k) fail with "key side is undefined".
-            if (names.right_name.empty() && names.right_alias.empty()) {
-                return expressions::side_t::left;
-            }
             return expressions::side_t::undefined;
         }
         if (names.left_name.relname == target_name || names.left_alias == target_name) {

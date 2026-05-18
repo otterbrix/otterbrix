@@ -399,14 +399,26 @@ namespace components::sql::transform {
         std::string funcname = strVal(node->funcname->lst.front().data);
         std::pmr::vector<param_storage> args;
         args.reserve(node->args->lst.size());
+        // create_value_getter rejects keys whose side is still undefined at runtime.
+        // For unqualified column refs inside a function call in a non-JOIN query
+        // (no right table set), default the side to left so the predicate can read
+        // the value. Joins keep the original ambiguity-aware behaviour.
+        const bool no_right_side = names.right_name.empty() && names.right_alias.empty();
+        auto pin_side_to_left_if_unset = [no_right_side](expressions::key_t& field) {
+            if (no_right_side && field.side() == expressions::side_t::undefined) {
+                field.set_side(expressions::side_t::left);
+            }
+        };
         for (const auto& arg : node->args->lst) {
             if (nodeTag(arg.data) == T_ColumnRef) {
                 auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg.data), names);
                 key.deduce_side(names);
+                pin_side_to_left_if_unset(key.field);
                 args.emplace_back(std::move(key.field));
             } else if (nodeTag(arg.data) == T_A_Indirection) {
                 auto key = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(arg.data), names);
                 key.deduce_side(names);
+                pin_side_to_left_if_unset(key.field);
                 args.emplace_back(std::move(key.field));
             } else if (nodeTag(arg.data) == T_FuncCall) {
                 args.emplace_back(transform_a_expr_func(pg_ptr_cast<FuncCall>(arg.data), names, params));

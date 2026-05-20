@@ -1,0 +1,18 @@
+{
+  "name": "large_join_tier_quantity_sum",
+  "sql": "SELECT c.tier, SUM(o.quantity) AS qty FROM large_orders o JOIN large_customers c ON o.customer_id = c.customer_id WHERE o.order_id < 100 GROUP BY c.tier ORDER BY qty DESC",
+  "expected_rows": [
+    {
+      "tier": "bronze",
+      "qty": 102
+    },
+    {
+      "tier": "silver",
+      "qty": 100
+    },
+    {
+      "tier": "gold",
+      "qty": 98
+    }
+  ]
+}

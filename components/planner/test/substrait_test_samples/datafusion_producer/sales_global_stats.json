@@ -1,0 +1,11 @@
+{
+  "name": "sales_global_stats",
+  "sql": "SELECT COUNT(amount) AS cnt, SUM(amount) AS total_amount, MAX(amount) AS max_amount FROM sales",
+  "expected_rows": [
+    {
+      "cnt": 3,
+      "total_amount": 35,
+      "max_amount": 20
+    }
+  ]
+}

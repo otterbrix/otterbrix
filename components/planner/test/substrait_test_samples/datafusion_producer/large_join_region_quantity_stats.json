@@ -1,0 +1,107 @@
+{
+  "name": "large_join_region_quantity_stats",
+  "sql": "SELECT c.region, o.quantity, COUNT(o.order_id) AS orders FROM large_orders o JOIN large_customers c ON o.customer_id = c.customer_id WHERE o.amount >= 900 GROUP BY c.region, o.quantity ORDER BY c.region ASC, o.quantity ASC",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "region": "east",
+      "quantity": 1,
+      "orders": 25
+    },
+    {
+      "region": "east",
+      "quantity": 2,
+      "orders": 25
+    },
+    {
+      "region": "east",
+      "quantity": 3,
+      "orders": 25
+    },
+    {
+      "region": "east",
+      "quantity": 4,
+      "orders": 25
+    },
+    {
+      "region": "east",
+      "quantity": 5,
+      "orders": 25
+    },
+    {
+      "region": "north",
+      "quantity": 1,
+      "orders": 25
+    },
+    {
+      "region": "north",
+      "quantity": 2,
+      "orders": 25
+    },
+    {
+      "region": "north",
+      "quantity": 3,
+      "orders": 25
+    },
+    {
+      "region": "north",
+      "quantity": 4,
+      "orders": 25
+    },
+    {
+      "region": "north",
+      "quantity": 5,
+      "orders": 25
+    },
+    {
+      "region": "south",
+      "quantity": 1,
+      "orders": 25
+    },
+    {
+      "region": "south",
+      "quantity": 2,
+      "orders": 25
+    },
+    {
+      "region": "south",
+      "quantity": 3,
+      "orders": 25
+    },
+    {
+      "region": "south",
+      "quantity": 4,
+      "orders": 25
+    },
+    {
+      "region": "south",
+      "quantity": 5,
+      "orders": 25
+    },
+    {
+      "region": "west",
+      "quantity": 1,
+      "orders": 25
+    },
+    {
+      "region": "west",
+      "quantity": 2,
+      "orders": 25
+    },
+    {
+      "region": "west",
+      "quantity": 3,
+      "orders": 30
+    },
+    {
+      "region": "west",
+      "quantity": 4,
+      "orders": 25
+    },
+    {
+      "region": "west",
+      "quantity": 5,
+      "orders": 25
+    }
+  ]
+}

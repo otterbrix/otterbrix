@@ -1,0 +1,9 @@
+{
+  "name": "coll_project_sort_id_desc",
+  "order_sensitive": true,
+  "expected_rows": [
+    {"id": 3},
+    {"id": 2},
+    {"id": 1}
+  ]
+}

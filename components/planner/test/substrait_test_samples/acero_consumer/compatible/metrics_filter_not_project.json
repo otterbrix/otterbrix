@@ -1,0 +1,13 @@
+{
+  "name": "metrics_filter_not_project",
+  "expected_rows": [
+    {
+      "metric_id": 2,
+      "bucket": "a"
+    },
+    {
+      "metric_id": 3,
+      "bucket": "b"
+    }
+  ]
+}

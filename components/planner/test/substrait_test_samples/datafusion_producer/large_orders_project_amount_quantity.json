@@ -1,0 +1,26 @@
+{
+  "name": "large_orders_project_amount_quantity",
+  "sql": "SELECT order_id, amount + quantity AS score FROM large_orders WHERE order_id < 10 ORDER BY score DESC LIMIT 5",
+  "expected_rows": [
+    {
+      "order_id": 9,
+      "score": 339
+    },
+    {
+      "order_id": 8,
+      "score": 301
+    },
+    {
+      "order_id": 7,
+      "score": 263
+    },
+    {
+      "order_id": 6,
+      "score": 225
+    },
+    {
+      "order_id": 5,
+      "score": 187
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "name": "large_orders_customer_top_quantity",
+  "sql": "SELECT customer_id, SUM(quantity) AS qty FROM large_orders WHERE amount >= 900 GROUP BY customer_id ORDER BY qty DESC, customer_id ASC LIMIT 10",
+  "expected_rows": [
+    {
+      "customer_id": 4,
+      "qty": 25
+    },
+    {
+      "customer_id": 9,
+      "qty": 25
+    },
+    {
+      "customer_id": 14,
+      "qty": 25
+    },
+    {
+      "customer_id": 19,
+      "qty": 25
+    },
+    {
+      "customer_id": 54,
+      "qty": 25
+    },
+    {
+      "customer_id": 59,
+      "qty": 25
+    },
+    {
+      "customer_id": 64,
+      "qty": 25
+    },
+    {
+      "customer_id": 69,
+      "qty": 25
+    },
+    {
+      "customer_id": 74,
+      "qty": 25
+    },
+    {
+      "customer_id": 79,
+      "qty": 25
+    }
+  ]
+}

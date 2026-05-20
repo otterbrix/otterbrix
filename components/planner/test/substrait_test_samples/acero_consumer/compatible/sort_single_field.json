@@ -1,0 +1,15 @@
+{
+  "name": "sort_single_field",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "id": 1
+    },
+    {
+      "id": 2
+    },
+    {
+      "id": 3
+    }
+  ]
+}

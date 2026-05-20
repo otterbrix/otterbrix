@@ -1,0 +1,6 @@
+{
+  "name": "delete_filter",
+  "expected_relation": "write",
+  "expected_operation": "WRITE_OP_DELETE",
+  "expected_table": ["db", "coll"]
+}

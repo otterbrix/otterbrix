@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -144,6 +145,8 @@ def compare_query_result(case: dict, batches) -> dict:
 
 
 def export_datafusion_plans(pa, SessionContext, Producer, output_dir: Path, cases: list[dict]) -> list[dict]:
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     ctx = make_datafusion_context(pa, SessionContext)
     comparisons = []

@@ -1,0 +1,26 @@
+{
+  "name": "large_join_region_count_amount",
+  "sql": "SELECT c.region, COUNT(o.order_id) AS orders, SUM(o.amount) AS total FROM large_orders o JOIN large_customers c ON o.customer_id = c.customer_id WHERE o.quantity > 2 GROUP BY c.region ORDER BY orders DESC",
+  "expected_rows": [
+    {
+      "region": "south",
+      "orders": 750,
+      "total": 374000
+    },
+    {
+      "region": "east",
+      "orders": 750,
+      "total": 377750
+    },
+    {
+      "region": "west",
+      "orders": 750,
+      "total": 376500
+    },
+    {
+      "region": "north",
+      "orders": 750,
+      "total": 375250
+    }
+  ]
+}

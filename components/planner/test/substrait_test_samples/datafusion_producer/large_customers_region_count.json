@@ -1,0 +1,23 @@
+{
+  "name": "large_customers_region_count",
+  "sql": "SELECT region, COUNT(customer_id) AS customers FROM large_customers GROUP BY region ORDER BY region ASC",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "region": "east",
+      "customers": 50
+    },
+    {
+      "region": "north",
+      "customers": 50
+    },
+    {
+      "region": "south",
+      "customers": 50
+    },
+    {
+      "region": "west",
+      "customers": 50
+    }
+  ]
+}

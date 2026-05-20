@@ -1,0 +1,10 @@
+{
+  "name": "sales_count_total",
+  "sql": "SELECT COUNT(amount) AS cnt, SUM(amount) AS total FROM sales",
+  "expected_rows": [
+    {
+      "cnt": 3,
+      "total": 35
+    }
+  ]
+}

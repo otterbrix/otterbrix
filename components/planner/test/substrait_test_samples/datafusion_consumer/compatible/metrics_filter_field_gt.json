@@ -1,0 +1,17 @@
+{
+  "name": "metrics_filter_field_gt",
+  "expected_rows": [
+    {
+      "metric_id": 1,
+      "bucket": "a",
+      "x": 10,
+      "y": 3
+    },
+    {
+      "metric_id": 4,
+      "bucket": "b",
+      "x": 6,
+      "y": 2
+    }
+  ]
+}

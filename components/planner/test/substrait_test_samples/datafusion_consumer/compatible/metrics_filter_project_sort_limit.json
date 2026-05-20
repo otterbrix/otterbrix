@@ -1,0 +1,16 @@
+{
+  "name": "metrics_filter_project_sort_limit",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "metric_id": 1,
+      "bucket": "a",
+      "delta_xy": 7.0
+    },
+    {
+      "metric_id": 4,
+      "bucket": "b",
+      "delta_xy": 4.0
+    }
+  ]
+}

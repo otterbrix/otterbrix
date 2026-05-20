@@ -1,0 +1,22 @@
+{
+  "name": "metrics_aggregate_full_stats",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "bucket": "a",
+      "cnt": 2,
+      "sum_x": 15,
+      "avg_y": 5.0,
+      "min_y": 3,
+      "max_x": 10
+    },
+    {
+      "bucket": "b",
+      "cnt": 2,
+      "sum_x": 14,
+      "avg_y": 5.0,
+      "min_y": 2,
+      "max_x": 8
+    }
+  ]
+}

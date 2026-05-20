@@ -1,0 +1,25 @@
+{
+  "name": "metrics_project_delta_product",
+  "expected_rows": [
+    {
+      "metric_id": 1,
+      "delta_xy": 7.0,
+      "product_xy": 30.0
+    },
+    {
+      "metric_id": 2,
+      "delta_xy": -2.0,
+      "product_xy": 35.0
+    },
+    {
+      "metric_id": 3,
+      "delta_xy": 0.0,
+      "product_xy": 64.0
+    },
+    {
+      "metric_id": 4,
+      "delta_xy": 4.0,
+      "product_xy": 12.0
+    }
+  ]
+}

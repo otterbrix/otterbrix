@@ -1,0 +1,21 @@
+{
+  "name": "project_subtract_multiply",
+  "sql": "SELECT id, id - 1 AS id_minus_one, id * 2 AS id_double FROM coll",
+  "expected_rows": [
+    {
+      "id": 3,
+      "id_minus_one": 2,
+      "id_double": 6
+    },
+    {
+      "id": 1,
+      "id_minus_one": 0,
+      "id_double": 2
+    },
+    {
+      "id": 2,
+      "id_minus_one": 1,
+      "id_double": 4
+    }
+  ]
+}

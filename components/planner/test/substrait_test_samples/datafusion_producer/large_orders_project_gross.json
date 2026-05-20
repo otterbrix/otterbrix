@@ -1,0 +1,39 @@
+{
+  "name": "large_orders_project_gross",
+  "sql": "SELECT order_id, amount * quantity AS gross_amount FROM large_orders WHERE order_id < 8 ORDER BY order_id ASC",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "order_id": 0,
+      "gross_amount": 1
+    },
+    {
+      "order_id": 1,
+      "gross_amount": 76
+    },
+    {
+      "order_id": 2,
+      "gross_amount": 225
+    },
+    {
+      "order_id": 3,
+      "gross_amount": 448
+    },
+    {
+      "order_id": 4,
+      "gross_amount": 745
+    },
+    {
+      "order_id": 5,
+      "gross_amount": 186
+    },
+    {
+      "order_id": 6,
+      "gross_amount": 446
+    },
+    {
+      "order_id": 7,
+      "gross_amount": 780
+    }
+  ]
+}

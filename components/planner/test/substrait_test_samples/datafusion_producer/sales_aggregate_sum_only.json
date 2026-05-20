@@ -1,0 +1,14 @@
+{
+  "name": "sales_aggregate_sum_only",
+  "sql": "SELECT category, SUM(amount) AS total_amount FROM sales GROUP BY category",
+  "expected_rows": [
+    {
+      "category": "a",
+      "total_amount": 30
+    },
+    {
+      "category": "b",
+      "total_amount": 5
+    }
+  ]
+}

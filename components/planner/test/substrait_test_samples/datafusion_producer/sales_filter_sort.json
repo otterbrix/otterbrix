@@ -1,0 +1,15 @@
+{
+  "name": "sales_filter_sort",
+  "sql": "SELECT category, amount FROM sales WHERE amount >= 10 ORDER BY amount DESC",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "category": "a",
+      "amount": 20
+    },
+    {
+      "category": "a",
+      "amount": 10
+    }
+  ]
+}

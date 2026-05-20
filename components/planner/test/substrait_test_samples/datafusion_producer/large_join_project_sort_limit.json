@@ -1,0 +1,37 @@
+{
+  "name": "large_join_project_sort_limit",
+  "sql": "SELECT c.region, o.order_id, o.amount * o.quantity AS gross_amount FROM large_orders o JOIN large_customers c ON o.customer_id = c.customer_id WHERE o.amount >= 990 ORDER BY gross_amount DESC, o.order_id ASC LIMIT 6",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "region": "east",
+      "order_id": 54,
+      "gross_amount": 4995
+    },
+    {
+      "region": "east",
+      "order_id": 1054,
+      "gross_amount": 4995
+    },
+    {
+      "region": "east",
+      "order_id": 2054,
+      "gross_amount": 4995
+    },
+    {
+      "region": "east",
+      "order_id": 3054,
+      "gross_amount": 4995
+    },
+    {
+      "region": "east",
+      "order_id": 4054,
+      "gross_amount": 4995
+    },
+    {
+      "region": "south",
+      "order_id": 189,
+      "gross_amount": 4970
+    }
+  ]
+}

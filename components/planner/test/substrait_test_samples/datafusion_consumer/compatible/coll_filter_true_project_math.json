@@ -1,0 +1,17 @@
+{
+  "name": "coll_filter_true_project_math",
+  "expected_rows": [
+    {
+      "id": 3,
+      "id_plus_id": 6
+    },
+    {
+      "id": 1,
+      "id_plus_id": 2
+    },
+    {
+      "id": 2,
+      "id_plus_id": 4
+    }
+  ]
+}

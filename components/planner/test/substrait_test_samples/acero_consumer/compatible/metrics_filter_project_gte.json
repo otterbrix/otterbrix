@@ -1,0 +1,20 @@
+{
+  "name": "metrics_filter_project_gte",
+  "expected_rows": [
+    {
+      "metric_id": 1,
+      "x": 10,
+      "y": 3
+    },
+    {
+      "metric_id": 3,
+      "x": 8,
+      "y": 8
+    },
+    {
+      "metric_id": 4,
+      "x": 6,
+      "y": 2
+    }
+  ]
+}

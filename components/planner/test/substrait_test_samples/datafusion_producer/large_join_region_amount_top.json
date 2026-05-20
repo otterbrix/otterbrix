@@ -1,0 +1,26 @@
+{
+  "name": "large_join_region_amount_top",
+  "sql": "SELECT c.region, o.amount FROM large_orders o JOIN large_customers c ON o.customer_id = c.customer_id WHERE o.amount > 995 ORDER BY o.amount DESC LIMIT 5",
+  "expected_rows": [
+    {
+      "region": "west",
+      "amount": 1000
+    },
+    {
+      "region": "west",
+      "amount": 1000
+    },
+    {
+      "region": "west",
+      "amount": 1000
+    },
+    {
+      "region": "west",
+      "amount": 1000
+    },
+    {
+      "region": "west",
+      "amount": 1000
+    }
+  ]
+}

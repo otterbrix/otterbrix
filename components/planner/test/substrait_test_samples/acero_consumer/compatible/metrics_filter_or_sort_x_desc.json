@@ -1,0 +1,9 @@
+{
+  "name": "metrics_filter_or_sort_x_desc",
+  "order_sensitive": true,
+  "expected_rows": [
+    {"metric_id": 1, "bucket": "a", "x": 10, "y": 3},
+    {"metric_id": 4, "bucket": "b", "x": 6, "y": 2},
+    {"metric_id": 2, "bucket": "a", "x": 5, "y": 7}
+  ]
+}

@@ -84,6 +84,18 @@ else ()
     find_program(SUBSTRAIT_CONSUMER_PYTHON NAMES python3 python)
 endif ()
 
+set(OTTERBRIX_SUBSTRAIT_VALIDATOR "" CACHE FILEPATH "substrait-validator executable")
+if (OTTERBRIX_SUBSTRAIT_VALIDATOR)
+    set(SUBSTRAIT_VALIDATOR_EXECUTABLE ${OTTERBRIX_SUBSTRAIT_VALIDATOR})
+else ()
+    find_program(SUBSTRAIT_VALIDATOR_EXECUTABLE NAMES substrait-validator)
+endif ()
+
+set(SUBSTRAIT_VALIDATOR_ARGS)
+if (SUBSTRAIT_VALIDATOR_EXECUTABLE)
+    list(APPEND SUBSTRAIT_VALIDATOR_ARGS --validator ${SUBSTRAIT_VALIDATOR_EXECUTABLE})
+endif ()
+
 if (SUBSTRAIT_CONSUMER_PYTHON)
     add_test(
             NAME components::planner::substrait::external_producer_datafusion
@@ -113,6 +125,70 @@ if (SUBSTRAIT_CONSUMER_PYTHON)
     set_tests_properties(
             components::planner::substrait::external_consumer_datafusion
             PROPERTIES
+            DEPENDS substrait_export_samples
+            SKIP_RETURN_CODE 77
+    )
+
+    add_test(
+            NAME components::planner::substrait::external_consumer_datafusion_write_nodes
+            COMMAND
+            ${SUBSTRAIT_CONSUMER_PYTHON}
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_substrait_datafusion_write_consumer.py
+            --exporter $<TARGET_FILE:substrait_export_samples>
+            --work-dir ${CMAKE_CURRENT_BINARY_DIR}/external_consumers/datafusion_write_nodes
+            --samples-dir ${CMAKE_CURRENT_SOURCE_DIR}/substrait_test_samples
+    )
+    set_tests_properties(
+            components::planner::substrait::external_consumer_datafusion_write_nodes
+            PROPERTIES
+            DEPENDS substrait_export_samples
+            SKIP_RETURN_CODE 77
+    )
+
+    add_test(
+            NAME components::planner::substrait::external_consumer_acero
+            COMMAND
+            ${SUBSTRAIT_CONSUMER_PYTHON}
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_substrait_acero_consumer.py
+            --exporter $<TARGET_FILE:substrait_export_samples>
+            --work-dir ${CMAKE_CURRENT_BINARY_DIR}/external_consumers/acero
+            --samples-dir ${CMAKE_CURRENT_SOURCE_DIR}/substrait_test_samples
+    )
+    set_tests_properties(
+            components::planner::substrait::external_consumer_acero
+            PROPERTIES
+            DEPENDS substrait_export_samples
+            SKIP_RETURN_CODE 77
+    )
+
+    add_test(
+            NAME components::planner::substrait::external_producer_acero
+            COMMAND
+            ${SUBSTRAIT_CONSUMER_PYTHON}
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_substrait_acero_producer.py
+            --work-dir ${CMAKE_CURRENT_BINARY_DIR}/external_producers/acero
+            --samples-dir ${CMAKE_CURRENT_SOURCE_DIR}/substrait_test_samples
+    )
+    set_tests_properties(
+            components::planner::substrait::external_producer_acero
+            PROPERTIES
+            SKIP_RETURN_CODE 77
+    )
+
+    add_test(
+            NAME components::planner::substrait::external_consumer_validator
+            COMMAND
+            ${SUBSTRAIT_CONSUMER_PYTHON}
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_substrait_validator_consumer.py
+            --exporter $<TARGET_FILE:substrait_export_samples>
+            --work-dir ${CMAKE_CURRENT_BINARY_DIR}/external_consumers/substrait_validator
+            --samples-dir ${CMAKE_CURRENT_SOURCE_DIR}/substrait_test_samples
+            ${SUBSTRAIT_VALIDATOR_ARGS}
+    )
+    set_tests_properties(
+            components::planner::substrait::external_consumer_validator
+            PROPERTIES
+            DEPENDS substrait_export_samples
             SKIP_RETURN_CODE 77
     )
 endif ()

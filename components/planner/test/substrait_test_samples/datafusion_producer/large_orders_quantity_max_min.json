@@ -1,0 +1,31 @@
+{
+  "name": "large_orders_quantity_max_min",
+  "sql": "SELECT quantity, MAX(amount) AS max_amount, MIN(amount) AS min_amount FROM large_orders GROUP BY quantity ORDER BY quantity ASC",
+  "expected_rows": [
+    {
+      "quantity": 1,
+      "max_amount": 996,
+      "min_amount": 1
+    },
+    {
+      "quantity": 2,
+      "max_amount": 998,
+      "min_amount": 3
+    },
+    {
+      "quantity": 3,
+      "max_amount": 1000,
+      "min_amount": 5
+    },
+    {
+      "quantity": 4,
+      "max_amount": 997,
+      "min_amount": 2
+    },
+    {
+      "quantity": 5,
+      "max_amount": 999,
+      "min_amount": 4
+    }
+  ]
+}

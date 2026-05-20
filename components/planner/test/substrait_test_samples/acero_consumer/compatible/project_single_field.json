@@ -1,0 +1,14 @@
+{
+  "name": "project_single_field",
+  "expected_rows": [
+    {
+      "id_alias": 3
+    },
+    {
+      "id_alias": 1
+    },
+    {
+      "id_alias": 2
+    }
+  ]
+}

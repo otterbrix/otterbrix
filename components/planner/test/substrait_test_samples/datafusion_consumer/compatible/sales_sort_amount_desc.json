@@ -1,0 +1,18 @@
+{
+  "name": "sales_sort_amount_desc",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "category": "a",
+      "amount": 20
+    },
+    {
+      "category": "a",
+      "amount": 10
+    },
+    {
+      "category": "b",
+      "amount": 5
+    }
+  ]
+}

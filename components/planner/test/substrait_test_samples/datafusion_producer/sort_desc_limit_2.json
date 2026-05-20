@@ -1,0 +1,13 @@
+{
+  "name": "sort_desc_limit_2",
+  "sql": "SELECT id FROM coll ORDER BY id DESC LIMIT 2",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "id": 3
+    },
+    {
+      "id": 2
+    }
+  ]
+}

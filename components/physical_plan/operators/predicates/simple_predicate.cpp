@@ -74,7 +74,8 @@ namespace components::operators::predicates {
 
     simple_predicate::simple_predicate(std::pmr::memory_resource* resource, row_check_fn_t func)
         : resource_(resource)
-        , func_(std::move(func)) {}
+        , func_(std::move(func))
+        , nested_(resource_) {}
 
     simple_predicate::simple_predicate(std::pmr::memory_resource* resource,
                                        std::pmr::vector<predicate_ptr>&& nested,

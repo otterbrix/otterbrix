@@ -25,10 +25,7 @@ namespace components::logical_plan {
                                                  core::macroname_t macroname,
                                                  std::vector<std::string> parameters,
                                                  core::body_sql_t body_sql) {
-        return {new node_create_macro_t{resource,
-                                        std::move(macroname),
-                                        std::move(parameters),
-                                        std::move(body_sql)}};
+        return {new node_create_macro_t{resource, std::move(macroname), std::move(parameters), std::move(body_sql)}};
     }
 
 } // namespace components::logical_plan

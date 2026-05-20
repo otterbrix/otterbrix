@@ -33,15 +33,14 @@ namespace components::sql::transform {
         }
 
         auto seq = logical_plan::make_node_create_sequence(resource_,
-                                                            core::seqname_t{std::move(qn.relname)},
-                                                            start,
-                                                            increment,
-                                                            min_value,
-                                                            max_value);
+                                                           core::seqname_t{std::move(qn.relname)},
+                                                           start,
+                                                           increment,
+                                                           min_value,
+                                                           max_value);
         // Wrap with namespace resolve so enrich's create_sequence_t case can
         // read ns_oid from plan-tree idx.
-        return maybe_wrap_with_catalog_resolve_namespace(
-            resource_, db_for_resolve, std::move(seq));
+        return maybe_wrap_with_catalog_resolve_namespace(resource_, db_for_resolve, std::move(seq));
     }
 
 } // namespace components::sql::transform

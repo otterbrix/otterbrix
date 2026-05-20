@@ -3,10 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <components/catalog/catalog_codes.hpp>
+#include <components/catalog/dependency_walker.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <fstream>
 #include <limits>
-#include <components/catalog/dependency_walker.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 #include <unordered_set>
 
@@ -26,15 +26,12 @@ namespace services::disk {
         struct behavior_expected_ids_t;
 
         template<auto... Ptrs>
-        struct behavior_expected_ids_t<
-            actor_zeta::type_traits::type_list<actor_zeta::method_map_entry<Ptrs>...>> {
+        struct behavior_expected_ids_t<actor_zeta::type_traits::type_list<actor_zeta::method_map_entry<Ptrs>...>> {
             static constexpr std::array<actor_zeta::mailbox::message_id, sizeof...(Ptrs)> value{
-                actor_zeta::msg_id<manager_disk_t, Ptrs>...
-            };
+                actor_zeta::msg_id<manager_disk_t, Ptrs>...};
         };
 
-        constexpr auto kImplementedIds =
-            behavior_expected_ids_t<manager_disk_t::dispatch_traits::methods>::value;
+        constexpr auto kImplementedIds = behavior_expected_ids_t<manager_disk_t::dispatch_traits::methods>::value;
 
         constexpr std::array kBehaviorHandledIds{
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::flush>,
@@ -75,20 +72,25 @@ namespace services::disk {
         };
 
         constexpr bool behavior_covers_all_implements() noexcept {
-            if (kImplementedIds.size() != kBehaviorHandledIds.size()) return false;
+            if (kImplementedIds.size() != kBehaviorHandledIds.size())
+                return false;
             for (auto id : kImplementedIds) {
                 bool found = false;
                 for (auto hid : kBehaviorHandledIds) {
-                    if (id == hid) { found = true; break; }
+                    if (id == hid) {
+                        found = true;
+                        break;
+                    }
                 }
-                if (!found) return false;
+                if (!found)
+                    return false;
             }
             return true;
         }
 
         static_assert(behavior_covers_all_implements(),
-            "behavior() is out of sync with dispatch_traits: "
-            "add a case to behavior() AND an entry to kBehaviorHandledIds");
+                      "behavior() is out of sync with dispatch_traits: "
+                      "add a case to behavior() AND an entry to kBehaviorHandledIds");
     } // namespace
 
     // ---- table_storage_t implementations ----
@@ -414,6 +416,5 @@ namespace services::disk {
                 break;
         }
     }
-
 
 } // namespace services::disk

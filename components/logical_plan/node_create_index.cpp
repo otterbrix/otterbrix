@@ -48,9 +48,8 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    node_create_index_ptr make_node_create_index(std::pmr::memory_resource* resource,
-                                                 core::indexname_t indexname,
-                                                 index_type type) {
+    node_create_index_ptr
+    make_node_create_index(std::pmr::memory_resource* resource, core::indexname_t indexname, index_type type) {
         return {new node_create_index_t{resource, std::move(indexname), type}};
     }
 

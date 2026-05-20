@@ -250,7 +250,7 @@ namespace components::compute {
         // LOCAL registries must agree so validate/predicate lookups are
         // cross-registry stable.
         [[nodiscard]] core::result_wrapper_t<function_uid> add_function_with_uid(function_uid uid,
-                                                                                  function_ptr function);
+                                                                                 function_ptr function);
         function* get_function(function_uid uid) const;
         [[nodiscard]] std::vector<std::pair<std::string, function_uid>> get_functions() const;
 
@@ -277,24 +277,21 @@ namespace components::compute {
     // TODO: could be constexpr after C++20
     // TODO: initialize DEFAULT_FUNCTIONS with register_default_functions() call
     static const std::array<std::pair<std::string, registered_func_id>, 5> DEFAULT_FUNCTIONS{
-        std::pair<std::string, registered_func_id>{
-            "sum",
-            {0,
-             {kernel_signature_t{function_type_t::aggregate,
-                                 {input_type::make_numeric()},
-                                 {output_type::same_type_at(0)}}}}},
-        std::pair<std::string, registered_func_id>{
-            "min",
-            {1,
-             {kernel_signature_t{function_type_t::aggregate,
-                                 {input_type::make_always_true()},
-                                 {output_type::same_type_at(0)}}}}},
-        std::pair<std::string, registered_func_id>{
-            "max",
-            {2,
-             {kernel_signature_t{function_type_t::aggregate,
-                                 {input_type::make_always_true()},
-                                 {output_type::same_type_at(0)}}}}},
+        std::pair<std::string, registered_func_id>{"sum",
+                                                   {0,
+                                                    {kernel_signature_t{function_type_t::aggregate,
+                                                                        {input_type::make_numeric()},
+                                                                        {output_type::same_type_at(0)}}}}},
+        std::pair<std::string, registered_func_id>{"min",
+                                                   {1,
+                                                    {kernel_signature_t{function_type_t::aggregate,
+                                                                        {input_type::make_always_true()},
+                                                                        {output_type::same_type_at(0)}}}}},
+        std::pair<std::string, registered_func_id>{"max",
+                                                   {2,
+                                                    {kernel_signature_t{function_type_t::aggregate,
+                                                                        {input_type::make_always_true()},
+                                                                        {output_type::same_type_at(0)}}}}},
         std::pair<std::string, registered_func_id>{
             "count",
             {3,
@@ -302,12 +299,11 @@ namespace components::compute {
                                  {input_type::make_always_true()},
                                  {output_type::same_type_at(0)}},
               kernel_signature_t{function_type_t::aggregate, {}, {output_type::fixed(types::logical_type::UBIGINT)}}}}},
-        std::pair<std::string, registered_func_id>{
-            "avg",
-            {4,
-             {kernel_signature_t{function_type_t::aggregate,
-                                 {input_type::make_numeric()},
-                                 {output_type::same_type_at(0)}}}}}};
+        std::pair<std::string, registered_func_id>{"avg",
+                                                   {4,
+                                                    {kernel_signature_t{function_type_t::aggregate,
+                                                                        {input_type::make_numeric()},
+                                                                        {output_type::same_type_at(0)}}}}}};
 
     void register_default_functions(function_registry_t& registry);
 

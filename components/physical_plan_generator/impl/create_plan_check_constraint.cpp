@@ -12,12 +12,10 @@ namespace services::planner::impl {
                                  const components::logical_plan::node_ptr& node,
                                  const components::logical_plan::storage_parameters* params) {
         auto* n = static_cast<components::logical_plan::node_check_constraint_t*>(node.get());
-        auto plan = boost::intrusive_ptr(
-            new components::operators::operator_check_constraint_t(
-                context.resource,
-                context.log.clone(),
-                n->not_null_columns(),
-                n->check_exprs()));
+        auto plan = boost::intrusive_ptr(new components::operators::operator_check_constraint_t(context.resource,
+                                                                                                context.log.clone(),
+                                                                                                n->not_null_columns(),
+                                                                                                n->check_exprs()));
         if (!node->children().empty()) {
             plan->set_children(create_plan(context, function_registry, node->children().front(), {}, params));
         }

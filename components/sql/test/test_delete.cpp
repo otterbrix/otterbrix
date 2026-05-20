@@ -12,7 +12,10 @@ using namespace components::sql::transform;
 #define TEST_SIMPLE_DELETE(QUERY, RESULT, PARAMS)                                                                      \
     SECTION(QUERY) {                                                                                                   \
         auto select = linitial(raw_parser(&arena_resource, QUERY));                                                    \
-        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));           \
+        auto result = ([](auto _w) {                                                                                   \
+            REQUIRE_FALSE(_w.has_error());                                                                             \
+            return _w.value();                                                                                         \
+        }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));                                            \
         auto node = result.node;                                                                                       \
         if (node->type() == components::logical_plan::node_type::sequence_t) {                                         \
             node = node->children().back();                                                                            \

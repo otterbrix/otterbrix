@@ -15,7 +15,7 @@ namespace components::catalog {
     struct drop_step_t {
         oid_t classid{INVALID_OID}; // catalog table that owns objid
         oid_t objid{INVALID_OID};   // object to drop
-        char  deptype{'n'};         // deptype of the pg_depend edge that drove this step
+        char deptype{'n'};          // deptype of the pg_depend edge that drove this step
     };
 
     // Result of planning a DROP operation (CASCADE or RESTRICT).
@@ -42,9 +42,9 @@ namespace components::catalog {
     // behavior: restrict_ → return immediately with blocking_oid if any 'n' dependency
     //           exists; cascade_ → compute full topological drop order.
     cascade_plan_t plan_drop(std::pmr::memory_resource* resource,
-                              oid_t seed_classid,
-                              oid_t seed_oid,
-                              drop_behavior_t behavior,
-                              const fetch_deps_fn& fetch_deps);
+                             oid_t seed_classid,
+                             oid_t seed_oid,
+                             drop_behavior_t behavior,
+                             const fetch_deps_fn& fetch_deps);
 
 } // namespace components::catalog

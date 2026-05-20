@@ -11,19 +11,19 @@ namespace components::logical_plan {
     // Fields are set at plan time; the operator calls disk.append_pg_catalog_row at runtime.
     class node_primitive_write_t final : public node_t {
     public:
-        node_primitive_write_t(std::pmr::memory_resource*   resource,
-                                catalog::oid_t                catalog_table_oid,
-                                vector::data_chunk_t          row);
+        node_primitive_write_t(std::pmr::memory_resource* resource,
+                               catalog::oid_t catalog_table_oid,
+                               vector::data_chunk_t row);
 
-        catalog::oid_t                catalog_table_oid() const noexcept { return catalog_table_oid_; }
-        vector::data_chunk_t&         row()              noexcept       { return row_; }
-        const vector::data_chunk_t&   row()              const noexcept { return row_; }
+        catalog::oid_t catalog_table_oid() const noexcept { return catalog_table_oid_; }
+        vector::data_chunk_t& row() noexcept { return row_; }
+        const vector::data_chunk_t& row() const noexcept { return row_; }
 
     private:
-        hash_t      hash_impl()      const override;
+        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
-        catalog::oid_t       catalog_table_oid_;
+        catalog::oid_t catalog_table_oid_;
         vector::data_chunk_t row_;
     };
 

@@ -27,9 +27,7 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    node_insert_ptr make_node_insert(std::pmr::memory_resource* resource) {
-        return {new node_insert_t{resource}};
-    }
+    node_insert_ptr make_node_insert(std::pmr::memory_resource* resource) { return {new node_insert_t{resource}}; }
 
     node_insert_ptr make_node_insert(std::pmr::memory_resource* resource,
                                      const components::vector::data_chunk_t& chunk) {
@@ -38,8 +36,7 @@ namespace components::logical_plan {
         return res;
     }
 
-    node_insert_ptr make_node_insert(std::pmr::memory_resource* resource,
-                                     components::vector::data_chunk_t&& chunk) {
+    node_insert_ptr make_node_insert(std::pmr::memory_resource* resource, components::vector::data_chunk_t&& chunk) {
         auto res = make_node_insert(resource);
         res->append_child(make_node_raw_data(resource, std::move(chunk)));
         return res;

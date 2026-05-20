@@ -16,8 +16,7 @@ namespace components::logical_plan {
         return s.str();
     }
 
-    node_allocate_oids_ptr make_node_allocate_oids(std::pmr::memory_resource* resource,
-                                                    std::size_t count) {
+    node_allocate_oids_ptr make_node_allocate_oids(std::pmr::memory_resource* resource, std::size_t count) {
         return {new node_allocate_oids_t{resource, count}};
     }
 

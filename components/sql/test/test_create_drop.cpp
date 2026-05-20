@@ -67,13 +67,19 @@ TEST_CASE("components::sql::table") {
 
     SECTION("create with uuid") {
         auto create = raw_parser(&arena_resource, "CREATE TABLE uuid.db_name.schema.table_name()")->lst.front().data;
-        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
         REQUIRE(result.node->to_string() == R"_($sequence[2])_");
     }
 
     SECTION("create with schema") {
         auto create = raw_parser(&arena_resource, "CREATE TABLE db_name.schema.table_name()")->lst.front().data;
-        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
         REQUIRE(result.node->to_string() == R"_($sequence[2])_");
     }
 
@@ -85,14 +91,20 @@ TEST_CASE("components::sql::table") {
     // after enrich stamps namespace_oid + table_oid.
     SECTION("drop with uuid") {
         auto drop = raw_parser(&arena_resource, "DROP TABLE uuid.db_name.schema.table_name")->lst.front().data;
-        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(drop)).finalize()));
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(drop)).finalize()));
         // result.node is the wrapping sequence_t: 1 resolve_ns + 1 resolve_table + 1 drop = 3 children.
         REQUIRE(result.node->to_string() == R"_($sequence[3])_");
     }
 
     SECTION("drop with schema") {
         auto drop = raw_parser(&arena_resource, "DROP TABLE db_name.schema.table_name")->lst.front().data;
-        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(drop)).finalize()));
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(drop)).finalize()));
         REQUIRE(result.node->to_string() == R"_($sequence[3])_");
     }
 
@@ -200,14 +212,20 @@ TEST_CASE("components::sql::index") {
     SECTION("create with uuid") {
         auto create =
             raw_parser(&arena_resource, "CREATE INDEX some_idx ON uuid.db.schema.table (field);")->lst.front().data;
-        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
         REQUIRE(result.node->to_string() == R"_($sequence[3])_");
     }
 
     SECTION("create with schema") {
         auto create =
             raw_parser(&arena_resource, "CREATE INDEX some_idx ON db.schema.table (field);")->lst.front().data;
-        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
         REQUIRE(result.node->to_string() == R"_($sequence[3])_");
     }
 
@@ -217,13 +235,19 @@ TEST_CASE("components::sql::index") {
     // resolve_table_index, drop_index). The drop node carries no user-typed names.
     SECTION("drop with uuid") {
         auto drop = raw_parser(&arena_resource, "DROP INDEX uuid.db.schema.table.some_idx")->lst.front().data;
-        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(drop)).finalize()));
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(drop)).finalize()));
         REQUIRE(result.node->to_string() == R"_($sequence[4])_");
     }
 
     SECTION("drop with schema") {
         auto drop = raw_parser(&arena_resource, "DROP INDEX db.schema.table.some_idx")->lst.front().data;
-        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(drop)).finalize()));
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(drop)).finalize()));
         REQUIRE(result.node->to_string() == R"_($sequence[4])_");
     }
 
@@ -236,11 +260,9 @@ TEST_CASE("components::sql::types") {
     transform::transformer transformer(&resource);
 
     // CREATE TYPE is wrapped in sequence_t(resolve_ns?, resolve_field_types..., create_type).
-    TEST_TRANSFORMER_OK("CREATE TYPE custom_type_name AS (f1 int, f2 string);",
-                        R"_($sequence[3])_");
+    TEST_TRANSFORMER_OK("CREATE TYPE custom_type_name AS (f1 int, f2 string);", R"_($sequence[3])_");
 
-    TEST_TRANSFORMER_OK("CREATE TYPE custom_enum AS ENUM ('f1', 'f2', 'f3');",
-                        R"_($sequence[3])_");
+    TEST_TRANSFORMER_OK("CREATE TYPE custom_enum AS ENUM ('f1', 'f2', 'f3');", R"_($sequence[3])_");
 
     // DROP TYPE is wrapped in sequence_t(resolve_ns, resolve_type, drop_type).
     TEST_TRANSFORMER_OK("DROP TYPE custom_type_name", R"_($sequence[3])_");
@@ -250,6 +272,5 @@ TEST_CASE("components::sql::types") {
 
     // INSERT is wrapped in sequence_t(resolve_table, resolve_constraint,
     // insert) — no dbname so no resolve_namespace.
-    TEST_TRANSFORMER_OK("INSERT INTO table_ (custom_type_name) VALUES (ROW('text', 42))",
-                        R"_($sequence[3])_");
+    TEST_TRANSFORMER_OK("INSERT INTO table_ (custom_type_name) VALUES (ROW('text', 42))", R"_($sequence[3])_");
 }

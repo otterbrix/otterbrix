@@ -21,15 +21,16 @@ namespace components::logical_plan {
 
     std::string node_create_constraint_t::to_string_impl() const {
         std::stringstream s;
-        s << "$create_constraint: " << dbname_ << "." << relname_
-          << " name=" << name_ << " kind=" << static_cast<char>(kind_);
+        s << "$create_constraint: " << dbname_ << "." << relname_ << " name=" << name_
+          << " kind=" << static_cast<char>(kind_);
         if (!ref_dbname_.empty()) {
             s << " ref_db=" << ref_dbname_;
         }
         if (!fk_col_attoids_.empty()) {
             s << " fk_attoids=[";
             for (std::size_t i = 0; i < fk_col_attoids_.size(); ++i) {
-                if (i) s << ',';
+                if (i)
+                    s << ',';
                 s << fk_col_attoids_[i];
             }
             s << ']';
@@ -37,7 +38,8 @@ namespace components::logical_plan {
         if (!ref_col_attoids_.empty()) {
             s << " ref_attoids=[";
             for (std::size_t i = 0; i < ref_col_attoids_.size(); ++i) {
-                if (i) s << ',';
+                if (i)
+                    s << ',';
                 s << ref_col_attoids_[i];
             }
             s << ']';
@@ -45,13 +47,12 @@ namespace components::logical_plan {
         return s.str();
     }
 
-    node_create_constraint_ptr
-    make_node_create_constraint(std::pmr::memory_resource* resource,
-                                std::string dbname,
-                                std::string relname,
-                                core::constraint_name_t name,
-                                constraint_kind kind,
-                                std::string ref_dbname) {
+    node_create_constraint_ptr make_node_create_constraint(std::pmr::memory_resource* resource,
+                                                           std::string dbname,
+                                                           std::string relname,
+                                                           core::constraint_name_t name,
+                                                           constraint_kind kind,
+                                                           std::string ref_dbname) {
         return {new node_create_constraint_t{resource,
                                              std::move(dbname),
                                              std::move(relname),

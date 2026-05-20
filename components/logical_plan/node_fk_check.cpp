@@ -17,8 +17,7 @@ namespace components::logical_plan {
 
     std::string node_fk_check_t::to_string_impl() const {
         std::ostringstream s;
-        s << "$fk_check: " << relname_
-          << " -> parent_oid=" << fk_.parent_table_oid;
+        s << "$fk_check: " << relname_ << " -> parent_oid=" << fk_.parent_table_oid;
         return s.str();
     }
 

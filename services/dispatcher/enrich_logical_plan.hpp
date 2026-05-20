@@ -38,27 +38,22 @@ namespace services::dispatcher {
         // resolve node's `resolved_metadata()` optional. Pointer stays valid
         // for the lifetime of the plan tree (intrusive_ptr keeps nodes alive
         // through the dispatcher's coroutine).
-        std::unordered_map<std::string, const components::logical_plan::resolved_table_metadata_t*>
-            tbl_md_by_qname;
+        std::unordered_map<std::string, const components::logical_plan::resolved_table_metadata_t*> tbl_md_by_qname;
         // table_oid → const resolved_table_metadata_t*. Mirror for oid-keyed
         // table metadata probes.
-        std::unordered_map<components::catalog::oid_t,
-                           const components::logical_plan::resolved_table_metadata_t*>
+        std::unordered_map<components::catalog::oid_t, const components::logical_plan::resolved_table_metadata_t*>
             tbl_md_by_oid;
         // Constraint snapshots keyed by parent table_oid, stamped by
         // operator_resolve_constraint_t at Pass 1 time.
-        std::unordered_map<components::catalog::oid_t,
-                           std::vector<components::catalog::fk_info_t>> outgoing_fks_by_oid;
-        std::unordered_map<components::catalog::oid_t,
-                           std::vector<components::catalog::fk_info_t>> referencing_fks_by_oid;
-        std::unordered_map<components::catalog::oid_t,
-                           std::vector<std::pair<std::string, std::string>>> check_exprs_by_oid;
+        std::unordered_map<components::catalog::oid_t, std::vector<components::catalog::fk_info_t>> outgoing_fks_by_oid;
+        std::unordered_map<components::catalog::oid_t, std::vector<components::catalog::fk_info_t>>
+            referencing_fks_by_oid;
+        std::unordered_map<components::catalog::oid_t, std::vector<std::pair<std::string, std::string>>>
+            check_exprs_by_oid;
         // "dbname|typename" -> const resolved_type_metadata_t*. Mirrors
         // plan_resolve_index_t::type_md_by_qname for enrich-only consumers
         // (drop_type_t, create_collection_t column-type resolution).
-        std::unordered_map<std::string,
-                           const components::logical_plan::resolved_type_metadata_t*>
-            type_md_by_qname;
+        std::unordered_map<std::string, const components::logical_plan::resolved_type_metadata_t*> type_md_by_qname;
     };
 
     // Walks the plan tree and fills catalog metadata fields into DML nodes
@@ -72,12 +67,11 @@ namespace services::dispatcher {
     // table_oid / namespace_oid without async catalog probes. When null,
     // enrich gathers a local index from `root` itself (recursive calls then
     // thread the gathered pointer through children).
-    actor_zeta::unique_future<void>
-    enrich_plan(components::logical_plan::node_ptr root,
-                actor_zeta::address_t disk_address,
-                components::execution_context_t ctx,
-                std::pmr::memory_resource* resource,
-                const enrich_resolve_idx_t* idx = nullptr);
+    actor_zeta::unique_future<void> enrich_plan(components::logical_plan::node_ptr root,
+                                                actor_zeta::address_t disk_address,
+                                                components::execution_context_t ctx,
+                                                std::pmr::memory_resource* resource,
+                                                const enrich_resolve_idx_t* idx = nullptr);
 
     // Propagate OIDs from sibling catalog_resolve_* nodes onto their consumer
     // nodes (drop/create/DML/alter) inside each sequence_t. Idempotent.

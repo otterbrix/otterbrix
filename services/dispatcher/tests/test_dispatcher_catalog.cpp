@@ -34,7 +34,11 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource, scheduler_, log_))
         , disk_config_(disk_path)
         , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
-        , wal_config_([&]() { configuration::config_wal c; c.on = false; return c; }())
+        , wal_config_([&]() {
+            configuration::config_wal c;
+            c.on = false;
+            return c;
+        }())
         , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource, scheduler_, wal_config_, log_)) {
         manager_dispatcher_->sync(
             std::make_tuple(manager_wal_->address(), manager_disk_->address(), actor_zeta::address_t::empty_address()));
@@ -79,10 +83,13 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
     // Resolve a namespace via disk actor — returns {found, oid}.
     resolve_namespace_result_t resolve_namespace(const std::string& name) {
         components::execution_context_t ctx{components::session::session_id_t{},
-                                              components::table::transaction_data{0, 0}, {}};
+                                            components::table::transaction_data{0, 0},
+                                            {}};
         auto [_, fut] = actor_zeta::otterbrix::send(manager_disk_->address(),
-                                                     &manager_disk_t::resolve_namespace,
-                                                     ctx, name, std::uint64_t{0});
+                                                    &manager_disk_t::resolve_namespace,
+                                                    ctx,
+                                                    name,
+                                                    std::uint64_t{0});
         scheduler_->run(10000);
         return std::move(fut).get();
     }
@@ -90,10 +97,14 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
     // Resolve a table via disk actor under a given namespace oid.
     resolve_table_result_t resolve_table(components::catalog::oid_t ns_oid, const std::string& tname) {
         components::execution_context_t ctx{components::session::session_id_t{},
-                                              components::table::transaction_data{0, 0}, {}};
+                                            components::table::transaction_data{0, 0},
+                                            {}};
         auto [_, fut] = actor_zeta::otterbrix::send(manager_disk_->address(),
-                                                     &manager_disk_t::resolve_table,
-                                                     ctx, ns_oid, tname, std::uint64_t{0});
+                                                    &manager_disk_t::resolve_table,
+                                                    ctx,
+                                                    ns_oid,
+                                                    tname,
+                                                    std::uint64_t{0});
         scheduler_->run(10000);
         return std::move(fut).get();
     }
@@ -102,7 +113,8 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         parser_arena_ = std::make_unique<std::pmr::monotonic_buffer_resource>(resource_);
         auto parse_result = linitial(raw_parser(parser_arena_.get(), query.c_str()));
         components::sql::transform::transformer local_transformer(resource_);
-        auto _wrap = local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_result)).finalize();
+        auto _wrap =
+            local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_result)).finalize();
         REQUIRE(!_wrap.has_error());
         auto view = _wrap.value();
 
@@ -133,7 +145,7 @@ TEST_CASE("services::dispatcher::schemeful_operations") {
     test_dispatcher test(mr.get(), "/tmp/test_dispatcher_disk_schemeful");
 
     test.execute_sql("CREATE DATABASE test;");
-    (void)test.take_result();
+    (void) test.take_result();
 
     test.execute_sql("CREATE TABLE test.test(fld1 int, fld2 string);");
     {
@@ -147,8 +159,10 @@ TEST_CASE("services::dispatcher::schemeful_operations") {
         // Locate columns by attname.
         bool seen_fld1 = false, seen_fld2 = false;
         for (const auto& col : rt.columns) {
-            if (col.attname == "fld1") seen_fld1 = true;
-            if (col.attname == "fld2") seen_fld2 = true;
+            if (col.attname == "fld1")
+                seen_fld1 = true;
+            if (col.attname == "fld2")
+                seen_fld2 = true;
         }
         REQUIRE(seen_fld1);
         REQUIRE(seen_fld2);
@@ -201,7 +215,7 @@ TEST_CASE("services::dispatcher::computed_operations") {
     test_dispatcher test(mr.get(), "/tmp/test_dispatcher_disk_computed");
 
     test.execute_sql("CREATE DATABASE test;");
-    (void)test.take_result();
+    (void) test.take_result();
 
     test.execute_sql("CREATE TABLE test.test();");
     {
@@ -235,8 +249,10 @@ TEST_CASE("services::dispatcher::computed_operations") {
         // After adoption the columns reflect the inserted shape.
         bool seen_name = false, seen_count = false;
         for (const auto& col : rt.columns) {
-            if (col.attname == "name") seen_name = true;
-            if (col.attname == "count") seen_count = true;
+            if (col.attname == "name")
+                seen_name = true;
+            if (col.attname == "count")
+                seen_count = true;
         }
         REQUIRE(seen_name);
         REQUIRE(seen_count);

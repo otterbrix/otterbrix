@@ -58,8 +58,7 @@ namespace services::disk {
                     // the sidecar.
                     continue;
                 }
-                trace(log_, "manager_disk_t::checkpoint_all checkpointing : oid={}",
-                      static_cast<unsigned>(tbl_oid));
+                trace(log_, "manager_disk_t::checkpoint_all checkpointing : oid={}", static_cast<unsigned>(tbl_oid));
 
                 const auto& otbx_path = entry->otbx_path;
                 auto prev_path = otbx_path;
@@ -68,12 +67,16 @@ namespace services::disk {
                 // Backup current checkpoint before overwriting (file stays open for block_manager)
                 std::error_code copy_error;
                 if (std::filesystem::exists(otbx_path)) {
-                    std::filesystem::copy_file(otbx_path, prev_path,
+                    std::filesystem::copy_file(otbx_path,
+                                               prev_path,
                                                std::filesystem::copy_options::overwrite_existing,
                                                copy_error);
                     if (copy_error) {
-                        warn(log_, "manager_disk_t::checkpoint_all , failed to copy {} to {} : {}",
-                             otbx_path.string(), prev_path.string(), copy_error.message());
+                        warn(log_,
+                             "manager_disk_t::checkpoint_all , failed to copy {} to {} : {}",
+                             otbx_path.string(),
+                             prev_path.string(),
+                             copy_error.message());
                     }
                 }
 
@@ -100,7 +103,9 @@ namespace services::disk {
                         std::error_code rename_error;
                         std::filesystem::rename(tmp_path, sidecar_path, rename_error);
                         if (rename_error) {
-                            warn(log_, "manager_disk_t::checkpoint_all sidecar rename failed: {}", rename_error.message());
+                            warn(log_,
+                                 "manager_disk_t::checkpoint_all sidecar rename failed: {}",
+                                 rename_error.message());
                         }
                     }
                 }
@@ -115,7 +120,6 @@ namespace services::disk {
                 // Tally min(prev_checkpoint_wal_id_) across DISK tables for safe WAL truncation.
                 min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
             }
-
         }
 
         if (!agents_.empty()) {
@@ -216,10 +220,8 @@ namespace services::disk {
     void manager_disk_t::create_storage_with_columns_sync(components::catalog::oid_t table_oid,
                                                           components::catalog::oid_t /*database_oid*/,
                                                           std::vector<components::table::column_definition_t> columns) {
-        trace(log_, "manager_disk_t::create_storage_with_columns_sync , oid : {}",
-              static_cast<unsigned>(table_oid));
-        storages_.emplace(table_oid,
-                           std::make_unique<collection_storage_entry_t>(resource(), std::move(columns)));
+        trace(log_, "manager_disk_t::create_storage_with_columns_sync , oid : {}", static_cast<unsigned>(table_oid));
+        storages_.emplace(table_oid, std::make_unique<collection_storage_entry_t>(resource(), std::move(columns)));
     }
 
     void manager_disk_t::create_storage_disk_sync(components::catalog::oid_t table_oid,
@@ -231,12 +233,12 @@ namespace services::disk {
               static_cast<unsigned>(table_oid),
               otbx_path.string());
         storages_.emplace(table_oid,
-                           std::make_unique<collection_storage_entry_t>(resource(), std::move(columns), otbx_path));
+                          std::make_unique<collection_storage_entry_t>(resource(), std::move(columns), otbx_path));
     }
 
     void manager_disk_t::load_storage_disk_sync(components::catalog::oid_t table_oid,
-                                                 components::catalog::oid_t /*database_oid*/,
-                                                 const std::filesystem::path& otbx_path) {
+                                                components::catalog::oid_t /*database_oid*/,
+                                                const std::filesystem::path& otbx_path) {
         trace(log_,
               "manager_disk_t::load_storage_disk_sync , oid : {} , path : {}",
               static_cast<unsigned>(table_oid),
@@ -247,9 +249,7 @@ namespace services::disk {
         const bool prev_exists = std::filesystem::exists(prev_path);
 
         if (!otbx_exists && prev_exists) {
-            warn(log_,
-                 "load_storage_disk_sync: {} missing, promoting .prev",
-                 otbx_path.string());
+            warn(log_, "load_storage_disk_sync: {} missing, promoting .prev", otbx_path.string());
             std::error_code ec;
             std::filesystem::rename(prev_path, otbx_path, ec);
             if (ec) {
@@ -262,10 +262,7 @@ namespace services::disk {
         try {
             storages_.emplace(table_oid, std::make_unique<collection_storage_entry_t>(resource(), otbx_path));
         } catch (const std::exception& e) {
-            warn(log_,
-                 "load_storage_disk_sync: failed to load {} : {}",
-                 otbx_path.string(),
-                 e.what());
+            warn(log_, "load_storage_disk_sync: failed to load {} : {}", otbx_path.string(), e.what());
             if (!prev_exists) {
                 throw;
             }
@@ -307,18 +304,17 @@ namespace services::disk {
     }
 
     wal::id_t manager_disk_t::peek_checkpoint_wal_id_from_disk(components::catalog::oid_t table_oid,
-                                                                components::catalog::oid_t database_oid) const noexcept {
+                                                               components::catalog::oid_t database_oid) const noexcept {
         auto it = storages_.find(table_oid);
         if (it != storages_.end()) {
             return it->second->table_storage.checkpoint_wal_id();
         }
-        if (config_.path.empty() || table_oid == components::catalog::INVALID_OID
-            || database_oid == components::catalog::INVALID_OID) {
+        if (config_.path.empty() || table_oid == components::catalog::INVALID_OID ||
+            database_oid == components::catalog::INVALID_OID) {
             return wal::id_t{0};
         }
-        auto sidecar = config_.path / std::to_string(static_cast<unsigned>(database_oid))
-                                    / std::to_string(static_cast<unsigned>(table_oid))
-                                    / "table.otbx.wal_id";
+        auto sidecar = config_.path / std::to_string(static_cast<unsigned>(database_oid)) /
+                       std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx.wal_id";
         std::ifstream f(sidecar, std::ios::binary);
         uint64_t v = 0;
         if (f && f.read(reinterpret_cast<char*>(&v), sizeof(v)) &&
@@ -329,23 +325,20 @@ namespace services::disk {
     }
 
     void manager_disk_t::load_storage_for_wal_replay_sync(components::catalog::oid_t table_oid,
-                                                           components::catalog::oid_t database_oid) {
-        if (has_storage(table_oid) || config_.path.empty() ||
-            table_oid == components::catalog::INVALID_OID ||
+                                                          components::catalog::oid_t database_oid) {
+        if (has_storage(table_oid) || config_.path.empty() || table_oid == components::catalog::INVALID_OID ||
             database_oid == components::catalog::INVALID_OID) {
             return;
         }
-        auto otbx_path = config_.path / std::to_string(static_cast<unsigned>(database_oid))
-                                      / std::to_string(static_cast<unsigned>(table_oid))
-                                      / "table.otbx";
+        auto otbx_path = config_.path / std::to_string(static_cast<unsigned>(database_oid)) /
+                         std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
         if (!std::filesystem::exists(otbx_path)) {
             return; // in-memory table — WAL replay creates it from the first INSERT chunk
         }
         try {
             load_storage_disk_sync(table_oid, database_oid, otbx_path);
         } catch (const std::exception& e) {
-            warn(log_, "load_storage_for_wal_replay_sync: failed to load {}: {}",
-                 otbx_path.string(), e.what());
+            warn(log_, "load_storage_for_wal_replay_sync: failed to load {}: {}", otbx_path.string(), e.what());
         }
     }
 

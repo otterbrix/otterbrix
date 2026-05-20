@@ -452,7 +452,9 @@ namespace components::types {
                                     std::move(alias));
     }
 
-    complex_logical_type complex_logical_type::create_struct(std::string name, const std::pmr::vector<complex_logical_type>& fields,std::string alias) {
+    complex_logical_type complex_logical_type::create_struct(std::string name,
+                                                             const std::pmr::vector<complex_logical_type>& fields,
+                                                             std::string alias) {
         return complex_logical_type(logical_type::STRUCT,
                                     std::make_unique<struct_logical_type_extension>(std::move(name), fields),
                                     std::move(alias));
@@ -495,7 +497,6 @@ namespace components::types {
         auto info = std::make_unique<unknown_logical_type_extension>(std::move(type_name));
         return {logical_type::UNKNOWN, std::move(info), std::move(alias)};
     }
-
 
     logical_type_extension::logical_type_extension(extension_type t, std::string alias)
         : type_(t)

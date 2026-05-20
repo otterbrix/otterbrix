@@ -1,10 +1,10 @@
 #include <catch2/catch.hpp>
-#include <core/pmr.hpp>
-#include <services/wal/wal_binary.hpp>
-#include <components/vector/data_chunk_binary.hpp>
 #include <components/tests/generaty.hpp>
+#include <components/vector/data_chunk_binary.hpp>
+#include <core/pmr.hpp>
 #include <services/wal/base.hpp>
 #include <services/wal/record.hpp>
+#include <services/wal/wal_binary.hpp>
 
 using namespace services::wal;
 using namespace components::types;
@@ -12,8 +12,7 @@ using namespace components::vector;
 
 // WAL binary serialization supports fixed-size and STRING types.
 // ARRAY/LIST not yet supported in binary format — use explicit types.
-static std::pmr::vector<components::types::complex_logical_type>
-wal_test_types(std::pmr::memory_resource* r) {
+static std::pmr::vector<components::types::complex_logical_type> wal_test_types(std::pmr::memory_resource* r) {
     using namespace components::types;
     std::pmr::vector<complex_logical_type> types(r);
     types.emplace_back(logical_type::BIGINT, "count");
@@ -33,8 +32,15 @@ TEST_CASE("wal_binary::encode_decode_insert") {
     auto chunk = gen_data_chunk(10, 0, wal_test_types(&resource), &resource);
 
     buffer_t buffer(&resource);
-    encode_insert(buffer, &resource, /*last_crc32=*/0, /*wal_id=*/1, /*txn_id=*/100,
-                  kTestTableOid, chunk, /*row_start=*/0, /*row_count=*/10);
+    encode_insert(buffer,
+                  &resource,
+                  /*last_crc32=*/0,
+                  /*wal_id=*/1,
+                  /*txn_id=*/100,
+                  kTestTableOid,
+                  chunk,
+                  /*row_start=*/0,
+                  /*row_count=*/10);
 
     REQUIRE(buffer.size() > 0);
 
@@ -63,8 +69,7 @@ TEST_CASE("wal_binary::encode_decode_delete") {
     std::vector<int64_t> row_ids = {1, 3, 5, 7, 9};
 
     buffer_t buffer(&resource);
-    encode_delete(buffer, /*last_crc32=*/0, /*wal_id=*/2, /*txn_id=*/101,
-                  kTestTableOid, row_ids.data(), /*count=*/5);
+    encode_delete(buffer, /*last_crc32=*/0, /*wal_id=*/2, /*txn_id=*/101, kTestTableOid, row_ids.data(), /*count=*/5);
 
     REQUIRE(buffer.size() > 0);
 
@@ -88,8 +93,15 @@ TEST_CASE("wal_binary::encode_decode_update") {
     std::vector<int64_t> row_ids = {0, 2, 4, 6, 8};
 
     buffer_t buffer(&resource);
-    encode_update(buffer, &resource, /*last_crc32=*/0, /*wal_id=*/3, /*txn_id=*/102,
-                  kTestTableOid, row_ids.data(), new_data, /*count=*/5);
+    encode_update(buffer,
+                  &resource,
+                  /*last_crc32=*/0,
+                  /*wal_id=*/3,
+                  /*txn_id=*/102,
+                  kTestTableOid,
+                  row_ids.data(),
+                  new_data,
+                  /*count=*/5);
 
     REQUIRE(buffer.size() > 0);
 
@@ -139,8 +151,15 @@ TEST_CASE("wal_binary::crc32_corruption") {
     auto chunk = gen_data_chunk(10, &resource);
 
     buffer_t buffer(&resource);
-    encode_insert(buffer, &resource, /*last_crc32=*/0, /*wal_id=*/1, /*txn_id=*/100,
-                  kTestTableOid, chunk, /*row_start=*/0, /*row_count=*/10);
+    encode_insert(buffer,
+                  &resource,
+                  /*last_crc32=*/0,
+                  /*wal_id=*/1,
+                  /*txn_id=*/100,
+                  kTestTableOid,
+                  chunk,
+                  /*row_start=*/0,
+                  /*row_count=*/10);
 
     REQUIRE(buffer.size() > 29);
 
@@ -157,8 +176,15 @@ TEST_CASE("wal_binary::truncated_input") {
     auto chunk = gen_data_chunk(10, &resource);
 
     buffer_t buffer(&resource);
-    encode_insert(buffer, &resource, /*last_crc32=*/0, /*wal_id=*/1, /*txn_id=*/100,
-                  kTestTableOid, chunk, /*row_start=*/0, /*row_count=*/10);
+    encode_insert(buffer,
+                  &resource,
+                  /*last_crc32=*/0,
+                  /*wal_id=*/1,
+                  /*txn_id=*/100,
+                  kTestTableOid,
+                  chunk,
+                  /*row_start=*/0,
+                  /*row_count=*/10);
 
     // Truncate to half size
     buffer_t truncated(buffer.data(), buffer.size() / 2, &resource);

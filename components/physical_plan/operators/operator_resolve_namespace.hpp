@@ -27,18 +27,16 @@ namespace components::operators {
     // plan_resolve_index_t without re-issuing an async actor message.
     class operator_resolve_namespace_t final : public read_write_operator_t {
     public:
-        operator_resolve_namespace_t(std::pmr::memory_resource* resource,
-                                      log_t                       log,
-                                      std::string                 name);
+        operator_resolve_namespace_t(std::pmr::memory_resource* resource, log_t log, std::string name);
 
         // Back-pointer form. The operator stamps the resolved namespace_oid
         // onto `target_node` after a successful pg_namespace scan. The node
         // is owned by the dispatcher's logical plan tree and outlives this
         // operator (operators live only for the duration of execute_plan).
         operator_resolve_namespace_t(std::pmr::memory_resource* resource,
-                                      log_t                       log,
-                                      std::string                 name,
-                                      components::logical_plan::node_catalog_resolve_namespace_t* target_node);
+                                     log_t log,
+                                     std::string name,
+                                     components::logical_plan::node_catalog_resolve_namespace_t* target_node);
 
     private:
         void on_execute_impl(pipeline::context_t* ctx) override;

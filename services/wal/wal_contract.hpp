@@ -19,7 +19,8 @@ namespace services::wal {
         using unique_future = actor_zeta::unique_future<T>;
         actor_zeta::unique_future<std::vector<record_t>> load(session_id_t session, id_t wal_id);
 
-        actor_zeta::unique_future<id_t> commit_txn(session_id_t session, uint64_t transaction_id,
+        actor_zeta::unique_future<id_t> commit_txn(session_id_t session,
+                                                   uint64_t transaction_id,
                                                    wal_sync_mode sync_mode,
                                                    components::catalog::oid_t database_oid);
 

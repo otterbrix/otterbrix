@@ -40,12 +40,12 @@ namespace components::catalog {
         std::string child_collection_name;
 
         oid_t constraint_oid{INVALID_OID};
-        oid_t child_table_oid{INVALID_OID};   // conrelid
-        oid_t parent_table_oid{INVALID_OID};  // confrelid
+        oid_t child_table_oid{INVALID_OID};  // conrelid
+        oid_t parent_table_oid{INVALID_OID}; // confrelid
 
-        char matchtype{'s'};    // confmatchtype: 's' SIMPLE, 'f' FULL, 'p' PARTIAL
-        char del_action{'a'};   // confdeltype: 'a' NO ACTION, 'r' RESTRICT, 'c' CASCADE, ...
-        char upd_action{'a'};   // confupdtype: same alphabet as del_action
+        char matchtype{'s'};  // confmatchtype: 's' SIMPLE, 'f' FULL, 'p' PARTIAL
+        char del_action{'a'}; // confdeltype: 'a' NO ACTION, 'r' RESTRICT, 'c' CASCADE, ...
+        char upd_action{'a'}; // confupdtype: same alphabet as del_action
     };
     // Layout guard: libstdc++ (string==32) → 256; libc++ (string==24) → 232. Saves a cacheline.
     static_assert(sizeof(fk_info_t) <= 256, "fk_info_t layout regression");

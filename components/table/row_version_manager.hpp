@@ -46,9 +46,9 @@ namespace components::table {
                                          vector::indexing_vector_t& indexing_vector,
                                          uint64_t max_count) = 0;
         virtual uint64_t committed_indexing_vector(uint64_t min_start_id,
-                                                  uint64_t min_transaction_id,
-                                                  vector::indexing_vector_t& indexing_vector,
-                                                  uint64_t max_count) = 0;
+                                                   uint64_t min_transaction_id,
+                                                   vector::indexing_vector_t& indexing_vector,
+                                                   uint64_t max_count) = 0;
         virtual bool fetch(transaction_data transaction, int64_t row) = 0;
         virtual void commit_append(uint64_t commit_id, uint64_t start, uint64_t end) = 0;
         virtual uint64_t committed_deleted_count(uint64_t max_count) = 0;
@@ -80,9 +80,9 @@ namespace components::table {
                                  vector::indexing_vector_t& indexing_vector,
                                  uint64_t max_count) override;
         uint64_t committed_indexing_vector(uint64_t min_start_id,
-                                          uint64_t min_transaction_id,
-                                          vector::indexing_vector_t& indexing_vector,
-                                          uint64_t max_count) override;
+                                           uint64_t min_transaction_id,
+                                           vector::indexing_vector_t& indexing_vector,
+                                           uint64_t max_count) override;
         bool fetch(transaction_data transaction, int64_t row) override;
         void commit_append(uint64_t commit_id, uint64_t start, uint64_t end) override;
         uint64_t committed_deleted_count(uint64_t max_count) override;
@@ -118,9 +118,9 @@ namespace components::table {
                                  vector::indexing_vector_t& indexing_vector,
                                  uint64_t max_count) override;
         uint64_t committed_indexing_vector(uint64_t min_start_id,
-                                          uint64_t min_transaction_id,
-                                          vector::indexing_vector_t& indexing_vector,
-                                          uint64_t max_count) override;
+                                           uint64_t min_transaction_id,
+                                           vector::indexing_vector_t& indexing_vector,
+                                           uint64_t max_count) override;
         bool fetch(transaction_data transaction, int64_t row) override;
         void commit_append(uint64_t commit_id, uint64_t start, uint64_t end) override;
         bool cleanup(uint64_t lowest_transaction, std::unique_ptr<chunk_info>& result) const override;
@@ -180,10 +180,10 @@ namespace components::table {
                                  vector::indexing_vector_t& indexing_vector,
                                  uint64_t max_count);
         uint64_t committed_indexing_vector(uint64_t start_time,
-                                          uint64_t transaction_id,
-                                          uint64_t vector_idx,
-                                          vector::indexing_vector_t& indexing_vector,
-                                          uint64_t max_count);
+                                           uint64_t transaction_id,
+                                           uint64_t vector_idx,
+                                           vector::indexing_vector_t& indexing_vector,
+                                           uint64_t max_count);
         bool fetch(transaction_data transaction, uint64_t row);
 
         void append_version_info(transaction_data transaction,

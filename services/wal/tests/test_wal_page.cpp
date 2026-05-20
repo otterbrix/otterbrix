@@ -1,12 +1,12 @@
 #include <catch2/catch.hpp>
+#include <components/tests/generaty.hpp>
 #include <core/pmr.hpp>
 #include <filesystem>
 #include <fstream>
-#include <services/wal/wal_page.hpp>
-#include <services/wal/wal_page_writer.hpp>
-#include <services/wal/wal_page_reader.hpp>
 #include <services/wal/wal_binary.hpp>
-#include <components/tests/generaty.hpp>
+#include <services/wal/wal_page.hpp>
+#include <services/wal/wal_page_reader.hpp>
+#include <services/wal/wal_page_writer.hpp>
 
 namespace {
 
@@ -27,9 +27,7 @@ namespace {
         tmp_dir_t(const tmp_dir_t&) = delete;
         tmp_dir_t& operator=(const tmp_dir_t&) = delete;
 
-        std::filesystem::path file(const std::string& filename) const {
-            return path / filename;
-        }
+        std::filesystem::path file(const std::string& filename) const { return path / filename; }
     };
 
     using namespace services::wal;
@@ -44,9 +42,7 @@ namespace {
     };
 
     // Helper: convert a buffer_t (std::pmr::string) to std::vector<char>.
-    std::vector<char> buffer_to_vec(const buffer_t& buf) {
-        return std::vector<char>(buf.begin(), buf.end());
-    }
+    std::vector<char> buffer_to_vec(const buffer_t& buf) { return std::vector<char>(buf.begin(), buf.end()); }
 
     encoded_record_info encode_commit_rec(uint64_t wal_id, uint64_t txn_id, crc32_t last_crc) {
         encoded_record_info info;
@@ -64,28 +60,36 @@ namespace {
     constexpr components::catalog::oid_t kTestTableOid = 16500;
 
     encoded_record_info encode_insert_rec(uint64_t wal_id,
-                                      uint64_t txn_id,
-                                      crc32_t last_crc,
-                                      components::catalog::oid_t table_oid,
-                                      const components::vector::data_chunk_t& chunk,
-                                      uint64_t row_start,
-                                      uint64_t row_count) {
+                                          uint64_t txn_id,
+                                          crc32_t last_crc,
+                                          components::catalog::oid_t table_oid,
+                                          const components::vector::data_chunk_t& chunk,
+                                          uint64_t row_start,
+                                          uint64_t row_count) {
         encoded_record_info info;
         info.wal_id = wal_id;
         info.txn_id = txn_id;
         info.type = wal_record_type::PHYSICAL_INSERT;
         buffer_t buf;
-        services::wal::encode_insert(buf, std::pmr::get_default_resource(), last_crc, wal_id, txn_id, table_oid, chunk, row_start, row_count);
+        services::wal::encode_insert(buf,
+                                     std::pmr::get_default_resource(),
+                                     last_crc,
+                                     wal_id,
+                                     txn_id,
+                                     table_oid,
+                                     chunk,
+                                     row_start,
+                                     row_count);
         info.data = buffer_to_vec(buf);
         return info;
     }
 
     encoded_record_info encode_delete_rec(uint64_t wal_id,
-                                      uint64_t txn_id,
-                                      crc32_t last_crc,
-                                      components::catalog::oid_t table_oid,
-                                      const std::pmr::vector<int64_t>& row_ids,
-                                      uint64_t count) {
+                                          uint64_t txn_id,
+                                          crc32_t last_crc,
+                                          components::catalog::oid_t table_oid,
+                                          const std::pmr::vector<int64_t>& row_ids,
+                                          uint64_t count) {
         encoded_record_info info;
         info.wal_id = wal_id;
         info.txn_id = txn_id;
@@ -97,18 +101,26 @@ namespace {
     }
 
     encoded_record_info encode_update_rec(uint64_t wal_id,
-                                      uint64_t txn_id,
-                                      crc32_t last_crc,
-                                      components::catalog::oid_t table_oid,
-                                      const std::pmr::vector<int64_t>& row_ids,
-                                      const components::vector::data_chunk_t& chunk,
-                                      uint64_t count) {
+                                          uint64_t txn_id,
+                                          crc32_t last_crc,
+                                          components::catalog::oid_t table_oid,
+                                          const std::pmr::vector<int64_t>& row_ids,
+                                          const components::vector::data_chunk_t& chunk,
+                                          uint64_t count) {
         encoded_record_info info;
         info.wal_id = wal_id;
         info.txn_id = txn_id;
         info.type = wal_record_type::PHYSICAL_UPDATE;
         buffer_t buf;
-        services::wal::encode_update(buf, std::pmr::get_default_resource(), last_crc, wal_id, txn_id, table_oid, row_ids.data(), chunk, count);
+        services::wal::encode_update(buf,
+                                     std::pmr::get_default_resource(),
+                                     last_crc,
+                                     wal_id,
+                                     txn_id,
+                                     table_oid,
+                                     row_ids.data(),
+                                     chunk,
+                                     count);
         info.data = buffer_to_vec(buf);
         return info;
     }
@@ -164,8 +176,7 @@ TEST_CASE("large_record_spanning") {
     {
         wal_page_writer_t writer(filepath, "testdb", 0);
 
-        auto rec = encode_insert_rec(/*wal_id=*/1, /*txn_id=*/42, /*last_crc=*/0,
-                                 kTestTableOid, chunk, 0, 500);
+        auto rec = encode_insert_rec(/*wal_id=*/1, /*txn_id=*/42, /*last_crc=*/0, kTestTableOid, chunk, 0, 500);
 
         // Confirm the encoded record is larger than one page's data area.
         REQUIRE(rec.data.size() > PAGE_DATA_SIZE);

@@ -3,7 +3,7 @@
 namespace components::logical_plan {
 
     node_register_udf_t::node_register_udf_t(std::pmr::memory_resource* resource,
-                                              std::shared_ptr<components::compute::function> function)
+                                             std::shared_ptr<components::compute::function> function)
         : node_t(resource, node_type::register_udf_t)
         , function_(std::move(function)) {}
 

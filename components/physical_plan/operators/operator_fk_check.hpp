@@ -10,9 +10,7 @@ namespace components::operators {
     // on the parent table, errors if no matching parent row is found.
     class operator_fk_check_t final : public read_write_operator_t {
     public:
-        operator_fk_check_t(std::pmr::memory_resource* resource,
-                             log_t                      log,
-                             catalog::fk_info_t         fk);
+        operator_fk_check_t(std::pmr::memory_resource* resource, log_t log, catalog::fk_info_t fk);
 
     private:
         void on_execute_impl(pipeline::context_t* ctx) override;

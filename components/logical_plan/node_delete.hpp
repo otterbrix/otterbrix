@@ -37,14 +37,11 @@ namespace components::logical_plan {
 
     using node_delete_ptr = boost::intrusive_ptr<node_delete_t>;
 
-    node_delete_ptr make_node_delete_many(std::pmr::memory_resource* resource,
-                                          const node_match_ptr& match);
+    node_delete_ptr make_node_delete_many(std::pmr::memory_resource* resource, const node_match_ptr& match);
 
-    node_delete_ptr make_node_delete_one(std::pmr::memory_resource* resource,
-                                         const node_match_ptr& match);
+    node_delete_ptr make_node_delete_one(std::pmr::memory_resource* resource, const node_match_ptr& match);
 
-    node_delete_ptr make_node_delete(std::pmr::memory_resource* resource,
-                                     const node_match_ptr& match,
-                                     const node_limit_ptr& limit);
+    node_delete_ptr
+    make_node_delete(std::pmr::memory_resource* resource, const node_match_ptr& match, const node_limit_ptr& limit);
 
 } // namespace components::logical_plan

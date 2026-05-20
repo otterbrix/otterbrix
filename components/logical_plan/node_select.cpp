@@ -27,9 +27,8 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    node_select_ptr make_node_select(std::pmr::memory_resource* resource,
-                                      core::dbname_t dbname,
-                                      core::relname_t relname) {
+    node_select_ptr
+    make_node_select(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname) {
         return {new node_select_t(resource, std::move(dbname), std::move(relname))};
     }
 

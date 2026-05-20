@@ -38,8 +38,8 @@ namespace components::operators {
             vec.template data<std::int64_t>()[row] = v;
             vec.validity().set(row, true);
         }
-        inline void set_str(vector::data_chunk_t& c, size_t col, size_t row,
-                            std::string_view v, std::pmr::memory_resource* r) {
+        inline void
+        set_str(vector::data_chunk_t& c, size_t col, size_t row, std::string_view v, std::pmr::memory_resource* r) {
             auto& vec = c.data[col];
             if (!vec.auxiliary()) {
                 vec.set_auxiliary(std::make_shared<vector::string_vector_buffer_t>(r));
@@ -52,10 +52,10 @@ namespace components::operators {
         }
     } // namespace
 
-    operator_resolve_function_t::operator_resolve_function_t(std::pmr::memory_resource*   resource,
-                                                              log_t                        log,
-                                                              components::catalog::oid_t   namespace_oid,
-                                                              std::string                  name)
+    operator_resolve_function_t::operator_resolve_function_t(std::pmr::memory_resource* resource,
+                                                             log_t log,
+                                                             components::catalog::oid_t namespace_oid,
+                                                             std::string name)
         : read_write_operator_t(resource, std::move(log), operator_type::resolve_function)
         , namespace_oid_(namespace_oid)
         , name_(std::move(name)) {}
@@ -65,8 +65,7 @@ namespace components::operators {
         async_wait();
     }
 
-    actor_zeta::unique_future<void>
-    operator_resolve_function_t::await_async_and_resume(pipeline::context_t* ctx) {
+    actor_zeta::unique_future<void> operator_resolve_function_t::await_async_and_resume(pipeline::context_t* ctx) {
         constexpr catalog::oid_t kPgProc = catalog::well_known_oid::pg_proc_table;
 
         // Output schema mirrors pg_proc column order:
@@ -79,13 +78,13 @@ namespace components::operators {
         //   [6] prorettype      STRING
         std::pmr::vector<types::complex_logical_type> out_types(resource_);
         out_types.reserve(7);
-        out_types.emplace_back(types::logical_type::UINTEGER);        // oid
-        out_types.emplace_back(types::logical_type::STRING_LITERAL);  // proname
-        out_types.emplace_back(types::logical_type::UINTEGER);        // pronamespace
-        out_types.emplace_back(types::logical_type::INTEGER);         // pronargs
-        out_types.emplace_back(types::logical_type::BIGINT);          // prouid
-        out_types.emplace_back(types::logical_type::STRING_LITERAL);  // proargmatchers
-        out_types.emplace_back(types::logical_type::STRING_LITERAL);  // prorettype
+        out_types.emplace_back(types::logical_type::UINTEGER);       // oid
+        out_types.emplace_back(types::logical_type::STRING_LITERAL); // proname
+        out_types.emplace_back(types::logical_type::UINTEGER);       // pronamespace
+        out_types.emplace_back(types::logical_type::INTEGER);        // pronargs
+        out_types.emplace_back(types::logical_type::BIGINT);         // prouid
+        out_types.emplace_back(types::logical_type::STRING_LITERAL); // proargmatchers
+        out_types.emplace_back(types::logical_type::STRING_LITERAL); // prorettype
 
         // Empty-input guard: no actor wired or empty name → emit an empty
         // chunk that still carries the schema so consumers can inspect columns.
@@ -109,12 +108,12 @@ namespace components::operators {
         std::pmr::vector<types::logical_value_t> pr_vals(resource_);
         pr_vals.emplace_back(name_lv);
         pr_vals.emplace_back(ns_lv);
-        auto [_h, fut] = actor_zeta::send(
-            ctx->disk_address,
-            &services::disk::manager_disk_t::read_rows_by_key,
-            exec_ctx, kPgProc,
-            std::move(pr_keys),
-            std::move(pr_vals));
+        auto [_h, fut] = actor_zeta::send(ctx->disk_address,
+                                          &services::disk::manager_disk_t::read_rows_by_key,
+                                          exec_ctx,
+                                          kPgProc,
+                                          std::move(pr_keys),
+                                          std::move(pr_vals));
         auto rows = co_await std::move(fut);
 
         // Materialise rows into a fresh chunk. Capacity is sized to the

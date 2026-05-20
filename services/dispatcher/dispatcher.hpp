@@ -120,7 +120,6 @@ namespace services::dispatcher {
 
         components::logical_plan::node_ptr create_logic_plan(components::logical_plan::node_ptr plan);
 
-
         unique_future<services::collection::executor::execute_result_t>
         execute_plan_impl(components::session::session_id_t session,
                           components::logical_plan::node_ptr logical_plan,

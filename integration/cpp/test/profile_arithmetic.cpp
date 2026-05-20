@@ -43,7 +43,9 @@ int main() {
     {
         auto chunk = gen_data_chunk(kRows, dispatcher->resource());
         auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-            dispatcher->resource(), database_name, collection_name,
+            dispatcher->resource(),
+            database_name,
+            collection_name,
             logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_plan(s, ins);

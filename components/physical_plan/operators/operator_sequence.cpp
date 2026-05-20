@@ -6,8 +6,8 @@
 namespace components::operators {
 
     operator_sequence_t::operator_sequence_t(std::pmr::memory_resource* resource,
-                                              log_t                      log,
-                                              std::vector<operator_ptr>  steps)
+                                             log_t log,
+                                             std::vector<operator_ptr> steps)
         : read_write_operator_t(resource, log, operator_type::sequence)
         , steps_(std::move(steps)) {}
 
@@ -28,8 +28,7 @@ namespace components::operators {
             // between doesn't break the hand-off.
             if (step->type() == operator_type::resolve_table && step->is_executed()) {
                 auto* resolver = static_cast<operator_resolve_table_t*>(step.get());
-                auto metadata = parse_resolved_table_metadata(
-                    resolver->resolved_table_oid(), step->output());
+                auto metadata = parse_resolved_table_metadata(resolver->resolved_table_oid(), step->output());
                 if (metadata.has_value()) {
                     for (std::size_t j = i + 1; j < steps_.size(); ++j) {
                         if (steps_[j]->wants_resolved_metadata()) {

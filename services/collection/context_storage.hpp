@@ -24,8 +24,7 @@ namespace services {
         // operator_resolve_table_t. Plan generators (transfer_scan in
         // create_plan_match / create_plan_aggregate) use it to forward live
         // column names + relkind.
-        std::unordered_map<components::catalog::oid_t,
-                           const components::logical_plan::resolved_table_metadata_t*>
+        std::unordered_map<components::catalog::oid_t, const components::logical_plan::resolved_table_metadata_t*>
             table_metadata;
 
         context_storage_t(std::pmr::memory_resource* resource, log_t log)

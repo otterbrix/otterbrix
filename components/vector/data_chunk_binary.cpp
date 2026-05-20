@@ -114,8 +114,7 @@ namespace components::vector {
                     case types::logical_type_extension::extension_type::ARRAY: {
                         *reinterpret_cast<uint8_t*>(output) = 1;
                         output += 1;
-                        auto* array_extension =
-                            static_cast<const types::array_logical_type_extension*>(extension);
+                        auto* array_extension = static_cast<const types::array_logical_type_extension*>(extension);
                         *reinterpret_cast<uint8_t*>(output) =
                             static_cast<uint8_t>(array_extension->internal_type().type());
                         output += 1;
@@ -126,8 +125,7 @@ namespace components::vector {
                     case types::logical_type_extension::extension_type::DECIMAL: {
                         *reinterpret_cast<uint8_t*>(output) = 2;
                         output += 1;
-                        auto* decimal_extension =
-                            static_cast<const types::decimal_logical_type_extension*>(extension);
+                        auto* decimal_extension = static_cast<const types::decimal_logical_type_extension*>(extension);
                         *reinterpret_cast<uint8_t*>(output) = decimal_extension->width();
                         output += 1;
                         *reinterpret_cast<uint8_t*>(output) = decimal_extension->scale();
@@ -147,8 +145,7 @@ namespace components::vector {
         // Read the type header for a single column. Advances scan pointer. On any
         // buffer-overflow sets ok=false and returns an INVALID-typed placeholder
         // (caller must check ok before using the result).
-        types::complex_logical_type
-        read_type_header(const char*& scan, const char* end, bool& ok) {
+        types::complex_logical_type read_type_header(const char*& scan, const char* end, bool& ok) {
             if (scan + 4 > end) {
                 ok = false;
                 return types::complex_logical_type{types::logical_type::INVALID};
@@ -185,13 +182,13 @@ namespace components::vector {
                         ok = false;
                         return types::complex_logical_type{types::logical_type::INVALID};
                     }
-                    auto inner_logical_type =
-                        static_cast<types::logical_type>(*reinterpret_cast<const uint8_t*>(scan));
+                    auto inner_logical_type = static_cast<types::logical_type>(*reinterpret_cast<const uint8_t*>(scan));
                     scan += 1;
                     uint32_t array_size = read_le32(scan);
                     scan += 4;
-                    return types::complex_logical_type::create_array(
-                        inner_logical_type, static_cast<size_t>(array_size), std::move(alias));
+                    return types::complex_logical_type::create_array(inner_logical_type,
+                                                                     static_cast<size_t>(array_size),
+                                                                     std::move(alias));
                 }
                 case 2: { // DECIMAL
                     if (scan + 2 > end) {
@@ -329,15 +326,13 @@ namespace components::vector {
             }
         }
 
-        assert(static_cast<size_t>(output - buffer.data() - base) == total);
+        assert(static_cast<size_t>(output - buffer.data()) - base == total);
     }
 
     // -----------------------------------------------------------------------
     // deserialize_binary
     // -----------------------------------------------------------------------
-    data_chunk_t deserialize_binary(const char* data, size_t len,
-                                     std::pmr::memory_resource* resource,
-                                     bool& ok) {
+    data_chunk_t deserialize_binary(const char* data, size_t len, std::pmr::memory_resource* resource, bool& ok) {
         ok = true;
         if (len < 10) {
             ok = false;
@@ -430,8 +425,7 @@ namespace components::vector {
                         void* heap_pointer = string_buffer->insert(
                             const_cast<void*>(static_cast<const void*>(string_data + offset_begin)),
                             string_length);
-                        views[row_index] =
-                            std::string_view(reinterpret_cast<const char*>(heap_pointer), string_length);
+                        views[row_index] = std::string_view(reinterpret_cast<const char*>(heap_pointer), string_length);
                     } else {
                         views[row_index] = std::string_view();
                     }

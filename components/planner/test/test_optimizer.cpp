@@ -435,7 +435,8 @@ TEST_CASE("optimizer::no_fold_group_node") {
 
     std::vector<expression_ptr> expressions;
     expressions.emplace_back(std::move(scalar));
-    auto group_node = make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, expressions);
+    auto group_node =
+        make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, expressions);
 
     components::planner::optimize(&resource, group_node, params.get());
 
@@ -709,7 +710,8 @@ TEST_CASE("optimizer::aggregate_match_folds_group_not") {
 
     // Child 0: match(eq, #0=5, #1=5)
     auto comp = make_compare_expression(&resource, compare_type::eq, id0, id1);
-    aggregate->append_child(make_node_match(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, comp));
+    aggregate->append_child(
+        make_node_match(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, comp));
 
     // Child 1: group with scalar(add, #2=2, #3=3)
     auto scalar = make_scalar_expression(&resource, scalar_type::add, key(&resource, "result"));
@@ -717,7 +719,8 @@ TEST_CASE("optimizer::aggregate_match_folds_group_not") {
     scalar->append_param(id3);
     std::vector<expression_ptr> group_exprs;
     group_exprs.emplace_back(std::move(scalar));
-    aggregate->append_child(make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, group_exprs));
+    aggregate->append_child(
+        make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, group_exprs));
 
     components::planner::optimize(&resource, aggregate, params.get());
 
@@ -744,10 +747,12 @@ TEST_CASE("optimizer::multiple_match_nodes") {
     auto aggregate = make_node_aggregate(&resource, core::dbname_t{database_name}, core::relname_t{collection_name});
 
     auto comp1 = make_compare_expression(&resource, compare_type::gt, id0, id1);
-    aggregate->append_child(make_node_match(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, comp1));
+    aggregate->append_child(
+        make_node_match(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, comp1));
 
     auto comp2 = make_compare_expression(&resource, compare_type::lt, id2, id3);
-    aggregate->append_child(make_node_match(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, comp2));
+    aggregate->append_child(
+        make_node_match(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, comp2));
 
     components::planner::optimize(&resource, aggregate, params.get());
 

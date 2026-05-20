@@ -16,7 +16,7 @@ using vec = std::vector<v>;
     {                                                                                                                  \
         SECTION(QUERY) {                                                                                               \
             auto select = linitial(raw_parser(&arena_resource, QUERY));                                                \
-            auto _wrap = transformer.transform(pg_cell_to_node_cast(select)).finalize();                              \
+            auto _wrap = transformer.transform(pg_cell_to_node_cast(select)).finalize();                               \
             REQUIRE(!_wrap.has_error());                                                                               \
             auto result = _wrap.value();                                                                               \
             auto node = result.node;                                                                                   \
@@ -255,9 +255,10 @@ TEST_CASE("components::sql::group_by") {
                        R"_($aggregate: {$group: {group_by: field}, $select: {field}})_",
                        vec());
 
-    TEST_SIMPLE_SELECT(R"_(SELECT name, name1, 9.99 FROM TestCollection GROUP BY name, name1;)_",
-                       R"_($aggregate: {$group: {group_by: name, group_by: name1}, $select: {name, name1, {$constant: #0}}})_",
-                       vec({v(&resource, 9.99)}));
+    TEST_SIMPLE_SELECT(
+        R"_(SELECT name, name1, 9.99 FROM TestCollection GROUP BY name, name1;)_",
+        R"_($aggregate: {$group: {group_by: name, group_by: name1}, $select: {name, name1, {$constant: #0}}})_",
+        vec({v(&resource, 9.99)}));
 }
 
 TEST_CASE("components::sql::select_from_fields") {

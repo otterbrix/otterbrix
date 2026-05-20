@@ -38,12 +38,8 @@ namespace components::logical_plan {
         components::catalog::oid_t index_oid() const noexcept { return index_oid_; }
         void set_index_oid(components::catalog::oid_t oid) noexcept { index_oid_ = oid; }
 
-        const std::vector<components::catalog::oid_t>& column_attoids() const noexcept {
-            return column_attoids_;
-        }
-        void set_column_attoids(std::vector<components::catalog::oid_t> v) noexcept {
-            column_attoids_ = std::move(v);
-        }
+        const std::vector<components::catalog::oid_t>& column_attoids() const noexcept { return column_attoids_; }
+        void set_column_attoids(std::vector<components::catalog::oid_t> v) noexcept { column_attoids_ = std::move(v); }
 
         const std::string& indkey() const noexcept { return indkey_; }
         void set_indkey(std::string s) noexcept { indkey_ = std::move(s); }
@@ -65,8 +61,9 @@ namespace components::logical_plan {
 
     using node_create_index_ptr = boost::intrusive_ptr<node_create_index_t>;
 
-    node_create_index_ptr make_node_create_index(std::pmr::memory_resource* resource,
-                                                 core::indexname_t indexname = core::indexname_t{std::string{"unnamed"}},
-                                                 index_type type = index_type::single);
+    node_create_index_ptr
+    make_node_create_index(std::pmr::memory_resource* resource,
+                           core::indexname_t indexname = core::indexname_t{std::string{"unnamed"}},
+                           index_type type = index_type::single);
 
 } // namespace components::logical_plan

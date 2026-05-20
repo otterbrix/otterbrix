@@ -5,9 +5,8 @@
 
 namespace components::operators {
 
-    std::optional<resolved_table_metadata_t>
-    parse_resolved_table_metadata(catalog::oid_t            table_oid,
-                                   const operator_data_ptr& resolve_output) {
+    std::optional<resolved_table_metadata_t> parse_resolved_table_metadata(catalog::oid_t table_oid,
+                                                                           const operator_data_ptr& resolve_output) {
         // operator_resolve_table_t emits a 5-column chunk:
         //   (position int32, attoid uint32, attname string,
         //    atttypid uint32, atttypspec string).
@@ -62,9 +61,8 @@ namespace components::operators {
         return out;
     }
 
-    column_key_translation_t
-    build_column_key_translation(const resolved_table_metadata_t& metadata,
-                                  const vector::data_chunk_t&     data_chunk) {
+    column_key_translation_t build_column_key_translation(const resolved_table_metadata_t& metadata,
+                                                          const vector::data_chunk_t& data_chunk) {
         column_key_translation_t translation(data_chunk.column_count(), -1);
         if (!metadata.has_columns()) {
             return translation;

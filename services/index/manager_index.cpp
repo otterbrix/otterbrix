@@ -71,11 +71,11 @@ namespace {
     using agent_addr_map_t = std::unordered_map<uintptr_t, actor_zeta::address_t>;
 
     [[maybe_unused]] void collect_disk_op(const components::index::index_engine_ptr& engine,
-                         const components::vector::data_chunk_t& chunk,
-                         size_t row,
-                         std::pmr::memory_resource* target_resource,
-                         agent_batch_map_t& batches,
-                         agent_addr_map_t& addrs) {
+                                          const components::vector::data_chunk_t& chunk,
+                                          size_t row,
+                                          std::pmr::memory_resource* target_resource,
+                                          agent_batch_map_t& batches,
+                                          agent_addr_map_t& addrs) {
         engine->for_each_disk_op(chunk,
                                  row,
                                  [&](const actor_zeta::address_t& agent_addr, const components::index::value_t& key) {
@@ -104,7 +104,6 @@ namespace services::index {
             std::filesystem::create_directories(path_db_);
         }
     }
-
 
     auto manager_index_t::make_type() const noexcept -> const char* { return "manager_index"; }
 
@@ -228,8 +227,8 @@ namespace services::index {
 
     // --- Collection lifecycle ---
 
-    manager_index_t::unique_future<void>
-    manager_index_t::register_collection(session_id_t /*session*/, components::catalog::oid_t table_oid) {
+    manager_index_t::unique_future<void> manager_index_t::register_collection(session_id_t /*session*/,
+                                                                              components::catalog::oid_t table_oid) {
         trace(log_, "manager_index_t::register_collection: oid={}", static_cast<unsigned>(table_oid));
 
         auto it = engines_.find(table_oid);
@@ -239,8 +238,8 @@ namespace services::index {
         co_return;
     }
 
-    manager_index_t::unique_future<void>
-    manager_index_t::unregister_collection(session_id_t /*session*/, components::catalog::oid_t table_oid) {
+    manager_index_t::unique_future<void> manager_index_t::unregister_collection(session_id_t /*session*/,
+                                                                                components::catalog::oid_t table_oid) {
         trace(log_, "manager_index_t::unregister_collection: oid={}", static_cast<unsigned>(table_oid));
 
         engines_.erase(table_oid);
@@ -323,16 +322,16 @@ namespace services::index {
             // Create disk agent for persistent storage
             if (!path_db_.empty()) {
                 try {
-                    auto agent = actor_zeta::spawn<index_agent_disk_t>(
-                        resource_,
-                        path_db_,
-                        table_oid,
-                        std::string(index_name),
-                        type,
-                        bitcask_index_disk_t::default_flush_threshold_,
-                        bitcask_index_disk_t::default_segment_record_limit_,
-                        btree_index_disk_t::default_flush_threshold_,
-                        log_);
+                    auto agent =
+                        actor_zeta::spawn<index_agent_disk_t>(resource_,
+                                                              path_db_,
+                                                              table_oid,
+                                                              std::string(index_name),
+                                                              type,
+                                                              bitcask_index_disk_t::default_flush_threshold_,
+                                                              bitcask_index_disk_t::default_segment_record_limit_,
+                                                              btree_index_disk_t::default_flush_threshold_,
+                                                              log_);
 
                     // Link disk agent with in-memory index
                     auto* idx = components::index::search_index(engine, keys);
@@ -346,15 +345,13 @@ namespace services::index {
                     trace(log_, "manager_index_t::create_index: disk agent creation failed: {}", e.what());
                 }
             }
-
         }
 
         co_return id_index;
     }
 
-    manager_index_t::unique_future<void> manager_index_t::drop_index(session_id_t session,
-                                                                     components::catalog::oid_t table_oid,
-                                                                     index_name_t index_name) {
+    manager_index_t::unique_future<void>
+    manager_index_t::drop_index(session_id_t session, components::catalog::oid_t table_oid, index_name_t index_name) {
         trace(log_, "manager_index_t::drop_index: {} on oid={}", index_name, static_cast<unsigned>(table_oid));
 
         auto it = engines_.find(table_oid);
@@ -479,9 +476,8 @@ namespace services::index {
 
     // --- MVCC commit/revert/cleanup ---
 
-    manager_index_t::unique_future<void> manager_index_t::commit_insert(execution_context_t ctx,
-                                                                        components::catalog::oid_t table_oid,
-                                                                        uint64_t commit_id) {
+    manager_index_t::unique_future<void>
+    manager_index_t::commit_insert(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id) {
         auto session = ctx.session;
         auto txn_id = ctx.txn.transaction_id;
         auto it = engines_.find(table_oid);
@@ -513,9 +509,8 @@ namespace services::index {
         co_return;
     }
 
-    manager_index_t::unique_future<void> manager_index_t::commit_delete(execution_context_t ctx,
-                                                                        components::catalog::oid_t table_oid,
-                                                                        uint64_t commit_id) {
+    manager_index_t::unique_future<void>
+    manager_index_t::commit_delete(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id) {
         auto session = ctx.session;
         auto txn_id = ctx.txn.transaction_id;
         auto it = engines_.find(table_oid);
@@ -587,9 +582,7 @@ namespace services::index {
 
         // Rebuild will be triggered by executor sending scan data to
         // manager_index for index rebuild.
-        trace(log_,
-              "manager_index_t::rebuild_indexes: cleared indexes for oid={}",
-              static_cast<unsigned>(table_oid));
+        trace(log_, "manager_index_t::rebuild_indexes: cleared indexes for oid={}", static_cast<unsigned>(table_oid));
 
         co_return;
     }

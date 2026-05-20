@@ -517,7 +517,6 @@ namespace components::types {
         const complex_logical_type& internal_type() const noexcept { return items_type_; }
         size_t size() const noexcept { return size_; }
 
-
     private:
         complex_logical_type items_type_;
         uint64_t size_;
@@ -538,7 +537,6 @@ namespace components::types {
         uint64_t value_id() const { return value_id_; }
         bool value_required() const { return value_required_; }
 
-
     private:
         complex_logical_type key_;
         complex_logical_type value_;
@@ -556,7 +554,6 @@ namespace components::types {
         uint64_t field_id() const noexcept { return field_id_; }
         bool required() const noexcept { return required_; }
 
-
     private:
         complex_logical_type items_type_;
         uint64_t field_id_;
@@ -565,16 +562,17 @@ namespace components::types {
 
     class struct_logical_type_extension : public logical_type_extension {
     public:
-        explicit struct_logical_type_extension(std::string name,const std::pmr::vector<complex_logical_type>& fields);
+        explicit struct_logical_type_extension(std::string name, const std::pmr::vector<complex_logical_type>& fields);
 
         // fields must be aliased
-        struct_logical_type_extension(std::string name, const std::pmr::vector<types::complex_logical_type>& columns, std::pmr::vector<field_description> descriptions);
+        struct_logical_type_extension(std::string name,
+                                      const std::pmr::vector<types::complex_logical_type>& columns,
+                                      std::pmr::vector<field_description> descriptions);
 
         const std::string& type_name() const { return type_name_; }
         std::pmr::vector<complex_logical_type>& child_types() { return fields_; }
         const std::pmr::vector<complex_logical_type>& child_types() const { return fields_; }
         const std::pmr::vector<field_description>& descriptions() const { return descriptions_; }
-
 
     private:
         std::string type_name_;
@@ -590,7 +588,6 @@ namespace components::types {
         uint8_t scale() const noexcept { return scale_; }
         physical_type stored_as() const noexcept { return stored_as_; }
 
-
     private:
         physical_type stored_as_;
         uint8_t width_;
@@ -605,7 +602,6 @@ namespace components::types {
         const complex_logical_type& return_type() const noexcept { return return_type_; }
         const std::pmr::vector<complex_logical_type>& argument_types() const noexcept { return argument_types_; }
 
-
     private:
         complex_logical_type return_type_;
         std::pmr::vector<complex_logical_type> argument_types_;
@@ -616,7 +612,6 @@ namespace components::types {
         explicit unknown_logical_type_extension(std::string type_name);
 
         const std::string& type_name() const;
-
 
     private:
         std::string type_name_;

@@ -104,16 +104,16 @@ namespace services::planner::impl {
                 } else {
                     const auto* agg = static_cast<const components::logical_plan::node_aggregate_t*>(node.get());
                     if (!agg->projected_cols().empty()) {
-                        projected_cols.assign(agg->projected_cols().begin(),
-                                              agg->projected_cols().end());
+                        projected_cols.assign(agg->projected_cols().begin(), agg->projected_cols().end());
                     }
                 }
             }
             executor = match_op ? std::move(match_op)
                                 : static_cast<components::operators::operator_ptr>(boost::intrusive_ptr(
-                                      new components::operators::transfer_scan(
-                                          plan_resource, node->table_oid(), scan_limit,
-                                          std::move(projected_cols))));
+                                      new components::operators::transfer_scan(plan_resource,
+                                                                               node->table_oid(),
+                                                                               scan_limit,
+                                                                               std::move(projected_cols))));
         }
         if (group_op) {
             group_op->set_children(std::move(executor));

@@ -171,9 +171,7 @@ TEST_CASE("services::disk::torn::load_falls_back_to_prev_on_corrupt_otbx") {
     std::filesystem::copy_file(otbx, prev);
 
     // Corrupt the otbx by truncating it to nothing.
-    {
-        std::ofstream zap(otbx, std::ios::trunc | std::ios::binary);
-    }
+    { std::ofstream zap(otbx, std::ios::trunc | std::ios::binary); }
     REQUIRE(std::filesystem::file_size(otbx) == 0);
     REQUIRE(std::filesystem::exists(prev));
 

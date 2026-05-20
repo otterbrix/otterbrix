@@ -9,8 +9,7 @@ namespace services::planner::impl {
     // Lower a node_commit_transaction_t into operator_commit_transaction_t.
     // The operator carries no fields; its inputs (session, txn_manager,
     // disk_address) flow through pipeline::context_t at execution time.
-    components::operators::operator_ptr
-    create_plan_commit_transaction(const context_storage_t& context,
-                                    const components::logical_plan::node_ptr& node);
+    components::operators::operator_ptr create_plan_commit_transaction(const context_storage_t& context,
+                                                                       const components::logical_plan::node_ptr& node);
 
 } // namespace services::planner::impl

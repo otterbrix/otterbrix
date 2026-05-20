@@ -4,7 +4,9 @@
 
 namespace components::logical_plan {
 
-    node_aggregate_t::node_aggregate_t(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname)
+    node_aggregate_t::node_aggregate_t(std::pmr::memory_resource* resource,
+                                       core::dbname_t dbname,
+                                       core::relname_t relname)
         : node_t(resource, node_type::aggregate_t)
         , uid_(std::string{})
         , dbname_(std::move(dbname))
@@ -37,9 +39,8 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    node_aggregate_ptr make_node_aggregate(std::pmr::memory_resource* resource,
-                                           core::dbname_t dbname,
-                                           core::relname_t relname) {
+    node_aggregate_ptr
+    make_node_aggregate(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname) {
         return {new node_aggregate_t(resource, std::move(dbname), std::move(relname))};
     }
 
@@ -47,10 +48,7 @@ namespace components::logical_plan {
                                            core::uid_t uid,
                                            core::dbname_t dbname,
                                            core::relname_t relname) {
-        return {new node_aggregate_t(resource,
-                                     std::move(uid),
-                                     std::move(dbname),
-                                     std::move(relname))};
+        return {new node_aggregate_t(resource, std::move(uid), std::move(dbname), std::move(relname))};
     }
 
 } // namespace components::logical_plan

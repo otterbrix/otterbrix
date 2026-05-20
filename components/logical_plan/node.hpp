@@ -79,8 +79,7 @@ namespace components::logical_plan {
         // is responsible for stamping the resolved oid before plan execution.
         components::catalog::oid_t table_oid_{components::catalog::INVALID_OID};
 
-        void
-        table_oid_dependencies_(std::unordered_set<components::catalog::oid_t>& upper_dependencies);
+        void table_oid_dependencies_(std::unordered_set<components::catalog::oid_t>& upper_dependencies);
 
     private:
         virtual hash_t hash_impl() const = 0;

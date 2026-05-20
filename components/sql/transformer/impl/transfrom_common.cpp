@@ -393,8 +393,7 @@ namespace components::sql::transform {
                                     error_ = target_type_res.error();
                                     return nullptr;
                                 }
-                                auto col_ref =
-                                    columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
+                                auto col_ref = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
                                 col_ref.deduce_side(names);
                                 col_ref.field.set_cast_type(target_type_res.value());
                                 return col_ref.field;

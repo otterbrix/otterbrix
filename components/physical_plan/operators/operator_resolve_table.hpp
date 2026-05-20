@@ -39,35 +39,33 @@ namespace components::operators {
     class operator_resolve_table_t final : public read_write_operator_t {
     public:
         // oid-form: caller already knows pg_class.oid.
-        operator_resolve_table_t(std::pmr::memory_resource*   resource,
-                                  log_t                         log,
-                                  components::catalog::oid_t    table_oid);
+        operator_resolve_table_t(std::pmr::memory_resource* resource, log_t log, components::catalog::oid_t table_oid);
 
         // name-form: operator scans pg_class by (relname, relnamespace) to
         // recover the oid before resolving columns. namespace_oid may be
         // INVALID_OID, in which case the operator scans by relname alone
         // (matches "no namespace enrichment yet" — typically yields not-found).
-        operator_resolve_table_t(std::pmr::memory_resource*   resource,
-                                  log_t                         log,
-                                  components::catalog::oid_t    namespace_oid,
-                                  std::string                   relname);
+        operator_resolve_table_t(std::pmr::memory_resource* resource,
+                                 log_t log,
+                                 components::catalog::oid_t namespace_oid,
+                                 std::string relname);
 
         // back-pointer form. After resolving, the operator stamps
         // namespace_oid + table_oid onto target_node so the dispatcher's
         // Pass 2 (validate / enrich) can read it via plan_resolve_index_t.
-        operator_resolve_table_t(std::pmr::memory_resource*   resource,
-                                  log_t                         log,
-                                  components::catalog::oid_t    namespace_oid,
-                                  std::string                   relname,
-                                  components::logical_plan::node_catalog_resolve_table_t* target_node);
+        operator_resolve_table_t(std::pmr::memory_resource* resource,
+                                 log_t log,
+                                 components::catalog::oid_t namespace_oid,
+                                 std::string relname,
+                                 components::logical_plan::node_catalog_resolve_table_t* target_node);
 
         // Accessors for downstream callers. resolved_found() is false when
         // pg_class has no row matching the inputs; the other accessors hold
         // their default-init values in that case.
-        bool                          resolved_found()      const noexcept { return found_; }
-        char                          resolved_relkind()    const noexcept { return relkind_; }
-        components::catalog::oid_t    resolved_namespace()  const noexcept { return namespace_oid_; }
-        components::catalog::oid_t    resolved_table_oid()  const noexcept { return table_oid_; }
+        bool resolved_found() const noexcept { return found_; }
+        char resolved_relkind() const noexcept { return relkind_; }
+        components::catalog::oid_t resolved_namespace() const noexcept { return namespace_oid_; }
+        components::catalog::oid_t resolved_table_oid() const noexcept { return table_oid_; }
 
     private:
         void on_execute_impl(pipeline::context_t* ctx) override;
@@ -77,12 +75,12 @@ namespace components::operators {
         // relname_) and resolve table_oid_ inside await_async_and_resume.
         // namespace_oid_ (below) is the *resolved* relnamespace, populated by
         // the oid-keyed pg_class scan in step 1.
-        components::catalog::oid_t    table_oid_;
-        components::catalog::oid_t    input_namespace_oid_{components::catalog::INVALID_OID};
-        std::string                   relname_;
-        bool                          found_{false};
-        char                          relkind_{0};
-        components::catalog::oid_t    namespace_oid_{components::catalog::INVALID_OID};
+        components::catalog::oid_t table_oid_;
+        components::catalog::oid_t input_namespace_oid_{components::catalog::INVALID_OID};
+        std::string relname_;
+        bool found_{false};
+        char relkind_{0};
+        components::catalog::oid_t namespace_oid_{components::catalog::INVALID_OID};
         components::logical_plan::node_catalog_resolve_table_t* target_node_{nullptr};
     };
 

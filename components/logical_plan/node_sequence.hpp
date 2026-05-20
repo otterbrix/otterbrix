@@ -11,7 +11,7 @@ namespace components::logical_plan {
         explicit node_sequence_t(std::pmr::memory_resource* resource);
 
     private:
-        hash_t      hash_impl()      const override;
+        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
     };
 

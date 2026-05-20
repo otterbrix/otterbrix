@@ -29,8 +29,7 @@ namespace services::wal {
 
     private:
         /// Read all records from segment files in a single database directory.
-        std::vector<record_t> read_database_segments(const std::filesystem::path& db_dir,
-                                                     id_t after_wal_id);
+        std::vector<record_t> read_database_segments(const std::filesystem::path& db_dir, id_t after_wal_id);
 
         configuration::config_wal config_;
         log_t log_;

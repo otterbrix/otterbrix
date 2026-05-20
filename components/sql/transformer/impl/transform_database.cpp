@@ -4,7 +4,9 @@
 
 namespace components::sql::transform {
     logical_plan::node_ptr transformer::transform_create_database(CreatedbStmt& node) {
-        return logical_plan::make_node_create_database(resource_, core::dbname_t{node.dbname ? std::string(node.dbname) : std::string{}});
+        return logical_plan::make_node_create_database(
+            resource_,
+            core::dbname_t{node.dbname ? std::string(node.dbname) : std::string{}});
     }
 
     logical_plan::node_ptr transformer::transform_drop_database(DropdbStmt&) {

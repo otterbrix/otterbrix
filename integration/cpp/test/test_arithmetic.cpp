@@ -43,7 +43,9 @@ TEST_CASE("integration::cpp::test_arithmetic") {
     INFO("insert test data") {
         auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
         auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-            dispatcher->resource(), database_name, collection_name,
+            dispatcher->resource(),
+            database_name,
+            collection_name,
             logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         {
             auto session = otterbrix::session_id_t();
@@ -727,7 +729,9 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
         {
             auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
             auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-                dispatcher->resource(), database_name, collection_name,
+                dispatcher->resource(),
+                database_name,
+                collection_name,
                 logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_plan(session, ins);
@@ -813,7 +817,9 @@ TEST_CASE("integration::cpp::test_arithmetic::having") {
     INFO("insert test data") {
         auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
         auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-            dispatcher->resource(), database_name, collection_name,
+            dispatcher->resource(),
+            database_name,
+            collection_name,
             logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_plan(session, ins);
@@ -881,7 +887,9 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
     INFO("insert test data") {
         auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
         auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-            dispatcher->resource(), database_name, collection_name,
+            dispatcher->resource(),
+            database_name,
+            collection_name,
             logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_plan(session, ins);
@@ -985,7 +993,9 @@ TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
     INFO("insert test data") {
         auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
         auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-            dispatcher->resource(), database_name, collection_name,
+            dispatcher->resource(),
+            database_name,
+            collection_name,
             logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_plan(session, ins);
@@ -1164,7 +1174,9 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     INFO("insert test data") {
         auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
         auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-            dispatcher->resource(), database_name, collection_name,
+            dispatcher->resource(),
+            database_name,
+            collection_name,
             logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_plan(session, ins);

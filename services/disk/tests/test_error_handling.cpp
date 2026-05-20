@@ -1,17 +1,17 @@
 #include <catch2/catch.hpp>
 
+#include "disk_test_helpers.hpp"
 #include <actor-zeta/spawn.hpp>
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/dependency_walker.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/types/types.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
-#include <components/catalog/dependency_walker.hpp>
 #include <services/disk/manager_disk.hpp>
-#include "disk_test_helpers.hpp"
 
 #include <filesystem>
 #include <limits>
@@ -78,8 +78,7 @@ namespace {
 // 1. resolve_namespace on unknown name returns found=false, no error.
 TEST_CASE("services::disk::error::resolve_unknown_namespace") {
     fixture fx;
-    auto r = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(),
-                        std::string("does_not_exist"), std::uint64_t{0});
+    auto r = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("does_not_exist"), std::uint64_t{0});
     REQUIRE_FALSE(r.found);
 }
 
@@ -87,16 +86,14 @@ TEST_CASE("services::disk::error::resolve_unknown_namespace") {
 TEST_CASE("services::disk::error::resolve_unknown_table") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "ns");
-    auto rt = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid,
-                         std::string("not_a_table"), std::uint64_t{0});
+    auto rt = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("not_a_table"), std::uint64_t{0});
     REQUIRE_FALSE(rt.found);
 }
 
 // 3. resolve_table with INVALID_OID namespace returns found=false.
 TEST_CASE("services::disk::error::resolve_table_invalid_namespace") {
     fixture fx;
-    auto rt = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), INVALID_OID,
-                         std::string("any"), std::uint64_t{0});
+    auto rt = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), INVALID_OID, std::string("any"), std::uint64_t{0});
     REQUIRE_FALSE(rt.found);
 }
 
@@ -110,8 +107,7 @@ TEST_CASE("services::disk::error::duplicate_namespace_name_two_rows") {
     auto b = test_create_namespace(fx, "dup");
     REQUIRE(a != b);
     // resolve_namespace returns the first match by scan order — non-deterministic but found.
-    auto r = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(),
-                        std::string("dup"), std::uint64_t{0});
+    auto r = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("dup"), std::uint64_t{0});
     REQUIRE(r.found);
 }
 
@@ -122,8 +118,7 @@ TEST_CASE("services::disk::error::topological_drop_empty") {
         return std::pmr::vector<dependency_t>{mr};
     };
     oid_t cycle_at = INVALID_OID;
-    auto order = topological_drop_order(&resource, well_known_oid::pg_namespace_table,
-                                         oid_t{16384}, edges, cycle_at);
+    auto order = topological_drop_order(&resource, well_known_oid::pg_namespace_table, oid_t{16384}, edges, cycle_at);
     REQUIRE(order.empty());
     REQUIRE(cycle_at == INVALID_OID);
 }
@@ -135,8 +130,7 @@ TEST_CASE("services::disk::error::long_namespace_name_accepted") {
     std::string long_name(200, 'x');
     auto ns_oid = test_create_namespace(fx, long_name);
     REQUIRE(ns_oid >= FIRST_USER_OID);
-    auto rs = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(),
-                         long_name, std::uint64_t{0});
+    auto rs = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), long_name, std::uint64_t{0});
     REQUIRE(rs.found);
 }
 
@@ -151,7 +145,7 @@ TEST_CASE("services::disk::error::empty_name_accepted") {
 TEST_CASE("services::disk::error::resolve_unknown_function") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "ns");
-    auto rf = fx.invoke(&manager_disk_t::resolve_function, fx.ctx(), ns_oid,
-                          std::string("unknown_fn"), std::uint64_t{0});
+    auto rf =
+        fx.invoke(&manager_disk_t::resolve_function, fx.ctx(), ns_oid, std::string("unknown_fn"), std::uint64_t{0});
     REQUIRE_FALSE(rf.found);
 }

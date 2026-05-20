@@ -14,16 +14,14 @@ namespace components::catalog {
     //   'a' — auto:   maintained automatically (e.g. index→table); always
     //                 auto-cascaded, never blocks RESTRICT.
     namespace deptype {
-        inline constexpr char normal   = 'n';
+        inline constexpr char normal = 'n';
         // 'auto' is a C++ keyword — use auto_dep for the named constant.
         inline constexpr char auto_dep = 'a';
 
         // Returns true if this deptype should cause RESTRICT to block.
         // Only 'n' (normal) external dependencies block RESTRICT; 'a' (auto)
         // dependencies are always auto-cascaded with the parent.
-        inline constexpr bool blocks_restrict(char dt) noexcept {
-            return dt == normal;
-        }
+        inline constexpr bool blocks_restrict(char dt) noexcept { return dt == normal; }
     } // namespace deptype
 
     // dependency_walker — topologically traverses pg_depend starting from a (refclassid,
@@ -36,28 +34,25 @@ namespace components::catalog {
     // This walker DOES NOT itself mutate state — it only computes the drop order. Each ddl_drop_*
     // remains responsible for its own MVCC delete + invalidation event emission.
     struct dependency_t {
-        oid_t classid{0};   // catalog hosting dependent (e.g. pg_class.oid)
-        oid_t objid{0};     // dependent's own oid
-        char deptype{'n'};   // 'n' normal, 'a' auto
+        oid_t classid{0};  // catalog hosting dependent (e.g. pg_class.oid)
+        oid_t objid{0};    // dependent's own oid
+        char deptype{'n'}; // 'n' normal, 'a' auto
     };
 
     // The fetch_deps callback should return all pg_depend rows where (refclassid, refobjid)
     // matches the supplied (cls, oid). Implemented over manager_disk_t::collect_dependents.
     // The memory_resource* is the arena the caller wants the returned vector to live in.
     using fetch_deps_fn =
-        std::function<std::pmr::vector<dependency_t>(std::pmr::memory_resource* resource,
-                                                      oid_t cls,
-                                                      oid_t oid)>;
+        std::function<std::pmr::vector<dependency_t>(std::pmr::memory_resource* resource, oid_t cls, oid_t oid)>;
 
     // Walk from (seed_cls, seed_oid). Returns dependents in reverse topological order:
     // children before parents, seed at end. On pg_depend back-edge, sets \p cycle_at
     // to the offending oid and returns a partial order — caller must check
     // `cycle_at == INVALID_OID` before using the result. INVALID_OID = success.
-    std::pmr::vector<dependency_t>
-    topological_drop_order(std::pmr::memory_resource* resource,
-                           oid_t seed_cls,
-                           oid_t seed_oid,
-                           const fetch_deps_fn& fetch_deps,
-                           oid_t& cycle_at);
+    std::pmr::vector<dependency_t> topological_drop_order(std::pmr::memory_resource* resource,
+                                                          oid_t seed_cls,
+                                                          oid_t seed_oid,
+                                                          const fetch_deps_fn& fetch_deps,
+                                                          oid_t& cycle_at);
 
 } // namespace components::catalog

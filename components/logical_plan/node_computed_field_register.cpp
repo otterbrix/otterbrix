@@ -21,7 +21,8 @@ namespace components::logical_plan {
         std::string out = "$computed_field_register[";
         bool first = true;
         for (const auto& c : columns_) {
-            if (!first) out.push_back(',');
+            if (!first)
+                out.push_back(',');
             out.append(c.name());
             first = false;
         }

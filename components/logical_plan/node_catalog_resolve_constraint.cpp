@@ -4,10 +4,9 @@
 
 namespace components::logical_plan {
 
-    node_catalog_resolve_constraint_t::node_catalog_resolve_constraint_t(
-        std::pmr::memory_resource* resource,
-        node_catalog_resolve_table_t* target,
-        direction_t direction)
+    node_catalog_resolve_constraint_t::node_catalog_resolve_constraint_t(std::pmr::memory_resource* resource,
+                                                                         node_catalog_resolve_table_t* target,
+                                                                         direction_t direction)
         : node_t(resource, node_type::catalog_resolve_constraint_t)
         , target_(target)
         , direction_(direction) {}
@@ -26,8 +25,8 @@ namespace components::logical_plan {
 
     node_catalog_resolve_constraint_ptr
     make_node_catalog_resolve_constraint(std::pmr::memory_resource* resource,
-                                          node_catalog_resolve_table_t* target,
-                                          node_catalog_resolve_constraint_t::direction_t direction) {
+                                         node_catalog_resolve_table_t* target,
+                                         node_catalog_resolve_constraint_t::direction_t direction) {
         return {new node_catalog_resolve_constraint_t{resource, target, direction}};
     }
 

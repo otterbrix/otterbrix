@@ -1,5 +1,6 @@
 #include "bitcask_index_disk.hpp"
 
+#include "absl/crc/crc32c.h"
 #include <algorithm>
 #include <charconv>
 #include <cstring>
@@ -8,7 +9,6 @@
 #include <stdexcept>
 #include <string_view>
 #include <vector>
-#include "absl/crc/crc32c.h"
 
 namespace services::index {
 
@@ -63,24 +63,45 @@ namespace services::index {
             return v;
         }
 
-        void write_value(std::pmr::string& out,
-                          const services::index::index_disk_t::value_t& key) {
+        void write_value(std::pmr::string& out, const services::index::index_disk_t::value_t& key) {
             const auto t = key.type().type();
             buf_append_le<uint8_t>(out, static_cast<uint8_t>(t));
             switch (t) {
                 case lt::NA:
                     break;
-                case lt::BOOLEAN:    buf_append_le<uint8_t>(out, key.value<bool>() ? 1 : 0); break;
-                case lt::TINYINT:    buf_append_le<int8_t>(out, key.value<int8_t>()); break;
-                case lt::UTINYINT:   buf_append_le<uint8_t>(out, key.value<uint8_t>()); break;
-                case lt::SMALLINT:   buf_append_le<int16_t>(out, key.value<int16_t>()); break;
-                case lt::USMALLINT:  buf_append_le<uint16_t>(out, key.value<uint16_t>()); break;
-                case lt::INTEGER:    buf_append_le<int32_t>(out, key.value<int32_t>()); break;
-                case lt::UINTEGER:   buf_append_le<uint32_t>(out, key.value<uint32_t>()); break;
-                case lt::BIGINT:     buf_append_le<int64_t>(out, key.value<int64_t>()); break;
-                case lt::UBIGINT:    buf_append_le<uint64_t>(out, key.value<uint64_t>()); break;
-                case lt::FLOAT:      buf_append_le<float>(out, key.value<float>()); break;
-                case lt::DOUBLE:     buf_append_le<double>(out, key.value<double>()); break;
+                case lt::BOOLEAN:
+                    buf_append_le<uint8_t>(out, key.value<bool>() ? 1 : 0);
+                    break;
+                case lt::TINYINT:
+                    buf_append_le<int8_t>(out, key.value<int8_t>());
+                    break;
+                case lt::UTINYINT:
+                    buf_append_le<uint8_t>(out, key.value<uint8_t>());
+                    break;
+                case lt::SMALLINT:
+                    buf_append_le<int16_t>(out, key.value<int16_t>());
+                    break;
+                case lt::USMALLINT:
+                    buf_append_le<uint16_t>(out, key.value<uint16_t>());
+                    break;
+                case lt::INTEGER:
+                    buf_append_le<int32_t>(out, key.value<int32_t>());
+                    break;
+                case lt::UINTEGER:
+                    buf_append_le<uint32_t>(out, key.value<uint32_t>());
+                    break;
+                case lt::BIGINT:
+                    buf_append_le<int64_t>(out, key.value<int64_t>());
+                    break;
+                case lt::UBIGINT:
+                    buf_append_le<uint64_t>(out, key.value<uint64_t>());
+                    break;
+                case lt::FLOAT:
+                    buf_append_le<float>(out, key.value<float>());
+                    break;
+                case lt::DOUBLE:
+                    buf_append_le<double>(out, key.value<double>());
+                    break;
                 case lt::STRING_LITERAL: {
                     auto s = key.value<std::string_view>();
                     buf_append_le<uint32_t>(out, static_cast<uint32_t>(s.size()));
@@ -93,24 +114,34 @@ namespace services::index {
         }
 
         services::index::index_disk_t::value_t
-        read_value(std::pmr::memory_resource* resource,
-                    const std::pmr::string& in,
-                    size_t& pos) {
+        read_value(std::pmr::memory_resource* resource, const std::pmr::string& in, size_t& pos) {
             using value_t = services::index::index_disk_t::value_t;
             const auto t = static_cast<lt>(buf_read_le<uint8_t>(in, pos));
             switch (t) {
-                case lt::NA:         return value_t(resource, components::types::complex_logical_type{lt::NA});
-                case lt::BOOLEAN:    return value_t(resource, buf_read_le<uint8_t>(in, pos) != 0);
-                case lt::TINYINT:    return value_t(resource, buf_read_le<int8_t>(in, pos));
-                case lt::UTINYINT:   return value_t(resource, buf_read_le<uint8_t>(in, pos));
-                case lt::SMALLINT:   return value_t(resource, buf_read_le<int16_t>(in, pos));
-                case lt::USMALLINT:  return value_t(resource, buf_read_le<uint16_t>(in, pos));
-                case lt::INTEGER:    return value_t(resource, buf_read_le<int32_t>(in, pos));
-                case lt::UINTEGER:   return value_t(resource, buf_read_le<uint32_t>(in, pos));
-                case lt::BIGINT:     return value_t(resource, buf_read_le<int64_t>(in, pos));
-                case lt::UBIGINT:    return value_t(resource, buf_read_le<uint64_t>(in, pos));
-                case lt::FLOAT:      return value_t(resource, buf_read_le<float>(in, pos));
-                case lt::DOUBLE:     return value_t(resource, buf_read_le<double>(in, pos));
+                case lt::NA:
+                    return value_t(resource, components::types::complex_logical_type{lt::NA});
+                case lt::BOOLEAN:
+                    return value_t(resource, buf_read_le<uint8_t>(in, pos) != 0);
+                case lt::TINYINT:
+                    return value_t(resource, buf_read_le<int8_t>(in, pos));
+                case lt::UTINYINT:
+                    return value_t(resource, buf_read_le<uint8_t>(in, pos));
+                case lt::SMALLINT:
+                    return value_t(resource, buf_read_le<int16_t>(in, pos));
+                case lt::USMALLINT:
+                    return value_t(resource, buf_read_le<uint16_t>(in, pos));
+                case lt::INTEGER:
+                    return value_t(resource, buf_read_le<int32_t>(in, pos));
+                case lt::UINTEGER:
+                    return value_t(resource, buf_read_le<uint32_t>(in, pos));
+                case lt::BIGINT:
+                    return value_t(resource, buf_read_le<int64_t>(in, pos));
+                case lt::UBIGINT:
+                    return value_t(resource, buf_read_le<uint64_t>(in, pos));
+                case lt::FLOAT:
+                    return value_t(resource, buf_read_le<float>(in, pos));
+                case lt::DOUBLE:
+                    return value_t(resource, buf_read_le<double>(in, pos));
                 case lt::STRING_LITERAL: {
                     const auto n = buf_read_le<uint32_t>(in, pos);
                     if (pos + n > in.size()) {
@@ -170,7 +201,8 @@ namespace services::index {
             if (!filename_sv.starts_with(prefix) || !filename_sv.ends_with(suffix))
                 return false;
 
-            const std::string_view digits = filename_sv.substr(prefix.size(), filename_sv.size() - prefix.size() - suffix.size());
+            const std::string_view digits =
+                filename_sv.substr(prefix.size(), filename_sv.size() - prefix.size() - suffix.size());
             if (digits.empty())
                 return false;
 
@@ -179,18 +211,15 @@ namespace services::index {
         }
 
         void write_record(core::filesystem::file_handle_t& file,
-                  uint8_t kind,
-                  uint64_t timestamp,
-                  const std::pmr::string& payload) {
+                          uint8_t kind,
+                          uint64_t timestamp,
+                          const std::pmr::string& payload) {
             record_header_t header{0, kind, static_cast<uint64_t>(payload.size()), timestamp};
 
             absl::crc32c_t crc = absl::ComputeCrc32c(
-                absl::string_view(reinterpret_cast<const char*>(&header.kind),
-                                  sizeof(header) - sizeof(header.crc))
-            );
+                absl::string_view(reinterpret_cast<const char*>(&header.kind), sizeof(header) - sizeof(header.crc)));
             if (!payload.empty()) {
-                crc = absl::ExtendCrc32c(crc,
-                                         absl::string_view(payload.data(), payload.size()));
+                crc = absl::ExtendCrc32c(crc, absl::string_view(payload.data(), payload.size()));
             }
             header.crc = static_cast<uint32_t>(crc);
 
@@ -199,7 +228,7 @@ namespace services::index {
                 file.write(const_cast<char*>(payload.data()), payload.size());
             }
         }
-    }
+    } // namespace
 
     bitcask_index_disk_t::bitcask_index_disk_t(const path_t& path,
                                                std::pmr::memory_resource* resource,
@@ -263,13 +292,11 @@ namespace services::index {
                 }
 
                 {
-                    absl::crc32c_t calc_crc = absl::ComputeCrc32c(
-                        absl::string_view(reinterpret_cast<const char*>(&header.kind),
-                                          sizeof(header) - sizeof(header.crc))
-                    );
+                    absl::crc32c_t calc_crc =
+                        absl::ComputeCrc32c(absl::string_view(reinterpret_cast<const char*>(&header.kind),
+                                                              sizeof(header) - sizeof(header.crc)));
                     if (!payload.empty()) {
-                        calc_crc = absl::ExtendCrc32c(calc_crc,
-                                                      absl::string_view(payload.data(), payload.size()));
+                        calc_crc = absl::ExtendCrc32c(calc_crc, absl::string_view(payload.data(), payload.size()));
                     }
                     if (static_cast<uint32_t>(calc_crc) != header.crc) {
                         throw std::runtime_error("CRC mismatch in segment " + std::to_string(segment.id) +
@@ -416,16 +443,11 @@ namespace services::index {
             }
 
             const auto offset = merged_file->seek_position();
-            write_record(*merged_file,
-                         static_cast<uint8_t>(record_kind_t::value),
-                         entry.timestamp,
-                         payload);
+            write_record(*merged_file, static_cast<uint8_t>(record_kind_t::value), entry.timestamp, payload);
 
-            updated_entries.emplace(value_t(resource_, key),
-                                    keydir_entry_t{merged_segment_id,
-                                                   offset + sizeof(record_header_t),
-                                                   entry.value_size,
-                                                   entry.timestamp});
+            updated_entries.emplace(
+                value_t(resource_, key),
+                keydir_entry_t{merged_segment_id, offset + sizeof(record_header_t), entry.value_size, entry.timestamp});
         }
 
         merged_file->sync();
@@ -470,10 +492,7 @@ namespace services::index {
         auto payload = serialize_payload(resource_, key, rows);
         const auto offset = file_->seek_position();
 
-        write_record(*file_,
-                     static_cast<uint8_t>(record_kind_t::value),
-                     ++next_timestamp_,
-                     payload);
+        write_record(*file_, static_cast<uint8_t>(record_kind_t::value), ++next_timestamp_, payload);
 
         upsert_state(key,
                      rows,
@@ -492,10 +511,7 @@ namespace services::index {
         rotate_active_segment_if_needed();
         auto payload = serialize_payload(resource_, key, row_ids_t(resource_));
 
-        write_record(*file_,
-                     static_cast<uint8_t>(record_kind_t::tombstone),
-                     ++next_timestamp_,
-                     payload);
+        write_record(*file_, static_cast<uint8_t>(record_kind_t::tombstone), ++next_timestamp_, payload);
 
         erase_state(key);
         ++active_segment_records_;
@@ -658,4 +674,4 @@ namespace services::index {
         remove_directory(fs_, path_);
     }
 
-}
+} // namespace services::index

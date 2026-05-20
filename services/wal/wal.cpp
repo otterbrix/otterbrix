@@ -126,14 +126,22 @@ namespace services::wal {
                                         wal::id_t wal_id) {
         id_.store(wal_id, std::memory_order_relaxed);
 
-        trace(log_, "wal_worker::write_physical_insert , wal_id : {} , txn : {} , rows : {}",
-              wal_id, txn_id, row_count);
+        trace(log_,
+              "wal_worker::write_physical_insert , wal_id : {} , txn : {} , rows : {}",
+              wal_id,
+              txn_id,
+              row_count);
 
         encode_buf_.clear();
-        last_crc_ = encode_insert(encode_buf_, this->resource(),
-                                  last_crc_, wal_id, txn_id,
+        last_crc_ = encode_insert(encode_buf_,
+                                  this->resource(),
+                                  last_crc_,
+                                  wal_id,
+                                  txn_id,
                                   table_oid,
-                                  *data_chunk, row_start, row_count);
+                                  *data_chunk,
+                                  row_start,
+                                  row_count);
 
         ensure_writer();
         writer_->append(encode_buf_.data(), encode_buf_.size(), wal_id);
@@ -145,23 +153,18 @@ namespace services::wal {
     // write_physical_delete
     // -----------------------------------------------------------------------
 
-    wal_worker_t::unique_future<wal::id_t>
-    wal_worker_t::write_physical_delete(session_id_t /*session*/,
-                                        components::catalog::oid_t table_oid,
-                                        std::pmr::vector<int64_t> row_ids,
-                                        uint64_t count,
-                                        uint64_t txn_id,
-                                        wal::id_t wal_id) {
+    wal_worker_t::unique_future<wal::id_t> wal_worker_t::write_physical_delete(session_id_t /*session*/,
+                                                                               components::catalog::oid_t table_oid,
+                                                                               std::pmr::vector<int64_t> row_ids,
+                                                                               uint64_t count,
+                                                                               uint64_t txn_id,
+                                                                               wal::id_t wal_id) {
         id_.store(wal_id, std::memory_order_relaxed);
 
-        trace(log_, "wal_worker::write_physical_delete , wal_id : {} , txn : {} , count : {}",
-              wal_id, txn_id, count);
+        trace(log_, "wal_worker::write_physical_delete , wal_id : {} , txn : {} , count : {}", wal_id, txn_id, count);
 
         encode_buf_.clear();
-        last_crc_ = encode_delete(encode_buf_,
-                                  last_crc_, wal_id, txn_id,
-                                  table_oid,
-                                  row_ids.data(), count);
+        last_crc_ = encode_delete(encode_buf_, last_crc_, wal_id, txn_id, table_oid, row_ids.data(), count);
 
         ensure_writer();
         writer_->append(encode_buf_.data(), encode_buf_.size(), wal_id);
@@ -183,14 +186,18 @@ namespace services::wal {
                                         wal::id_t wal_id) {
         id_.store(wal_id, std::memory_order_relaxed);
 
-        trace(log_, "wal_worker::write_physical_update , wal_id : {} , txn : {} , count : {}",
-              wal_id, txn_id, count);
+        trace(log_, "wal_worker::write_physical_update , wal_id : {} , txn : {} , count : {}", wal_id, txn_id, count);
 
         encode_buf_.clear();
-        last_crc_ = encode_update(encode_buf_, this->resource(),
-                                  last_crc_, wal_id, txn_id,
+        last_crc_ = encode_update(encode_buf_,
+                                  this->resource(),
+                                  last_crc_,
+                                  wal_id,
+                                  txn_id,
                                   table_oid,
-                                  row_ids.data(), *new_data, count);
+                                  row_ids.data(),
+                                  *new_data,
+                                  count);
 
         ensure_writer();
         writer_->append(encode_buf_.data(), encode_buf_.size(), wal_id);
@@ -202,15 +209,17 @@ namespace services::wal {
     // commit_txn
     // -----------------------------------------------------------------------
 
-    wal_worker_t::unique_future<wal::id_t>
-    wal_worker_t::commit_txn(session_id_t /*session*/,
-                             uint64_t transaction_id,
-                             wal_sync_mode sync_mode,
-                             wal::id_t wal_id) {
+    wal_worker_t::unique_future<wal::id_t> wal_worker_t::commit_txn(session_id_t /*session*/,
+                                                                    uint64_t transaction_id,
+                                                                    wal_sync_mode sync_mode,
+                                                                    wal::id_t wal_id) {
         id_.store(wal_id, std::memory_order_relaxed);
 
-        trace(log_, "wal_worker::commit_txn , wal_id : {} , txn : {} , sync : {}",
-              wal_id, transaction_id, static_cast<int>(sync_mode));
+        trace(log_,
+              "wal_worker::commit_txn , wal_id : {} , txn : {} , sync : {}",
+              wal_id,
+              transaction_id,
+              static_cast<int>(sync_mode));
 
         if (sync_mode == wal_sync_mode::OFF) {
             // OFF mode: encode the commit marker but do not write to disk.
@@ -247,10 +256,9 @@ namespace services::wal {
     //      (or txn_id == 0), plus COMMIT markers themselves.
     // -----------------------------------------------------------------------
 
-    wal_worker_t::unique_future<std::vector<record_t>>
-    wal_worker_t::load(session_id_t session, wal::id_t after_wal_id) {
-        trace(log_, "wal_worker::load , session : {} , after_wal_id : {}",
-              session.data(), after_wal_id);
+    wal_worker_t::unique_future<std::vector<record_t>> wal_worker_t::load(session_id_t session,
+                                                                          wal::id_t after_wal_id) {
+        trace(log_, "wal_worker::load , session : {} , after_wal_id : {}", session.data(), after_wal_id);
 
         // Flush current writer so all data is on disk.
         if (writer_) {
@@ -284,15 +292,13 @@ namespace services::wal {
             if (!r.is_valid()) {
                 continue;
             }
-            if (r.transaction_id == 0 ||
-                committed_txns.count(r.transaction_id) > 0) {
+            if (r.transaction_id == 0 || committed_txns.count(r.transaction_id) > 0) {
                 result.push_back(std::move(r));
             }
         }
 
         // Sort by wal_id ascending.
-        std::sort(result.begin(), result.end(),
-                  [](const record_t& a, const record_t& b) { return a.id < b.id; });
+        std::sort(result.begin(), result.end(), [](const record_t& a, const record_t& b) { return a.id < b.id; });
 
         trace(log_, "wal_worker::load , returning {} records", result.size());
         co_return result;
@@ -312,8 +318,8 @@ namespace services::wal {
     // worst-case .prev recovery while still trimming records older than every .prev.
     // -----------------------------------------------------------------------
 
-    wal_worker_t::unique_future<void>
-    wal_worker_t::truncate_before(session_id_t /*session*/, wal::id_t checkpoint_wal_id) {
+    wal_worker_t::unique_future<void> wal_worker_t::truncate_before(session_id_t /*session*/,
+                                                                    wal::id_t checkpoint_wal_id) {
         trace(log_, "wal_worker::truncate_before , checkpoint_wal_id : {}", checkpoint_wal_id);
 
         auto segments = discover_segments();
@@ -335,8 +341,7 @@ namespace services::wal {
             // The last data page's page_end_lsn is the highest wal_id.
             auto last_hdr = reader.read_page_header(pc); // last data page index
             if (last_hdr.page_end_lsn <= checkpoint_wal_id) {
-                trace(log_, "wal_worker::truncate_before , removing segment : {}",
-                      seg_path.filename().string());
+                trace(log_, "wal_worker::truncate_before , removing segment : {}", seg_path.filename().string());
                 std::filesystem::remove(seg_path);
             }
         }
@@ -356,7 +361,8 @@ namespace services::wal {
     void wal_worker_t::recover_from_disk() {
         auto segments = discover_segments();
         if (segments.empty()) {
-            trace(log_, "wal_worker::recover , no existing segments for db_oid={}",
+            trace(log_,
+                  "wal_worker::recover , no existing segments for db_oid={}",
                   static_cast<unsigned>(database_oid_));
             return;
         }
@@ -376,8 +382,9 @@ namespace services::wal {
             // Verify page checksums (W-CRC). On corruption, log and stop reading
             // further segments (W-CORRUPT STOP-A).
             if (!reader.verify_chain()) {
-                warn(log_, "wal_worker::recover , CRC chain broken in segment '{}' , "
-                           "truncating at corruption point",
+                warn(log_,
+                     "wal_worker::recover , CRC chain broken in segment '{}' , "
+                     "truncating at corruption point",
                      seg_path.filename().string());
 
                 // Read whatever valid records exist before the corruption.
@@ -407,8 +414,11 @@ namespace services::wal {
         last_crc_ = recovered_crc;
         current_segment_index_ = max_seg_index;
 
-        trace(log_, "wal_worker::recover , db_oid={} , max_wal_id : {} , segment_index : {}",
-              static_cast<unsigned>(database_oid_), max_wal_id, current_segment_index_);
+        trace(log_,
+              "wal_worker::recover , db_oid={} , max_wal_id : {} , segment_index : {}",
+              static_cast<unsigned>(database_oid_),
+              max_wal_id,
+              current_segment_index_);
     }
 
     // -----------------------------------------------------------------------
@@ -435,11 +445,10 @@ namespace services::wal {
         }
 
         auto path = segment_path(current_segment_index_);
-        writer_ = std::make_unique<wal_page_writer_t>(
-            path,
-            database_dir_name_,
-            current_segment_index_,
-            config_.max_segment_size);
+        writer_ = std::make_unique<wal_page_writer_t>(path,
+                                                      database_dir_name_,
+                                                      current_segment_index_,
+                                                      config_.max_segment_size);
     }
 
     // -----------------------------------------------------------------------
@@ -464,8 +473,7 @@ namespace services::wal {
                 continue;
             }
             auto fname = entry.path().filename().string();
-            if (fname.size() >= prefix.size() &&
-                fname.compare(0, prefix.size(), prefix) == 0) {
+            if (fname.size() >= prefix.size() && fname.compare(0, prefix.size(), prefix) == 0) {
                 result.push_back(entry.path());
             }
         }
@@ -475,12 +483,10 @@ namespace services::wal {
         return result;
     }
 
-    uint32_t wal_worker_t::parse_segment_index(const std::filesystem::path& path,
-                                                const std::string& db_dir_name) {
+    uint32_t wal_worker_t::parse_segment_index(const std::filesystem::path& path, const std::string& db_dir_name) {
         auto fname = path.filename().string();
         std::string prefix = "wal_" + db_dir_name + "_";
-        if (fname.size() <= prefix.size() ||
-            fname.compare(0, prefix.size(), prefix) != 0) {
+        if (fname.size() <= prefix.size() || fname.compare(0, prefix.size(), prefix) != 0) {
             return static_cast<uint32_t>(-1);
         }
         auto suffix = fname.substr(prefix.size());

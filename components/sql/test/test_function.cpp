@@ -16,7 +16,10 @@ using vec = std::vector<v>;
     {                                                                                                                  \
         SECTION(QUERY) {                                                                                               \
             auto select = linitial(raw_parser(&arena_resource, QUERY));                                                \
-            auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));       \
+            auto result = ([](auto _w) {                                                                               \
+                REQUIRE_FALSE(_w.has_error());                                                                         \
+                return _w.value();                                                                                     \
+            }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));                                        \
             auto node = result.node;                                                                                   \
             if (node->type() == components::logical_plan::node_type::sequence_t) {                                     \
                 node = node->children().back();                                                                        \
@@ -51,9 +54,10 @@ TEST_CASE("components::sql::functions") {
                          R"_($aggregate: {$match: {$function: {name: {"is_active_user"}, args: {"data/id"}}}})_",
                          vec());
 
-    TEST_SIMPLE_FUNCTION(R"_(SELECT id, text, some_udf(text) AS some_alias FROM some_table;)_",
-                         R"_($aggregate: {$group: {some_alias: {$some_udf: "text"}}, $select: {id, text, some_alias}})_",
-                         vec());
+    TEST_SIMPLE_FUNCTION(
+        R"_(SELECT id, text, some_udf(text) AS some_alias FROM some_table;)_",
+        R"_($aggregate: {$group: {some_alias: {$some_udf: "text"}}, $select: {id, text, some_alias}})_",
+        vec());
 
     TEST_SIMPLE_FUNCTION(
         R"_(SELECT *, some_udf_1(foo_name) FROM some_udf_2(1) AS some_alias;)_",
@@ -64,9 +68,10 @@ TEST_CASE("components::sql::functions") {
                          R"_($aggregate: {$group: {some_udf: {$some_udf: [#0, #1]}}, $select: {some_udf}})_",
                          vec({v(&resource, 5), v(&resource, 10)}));
 
-    TEST_SIMPLE_FUNCTION(R"_(SELECT name, some_udf(name, number) AS some_alias;)_",
-                         R"_($aggregate: {$group: {some_alias: {$some_udf: ["name", "number"]}}, $select: {name, some_alias}})_",
-                         vec());
+    TEST_SIMPLE_FUNCTION(
+        R"_(SELECT name, some_udf(name, number) AS some_alias;)_",
+        R"_($aggregate: {$group: {some_alias: {$some_udf: ["name", "number"]}}, $select: {name, some_alias}})_",
+        vec());
 
     TEST_SIMPLE_FUNCTION(
         R"_(SELECT * FROM col1 join col2 on udf(col1.id, col2.id);)_",

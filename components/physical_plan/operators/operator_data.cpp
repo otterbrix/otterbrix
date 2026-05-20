@@ -73,9 +73,7 @@ namespace components::operators {
         return total;
     }
 
-    void operator_data_t::append_chunk(vector::data_chunk_t&& chunk) {
-        chunks_.emplace_back(std::move(chunk));
-    }
+    void operator_data_t::append_chunk(vector::data_chunk_t&& chunk) { chunks_.emplace_back(std::move(chunk)); }
 
     vector::data_chunk_t& operator_data_t::data_chunk() {
         if (chunks_.size() != 1) {

@@ -7,11 +7,11 @@ namespace services::index {
 
     namespace {
         std::unique_ptr<index_disk_t> make_index_disk(const std::filesystem::path& path,
-                                                     std::pmr::memory_resource* resource,
-                                                     components::logical_plan::index_type type,
-                                                     uint64_t bitcask_flush_threshold,
-                                                     uint64_t bitcask_segment_record_limit,
-                                                     uint64_t btree_flush_threshold) {
+                                                      std::pmr::memory_resource* resource,
+                                                      components::logical_plan::index_type type,
+                                                      uint64_t bitcask_flush_threshold,
+                                                      uint64_t bitcask_segment_record_limit,
+                                                      uint64_t btree_flush_threshold) {
             // index_type::hashed → bitcask LSM. Everything else (single / composite /
             // multikey / wildcard) → ordered B+tree.
             if (type == components::logical_plan::index_type::hashed) {
@@ -35,13 +35,12 @@ namespace services::index {
                                            log_t& log)
         : actor_zeta::basic_actor<index_agent_disk_t>(resource)
         , log_(log.clone())
-        , index_disk_(make_index_disk(
-              path_db / std::to_string(static_cast<unsigned>(table_oid)) / index_name,
-              this->resource(),
-              type,
-              bitcask_flush_threshold,
-              bitcask_segment_record_limit,
-              btree_flush_threshold))
+        , index_disk_(make_index_disk(path_db / std::to_string(static_cast<unsigned>(table_oid)) / index_name,
+                                      this->resource(),
+                                      type,
+                                      bitcask_flush_threshold,
+                                      bitcask_segment_record_limit,
+                                      btree_flush_threshold))
         , table_oid_(table_oid) {
         trace(log_, "index_agent_disk::create {} (table_oid={})", index_name, static_cast<unsigned>(table_oid));
     }

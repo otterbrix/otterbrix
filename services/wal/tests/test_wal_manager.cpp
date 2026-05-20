@@ -1,18 +1,23 @@
+// clang-format off
+// <actor-zeta/spawn.hpp> requires std::unique_ptr, but does not include it itself
+#include <memory>
+#include <actor-zeta/spawn.hpp>
+// clang-format on
+
 #include <catch2/catch.hpp>
-#include <core/pmr.hpp>
-#include <filesystem>
-#include <services/wal/manager_wal_replicate.hpp>
-#include <services/wal/wal_contract.hpp>
-#include <services/wal/wal_sync_mode.hpp>
-#include <services/wal/record.hpp>
-#include <services/wal/base.hpp>
 #include <components/catalog/catalog_oids.hpp>
-#include <components/tests/generaty.hpp>
 #include <components/configuration/configuration.hpp>
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>
-#include <actor-zeta/spawn.hpp>
+#include <components/tests/generaty.hpp>
 #include <core/executor.hpp>
+#include <core/pmr.hpp>
+#include <filesystem>
+#include <services/wal/base.hpp>
+#include <services/wal/manager_wal_replicate.hpp>
+#include <services/wal/record.hpp>
+#include <services/wal/wal_contract.hpp>
+#include <services/wal/wal_sync_mode.hpp>
 
 using namespace services::wal;
 using namespace components::session;
@@ -37,12 +42,15 @@ struct test_wal_manager {
         , resource_()
         , log_(initialization_logger("python", "/tmp/docker_logs/"))
         , scheduler_(new actor_zeta::shared_work(3, 1000))
-        , config_([&]() { configuration::config_wal c(path); c.on = wal_enabled; return c; }())
+        , config_([&]() {
+            configuration::config_wal c(path);
+            c.on = wal_enabled;
+            return c;
+        }())
         , manager_(actor_zeta::spawn<manager_wal_replicate_t>(&resource_, scheduler_.get(), config_, log_)) {
         std::filesystem::remove_all(path_);
         std::filesystem::create_directories(path_);
-        manager_->sync(std::make_tuple(actor_zeta::address_t::empty_address(),
-                                       actor_zeta::address_t::empty_address()));
+        manager_->sync(std::make_tuple(actor_zeta::address_t::empty_address(), actor_zeta::address_t::empty_address()));
         scheduler_->start();
     }
 
@@ -51,66 +59,57 @@ struct test_wal_manager {
         std::filesystem::remove_all(path_);
     }
 
-    actor_zeta::address_t address() const {
-        return manager_->address();
-    }
+    actor_zeta::address_t address() const { return manager_->address(); }
 
     // ----- convenience senders -------------------------------------------
 
-    actor_zeta::unique_future<services::wal::id_t> send_insert(catalog::oid_t table_oid,
-                                                  uint64_t txn_id,
-                                                  size_t row_count,
-                                                  uint64_t row_start = 0) {
+    actor_zeta::unique_future<services::wal::id_t>
+    send_insert(catalog::oid_t table_oid, uint64_t txn_id, size_t row_count, uint64_t row_start = 0) {
         std::pmr::monotonic_buffer_resource arena(1024 * 64);
         auto chunk = gen_data_chunk(row_count, &arena);
-        auto [ns, fut] =
-            actor_zeta::otterbrix::send(address(),
-                                        &manager_wal_replicate_t::write_physical_insert,
-                                        session_id_t::generate_uid(),
-                                        table_oid,
-                                        std::make_unique<data_chunk_t>(std::move(chunk)),
-                                        row_start,
-                                        row_count,
-                                        txn_id);
+        auto [ns, fut] = actor_zeta::otterbrix::send(address(),
+                                                     &manager_wal_replicate_t::write_physical_insert,
+                                                     session_id_t::generate_uid(),
+                                                     table_oid,
+                                                     std::make_unique<data_chunk_t>(std::move(chunk)),
+                                                     row_start,
+                                                     row_count,
+                                                     txn_id);
         return std::move(fut);
     }
 
     actor_zeta::unique_future<services::wal::id_t> send_commit(uint64_t txn_id,
-                                                  catalog::oid_t database_oid = kMainDb,
-                                                  wal_sync_mode sync_mode = wal_sync_mode::NORMAL) {
-        auto [ns, fut] =
-            actor_zeta::otterbrix::send(address(),
-                                        &manager_wal_replicate_t::commit_txn,
-                                        session_id_t::generate_uid(),
-                                        txn_id,
-                                        sync_mode,
-                                        database_oid);
+                                                               catalog::oid_t database_oid = kMainDb,
+                                                               wal_sync_mode sync_mode = wal_sync_mode::NORMAL) {
+        auto [ns, fut] = actor_zeta::otterbrix::send(address(),
+                                                     &manager_wal_replicate_t::commit_txn,
+                                                     session_id_t::generate_uid(),
+                                                     txn_id,
+                                                     sync_mode,
+                                                     database_oid);
         return std::move(fut);
     }
 
     actor_zeta::unique_future<std::vector<record_t>> send_load(services::wal::id_t from_id = 0) {
-        auto [ns, fut] =
-            actor_zeta::otterbrix::send(address(),
-                                        &manager_wal_replicate_t::load,
-                                        session_id_t::generate_uid(),
-                                        from_id);
+        auto [ns, fut] = actor_zeta::otterbrix::send(address(),
+                                                     &manager_wal_replicate_t::load,
+                                                     session_id_t::generate_uid(),
+                                                     from_id);
         return std::move(fut);
     }
 
     actor_zeta::unique_future<services::wal::id_t> send_current_wal_id() {
-        auto [ns, fut] =
-            actor_zeta::otterbrix::send(address(),
-                                        &manager_wal_replicate_t::current_wal_id,
-                                        session_id_t::generate_uid());
+        auto [ns, fut] = actor_zeta::otterbrix::send(address(),
+                                                     &manager_wal_replicate_t::current_wal_id,
+                                                     session_id_t::generate_uid());
         return std::move(fut);
     }
 
     actor_zeta::unique_future<void> send_truncate_before(services::wal::id_t checkpoint_id) {
-        auto [ns, fut] =
-            actor_zeta::otterbrix::send(address(),
-                                        &manager_wal_replicate_t::truncate_before,
-                                        session_id_t::generate_uid(),
-                                        checkpoint_id);
+        auto [ns, fut] = actor_zeta::otterbrix::send(address(),
+                                                     &manager_wal_replicate_t::truncate_before,
+                                                     session_id_t::generate_uid(),
+                                                     checkpoint_id);
         return std::move(fut);
     }
 
@@ -194,8 +193,10 @@ TEST_CASE("wal_manager::load_returns_all") {
     services::wal::id_t prev_id = 0;
     for (const auto& r : records) {
         if (r.is_physical()) {
-            if (r.table_oid == kTestTableOidA) seen_a = true;
-            if (r.table_oid == kTestTableOidB) seen_b = true;
+            if (r.table_oid == kTestTableOidA)
+                seen_a = true;
+            if (r.table_oid == kTestTableOidB)
+                seen_b = true;
         }
         // Records should be sorted by wal_id.
         REQUIRE(r.id >= prev_id);
@@ -264,15 +265,14 @@ TEST_CASE("wal_manager::disabled") {
     {
         std::pmr::monotonic_buffer_resource arena(1024 * 64);
         auto chunk = gen_data_chunk(5, &arena);
-        auto [ns, fut] =
-            actor_zeta::otterbrix::send(env.address(),
-                                        &manager_wal_replicate_t::write_physical_insert,
-                                        session_id_t::generate_uid(),
-                                        kTestTableOidA,
-                                        std::make_unique<data_chunk_t>(std::move(chunk)),
-                                        uint64_t{0},
-                                        uint64_t{5},
-                                        uint64_t{800});
+        auto [ns, fut] = actor_zeta::otterbrix::send(env.address(),
+                                                     &manager_wal_replicate_t::write_physical_insert,
+                                                     session_id_t::generate_uid(),
+                                                     kTestTableOidA,
+                                                     std::make_unique<data_chunk_t>(std::move(chunk)),
+                                                     uint64_t{0},
+                                                     uint64_t{5},
+                                                     uint64_t{800});
 
         auto wal_id = std::move(fut).get();
         REQUIRE(wal_id == 0);
@@ -280,24 +280,22 @@ TEST_CASE("wal_manager::disabled") {
 
     // commit_txn should return 0.
     {
-        auto [ns, fut] =
-            actor_zeta::otterbrix::send(env.address(),
-                                        &manager_wal_replicate_t::commit_txn,
-                                        session_id_t::generate_uid(),
-                                        uint64_t{800},
-                                        wal_sync_mode::NORMAL,
-                                        kMainDb);
+        auto [ns, fut] = actor_zeta::otterbrix::send(env.address(),
+                                                     &manager_wal_replicate_t::commit_txn,
+                                                     session_id_t::generate_uid(),
+                                                     uint64_t{800},
+                                                     wal_sync_mode::NORMAL,
+                                                     kMainDb);
 
         REQUIRE(std::move(fut).get() == 0);
     }
 
     // load should return empty.
     {
-        auto [ns, fut] =
-            actor_zeta::otterbrix::send(env.address(),
-                                        &manager_wal_replicate_t::load,
-                                        session_id_t::generate_uid(),
-                                        services::wal::id_t{0});
+        auto [ns, fut] = actor_zeta::otterbrix::send(env.address(),
+                                                     &manager_wal_replicate_t::load,
+                                                     session_id_t::generate_uid(),
+                                                     services::wal::id_t{0});
 
         auto records = std::move(fut).get();
         REQUIRE(records.empty());
@@ -305,10 +303,9 @@ TEST_CASE("wal_manager::disabled") {
 
     // current_wal_id should return 0.
     {
-        auto [ns, fut] =
-            actor_zeta::otterbrix::send(env.address(),
-                                        &manager_wal_replicate_t::current_wal_id,
-                                        session_id_t::generate_uid());
+        auto [ns, fut] = actor_zeta::otterbrix::send(env.address(),
+                                                     &manager_wal_replicate_t::current_wal_id,
+                                                     session_id_t::generate_uid());
 
         REQUIRE(std::move(fut).get() == 0);
     }
@@ -332,15 +329,14 @@ TEST_CASE("wal_manager::test_auto_checkpoint_on_wal_size") {
     cfg.on = true;
     cfg.auto_checkpoint_threshold_bytes = 1; // crossed after first write
     auto manager = actor_zeta::spawn<manager_wal_replicate_t>(&resource, scheduler.get(), cfg, log);
-    manager->sync(std::make_tuple(actor_zeta::address_t::empty_address(),
-                                  actor_zeta::address_t::empty_address()));
+    manager->sync(std::make_tuple(actor_zeta::address_t::empty_address(), actor_zeta::address_t::empty_address()));
     scheduler->start();
 
     // Before any writes: auto_checkpoint_wal_id should return 0.
     {
         auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
-                                                      &manager_wal_replicate_t::auto_checkpoint_wal_id,
-                                                      session_id_t::generate_uid());
+                                                     &manager_wal_replicate_t::auto_checkpoint_wal_id,
+                                                     session_id_t::generate_uid());
         auto id = std::move(fut).get();
         REQUIRE(id == 0);
     }
@@ -350,30 +346,30 @@ TEST_CASE("wal_manager::test_auto_checkpoint_on_wal_size") {
         std::pmr::monotonic_buffer_resource arena(1024 * 64);
         auto chunk = gen_data_chunk(10, &arena);
         auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
-                                                      &manager_wal_replicate_t::write_physical_insert,
-                                                      session_id_t::generate_uid(),
-                                                      kTestTableOidA,
-                                                      std::make_unique<data_chunk_t>(std::move(chunk)),
-                                                      uint64_t{0},
-                                                      uint64_t{10},
-                                                      uint64_t{1001});
+                                                     &manager_wal_replicate_t::write_physical_insert,
+                                                     session_id_t::generate_uid(),
+                                                     kTestTableOidA,
+                                                     std::make_unique<data_chunk_t>(std::move(chunk)),
+                                                     uint64_t{0},
+                                                     uint64_t{10},
+                                                     uint64_t{1001});
         REQUIRE(std::move(fut).get() > 0);
     }
     {
         auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
-                                                      &manager_wal_replicate_t::commit_txn,
-                                                      session_id_t::generate_uid(),
-                                                      uint64_t{1001},
-                                                      wal_sync_mode::NORMAL,
-                                                      kMainDb);
+                                                     &manager_wal_replicate_t::commit_txn,
+                                                     session_id_t::generate_uid(),
+                                                     uint64_t{1001},
+                                                     wal_sync_mode::NORMAL,
+                                                     kMainDb);
         REQUIRE(std::move(fut).get() > 0);
     }
 
     // Now threshold is exceeded: auto_checkpoint_wal_id must return current wal_id > 0.
     {
         auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
-                                                      &manager_wal_replicate_t::auto_checkpoint_wal_id,
-                                                      session_id_t::generate_uid());
+                                                     &manager_wal_replicate_t::auto_checkpoint_wal_id,
+                                                     session_id_t::generate_uid());
         auto id = std::move(fut).get();
         REQUIRE(id > 0);
     }
@@ -381,8 +377,8 @@ TEST_CASE("wal_manager::test_auto_checkpoint_on_wal_size") {
     // Counter was reset: second call must return 0 again.
     {
         auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
-                                                      &manager_wal_replicate_t::auto_checkpoint_wal_id,
-                                                      session_id_t::generate_uid());
+                                                     &manager_wal_replicate_t::auto_checkpoint_wal_id,
+                                                     session_id_t::generate_uid());
         auto id = std::move(fut).get();
         REQUIRE(id == 0);
     }
@@ -402,8 +398,7 @@ TEST_CASE("wal_manager::sync_addresses") {
     // Call it again with different empty addresses to confirm idempotency.
     if (env.manager_) {
         REQUIRE_NOTHROW(env.manager_->sync(
-            std::make_tuple(actor_zeta::address_t::empty_address(),
-                            actor_zeta::address_t::empty_address())));
+            std::make_tuple(actor_zeta::address_t::empty_address(), actor_zeta::address_t::empty_address())));
     }
 
     // The manager should still be functional after re-sync.

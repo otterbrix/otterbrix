@@ -31,8 +31,8 @@ namespace components::operators {
     } // namespace
 
     operator_resolve_namespace_t::operator_resolve_namespace_t(std::pmr::memory_resource* resource,
-                                                                 log_t                       log,
-                                                                 std::string                 name)
+                                                               log_t log,
+                                                               std::string name)
         // operator_type::resolve_namespace tags the leaf for downstream
         // consumers; like operator_get_schema, the executor's generic
         // pipeline drives this operator via await_async_and_resume.
@@ -40,9 +40,9 @@ namespace components::operators {
         , name_(std::move(name)) {}
 
     operator_resolve_namespace_t::operator_resolve_namespace_t(
-        std::pmr::memory_resource*                                  resource,
-        log_t                                                        log,
-        std::string                                                  name,
+        std::pmr::memory_resource* resource,
+        log_t log,
+        std::string name,
         components::logical_plan::node_catalog_resolve_namespace_t* target_node)
         : read_write_operator_t(resource, std::move(log), operator_type::resolve_namespace)
         , name_(std::move(name))
@@ -54,8 +54,7 @@ namespace components::operators {
         async_wait();
     }
 
-    actor_zeta::unique_future<void>
-    operator_resolve_namespace_t::await_async_and_resume(pipeline::context_t* ctx) {
+    actor_zeta::unique_future<void> operator_resolve_namespace_t::await_async_and_resume(pipeline::context_t* ctx) {
         constexpr catalog::oid_t kPgNamespace = catalog::well_known_oid::pg_namespace_table;
 
         // Build the single-column output chunk schema up-front. We always emit
@@ -86,20 +85,19 @@ namespace components::operators {
         ns_keys.emplace_back("nspname");
         std::pmr::vector<types::logical_value_t> ns_vals(resource_);
         ns_vals.emplace_back(name_lv);
-        auto [_ns, nsf] = actor_zeta::send(
-            ctx->disk_address,
-            &services::disk::manager_disk_t::read_rows_by_key,
-            exec_ctx, kPgNamespace,
-            std::move(ns_keys),
-            std::move(ns_vals));
+        auto [_ns, nsf] = actor_zeta::send(ctx->disk_address,
+                                           &services::disk::manager_disk_t::read_rows_by_key,
+                                           exec_ctx,
+                                           kPgNamespace,
+                                           std::move(ns_keys),
+                                           std::move(ns_vals));
         auto ns_rows = co_await std::move(nsf);
 
         if (!ns_rows.empty() && !ns_rows[0].empty() && !ns_rows[0][0].is_null()) {
             // First row's col 0 = namespace_oid. Mirrors
             // manager_disk_t::resolve_namespace (manager_disk_resolve.cpp:9-32)
             // which returns the first match.
-            const auto oid_val = static_cast<catalog::oid_t>(
-                ns_rows[0][0].value<std::uint32_t>());
+            const auto oid_val = static_cast<catalog::oid_t>(ns_rows[0][0].value<std::uint32_t>());
             out_chunk.set_cardinality(1);
             set_uint32(out_chunk, 0, 0, static_cast<std::uint32_t>(oid_val));
             // Stamp the resolved oid onto the logical-plan node so the

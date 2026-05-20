@@ -18,8 +18,8 @@ namespace components::operators {
 
     operator_computed_field_register_t::operator_computed_field_register_t(
         std::pmr::memory_resource* resource,
-        log_t                       log,
-        catalog::oid_t              table_oid,
+        log_t log,
+        catalog::oid_t table_oid,
         std::vector<components::table::column_definition_t> columns)
         : read_write_operator_t(resource, std::move(log), operator_type::computed_field_register)
         , table_oid_(table_oid)
@@ -62,8 +62,8 @@ namespace components::operators {
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
         constexpr catalog::oid_t pg_computed_column = catalog::well_known_oid::pg_computed_column_table;
-        constexpr catalog::oid_t pg_type            = catalog::well_known_oid::pg_type_table;
-        constexpr catalog::oid_t pg_depend          = catalog::well_known_oid::pg_depend_table;
+        constexpr catalog::oid_t pg_type = catalog::well_known_oid::pg_type_table;
+        constexpr catalog::oid_t pg_depend = catalog::well_known_oid::pg_depend_table;
 
         const types::logical_value_t toid_lv(resource_, table_oid_);
 
@@ -78,30 +78,30 @@ namespace components::operators {
             std::pmr::vector<types::logical_value_t> r_vals(resource_);
             r_vals.emplace_back(toid_lv);
             r_vals.emplace_back(name_lv);
-            auto [_r, rf] = actor_zeta::send(
-                ctx->disk_address,
-                &services::disk::manager_disk_t::read_rows_by_key,
-                exec_ctx, pg_computed_column,
-                std::move(r_keys),
-                std::move(r_vals));
+            auto [_r, rf] = actor_zeta::send(ctx->disk_address,
+                                             &services::disk::manager_disk_t::read_rows_by_key,
+                                             exec_ctx,
+                                             pg_computed_column,
+                                             std::move(r_keys),
+                                             std::move(r_vals));
             auto rows = co_await std::move(rf);
 
-            std::int64_t   max_version    = -1;
+            std::int64_t max_version = -1;
             catalog::oid_t latest_atttypid = catalog::INVALID_OID;
-            std::string    latest_atttypspec;
-            std::int64_t   latest_refcount = 0;
+            std::string latest_atttypspec;
+            std::int64_t latest_refcount = 0;
             for (const auto& row : rows) {
-                if (row.size() < 7) continue;
-                if (row[5].is_null()) continue;
+                if (row.size() < 7)
+                    continue;
+                if (row[5].is_null())
+                    continue;
                 const auto v = row[5].value<std::int64_t>();
                 if (v > max_version) {
                     max_version = v;
-                    latest_atttypid = row[3].is_null()
-                                          ? catalog::INVALID_OID
-                                          : static_cast<catalog::oid_t>(row[3].value<std::uint32_t>());
-                    latest_atttypspec = row[4].is_null()
-                                            ? std::string{}
-                                            : std::string(row[4].value<std::string_view>());
+                    latest_atttypid = row[3].is_null() ? catalog::INVALID_OID
+                                                       : static_cast<catalog::oid_t>(row[3].value<std::uint32_t>());
+                    latest_atttypspec =
+                        row[4].is_null() ? std::string{} : std::string(row[4].value<std::string_view>());
                     latest_refcount = row[6].is_null() ? 0 : row[6].value<std::int64_t>();
                 }
             }
@@ -128,16 +128,15 @@ namespace components::operators {
                     t_keys.emplace_back("typname");
                     std::pmr::vector<types::logical_value_t> t_vals(resource_);
                     t_vals.emplace_back(lookup_lv);
-                    auto [_t, tf] = actor_zeta::send(
-                        ctx->disk_address,
-                        &services::disk::manager_disk_t::read_rows_by_key,
-                        exec_ctx, pg_type,
-                        std::move(t_keys),
-                        std::move(t_vals));
+                    auto [_t, tf] = actor_zeta::send(ctx->disk_address,
+                                                     &services::disk::manager_disk_t::read_rows_by_key,
+                                                     exec_ctx,
+                                                     pg_type,
+                                                     std::move(t_keys),
+                                                     std::move(t_vals));
                     auto type_rows = co_await std::move(tf);
                     if (!type_rows.empty() && !type_rows[0].empty() && !type_rows[0][0].is_null()) {
-                        atttypid = static_cast<catalog::oid_t>(
-                            type_rows[0][0].value<std::uint32_t>());
+                        atttypid = static_cast<catalog::oid_t>(type_rows[0][0].value<std::uint32_t>());
                     }
                 }
             }
@@ -157,9 +156,8 @@ namespace components::operators {
             // attversion are written and operator_computed_field_register
             // doesn't short-circuit on stale type info.
             const bool is_new = (max_version < 0) || (latest_refcount <= 0);
-            const bool same_type =
-                !is_new && latest_atttypid == atttypid && latest_atttypspec == atttypspec &&
-                (latest_atttypid != catalog::INVALID_OID || !atttypspec.empty());
+            const bool same_type = !is_new && latest_atttypid == atttypid && latest_atttypspec == atttypspec &&
+                                   (latest_atttypid != catalog::INVALID_OID || !atttypspec.empty());
             if (same_type) {
                 // No-op: column already registered with the same type. The
                 // simplified binary refcount model does not bump on every
@@ -168,14 +166,14 @@ namespace components::operators {
             }
 
             // Step 3: allocate a fresh attoid for the new (or evolved) column row.
-            auto [_oa, oaf] = actor_zeta::send(
-                ctx->disk_address,
-                &services::disk::manager_disk_t::allocate_oids_batch,
-                std::size_t{1});
+            auto [_oa, oaf] = actor_zeta::send(ctx->disk_address,
+                                               &services::disk::manager_disk_t::allocate_oids_batch,
+                                               std::size_t{1});
             auto oid_batch = co_await std::move(oaf);
             if (oid_batch.empty()) {
-                set_error(core::error_t{core::error_code_t::other_error,
-                                         std::pmr::string{"computed_field_register: oid allocation returned empty batch", resource_}});
+                set_error(core::error_t{
+                    core::error_code_t::other_error,
+                    std::pmr::string{"computed_field_register: oid allocation returned empty batch", resource_}});
                 mark_executed();
                 co_return;
             }
@@ -190,19 +188,19 @@ namespace components::operators {
             // dynamic_schema_re_add_after_drop pins this.
             const std::int64_t new_version = (max_version < 0) ? std::int64_t{0} : (max_version + 1);
 
-            auto cc_row = catalog::build_pg_computed_column_row(
-                resource_,
-                table_oid_,
-                attoid,
-                std::string(col.name()),
-                atttypid,
-                new_version,
-                /*attrefcount=*/std::int64_t{1},
-                atttypspec);
-            auto [_w, wf] = actor_zeta::send(
-                ctx->disk_address,
-                &services::disk::manager_disk_t::append_pg_catalog_row,
-                exec_ctx, pg_computed_column, std::move(cc_row));
+            auto cc_row = catalog::build_pg_computed_column_row(resource_,
+                                                                table_oid_,
+                                                                attoid,
+                                                                std::string(col.name()),
+                                                                atttypid,
+                                                                new_version,
+                                                                /*attrefcount=*/std::int64_t{1},
+                                                                atttypspec);
+            auto [_w, wf] = actor_zeta::send(ctx->disk_address,
+                                             &services::disk::manager_disk_t::append_pg_catalog_row,
+                                             exec_ctx,
+                                             pg_computed_column,
+                                             std::move(cc_row));
             if (auto rng = co_await std::move(wf); rng.count > 0) {
                 ctx->pg_catalog_appends.push_back(std::move(rng));
             }
@@ -222,33 +220,35 @@ namespace components::operators {
             // later, and a stale pg_depend row to a still-live oid is harmless
             // (refcount=0 columns simply remain undiscoverable via attname).
             if (atttypid != catalog::INVALID_OID) {
-                auto dep_row = catalog::build_pg_depend_row(
-                    resource_,
-                    catalog::well_known_oid::pg_computed_column_table, // classid
-                    attoid,                                            // objid
-                    catalog::well_known_oid::pg_type_table,            // refclassid
-                    atttypid,                                          // refobjid
-                    /*deptype=*/'n');
-                auto [_dt, dtf] = actor_zeta::send(
-                    ctx->disk_address,
-                    &services::disk::manager_disk_t::append_pg_catalog_row,
-                    exec_ctx, pg_depend, std::move(dep_row));
+                auto dep_row =
+                    catalog::build_pg_depend_row(resource_,
+                                                 catalog::well_known_oid::pg_computed_column_table, // classid
+                                                 attoid,                                            // objid
+                                                 catalog::well_known_oid::pg_type_table,            // refclassid
+                                                 atttypid,                                          // refobjid
+                                                 /*deptype=*/'n');
+                auto [_dt, dtf] = actor_zeta::send(ctx->disk_address,
+                                                   &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                   exec_ctx,
+                                                   pg_depend,
+                                                   std::move(dep_row));
                 if (auto rng = co_await std::move(dtf); rng.count > 0) {
                     ctx->pg_catalog_appends.push_back(std::move(rng));
                 }
             }
             {
-                auto dep_row = catalog::build_pg_depend_row(
-                    resource_,
-                    catalog::well_known_oid::pg_computed_column_table, // classid
-                    attoid,                                            // objid
-                    catalog::well_known_oid::pg_class_table,           // refclassid
-                    table_oid_,                                        // refobjid
-                    /*deptype=*/'n');
-                auto [_dc, dcf] = actor_zeta::send(
-                    ctx->disk_address,
-                    &services::disk::manager_disk_t::append_pg_catalog_row,
-                    exec_ctx, pg_depend, std::move(dep_row));
+                auto dep_row =
+                    catalog::build_pg_depend_row(resource_,
+                                                 catalog::well_known_oid::pg_computed_column_table, // classid
+                                                 attoid,                                            // objid
+                                                 catalog::well_known_oid::pg_class_table,           // refclassid
+                                                 table_oid_,                                        // refobjid
+                                                 /*deptype=*/'n');
+                auto [_dc, dcf] = actor_zeta::send(ctx->disk_address,
+                                                   &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                   exec_ctx,
+                                                   pg_depend,
+                                                   std::move(dep_row));
                 if (auto rng = co_await std::move(dcf); rng.count > 0) {
                     ctx->pg_catalog_appends.push_back(std::move(rng));
                 }

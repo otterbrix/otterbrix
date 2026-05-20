@@ -14,19 +14,16 @@
 namespace components::operators {
 
     operator_unregister_udf_t::operator_unregister_udf_t(std::pmr::memory_resource* resource,
-                                                          log_t log,
-                                                          std::string function_name,
-                                                          std::pmr::vector<types::complex_logical_type> inputs)
+                                                         log_t log,
+                                                         std::string function_name,
+                                                         std::pmr::vector<types::complex_logical_type> inputs)
         : read_only_operator_t(resource, std::move(log), operator_type::unregister_udf)
         , function_name_(std::move(function_name))
         , inputs_(std::move(inputs)) {}
 
-    void operator_unregister_udf_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
-        async_wait();
-    }
+    void operator_unregister_udf_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
 
-    actor_zeta::unique_future<void>
-    operator_unregister_udf_t::await_async_and_resume(pipeline::context_t* ctx) {
+    actor_zeta::unique_future<void> operator_unregister_udf_t::await_async_and_resume(pipeline::context_t* ctx) {
         success_ = false;
 
         // 1. Existence check via the global default registry (V4 invariant:
@@ -37,13 +34,19 @@ namespace components::operators {
         bool exists = false;
         if (reg) {
             for (auto& [n, uid] : reg->get_functions()) {
-                if (n != function_name_) continue;
+                if (n != function_name_)
+                    continue;
                 auto* fn = reg->get_function(uid);
-                if (!fn) continue;
+                if (!fn)
+                    continue;
                 for (auto& sig : fn->get_signatures()) {
-                    if (sig.matches_inputs(inputs_)) { exists = true; break; }
+                    if (sig.matches_inputs(inputs_)) {
+                        exists = true;
+                        break;
+                    }
                 }
-                if (exists) break;
+                if (exists)
+                    break;
             }
         }
         if (!exists) {
@@ -62,29 +65,41 @@ namespace components::operators {
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
             auto [_rfbn, rfbnf] = actor_zeta::send(ctx->disk_address,
-                                                    &services::disk::manager_disk_t::resolve_function_by_name,
-                                                    exec_ctx,
-                                                    function_name_,
-                                                    std::uint64_t{0});
+                                                   &services::disk::manager_disk_t::resolve_function_by_name,
+                                                   exec_ctx,
+                                                   function_name_,
+                                                   std::uint64_t{0});
             auto matches = co_await std::move(rfbnf);
-            constexpr components::catalog::oid_t pg_proc_coll   = components::catalog::well_known_oid::pg_proc_table;
+            constexpr components::catalog::oid_t pg_proc_coll = components::catalog::well_known_oid::pg_proc_table;
             constexpr components::catalog::oid_t pg_depend_coll = components::catalog::well_known_oid::pg_depend_table;
             for (auto& m : matches) {
                 auto [_d1, d1f] = actor_zeta::send(ctx->disk_address,
-                                                    &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                                    exec_ctx, pg_proc_coll, std::int64_t{0}, m.oid);
+                                                   &services::disk::manager_disk_t::delete_pg_catalog_rows,
+                                                   exec_ctx,
+                                                   pg_proc_coll,
+                                                   std::int64_t{0},
+                                                   m.oid);
                 co_await std::move(d1f);
-                if (ctx->txn.transaction_id != 0) ctx->pg_catalog_delete_tables.insert(pg_proc_coll);
+                if (ctx->txn.transaction_id != 0)
+                    ctx->pg_catalog_delete_tables.insert(pg_proc_coll);
                 auto [_d2, d2f] = actor_zeta::send(ctx->disk_address,
-                                                    &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                                    exec_ctx, pg_depend_coll, std::int64_t{1}, m.oid);
+                                                   &services::disk::manager_disk_t::delete_pg_catalog_rows,
+                                                   exec_ctx,
+                                                   pg_depend_coll,
+                                                   std::int64_t{1},
+                                                   m.oid);
                 co_await std::move(d2f);
-                if (ctx->txn.transaction_id != 0) ctx->pg_catalog_delete_tables.insert(pg_depend_coll);
+                if (ctx->txn.transaction_id != 0)
+                    ctx->pg_catalog_delete_tables.insert(pg_depend_coll);
                 auto [_d3, d3f] = actor_zeta::send(ctx->disk_address,
-                                                    &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                                    exec_ctx, pg_depend_coll, std::int64_t{3}, m.oid);
+                                                   &services::disk::manager_disk_t::delete_pg_catalog_rows,
+                                                   exec_ctx,
+                                                   pg_depend_coll,
+                                                   std::int64_t{3},
+                                                   m.oid);
                 co_await std::move(d3f);
-                if (ctx->txn.transaction_id != 0) ctx->pg_catalog_delete_tables.insert(pg_depend_coll);
+                if (ctx->txn.transaction_id != 0)
+                    ctx->pg_catalog_delete_tables.insert(pg_depend_coll);
             }
         }
 

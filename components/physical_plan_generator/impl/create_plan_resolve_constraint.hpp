@@ -10,8 +10,7 @@ namespace services::planner::impl {
     // The operator reads the parent table_oid from the back-pointed
     // resolve_table node (filled by an earlier Pass 1 resolve_table
     // operator), so this generator just forwards the back-pointer.
-    components::operators::operator_ptr
-    create_plan_resolve_constraint(const context_storage_t& context,
-                                    const components::logical_plan::node_ptr& node);
+    components::operators::operator_ptr create_plan_resolve_constraint(const context_storage_t& context,
+                                                                       const components::logical_plan::node_ptr& node);
 
 } // namespace services::planner::impl

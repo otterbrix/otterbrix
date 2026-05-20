@@ -29,17 +29,17 @@ namespace components::operators {
     // downstream consumers can introspect columns).
     class operator_resolve_function_t final : public read_write_operator_t {
     public:
-        operator_resolve_function_t(std::pmr::memory_resource*   resource,
-                                     log_t                        log,
-                                     components::catalog::oid_t   namespace_oid,
-                                     std::string                  name);
+        operator_resolve_function_t(std::pmr::memory_resource* resource,
+                                    log_t log,
+                                    components::catalog::oid_t namespace_oid,
+                                    std::string name);
 
         void on_execute_impl(pipeline::context_t* ctx) override;
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
     private:
         components::catalog::oid_t namespace_oid_;
-        std::string                name_;
+        std::string name_;
     };
 
 } // namespace components::operators

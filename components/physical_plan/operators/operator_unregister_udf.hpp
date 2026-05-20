@@ -20,9 +20,9 @@ namespace components::operators {
     class operator_unregister_udf_t final : public read_only_operator_t {
     public:
         operator_unregister_udf_t(std::pmr::memory_resource* resource,
-                                   log_t log,
-                                   std::string function_name,
-                                   std::pmr::vector<types::complex_logical_type> inputs);
+                                  log_t log,
+                                  std::string function_name,
+                                  std::pmr::vector<types::complex_logical_type> inputs);
 
         bool success() const noexcept { return success_; }
 

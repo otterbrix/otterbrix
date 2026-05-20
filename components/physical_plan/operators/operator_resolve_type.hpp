@@ -40,28 +40,28 @@ namespace components::operators {
     public:
         // Legacy ctor: (ns_oid, name). Caller has already resolved namespace
         // via well_known_oid::* or other means.
-        operator_resolve_type_t(std::pmr::memory_resource*    resource,
-                                  log_t                         log,
-                                  components::catalog::oid_t    namespace_oid,
-                                  std::string                   name);
+        operator_resolve_type_t(std::pmr::memory_resource* resource,
+                                log_t log,
+                                components::catalog::oid_t namespace_oid,
+                                std::string name);
 
         // back-pointer form. dbname is resolved internally (well_known
         // constants for "public" / "pg_catalog", otherwise scan
         // pg_namespace) and the operator stamps resolved_metadata + type_oid
         // onto the back-pointed logical node.
-        operator_resolve_type_t(std::pmr::memory_resource*    resource,
-                                  log_t                         log,
-                                  std::string                   dbname,
-                                  std::string                   name,
-                                  components::logical_plan::node_catalog_resolve_type_t* target_node);
+        operator_resolve_type_t(std::pmr::memory_resource* resource,
+                                log_t log,
+                                std::string dbname,
+                                std::string name,
+                                components::logical_plan::node_catalog_resolve_type_t* target_node);
 
         void on_execute_impl(pipeline::context_t* ctx) override;
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
     private:
         components::catalog::oid_t namespace_oid_;
-        std::string                 dbname_;
-        std::string                 name_;
+        std::string dbname_;
+        std::string name_;
         components::logical_plan::node_catalog_resolve_type_t* target_node_{nullptr};
     };
 

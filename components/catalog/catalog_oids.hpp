@@ -59,7 +59,7 @@ namespace components::catalog {
 
         // System tables added beyond the initial 10.
         inline constexpr oid_t pg_sequence_table = 34;
-        inline constexpr oid_t pg_rewrite_table  = 35;
+        inline constexpr oid_t pg_rewrite_table = 35;
 
         // Built-in functions (pg_proc.oid) — subset.
         inline constexpr oid_t fn_count = 101;
@@ -103,8 +103,7 @@ namespace components::catalog {
         void seed(oid_t high_water) noexcept {
             const oid_t target = high_water < FIRST_USER_OID ? FIRST_USER_OID : high_water + 1;
             oid_t current = next_.load(std::memory_order_relaxed);
-            while (current < target
-                   && !next_.compare_exchange_weak(current, target, std::memory_order_relaxed)) {
+            while (current < target && !next_.compare_exchange_weak(current, target, std::memory_order_relaxed)) {
                 // CAS retry; another thread may have advanced the counter further already.
             }
         }

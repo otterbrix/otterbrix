@@ -26,16 +26,16 @@ namespace components::operators {
     class operator_computed_field_register_t final : public read_write_operator_t {
     public:
         operator_computed_field_register_t(std::pmr::memory_resource* resource,
-                                             log_t                       log,
-                                             components::catalog::oid_t  table_oid,
-                                             std::vector<components::table::column_definition_t> columns);
+                                           log_t log,
+                                           components::catalog::oid_t table_oid,
+                                           std::vector<components::table::column_definition_t> columns);
 
     private:
         void on_execute_impl(pipeline::context_t* ctx) override;
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
-        components::catalog::oid_t                              table_oid_;
-        std::vector<components::table::column_definition_t>     columns_;
+        components::catalog::oid_t table_oid_;
+        std::vector<components::table::column_definition_t> columns_;
     };
 
 } // namespace components::operators

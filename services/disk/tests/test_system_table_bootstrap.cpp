@@ -24,33 +24,42 @@ namespace {
     // the impl keeps it in an anonymous namespace, so duplicate here.
     components::catalog::oid_t well_known_oid_for_system_table(std::string_view name) {
         namespace wk = components::catalog::well_known_oid;
-        if (name == "pg_namespace")        return wk::pg_namespace_table;
-        if (name == "pg_class")            return wk::pg_class_table;
-        if (name == "pg_attribute")        return wk::pg_attribute_table;
-        if (name == "pg_type")             return wk::pg_type_table;
-        if (name == "pg_proc")             return wk::pg_proc_table;
-        if (name == "pg_depend")           return wk::pg_depend_table;
-        if (name == "pg_constraint")       return wk::pg_constraint_table;
-        if (name == "pg_index")            return wk::pg_index_table;
-        if (name == "pg_computed_column")  return wk::pg_computed_column_table;
-        if (name == "pg_database")         return wk::pg_database_table;
-        if (name == "pg_sequence")         return wk::pg_sequence_table;
-        if (name == "pg_rewrite")          return wk::pg_rewrite_table;
+        if (name == "pg_namespace")
+            return wk::pg_namespace_table;
+        if (name == "pg_class")
+            return wk::pg_class_table;
+        if (name == "pg_attribute")
+            return wk::pg_attribute_table;
+        if (name == "pg_type")
+            return wk::pg_type_table;
+        if (name == "pg_proc")
+            return wk::pg_proc_table;
+        if (name == "pg_depend")
+            return wk::pg_depend_table;
+        if (name == "pg_constraint")
+            return wk::pg_constraint_table;
+        if (name == "pg_index")
+            return wk::pg_index_table;
+        if (name == "pg_computed_column")
+            return wk::pg_computed_column_table;
+        if (name == "pg_database")
+            return wk::pg_database_table;
+        if (name == "pg_sequence")
+            return wk::pg_sequence_table;
+        if (name == "pg_rewrite")
+            return wk::pg_rewrite_table;
         return components::catalog::INVALID_OID;
     }
 
     std::filesystem::path sys_dir_for(const std::filesystem::path& base) {
-        return base / std::to_string(static_cast<unsigned>(
-                          components::catalog::well_known_oid::main_database));
+        return base / std::to_string(static_cast<unsigned>(components::catalog::well_known_oid::main_database));
     }
     std::filesystem::path otbx_for(const std::filesystem::path& base, std::string_view tbl) {
-        return sys_dir_for(base)
-               / std::to_string(static_cast<unsigned>(well_known_oid_for_system_table(tbl)))
-               / "table.otbx";
+        return sys_dir_for(base) / std::to_string(static_cast<unsigned>(well_known_oid_for_system_table(tbl))) /
+               "table.otbx";
     }
     std::filesystem::path coll_dir_for(const std::filesystem::path& base, std::string_view tbl) {
-        return sys_dir_for(base)
-               / std::to_string(static_cast<unsigned>(well_known_oid_for_system_table(tbl)));
+        return sys_dir_for(base) / std::to_string(static_cast<unsigned>(well_known_oid_for_system_table(tbl)));
     }
 
     struct disk_only_fixture {

@@ -1,5 +1,6 @@
 #include <catch2/catch.hpp>
 
+#include "disk_test_helpers.hpp"
 #include <actor-zeta/spawn.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/system_table_schemas.hpp>
@@ -9,7 +10,6 @@
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
-#include "disk_test_helpers.hpp"
 
 #include <filesystem>
 #include <unistd.h>
@@ -107,7 +107,7 @@ TEST_CASE("test_recovery_system_wal_before_user") {
 
     // Restart: skip bootstrap (already done), call load_system_tables_sync.
     {
-        recovery_fixture fx(dir, /*bootstrap=*/ false);
+        recovery_fixture fx(dir, /*bootstrap=*/false);
         // load_system_tables_sync MUST run before any user storage is touched on restart;
         // here we call it explicitly and require the previously-created namespace OID is
         // recovered from pg_namespace via restore_oid_generator_sync (its scan walks
@@ -142,9 +142,11 @@ TEST_CASE("test_recovery_ddl_then_dml") {
         // pg_catalog.* via append_pg_catalog_row -> WAL physical records +
         // on-disk storage.
         std::vector<components::table::column_definition_t> cols;
-        cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT}, /*not_null=*/ true);
-        const auto table_oid = disk_test_helpers::test_create_table(fx, ns_oid,
-                                                                      std::string("durable_table"), cols, 'r');
+        cols.emplace_back("id",
+                          components::types::complex_logical_type{components::types::logical_type::BIGINT},
+                          /*not_null=*/true);
+        const auto table_oid =
+            disk_test_helpers::test_create_table(fx, ns_oid, std::string("durable_table"), cols, 'r');
         REQUIRE(table_oid != components::catalog::INVALID_OID);
 
         // Force durability: checkpoint flushes pg_namespace/pg_class/pg_attribute rows from
@@ -153,9 +155,8 @@ TEST_CASE("test_recovery_ddl_then_dml") {
         // replay on the second fixture. Pass wal_id=0 since we don't have a live WAL id
         // tracker in this test path; checkpoint_all is happy to skip the wal-id sidecar
         // when value is 0.
-        auto cp_future = fx.invoke(&manager_disk_t::checkpoint_all,
-                                    session_id_t{}, services::wal::id_t{0});
-        (void)cp_future;
+        auto cp_future = fx.invoke(&manager_disk_t::checkpoint_all, session_id_t{}, services::wal::id_t{0});
+        (void) cp_future;
     }
 
     // Restart and verify the DDL state is durable: load_system_tables_sync must succeed,
@@ -163,7 +164,7 @@ TEST_CASE("test_recovery_ddl_then_dml") {
     // now contains its row), and a brand-new namespace allocation yields a strictly
     // higher OID.
     {
-        recovery_fixture fx(dir, /*bootstrap=*/ false);
+        recovery_fixture fx(dir, /*bootstrap=*/false);
         REQUIRE_NOTHROW(fx.disk->load_system_tables_sync());
         REQUIRE_NOTHROW(fx.disk->restore_oid_generator_sync());
 
@@ -186,30 +187,26 @@ TEST_CASE("test_recovery_orphaned_uncommitted_ddl") {
         // Use txn_id=1 so append_pg_catalog_row writes the pg_namespace row under a
         // non-zero txn (not immediately visible). Without storage_commit_appends the
         // flip from txn_id to commit_id never happens.
-        components::execution_context_t uncommitted_ctx{
-            session_id_t{},
-            components::table::transaction_data{1, 0},
-            {}
-        };
+        components::execution_context_t uncommitted_ctx{session_id_t{}, components::table::transaction_data{1, 0}, {}};
         auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
         const components::catalog::oid_t ns_oid = oids[0];
         REQUIRE(ns_oid != components::catalog::INVALID_OID);
-        auto writes = components::catalog::build_create_namespace_writes(&fx.resource,
-                                                                          std::string("orphaned_ns"), ns_oid);
+        auto writes =
+            components::catalog::build_create_namespace_writes(&fx.resource, std::string("orphaned_ns"), ns_oid);
         for (auto& w : writes)
             fx.invoke(&manager_disk_t::append_pg_catalog_row, uncommitted_ctx, w.table_oid, std::move(w.row));
         // Intentionally omit storage_commit_appends — simulates crash before commit.
     }
 
     {
-        recovery_fixture fx(dir, /*bootstrap=*/ false);
+        recovery_fixture fx(dir, /*bootstrap=*/false);
         REQUIRE_NOTHROW(fx.disk->load_system_tables_sync());
         REQUIRE_NOTHROW(fx.disk->restore_oid_generator_sync());
 
         // ns_name_to_oid_ is rebuilt by rebuild_lookup_indexes via inline_scan →
         // scan_committed. The uncommitted row (txn_id=1) must not appear.
-        auto res = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(),
-                              std::string("orphaned_ns"), std::uint64_t{0});
+        auto res =
+            fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("orphaned_ns"), std::uint64_t{0});
         REQUIRE_FALSE(res.found);
     }
     cleanup_dir(dir);
@@ -233,29 +230,31 @@ TEST_CASE("services::disk::recovery::dynamic_schema_persists_across_restart") {
         recovery_fixture fx(dir);
         ns_oid = disk_test_helpers::test_create_namespace(fx, std::string("main_db"));
         REQUIRE(ns_oid != components::catalog::INVALID_OID);
-        table_oid = disk_test_helpers::test_create_table(
-            fx, ns_oid, std::string("docs"),
-            std::vector<components::table::column_definition_t>{},
-            components::catalog::relkind::computed);
+        table_oid = disk_test_helpers::test_create_table(fx,
+                                                         ns_oid,
+                                                         std::string("docs"),
+                                                         std::vector<components::table::column_definition_t>{},
+                                                         components::catalog::relkind::computed);
         REQUIRE(table_oid != components::catalog::INVALID_OID);
 
         // Register two computed-schema columns. Each call goes through
         // append_pg_catalog_row → WAL physical_insert + in-memory storage.
-        auto attoid_a = disk_test_helpers::test_computed_register(
-            fx, table_oid, std::string("a"),
-            components::catalog::well_known_oid::int64_type);
-        auto attoid_b = disk_test_helpers::test_computed_register(
-            fx, table_oid, std::string("b"),
-            components::catalog::well_known_oid::string_type);
+        auto attoid_a = disk_test_helpers::test_computed_register(fx,
+                                                                  table_oid,
+                                                                  std::string("a"),
+                                                                  components::catalog::well_known_oid::int64_type);
+        auto attoid_b = disk_test_helpers::test_computed_register(fx,
+                                                                  table_oid,
+                                                                  std::string("b"),
+                                                                  components::catalog::well_known_oid::string_type);
         REQUIRE(attoid_a >= components::catalog::FIRST_USER_OID);
         REQUIRE(attoid_b >= components::catalog::FIRST_USER_OID);
 
         // Force durability for the on-disk pg_* storages (fsyncs the .otbx files).
         // Without checkpoint, pg_computed_column rows live only in WAL; we still
         // expect them back via the bootstrap-replay path on restart.
-        auto cp_future = fx.invoke(&manager_disk_t::checkpoint_all,
-                                    session_id_t{}, services::wal::id_t{0});
-        (void)cp_future;
+        auto cp_future = fx.invoke(&manager_disk_t::checkpoint_all, session_id_t{}, services::wal::id_t{0});
+        (void) cp_future;
     }
 
     // Restart: bootstrap=false → don't re-create fresh empty system tables; instead
@@ -263,7 +262,7 @@ TEST_CASE("services::disk::recovery::dynamic_schema_persists_across_restart") {
     // pg_computed_column. After that, pg_computed_column must hold both rows and
     // resolve_table must reconstruct the dynamic schema for "docs".
     {
-        recovery_fixture fx_reopen(dir, /*bootstrap=*/ false);
+        recovery_fixture fx_reopen(dir, /*bootstrap=*/false);
         REQUIRE_NOTHROW(fx_reopen.disk->load_system_tables_sync());
         REQUIRE_NOTHROW(fx_reopen.disk->restore_oid_generator_sync());
 
@@ -274,10 +273,8 @@ TEST_CASE("services::disk::recovery::dynamic_schema_persists_across_restart") {
         rk.emplace_back("relid");
         std::pmr::vector<components::types::logical_value_t> rv{&fx_reopen.resource};
         rv.emplace_back(toid_lv);
-        auto rows = fx_reopen.invoke(&manager_disk_t::read_rows_by_key, fx_reopen.ctx(),
-                                      pg_cc,
-                                      std::move(rk),
-                                      std::move(rv));
+        auto rows =
+            fx_reopen.invoke(&manager_disk_t::read_rows_by_key, fx_reopen.ctx(), pg_cc, std::move(rk), std::move(rv));
         REQUIRE(rows.size() == 2);
         bool saw_a = false;
         bool saw_b = false;
@@ -305,8 +302,11 @@ TEST_CASE("services::disk::recovery::dynamic_schema_persists_across_restart") {
         // resolve_table on restart must report relkind='g' and reconstruct both columns
         // from the replayed pg_computed_column rows (computed-schema path skips
         // pg_attribute and reads pg_computed_column directly).
-        auto rs = fx_reopen.invoke(&manager_disk_t::resolve_table, fx_reopen.ctx(),
-                                    ns_oid, std::string("docs"), std::uint64_t{0});
+        auto rs = fx_reopen.invoke(&manager_disk_t::resolve_table,
+                                   fx_reopen.ctx(),
+                                   ns_oid,
+                                   std::string("docs"),
+                                   std::uint64_t{0});
         REQUIRE(rs.found);
         REQUIRE(rs.relkind == components::catalog::relkind::computed);
         REQUIRE(rs.columns.size() == 2);

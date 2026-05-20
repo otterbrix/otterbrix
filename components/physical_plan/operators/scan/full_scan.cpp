@@ -116,8 +116,10 @@ namespace components::operators {
         }
 
         // Get types to build filter
-        auto [_t, tf] =
-            actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::storage_types, ctx->session, table_oid_);
+        auto [_t, tf] = actor_zeta::send(ctx->disk_address,
+                                         &services::disk::manager_disk_t::storage_types,
+                                         ctx->session,
+                                         table_oid_);
         auto types = co_await std::move(tf);
 
         // Build filter from expression

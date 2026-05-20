@@ -60,16 +60,15 @@ namespace services::wal {
         // and the variable strings disappear).
         // -----------------------------------------------------------------
 
-        static constexpr size_t DML_FIXED_HEADER =
-            4  // last_crc32
-            + 8  // wal_id
-            + 8  // txn_id
-            + 1  // record_type
-            + 4  // table_oid (was: db_len:2 + coll_len:2)
-            + 8  // row_start
-            + 8  // row_count
-            + 4; // payload_size
-            // = 45
+        static constexpr size_t DML_FIXED_HEADER = 4    // last_crc32
+                                                   + 8  // wal_id
+                                                   + 8  // txn_id
+                                                   + 1  // record_type
+                                                   + 4  // table_oid (was: db_len:2 + coll_len:2)
+                                                   + 8  // row_start
+                                                   + 8  // row_count
+                                                   + 4; // payload_size
+        // = 45
 
         // Write a complete DML record. Returns the CRC of that record.
         crc32_t write_dml_record(buffer_t& buffer,
@@ -147,10 +146,14 @@ namespace services::wal {
         buffer_t payload_buf(buffer.get_allocator());
         components::vector::serialize_binary(data_chunk, payload_buf);
 
-        return write_dml_record(buffer, last_crc32, wal_id, txn_id,
+        return write_dml_record(buffer,
+                                last_crc32,
+                                wal_id,
+                                txn_id,
                                 wal_record_type::PHYSICAL_INSERT,
                                 table_oid,
-                                row_start, row_count,
+                                row_start,
+                                row_count,
                                 payload_buf.data(),
                                 static_cast<uint32_t>(payload_buf.size()));
     }
@@ -168,10 +171,14 @@ namespace services::wal {
         // Payload = raw int64_t array.
         const auto payload_size = static_cast<uint32_t>(count * sizeof(int64_t));
 
-        return write_dml_record(buffer, last_crc32, wal_id, txn_id,
+        return write_dml_record(buffer,
+                                last_crc32,
+                                wal_id,
+                                txn_id,
                                 wal_record_type::PHYSICAL_DELETE,
                                 table_oid,
-                                0, count,
+                                0,
+                                count,
                                 reinterpret_cast<const char*>(row_ids),
                                 payload_size);
     }
@@ -207,10 +214,14 @@ namespace services::wal {
         // Append serialised data_chunk.
         components::vector::serialize_binary(new_data, payload_buf);
 
-        return write_dml_record(buffer, last_crc32, wal_id, txn_id,
+        return write_dml_record(buffer,
+                                last_crc32,
+                                wal_id,
+                                txn_id,
                                 wal_record_type::PHYSICAL_UPDATE,
                                 table_oid,
-                                0, count,
+                                0,
+                                count,
                                 payload_buf.data(),
                                 static_cast<uint32_t>(payload_buf.size()));
     }
@@ -226,11 +237,8 @@ namespace services::wal {
     //   [record_type:1]   = COMMIT (1)
     //   [crc32:4]
     // -----------------------------------------------------------------------
-    crc32_t encode_commit(buffer_t& buffer,
-                          crc32_t last_crc32,
-                          id_t wal_id,
-                          uint64_t txn_id) {
-        static constexpr uint32_t COMMIT_BODY_SIZE = 4 + 8 + 8 + 1; // = 21
+    crc32_t encode_commit(buffer_t& buffer, crc32_t last_crc32, id_t wal_id, uint64_t txn_id) {
+        static constexpr uint32_t COMMIT_BODY_SIZE = 4 + 8 + 8 + 1;      // = 21
         static constexpr size_t COMMIT_TOTAL = 4 + COMMIT_BODY_SIZE + 4; // = 29
 
         const size_t base = buffer.size();
@@ -346,8 +354,7 @@ namespace services::wal {
             case wal_record_type::PHYSICAL_INSERT: {
                 if (payload_size > 0) {
                     bool ok = false;
-                    auto chunk = components::vector::deserialize_binary(
-                        payload, payload_size, resource, ok);
+                    auto chunk = components::vector::deserialize_binary(payload, payload_size, resource, ok);
                     if (!ok) {
                         rec.is_corrupt = true;
                         return rec;
@@ -383,8 +390,7 @@ namespace services::wal {
                 uint32_t chunk_size = payload_size - 4 - row_ids_bytes;
                 if (chunk_size > 0) {
                     bool ok = false;
-                    auto chunk = components::vector::deserialize_binary(
-                        chunk_data, chunk_size, resource, ok);
+                    auto chunk = components::vector::deserialize_binary(chunk_data, chunk_size, resource, ok);
                     if (!ok) {
                         rec.is_corrupt = true;
                         return rec;
@@ -404,9 +410,7 @@ namespace services::wal {
     // -----------------------------------------------------------------------
     // extract_crc
     // -----------------------------------------------------------------------
-    crc32_t extract_crc(const buffer_t& buffer) {
-        return extract_crc(buffer.data(), buffer.size());
-    }
+    crc32_t extract_crc(const buffer_t& buffer) { return extract_crc(buffer.data(), buffer.size()); }
 
     crc32_t extract_crc(const char* data, size_t len) {
         if (len < 4) {

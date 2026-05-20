@@ -12,8 +12,6 @@ namespace components::logical_plan {
 
     hash_t node_alter_column_add_t::hash_impl() const { return 0; }
 
-    std::string node_alter_column_add_t::to_string_impl() const {
-        return "$alter_column_add[" + column_.name() + "]";
-    }
+    std::string node_alter_column_add_t::to_string_impl() const { return "$alter_column_add[" + column_.name() + "]"; }
 
 } // namespace components::logical_plan

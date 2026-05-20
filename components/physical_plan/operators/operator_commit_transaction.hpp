@@ -28,11 +28,10 @@ namespace components::operators {
         operator_commit_transaction_t(std::pmr::memory_resource* resource, log_t log);
 
         // Configure DDL-commit mode (default is RPC mode).
-        void set_ddl_commit(std::uint64_t txn_id,
-                            components::catalog::oid_t database_oid) noexcept {
+        void set_ddl_commit(std::uint64_t txn_id, components::catalog::oid_t database_oid) noexcept {
             is_ddl_commit_ = true;
-            txn_id_        = txn_id;
-            database_oid_  = database_oid;
+            txn_id_ = txn_id;
+            database_oid_ = database_oid;
         }
 
         // Result accessor; valid only after the operator reports is_executed().
@@ -42,10 +41,10 @@ namespace components::operators {
         void on_execute_impl(pipeline::context_t* ctx) override;
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
-        bool                       is_ddl_commit_{false};
-        std::uint64_t              txn_id_{0};
+        bool is_ddl_commit_{false};
+        std::uint64_t txn_id_{0};
         components::catalog::oid_t database_oid_{components::catalog::INVALID_OID};
-        std::uint64_t              commit_id_{0};
+        std::uint64_t commit_id_{0};
     };
 
 } // namespace components::operators

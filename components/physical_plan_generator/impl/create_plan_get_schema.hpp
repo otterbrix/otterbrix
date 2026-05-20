@@ -10,8 +10,7 @@ namespace services::planner::impl {
     // carries the (database, collection) ids; the operator self-resolves
     // namespace / table / columns at execution time. Wired from create_plan.cpp
     // dispatch on node_type::get_schema_t.
-    components::operators::operator_ptr
-    create_plan_get_schema(const context_storage_t& context,
-                            const components::logical_plan::node_ptr& node);
+    components::operators::operator_ptr create_plan_get_schema(const context_storage_t& context,
+                                                               const components::logical_plan::node_ptr& node);
 
 } // namespace services::planner::impl

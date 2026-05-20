@@ -25,8 +25,7 @@ namespace services::planner::impl {
         // DDL create-table sequence: sequence_t(create_collection_t, primitive_write×N).
         // Produce a single operator_create_collection_t that does storage creation,
         // index registration, and all pg_catalog writes in one await_async_and_resume.
-        if (!node->children().empty() &&
-            node->children().front()->type() == node_type::create_collection_t) {
+        if (!node->children().empty() && node->children().front()->type() == node_type::create_collection_t) {
             auto* cc = static_cast<node_create_collection_t*>(node->children().front().get());
             std::vector<components::operators::operator_create_collection_t::catalog_write_t> writes;
             writes.reserve(node->children().size() - 1);
@@ -34,14 +33,14 @@ namespace services::planner::impl {
                 auto* pw = static_cast<node_primitive_write_t*>(node->children()[i].get());
                 writes.emplace_back(pw->catalog_table_oid(), std::move(pw->row()));
             }
-            return boost::intrusive_ptr(new components::operators::operator_create_collection_t(
-                context.resource,
-                context.log.clone(),
-                cc->table_oid(),
-                cc->namespace_oid(),
-                cc->column_definitions(),
-                cc->is_disk_storage(),
-                std::move(writes)));
+            return boost::intrusive_ptr(
+                new components::operators::operator_create_collection_t(context.resource,
+                                                                        context.log.clone(),
+                                                                        cc->table_oid(),
+                                                                        cc->namespace_oid(),
+                                                                        cc->column_definitions(),
+                                                                        cc->is_disk_storage(),
+                                                                        std::move(writes)));
         }
 
         // DDL create-index sequence: sequence_t(primitive_write × N, create_index_t).
@@ -52,8 +51,7 @@ namespace services::planner::impl {
         // metadata_op is wired as backfill_op's left child so the executor's
         // find_waiting_operator walks it first via the same left_/right_
         // traversal used by the multi-clause ALTER TABLE chain below.
-        if (!node->children().empty() &&
-            node->children().back()->type() == node_type::create_index_t) {
+        if (!node->children().empty() && node->children().back()->type() == node_type::create_index_t) {
             auto* ci = static_cast<node_create_index_t*>(node->children().back().get());
             std::vector<components::operators::operator_create_index_metadata_t::catalog_write_t> writes;
             writes.reserve(node->children().size() - 1);
@@ -61,21 +59,19 @@ namespace services::planner::impl {
                 auto* pw = static_cast<node_primitive_write_t*>(node->children()[i].get());
                 writes.emplace_back(pw->catalog_table_oid(), std::move(pw->row()));
             }
-            auto metadata_op = boost::intrusive_ptr(
-                new components::operators::operator_create_index_metadata_t(
-                    context.resource,
-                    context.log.clone(),
-                    std::move(writes)));
-            auto backfill_op = boost::intrusive_ptr(
-                new components::operators::operator_create_index_backfill_t(
-                    context.resource,
-                    context.log.clone(),
-                    ci->name(),
-                    ci->type(),
-                    ci->keys(),
-                    ci->table_oid(),
-                    ci->index_oid(),
-                    ci->indkey()));
+            auto metadata_op =
+                boost::intrusive_ptr(new components::operators::operator_create_index_metadata_t(context.resource,
+                                                                                                 context.log.clone(),
+                                                                                                 std::move(writes)));
+            auto backfill_op =
+                boost::intrusive_ptr(new components::operators::operator_create_index_backfill_t(context.resource,
+                                                                                                 context.log.clone(),
+                                                                                                 ci->name(),
+                                                                                                 ci->type(),
+                                                                                                 ci->keys(),
+                                                                                                 ci->table_oid(),
+                                                                                                 ci->index_oid(),
+                                                                                                 ci->indkey()));
             backfill_op->set_children(metadata_op, nullptr);
             return backfill_op;
         }
@@ -86,8 +82,7 @@ namespace services::planner::impl {
         // teardown. DROP INDEX has no useful intermediate state to expose — the
         // metadata/runtime split that motivates the CREATE INDEX two-operator
         // design has no analogue here.
-        if (!node->children().empty() &&
-            node->children().back()->type() == node_type::drop_index_t) {
+        if (!node->children().empty() && node->children().back()->type() == node_type::drop_index_t) {
             auto* di = static_cast<node_drop_index_t*>(node->children().back().get());
             std::vector<components::operators::operator_drop_index_t::catalog_delete_t> deletes;
             deletes.reserve(node->children().size() - 1);
@@ -95,13 +90,11 @@ namespace services::planner::impl {
                 auto* pd = static_cast<node_primitive_delete_t*>(node->children()[i].get());
                 deletes.push_back({pd->catalog_table_oid(), pd->oid_col_idx(), pd->target_oid()});
             }
-            return boost::intrusive_ptr(
-                new components::operators::operator_drop_index_t(
-                    context.resource,
-                    context.log.clone(),
-                    di->table_oid(),
-                    di->runtime_index_name(),
-                    std::move(deletes)));
+            return boost::intrusive_ptr(new components::operators::operator_drop_index_t(context.resource,
+                                                                                         context.log.clone(),
+                                                                                         di->table_oid(),
+                                                                                         di->runtime_index_name(),
+                                                                                         std::move(deletes)));
         }
 
         // ALTER TABLE: rewrite_alter_table emits sequence_t(alter_column_add_t |
@@ -112,14 +105,13 @@ namespace services::planner::impl {
         // ALTER TABLE statements after the first async-wait.
         if (!node->children().empty()) {
             const auto front_t = node->children().front()->type();
-            if (front_t == node_type::alter_column_add_t ||
-                front_t == node_type::alter_column_rename_t) {
+            if (front_t == node_type::alter_column_add_t || front_t == node_type::alter_column_rename_t) {
                 bool all_alter = true;
                 for (const auto& child : node->children()) {
                     const auto t = child->type();
-                    if (t != node_type::alter_column_add_t &&
-                        t != node_type::alter_column_rename_t) {
-                        all_alter = false; break;
+                    if (t != node_type::alter_column_add_t && t != node_type::alter_column_rename_t) {
+                        all_alter = false;
+                        break;
                     }
                 }
                 if (all_alter) {
@@ -130,8 +122,7 @@ namespace services::planner::impl {
                     // previous; the last-built operator (head) wraps everything and
                     // becomes the root returned to the caller.
                     components::operators::operator_ptr head;
-                    for (auto it = node->children().rbegin();
-                         it != node->children().rend(); ++it) {
+                    for (auto it = node->children().rbegin(); it != node->children().rend(); ++it) {
                         auto op = create_plan(context, function_registry, *it, {}, params);
                         if (head) {
                             // op wraps `head` (op runs after head's chain executes).
@@ -171,10 +162,8 @@ namespace services::planner::impl {
             // (Pass 1's own sub-plan), don't skip — we'd produce an empty
             // chain. Pass 1 explicitly wants the resolves executed.
             auto is_catalog_resolve = [](node_type t) {
-                return t == node_type::catalog_resolve_namespace_t ||
-                       t == node_type::catalog_resolve_table_t ||
-                       t == node_type::catalog_resolve_type_t ||
-                       t == node_type::catalog_resolve_function_t ||
+                return t == node_type::catalog_resolve_namespace_t || t == node_type::catalog_resolve_table_t ||
+                       t == node_type::catalog_resolve_type_t || t == node_type::catalog_resolve_function_t ||
                        t == node_type::catalog_resolve_constraint_t;
             };
             bool has_non_resolve_child = false;
@@ -203,10 +192,8 @@ namespace services::planner::impl {
         for (const auto& child : node->children()) {
             steps.push_back(create_plan(context, function_registry, child, {}, params));
         }
-        return boost::intrusive_ptr(new components::operators::operator_sequence_t(
-            context.resource,
-            context.log.clone(),
-            std::move(steps)));
+        return boost::intrusive_ptr(
+            new components::operators::operator_sequence_t(context.resource, context.log.clone(), std::move(steps)));
     }
 
 } // namespace services::planner::impl

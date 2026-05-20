@@ -27,9 +27,7 @@ struct qualified_name_t {
         : database(database)
         , collection(collection) {}
 
-    qualified_name_t(const database_name_t& database,
-                     const schema_name_t& schema,
-                     const collection_name_t& collection)
+    qualified_name_t(const database_name_t& database, const schema_name_t& schema, const collection_name_t& collection)
         : database(database)
         , schema(schema)
         , collection(collection) {}

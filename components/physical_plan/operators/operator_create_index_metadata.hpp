@@ -24,8 +24,8 @@ namespace components::operators {
         using catalog_write_t = std::pair<components::catalog::oid_t, vector::data_chunk_t>;
 
         operator_create_index_metadata_t(std::pmr::memory_resource* resource,
-                                          log_t                      log,
-                                          std::vector<catalog_write_t> catalog_writes);
+                                         log_t log,
+                                         std::vector<catalog_write_t> catalog_writes);
 
     private:
         void on_execute_impl(pipeline::context_t* ctx) override;

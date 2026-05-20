@@ -24,18 +24,18 @@ namespace components::operators {
     // not used). It produces no rows (output_ stays nullptr).
     class operator_dynamic_cascade_delete_t final : public read_write_operator_t {
     public:
-        operator_dynamic_cascade_delete_t(std::pmr::memory_resource*           resource,
-                                           log_t                                log,
-                                           components::catalog::oid_t           seed_classid,
-                                           components::catalog::oid_t           seed_objid,
-                                           components::catalog::drop_behavior_t behavior);
+        operator_dynamic_cascade_delete_t(std::pmr::memory_resource* resource,
+                                          log_t log,
+                                          components::catalog::oid_t seed_classid,
+                                          components::catalog::oid_t seed_objid,
+                                          components::catalog::drop_behavior_t behavior);
 
     private:
         void on_execute_impl(pipeline::context_t* ctx) override;
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
-        components::catalog::oid_t           seed_classid_;
-        components::catalog::oid_t           seed_objid_;
+        components::catalog::oid_t seed_classid_;
+        components::catalog::oid_t seed_objid_;
         components::catalog::drop_behavior_t behavior_;
     };
 

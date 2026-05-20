@@ -3,8 +3,8 @@
 namespace components::logical_plan {
 
     node_primitive_write_t::node_primitive_write_t(std::pmr::memory_resource* resource,
-                                                    catalog::oid_t             catalog_table_oid,
-                                                    vector::data_chunk_t       row)
+                                                   catalog::oid_t catalog_table_oid,
+                                                   vector::data_chunk_t row)
         : node_t(resource, node_type::primitive_write_t)
         , catalog_table_oid_(catalog_table_oid)
         , row_(std::move(row)) {

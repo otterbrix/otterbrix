@@ -76,7 +76,6 @@ namespace services::disk {
         explicit resolve_function_result_t(std::pmr::memory_resource* /*resource*/) {}
     };
     // Layout guard: libstdc++ (string==32) → 120; libc++ (string==24) → 96.
-    static_assert(sizeof(resolve_function_result_t) <= 120,
-                  "resolve_function_result_t layout regression");
+    static_assert(sizeof(resolve_function_result_t) <= 120, "resolve_function_result_t layout regression");
 
 } // namespace services::disk

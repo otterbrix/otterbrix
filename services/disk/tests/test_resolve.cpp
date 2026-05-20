@@ -1,5 +1,6 @@
 #include <catch2/catch.hpp>
 
+#include "disk_test_helpers.hpp"
 #include <actor-zeta/spawn.hpp>
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
@@ -10,7 +11,6 @@
 #include <components/types/types.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <services/disk/manager_disk.hpp>
-#include "disk_test_helpers.hpp"
 
 #include <filesystem>
 #include <unistd.h>
@@ -76,8 +76,7 @@ namespace {
 // 1. After bootstrap, resolve_namespace finds the well-known "public" namespace.
 TEST_CASE("services::disk::resolve::namespace_finds_bootstrap") {
     fixture fx;
-    auto r = fx.invoke_async(&manager_disk_t::resolve_namespace, fx.ctx(),
-                              std::string("public"), std::uint64_t{0});
+    auto r = fx.invoke_async(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("public"), std::uint64_t{0});
     REQUIRE(r.found);
     REQUIRE(r.oid == well_known_oid::public_namespace);
 }
@@ -85,8 +84,8 @@ TEST_CASE("services::disk::resolve::namespace_finds_bootstrap") {
 // 2. resolve_namespace misses on unknown name.
 TEST_CASE("services::disk::resolve::namespace_misses_unknown") {
     fixture fx;
-    auto r = fx.invoke_async(&manager_disk_t::resolve_namespace, fx.ctx(),
-                              std::string("does_not_exist"), std::uint64_t{0});
+    auto r =
+        fx.invoke_async(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("does_not_exist"), std::uint64_t{0});
     REQUIRE_FALSE(r.found);
 }
 
@@ -97,13 +96,18 @@ TEST_CASE("services::disk::resolve::table_finds_after_create") {
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     cols.emplace_back("name", components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL});
 
-    const auto table_oid = disk_test_helpers::test_create_table(fx, well_known_oid::public_namespace,
-                                                                  std::string("users"), cols,
-                                                                  catalog::relkind::regular);
+    const auto table_oid = disk_test_helpers::test_create_table(fx,
+                                                                well_known_oid::public_namespace,
+                                                                std::string("users"),
+                                                                cols,
+                                                                catalog::relkind::regular);
     REQUIRE(table_oid >= FIRST_USER_OID);
 
-    auto r = fx.invoke_async(&manager_disk_t::resolve_table, fx.ctx(),
-                              well_known_oid::public_namespace, std::string("users"), std::uint64_t{0});
+    auto r = fx.invoke_async(&manager_disk_t::resolve_table,
+                             fx.ctx(),
+                             well_known_oid::public_namespace,
+                             std::string("users"),
+                             std::uint64_t{0});
     REQUIRE(r.found);
     REQUIRE(r.oid == table_oid);
     REQUIRE(r.namespace_oid == well_known_oid::public_namespace);
@@ -114,20 +118,28 @@ TEST_CASE("services::disk::resolve::table_finds_after_create") {
 // 4. resolve_table misses when the namespace doesn't match.
 TEST_CASE("services::disk::resolve::table_misses_in_wrong_namespace") {
     fixture fx;
-    disk_test_helpers::test_create_table(fx, well_known_oid::public_namespace, std::string("users"),
-                                          std::vector<components::table::column_definition_t>{},
-                                          catalog::relkind::regular);
+    disk_test_helpers::test_create_table(fx,
+                                         well_known_oid::public_namespace,
+                                         std::string("users"),
+                                         std::vector<components::table::column_definition_t>{},
+                                         catalog::relkind::regular);
 
-    auto r = fx.invoke_async(&manager_disk_t::resolve_table, fx.ctx(),
-                              well_known_oid::pg_catalog_namespace, std::string("users"), std::uint64_t{0});
+    auto r = fx.invoke_async(&manager_disk_t::resolve_table,
+                             fx.ctx(),
+                             well_known_oid::pg_catalog_namespace,
+                             std::string("users"),
+                             std::uint64_t{0});
     REQUIRE_FALSE(r.found);
 }
 
 // 5. resolve_type finds the bootstrap "int64" type in pg_catalog.
 TEST_CASE("services::disk::resolve::type_finds_bootstrap") {
     fixture fx;
-    auto r = fx.invoke_async(&manager_disk_t::resolve_type, fx.ctx(),
-                              well_known_oid::pg_catalog_namespace, std::string("int64"), std::uint64_t{0});
+    auto r = fx.invoke_async(&manager_disk_t::resolve_type,
+                             fx.ctx(),
+                             well_known_oid::pg_catalog_namespace,
+                             std::string("int64"),
+                             std::uint64_t{0});
     REQUIRE(r.found);
     REQUIRE(r.oid == well_known_oid::int64_type);
 }
@@ -135,9 +147,11 @@ TEST_CASE("services::disk::resolve::type_finds_bootstrap") {
 // 6. resolve_function finds the bootstrap "count" aggregate.
 TEST_CASE("services::disk::resolve::function_finds_bootstrap_count") {
     fixture fx;
-    auto r = fx.invoke_async(&manager_disk_t::resolve_function, fx.ctx(),
-                              well_known_oid::pg_catalog_namespace, std::string("count"), std::uint64_t{0});
+    auto r = fx.invoke_async(&manager_disk_t::resolve_function,
+                             fx.ctx(),
+                             well_known_oid::pg_catalog_namespace,
+                             std::string("count"),
+                             std::uint64_t{0});
     REQUIRE(r.found);
     REQUIRE(r.oid == well_known_oid::fn_count);
 }
-

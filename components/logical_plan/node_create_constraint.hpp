@@ -49,16 +49,10 @@ namespace components::logical_plan {
         components::catalog::oid_t ref_table_oid() const noexcept { return ref_table_oid_; }
         void set_ref_table_oid(components::catalog::oid_t oid) noexcept { ref_table_oid_ = oid; }
 
-        const std::vector<components::catalog::oid_t>& fk_col_attoids() const noexcept {
-            return fk_col_attoids_;
-        }
-        void set_fk_col_attoids(std::vector<components::catalog::oid_t> v) noexcept {
-            fk_col_attoids_ = std::move(v);
-        }
+        const std::vector<components::catalog::oid_t>& fk_col_attoids() const noexcept { return fk_col_attoids_; }
+        void set_fk_col_attoids(std::vector<components::catalog::oid_t> v) noexcept { fk_col_attoids_ = std::move(v); }
 
-        const std::vector<components::catalog::oid_t>& ref_col_attoids() const noexcept {
-            return ref_col_attoids_;
-        }
+        const std::vector<components::catalog::oid_t>& ref_col_attoids() const noexcept { return ref_col_attoids_; }
         void set_ref_col_attoids(std::vector<components::catalog::oid_t> v) noexcept {
             ref_col_attoids_ = std::move(v);
         }
@@ -88,12 +82,11 @@ namespace components::logical_plan {
 
     using node_create_constraint_ptr = boost::intrusive_ptr<node_create_constraint_t>;
 
-    node_create_constraint_ptr
-    make_node_create_constraint(std::pmr::memory_resource* resource,
-                                std::string dbname,
-                                std::string relname,
-                                core::constraint_name_t name,
-                                constraint_kind kind,
-                                std::string ref_dbname = {});
+    node_create_constraint_ptr make_node_create_constraint(std::pmr::memory_resource* resource,
+                                                           std::string dbname,
+                                                           std::string relname,
+                                                           core::constraint_name_t name,
+                                                           constraint_kind kind,
+                                                           std::string ref_dbname = {});
 
 } // namespace components::logical_plan

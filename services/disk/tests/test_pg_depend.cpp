@@ -1,5 +1,6 @@
 #include <catch2/catch.hpp>
 
+#include "disk_test_helpers.hpp"
 #include <actor-zeta/spawn.hpp>
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
@@ -11,7 +12,6 @@
 #include <components/types/types.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <services/disk/manager_disk.hpp>
-#include "disk_test_helpers.hpp"
 
 #include <filesystem>
 #include <unistd.h>
@@ -78,8 +78,8 @@ namespace {
             const auto ns_oid = disk_test_helpers::test_create_namespace(*this, ns_name);
             std::vector<components::table::column_definition_t> cols;
             cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
-            const auto tbl_oid = disk_test_helpers::test_create_table(*this, ns_oid, table_name, cols,
-                                                                        catalog::relkind::regular);
+            const auto tbl_oid =
+                disk_test_helpers::test_create_table(*this, ns_oid, table_name, cols, catalog::relkind::regular);
             return {ns_oid, tbl_oid};
         }
     };
@@ -94,8 +94,7 @@ TEST_CASE("services::disk::pg_depend::table_to_namespace_cascade") {
     disk_test_helpers::test_drop_table(fx, t_oid);
     disk_test_helpers::test_drop_namespace(fx, ns_oid);
     // Resolving the table afterwards must miss.
-    auto rt = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid,
-                         std::string("t1"), std::uint64_t{0});
+    auto rt = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("t1"), std::uint64_t{0});
     REQUIRE_FALSE(rt.found);
 }
 
@@ -106,8 +105,7 @@ TEST_CASE("services::disk::pg_depend::drop_namespace_restrict_blocks") {
     fixture fx;
     auto [ns_oid, t_oid] = fx.make_ns_table("ns_b", "t1");
     // Table must be resolvable before any drop.
-    auto rt_before = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid,
-                                 std::string("t1"), std::uint64_t{0});
+    auto rt_before = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("t1"), std::uint64_t{0});
     REQUIRE(rt_before.found);
     REQUIRE(rt_before.oid == t_oid);
 }
@@ -116,16 +114,17 @@ TEST_CASE("services::disk::pg_depend::drop_namespace_restrict_blocks") {
 TEST_CASE("services::disk::pg_depend::index_cascades_with_table") {
     fixture fx;
     auto [ns_oid, t_oid] = fx.make_ns_table("ns_c", "t1");
-    const auto idx_oid = disk_test_helpers::test_create_index(fx, ns_oid, t_oid,
-                                                               std::string("idx_id"),
-                                                               std::vector<std::string>{"id"},
-                                                               std::vector<catalog::oid_t>{});
+    const auto idx_oid = disk_test_helpers::test_create_index(fx,
+                                                              ns_oid,
+                                                              t_oid,
+                                                              std::string("idx_id"),
+                                                              std::vector<std::string>{"id"},
+                                                              std::vector<catalog::oid_t>{});
     REQUIRE(idx_oid >= FIRST_USER_OID);
     disk_test_helpers::test_drop_table(fx, t_oid);
     disk_test_helpers::test_drop_index(fx, idx_oid);
     // Index gone too — pg_class entry for the index removed.
-    auto rt_idx = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid,
-                              std::string("idx_id"), std::uint64_t{0});
+    auto rt_idx = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("idx_id"), std::uint64_t{0});
     REQUIRE_FALSE(rt_idx.found);
 }
 
@@ -133,13 +132,11 @@ TEST_CASE("services::disk::pg_depend::index_cascades_with_table") {
 TEST_CASE("services::disk::pg_depend::type_cascades_with_namespace") {
     fixture fx;
     const auto ns_oid = disk_test_helpers::test_create_namespace(fx, std::string("ns_d"));
-    const auto type_oid = disk_test_helpers::test_create_type(fx, ns_oid,
-                                                               std::string("widget_type"), std::string{});
+    const auto type_oid = disk_test_helpers::test_create_type(fx, ns_oid, std::string("widget_type"), std::string{});
     REQUIRE(type_oid >= FIRST_USER_OID);
     disk_test_helpers::test_drop_type(fx, type_oid);
     disk_test_helpers::test_drop_namespace(fx, ns_oid);
-    auto rr = fx.invoke(&manager_disk_t::resolve_type, fx.ctx(), ns_oid,
-                          std::string("widget_type"), std::uint64_t{0});
+    auto rr = fx.invoke(&manager_disk_t::resolve_type, fx.ctx(), ns_oid, std::string("widget_type"), std::uint64_t{0});
     REQUIRE_FALSE(rr.found);
 }
 
@@ -150,8 +147,7 @@ TEST_CASE("services::disk::pg_depend::function_cascades_with_namespace") {
     const auto ns_oid = disk_test_helpers::test_create_namespace(fx, std::string("ns_e"));
     REQUIRE(ns_oid >= FIRST_USER_OID);
     disk_test_helpers::test_drop_namespace(fx, ns_oid);
-    auto rr = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(),
-                          std::string("ns_e"), std::uint64_t{0});
+    auto rr = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("ns_e"), std::uint64_t{0});
     REQUIRE_FALSE(rr.found);
 }
 
@@ -159,20 +155,35 @@ TEST_CASE("services::disk::pg_depend::function_cascades_with_namespace") {
 TEST_CASE("services::disk::pg_depend::drop_type_restrict_no_deps") {
     fixture fx;
     const auto ns_oid = disk_test_helpers::test_create_namespace(fx, std::string("ns_f"));
-    const auto type_oid = disk_test_helpers::test_create_type(fx, ns_oid,
-                                                               std::string("standalone_type"), std::string{});
+    const auto type_oid =
+        disk_test_helpers::test_create_type(fx, ns_oid, std::string("standalone_type"), std::string{});
     // Drop the type via pg_catalog rows (no restrict/cascade distinction in helper API).
     {
         constexpr catalog::oid_t pg_type = catalog::well_known_oid::pg_type_table;
-        constexpr catalog::oid_t pg_dep  = catalog::well_known_oid::pg_depend_table;
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, disk_test_helpers::txn_ctx(), pg_type, std::int64_t{0}, type_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, disk_test_helpers::txn_ctx(), pg_dep,  std::int64_t{1}, type_oid);
-        fx.invoke(&manager_disk_t::delete_pg_catalog_rows, disk_test_helpers::txn_ctx(), pg_dep,  std::int64_t{3}, type_oid);
+        constexpr catalog::oid_t pg_dep = catalog::well_known_oid::pg_depend_table;
+        fx.invoke(&manager_disk_t::delete_pg_catalog_rows,
+                  disk_test_helpers::txn_ctx(),
+                  pg_type,
+                  std::int64_t{0},
+                  type_oid);
+        fx.invoke(&manager_disk_t::delete_pg_catalog_rows,
+                  disk_test_helpers::txn_ctx(),
+                  pg_dep,
+                  std::int64_t{1},
+                  type_oid);
+        fx.invoke(&manager_disk_t::delete_pg_catalog_rows,
+                  disk_test_helpers::txn_ctx(),
+                  pg_dep,
+                  std::int64_t{3},
+                  type_oid);
         std::set<catalog::oid_t> deletes_local{pg_type, pg_dep};
-        fx.invoke(&manager_disk_t::storage_commit_deletes, disk_test_helpers::txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
+        fx.invoke(&manager_disk_t::storage_commit_deletes,
+                  disk_test_helpers::txn_ctx(),
+                  std::uint64_t{1000},
+                  std::move(deletes_local));
     }
-    auto rr = fx.invoke(&manager_disk_t::resolve_type, fx.ctx(), ns_oid,
-                          std::string("standalone_type"), std::uint64_t{0});
+    auto rr =
+        fx.invoke(&manager_disk_t::resolve_type, fx.ctx(), ns_oid, std::string("standalone_type"), std::uint64_t{0});
     REQUIRE_FALSE(rr.found);
 }
 
@@ -180,19 +191,19 @@ TEST_CASE("services::disk::pg_depend::drop_type_restrict_no_deps") {
 TEST_CASE("services::disk::pg_depend::multi_level_cascade") {
     fixture fx;
     auto [ns_oid, t_oid] = fx.make_ns_table("ns_g", "t1");
-    const auto idx_oid = disk_test_helpers::test_create_index(fx, ns_oid, t_oid,
-                                                               std::string("idx_id"),
-                                                               std::vector<std::string>{"id"},
-                                                               std::vector<catalog::oid_t>{});
+    const auto idx_oid = disk_test_helpers::test_create_index(fx,
+                                                              ns_oid,
+                                                              t_oid,
+                                                              std::string("idx_id"),
+                                                              std::vector<std::string>{"id"},
+                                                              std::vector<catalog::oid_t>{});
     REQUIRE(idx_oid >= FIRST_USER_OID);
     disk_test_helpers::test_drop_index(fx, idx_oid);
     disk_test_helpers::test_drop_table(fx, t_oid);
     disk_test_helpers::test_drop_namespace(fx, ns_oid);
     // All gone: namespace, table, index.
-    auto rt_t = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid,
-                            std::string("t1"), std::uint64_t{0});
-    auto rt_i = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid,
-                            std::string("idx_id"), std::uint64_t{0});
+    auto rt_t = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("t1"), std::uint64_t{0});
+    auto rt_i = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("idx_id"), std::uint64_t{0});
     REQUIRE_FALSE(rt_t.found);
     REQUIRE_FALSE(rt_i.found);
 }
@@ -203,14 +214,15 @@ TEST_CASE("services::disk::pg_depend::multi_level_cascade") {
 TEST_CASE("services::disk::pg_depend::drop_table_restrict_vs_cascade") {
     fixture fx;
     auto [ns_oid, t_oid] = fx.make_ns_table("ns_h", "t1");
-    const auto idx_oid = disk_test_helpers::test_create_index(fx, ns_oid, t_oid,
-                                                               std::string("idx_id"),
-                                                               std::vector<std::string>{"id"},
-                                                               std::vector<catalog::oid_t>{});
-    (void)idx_oid;
+    const auto idx_oid = disk_test_helpers::test_create_index(fx,
+                                                              ns_oid,
+                                                              t_oid,
+                                                              std::string("idx_id"),
+                                                              std::vector<std::string>{"id"},
+                                                              std::vector<catalog::oid_t>{});
+    (void) idx_oid;
     disk_test_helpers::test_drop_table(fx, t_oid);
-    auto rt_after_r = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid,
-                                  std::string("t1"), std::uint64_t{0});
+    auto rt_after_r = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("t1"), std::uint64_t{0});
     REQUIRE_FALSE(rt_after_r.found);
 }
 
@@ -221,17 +233,17 @@ TEST_CASE("services::disk::pg_depend::drop_table_restrict_vs_cascade") {
 // ===========================================================================
 TEST_CASE("services::disk::pg_depend::test_circular_dependency_detection") {
     using namespace services::disk;
-namespace catalog = components::catalog;
+    namespace catalog = components::catalog;
 
-    constexpr components::catalog::oid_t CLS  = 10;
+    constexpr components::catalog::oid_t CLS = 10;
     constexpr components::catalog::oid_t OID_A = 100;
     constexpr components::catalog::oid_t OID_B = 200;
 
     std::pmr::synchronized_pool_resource resource;
     // A depends on B and B depends on A — a minimal 2-node cycle.
     auto fetch = [&](std::pmr::memory_resource* mr,
-                     components::catalog::oid_t /*cls*/, components::catalog::oid_t oid)
-                     -> std::pmr::vector<dependency_t> {
+                     components::catalog::oid_t /*cls*/,
+                     components::catalog::oid_t oid) -> std::pmr::vector<dependency_t> {
         std::pmr::vector<dependency_t> out{mr};
         if (oid == OID_A)
             out.push_back({CLS, OID_B, deptype::normal});
@@ -255,9 +267,9 @@ namespace catalog = components::catalog;
 // ===========================================================================
 TEST_CASE("services::disk::pg_depend::test_no_cycle_linear_chain") {
     using namespace services::disk;
-namespace catalog = components::catalog;
+    namespace catalog = components::catalog;
 
-    constexpr components::catalog::oid_t CLS  = 10;
+    constexpr components::catalog::oid_t CLS = 10;
     constexpr components::catalog::oid_t OID_A = 100; // root (seed)
     constexpr components::catalog::oid_t OID_B = 200; // depends on A
     constexpr components::catalog::oid_t OID_C = 300; // depends on B
@@ -265,8 +277,8 @@ namespace catalog = components::catalog;
     std::pmr::synchronized_pool_resource resource;
     // fetch_deps(cls, X) → objects that depend ON X.
     auto fetch = [&](std::pmr::memory_resource* mr,
-                     components::catalog::oid_t /*cls*/, components::catalog::oid_t oid)
-                     -> std::pmr::vector<dependency_t> {
+                     components::catalog::oid_t /*cls*/,
+                     components::catalog::oid_t oid) -> std::pmr::vector<dependency_t> {
         std::pmr::vector<dependency_t> out{mr};
         if (oid == OID_A)
             out.push_back({CLS, OID_B, 'a'});
@@ -297,16 +309,17 @@ TEST_CASE("services::disk::pg_depend::test_column_level_pg_depend_written") {
     auto [ns_oid, t_oid] = fx.make_ns_table("ns_col_dep", "t_col");
 
     // Create an index on the 'id' column.
-    const auto idx_oid = disk_test_helpers::test_create_index(fx, ns_oid, t_oid,
-                                                               std::string("idx_col_dep"),
-                                                               std::vector<std::string>{"id"},
-                                                               std::vector<catalog::oid_t>{});
+    const auto idx_oid = disk_test_helpers::test_create_index(fx,
+                                                              ns_oid,
+                                                              t_oid,
+                                                              std::string("idx_col_dep"),
+                                                              std::vector<std::string>{"id"},
+                                                              std::vector<catalog::oid_t>{});
     REQUIRE(idx_oid >= FIRST_USER_OID);
 
     // Drop table (helper issues committed delete for pg_class/pg_attribute/pg_depend).
     disk_test_helpers::test_drop_table(fx, t_oid);
-    auto rt = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid,
-                         std::string("t_col"), std::uint64_t{0});
+    auto rt = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("t_col"), std::uint64_t{0});
     REQUIRE_FALSE(rt.found);
 }
 
@@ -321,25 +334,30 @@ TEST_CASE("services::disk::pg_depend::cross_namespace_fk_restricts_parent_drop")
     const auto ns_a_oid = disk_test_helpers::test_create_namespace(fx, std::string("ns_xfk_a"));
     std::vector<components::table::column_definition_t> parent_cols;
     parent_cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
-    const auto parent_oid = disk_test_helpers::test_create_table(fx, ns_a_oid,
-                                                                   std::string("parent_xfk"), parent_cols,
-                                                                   catalog::relkind::regular);
+    const auto parent_oid = disk_test_helpers::test_create_table(fx,
+                                                                 ns_a_oid,
+                                                                 std::string("parent_xfk"),
+                                                                 parent_cols,
+                                                                 catalog::relkind::regular);
     REQUIRE(parent_oid >= FIRST_USER_OID);
 
     // Create ns_b with child table that will hold the FK.
     const auto ns_b_oid = disk_test_helpers::test_create_namespace(fx, std::string("ns_xfk_b"));
     std::vector<components::table::column_definition_t> child_cols;
-    child_cols.emplace_back("parent_id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
-    const auto child_oid = disk_test_helpers::test_create_table(fx, ns_b_oid,
-                                                                  std::string("child_xfk"), child_cols,
-                                                                  catalog::relkind::regular);
+    child_cols.emplace_back("parent_id",
+                            components::types::complex_logical_type{components::types::logical_type::BIGINT});
+    const auto child_oid = disk_test_helpers::test_create_table(fx,
+                                                                ns_b_oid,
+                                                                std::string("child_xfk"),
+                                                                child_cols,
+                                                                catalog::relkind::regular);
     REQUIRE(child_oid >= FIRST_USER_OID);
 
     // Both tables must be resolvable.
-    auto parent_resolve = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_a_oid,
-                                     std::string("parent_xfk"), std::uint64_t{0});
+    auto parent_resolve =
+        fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_a_oid, std::string("parent_xfk"), std::uint64_t{0});
     REQUIRE(parent_resolve.found);
-    auto child_resolve = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_b_oid,
-                                    std::string("child_xfk"), std::uint64_t{0});
+    auto child_resolve =
+        fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_b_oid, std::string("child_xfk"), std::uint64_t{0});
     REQUIRE(child_resolve.found);
 }

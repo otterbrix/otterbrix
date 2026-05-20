@@ -25,23 +25,17 @@ namespace components::operators {
     operator_vacuum_t::operator_vacuum_t(std::pmr::memory_resource* resource, log_t log)
         : read_write_operator_t(resource, std::move(log), operator_type::vacuum) {}
 
-    void operator_vacuum_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
-        async_wait();
-    }
+    void operator_vacuum_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
 
-    actor_zeta::unique_future<void>
-    operator_vacuum_t::await_async_and_resume(pipeline::context_t* ctx) {
+    actor_zeta::unique_future<void> operator_vacuum_t::await_async_and_resume(pipeline::context_t* ctx) {
         const std::uint64_t lowest = ctx->lowest_active_start_time;
 
         // Step 1: vacuum_all — cleanup_versions + compact across every user
         // storage. The disk manager already iterates its storages_ map, so a
         // single global call suffices (matches the legacy dispatcher path).
         {
-            auto [_v, vf] = actor_zeta::send(
-                ctx->disk_address,
-                &services::disk::manager_disk_t::vacuum_all,
-                ctx->session,
-                lowest);
+            auto [_v, vf] =
+                actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::vacuum_all, ctx->session, lowest);
             co_await std::move(vf);
         }
 
@@ -53,11 +47,10 @@ namespace components::operators {
 
         // Step 2: drop reclaimed index versions globally.
         {
-            auto [_cv, cvf] = actor_zeta::send(
-                ctx->index_address,
-                &services::index::manager_index_t::cleanup_all_versions,
-                ctx->session,
-                lowest);
+            auto [_cv, cvf] = actor_zeta::send(ctx->index_address,
+                                               &services::index::manager_index_t::cleanup_all_versions,
+                                               ctx->session,
+                                               lowest);
             co_await std::move(cvf);
         }
 
@@ -69,14 +62,13 @@ namespace components::operators {
 
         std::unique_ptr<components::vector::data_chunk_t> pg_class_rows;
         {
-            auto [_sc, scf] = actor_zeta::send(
-                ctx->disk_address,
-                &services::disk::manager_disk_t::storage_scan,
-                ctx->session,
-                kPgClass,
-                std::unique_ptr<components::table::table_filter_t>{},
-                /*limit=*/-1,
-                ctx->txn);
+            auto [_sc, scf] = actor_zeta::send(ctx->disk_address,
+                                               &services::disk::manager_disk_t::storage_scan,
+                                               ctx->session,
+                                               kPgClass,
+                                               std::unique_ptr<components::table::table_filter_t>{},
+                                               /*limit=*/-1,
+                                               ctx->txn);
             pg_class_rows = co_await std::move(scf);
         }
         if (!pg_class_rows) {
@@ -97,19 +89,18 @@ namespace components::operators {
         for (std::uint64_t i = 0; i < pg_class_rows->size(); ++i) {
             // pg_class columns: 0=oid, 1=relname, 2=relnamespace, 3=relkind, 4=relstoragemode
             auto rk_v = pg_class_rows->value(3, i);
-            const auto rkv = rk_v.is_null()
-                                 ? std::string_view{"r"}
-                                 : rk_v.value<std::string_view>();
+            const auto rkv = rk_v.is_null() ? std::string_view{"r"} : rk_v.value<std::string_view>();
             const char relkind = rkv.empty() ? catalog::relkind::regular : rkv[0];
-            if (relkind != catalog::relkind::regular &&
-                relkind != catalog::relkind::computed) {
+            if (relkind != catalog::relkind::regular && relkind != catalog::relkind::computed) {
                 continue;
             }
 
             auto oid_v = pg_class_rows->value(0, i);
-            if (oid_v.is_null()) continue;
+            if (oid_v.is_null())
+                continue;
             const auto this_oid = static_cast<catalog::oid_t>(oid_v.value<std::uint32_t>());
-            if (this_oid == catalog::INVALID_OID) continue;
+            if (this_oid == catalog::INVALID_OID)
+                continue;
 
             if (relkind == catalog::relkind::computed) {
                 computing_table_oids.push_back(this_oid);
@@ -123,48 +114,46 @@ namespace components::operators {
         // dispatcher.collections_.
         for (auto& tbl : user_tables) {
             {
-                auto [_rb, rbf] = actor_zeta::send(
-                    ctx->index_address,
-                    &services::index::manager_index_t::rebuild_indexes,
-                    ctx->session,
-                    tbl.table_oid);
+                auto [_rb, rbf] = actor_zeta::send(ctx->index_address,
+                                                   &services::index::manager_index_t::rebuild_indexes,
+                                                   ctx->session,
+                                                   tbl.table_oid);
                 co_await std::move(rbf);
             }
 
             std::uint64_t total = 0;
             {
-                auto [_tr, trf] = actor_zeta::send(
-                    ctx->disk_address,
-                    &services::disk::manager_disk_t::storage_total_rows,
-                    ctx->session,
-                    tbl.table_oid);
+                auto [_tr, trf] = actor_zeta::send(ctx->disk_address,
+                                                   &services::disk::manager_disk_t::storage_total_rows,
+                                                   ctx->session,
+                                                   tbl.table_oid);
                 total = co_await std::move(trf);
             }
-            if (total == 0) continue;
+            if (total == 0)
+                continue;
 
             std::unique_ptr<components::vector::data_chunk_t> scan_data;
             {
-                auto [_ss, ssf] = actor_zeta::send(
-                    ctx->disk_address,
-                    &services::disk::manager_disk_t::storage_scan_segment,
-                    ctx->session,
-                    tbl.table_oid,
-                    std::int64_t{0},
-                    total);
+                auto [_ss, ssf] = actor_zeta::send(ctx->disk_address,
+                                                   &services::disk::manager_disk_t::storage_scan_segment,
+                                                   ctx->session,
+                                                   tbl.table_oid,
+                                                   std::int64_t{0},
+                                                   total);
                 scan_data = co_await std::move(ssf);
             }
-            if (!scan_data) continue;
+            if (!scan_data)
+                continue;
 
             const auto count = scan_data->size();
             components::execution_context_t ix_ctx{ctx->session, ctx->txn, tbl.table_oid};
-            auto [_ir, irf] = actor_zeta::send(
-                ctx->index_address,
-                &services::index::manager_index_t::insert_rows,
-                ix_ctx,
-                tbl.table_oid,
-                std::move(scan_data),
-                std::uint64_t{0},
-                count);
+            auto [_ir, irf] = actor_zeta::send(ctx->index_address,
+                                               &services::index::manager_index_t::insert_rows,
+                                               ix_ctx,
+                                               tbl.table_oid,
+                                               std::move(scan_data),
+                                               std::uint64_t{0},
+                                               count);
             co_await std::move(irf);
         }
 
@@ -219,32 +208,35 @@ namespace components::operators {
                 cc_keys.emplace_back("relid");
                 std::pmr::vector<types::logical_value_t> cc_vals(resource_);
                 cc_vals.emplace_back(toid_lv);
-                auto [_cc, ccf] = actor_zeta::send(
-                    ctx->disk_address,
-                    &services::disk::manager_disk_t::read_rows_by_key,
-                    cc_ctx, kPgComputedColumn,
-                    std::move(cc_keys),
-                    std::move(cc_vals));
+                auto [_cc, ccf] = actor_zeta::send(ctx->disk_address,
+                                                   &services::disk::manager_disk_t::read_rows_by_key,
+                                                   cc_ctx,
+                                                   kPgComputedColumn,
+                                                   std::move(cc_keys),
+                                                   std::move(cc_vals));
                 auto cc_rows = co_await std::move(ccf);
 
                 std::vector<catalog::oid_t> dead_attoids;
                 dead_attoids.reserve(cc_rows.size());
                 for (const auto& row : cc_rows) {
-                    if (row.size() < 7) continue;
-                    if (row[1].is_null() || row[6].is_null()) continue;
+                    if (row.size() < 7)
+                        continue;
+                    if (row[1].is_null() || row[6].is_null())
+                        continue;
                     const auto rc = row[6].value<std::int64_t>();
-                    if (rc > 0) continue;
-                    dead_attoids.push_back(
-                        static_cast<catalog::oid_t>(row[1].value<std::uint32_t>()));
+                    if (rc > 0)
+                        continue;
+                    dead_attoids.push_back(static_cast<catalog::oid_t>(row[1].value<std::uint32_t>()));
                 }
 
                 for (const auto attoid : dead_attoids) {
                     // attoid is column index 1 in pg_computed_column.
-                    auto [_d, df] = actor_zeta::send(
-                        ctx->disk_address,
-                        &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                        cc_ctx, kPgComputedColumn,
-                        std::int64_t{1}, attoid);
+                    auto [_d, df] = actor_zeta::send(ctx->disk_address,
+                                                     &services::disk::manager_disk_t::delete_pg_catalog_rows,
+                                                     cc_ctx,
+                                                     kPgComputedColumn,
+                                                     std::int64_t{1},
+                                                     attoid);
                     co_await std::move(df);
                     if (ctx->txn.transaction_id != 0) {
                         ctx->pg_catalog_delete_tables.insert(kPgComputedColumn);
@@ -261,32 +253,33 @@ namespace components::operators {
                 };
                 std::map<std::string, std::vector<version_row_t>> grouped;
                 for (const auto& row : cc_rows) {
-                    if (row.size() < 7) continue;
-                    if (row[1].is_null() || row[2].is_null() || row[5].is_null() ||
-                        row[6].is_null()) {
+                    if (row.size() < 7)
+                        continue;
+                    if (row[1].is_null() || row[2].is_null() || row[5].is_null() || row[6].is_null()) {
                         continue;
                     }
                     // Skip rows already queued for deletion as tombstones.
-                    if (row[6].value<std::int64_t>() <= 0) continue;
+                    if (row[6].value<std::int64_t>() <= 0)
+                        continue;
                     auto attname = row[2].value<std::string_view>();
                     auto attversion = row[5].value<std::int64_t>();
-                    auto attoid = static_cast<catalog::oid_t>(
-                        row[1].value<std::uint32_t>());
+                    auto attoid = static_cast<catalog::oid_t>(row[1].value<std::uint32_t>());
                     grouped[std::string(attname)].push_back({attoid, attversion});
                 }
                 for (auto& [_key, rows] : grouped) {
-                    if (rows.size() <= 1) continue;
+                    if (rows.size() <= 1)
+                        continue;
                     // Sort by version descending; keep first (max), delete rest.
-                    std::sort(rows.begin(), rows.end(),
-                              [](const version_row_t& a, const version_row_t& b) {
-                                  return a.attversion > b.attversion;
-                              });
+                    std::sort(rows.begin(), rows.end(), [](const version_row_t& a, const version_row_t& b) {
+                        return a.attversion > b.attversion;
+                    });
                     for (std::size_t i = 1; i < rows.size(); ++i) {
-                        auto [_d, df] = actor_zeta::send(
-                            ctx->disk_address,
-                            &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                            cc_ctx, kPgComputedColumn,
-                            std::int64_t{1}, rows[i].attoid);
+                        auto [_d, df] = actor_zeta::send(ctx->disk_address,
+                                                         &services::disk::manager_disk_t::delete_pg_catalog_rows,
+                                                         cc_ctx,
+                                                         kPgComputedColumn,
+                                                         std::int64_t{1},
+                                                         rows[i].attoid);
                         co_await std::move(df);
                         if (ctx->txn.transaction_id != 0) {
                             ctx->pg_catalog_delete_tables.insert(kPgComputedColumn);
@@ -311,29 +304,30 @@ namespace components::operators {
                     cc2_keys.emplace_back("relid");
                     std::pmr::vector<types::logical_value_t> cc2_vals(resource_);
                     cc2_vals.emplace_back(toid_lv2);
-                    auto [_cc2, ccf2] = actor_zeta::send(
-                        ctx->disk_address,
-                        &services::disk::manager_disk_t::read_rows_by_key,
-                        cc_ctx, kPgComputedColumn,
-                        std::move(cc2_keys),
-                        std::move(cc2_vals));
+                    auto [_cc2, ccf2] = actor_zeta::send(ctx->disk_address,
+                                                         &services::disk::manager_disk_t::read_rows_by_key,
+                                                         cc_ctx,
+                                                         kPgComputedColumn,
+                                                         std::move(cc2_keys),
+                                                         std::move(cc2_vals));
                     auto live_cc = co_await std::move(ccf2);
 
                     std::set<std::string> live_attnames;
                     for (const auto& row : live_cc) {
-                        if (row.size() < 7) continue;
-                        if (row[2].is_null() || row[6].is_null()) continue;
-                        if (row[6].value<std::int64_t>() <= 0) continue;
-                        live_attnames.emplace(
-                            std::string(row[2].value<std::string_view>()));
+                        if (row.size() < 7)
+                            continue;
+                        if (row[2].is_null() || row[6].is_null())
+                            continue;
+                        if (row[6].value<std::int64_t>() <= 0)
+                            continue;
+                        live_attnames.emplace(std::string(row[2].value<std::string_view>()));
                     }
 
-                    auto [_dc, dcf] = actor_zeta::send(
-                        ctx->disk_address,
-                        &services::disk::manager_disk_t::compact_relkind_g_storage,
-                        cc_ctx,
-                        table_oid,
-                        std::move(live_attnames));
+                    auto [_dc, dcf] = actor_zeta::send(ctx->disk_address,
+                                                       &services::disk::manager_disk_t::compact_relkind_g_storage,
+                                                       cc_ctx,
+                                                       table_oid,
+                                                       std::move(live_attnames));
                     (void) co_await std::move(dcf);
                 }
             }

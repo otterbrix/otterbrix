@@ -6,14 +6,13 @@ namespace services::disk {
     namespace catalog = components::catalog;
     using namespace detail;
 
-    uint64_t manager_disk_t::direct_append_sync(catalog::oid_t table_oid,
-                                                 components::vector::data_chunk_t& data) {
+    uint64_t manager_disk_t::direct_append_sync(catalog::oid_t table_oid, components::vector::data_chunk_t& data) {
         return direct_append_sync(table_oid, data, components::table::transaction_data{0, 0});
     }
 
     uint64_t manager_disk_t::direct_append_sync(catalog::oid_t table_oid,
-                                                 components::vector::data_chunk_t& data,
-                                                 const components::table::transaction_data& txn) {
+                                                components::vector::data_chunk_t& data,
+                                                const components::table::transaction_data& txn) {
         auto* s = get_storage(table_oid);
         if (!s || data.size() == 0)
             return 0;
@@ -159,11 +158,11 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<void>
-    manager_disk_t::create_storage(session_id_t session,
-                                    catalog::oid_t table_oid,
-                                    catalog::oid_t /*database_oid*/) {
-        trace(log_, "manager_disk_t::create_storage , session : {} , oid : {}",
-              session.data(), static_cast<unsigned>(table_oid));
+    manager_disk_t::create_storage(session_id_t session, catalog::oid_t table_oid, catalog::oid_t /*database_oid*/) {
+        trace(log_,
+              "manager_disk_t::create_storage , session : {} , oid : {}",
+              session.data(),
+              static_cast<unsigned>(table_oid));
         storages_.emplace(table_oid, std::make_unique<collection_storage_entry_t>(resource()));
         co_return;
     }
@@ -175,9 +174,9 @@ namespace services::disk {
                                                 std::vector<components::table::column_definition_t> columns) {
         trace(log_,
               "manager_disk_t::create_storage_with_columns , session : {} , oid : {}",
-              session.data(), static_cast<unsigned>(table_oid));
-        storages_.emplace(table_oid,
-                           std::make_unique<collection_storage_entry_t>(resource(), std::move(columns)));
+              session.data(),
+              static_cast<unsigned>(table_oid));
+        storages_.emplace(table_oid, std::make_unique<collection_storage_entry_t>(resource(), std::move(columns)));
         co_return;
     }
 
@@ -186,21 +185,23 @@ namespace services::disk {
                                         catalog::oid_t table_oid,
                                         catalog::oid_t database_oid,
                                         std::vector<components::table::column_definition_t> columns) {
-        trace(log_, "manager_disk_t::create_storage_disk , session : {} , oid : {}",
-              session.data(), static_cast<unsigned>(table_oid));
-        auto otbx_path = config_.path / std::to_string(static_cast<unsigned>(database_oid))
-                                       / std::to_string(static_cast<unsigned>(table_oid))
-                                       / "table.otbx";
+        trace(log_,
+              "manager_disk_t::create_storage_disk , session : {} , oid : {}",
+              session.data(),
+              static_cast<unsigned>(table_oid));
+        auto otbx_path = config_.path / std::to_string(static_cast<unsigned>(database_oid)) /
+                         std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
         std::filesystem::create_directories(otbx_path.parent_path());
         storages_.emplace(table_oid,
-                           std::make_unique<collection_storage_entry_t>(resource(), std::move(columns), otbx_path));
+                          std::make_unique<collection_storage_entry_t>(resource(), std::move(columns), otbx_path));
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::drop_storage(session_id_t session,
-                                                                     catalog::oid_t table_oid) {
-        trace(log_, "manager_disk_t::drop_storage , session : {} , oid : {}",
-              session.data(), static_cast<unsigned>(table_oid));
+    manager_disk_t::unique_future<void> manager_disk_t::drop_storage(session_id_t session, catalog::oid_t table_oid) {
+        trace(log_,
+              "manager_disk_t::drop_storage , session : {} , oid : {}",
+              session.data(),
+              static_cast<unsigned>(table_oid));
         // Physically remove the .otbx file (and its sidecar + per-oid directory)
         // when dropping a DISK-backed storage. Otherwise a restart would see the
         // surviving .otbx, WAL replay would synthesise a phantom storage, and
@@ -311,8 +312,8 @@ namespace services::disk {
 
     manager_disk_t::unique_future<std::pair<uint64_t, uint64_t>>
     manager_disk_t::storage_append(execution_context_t ctx,
-                                    catalog::oid_t table_oid,
-                                    std::unique_ptr<components::vector::data_chunk_t> data) {
+                                   catalog::oid_t table_oid,
+                                   std::unique_ptr<components::vector::data_chunk_t> data) {
         auto& txn = ctx.txn;
         auto* s = get_storage(table_oid);
         if (!s || !data || data->size() == 0) {
@@ -340,8 +341,7 @@ namespace services::disk {
         // (now-unfilled) column — producing a NOT NULL violation on the
         // original. test_collection::insert::"insert with conversions"
         // exercises this exact path.
-        if (s->has_schema() && data->column_count() > 0 &&
-            data->column_count() != s->columns().size()) {
+        if (s->has_schema() && data->column_count() > 0 && data->column_count() != s->columns().size()) {
             auto it = storages_.find(table_oid);
             if (it != storages_.end() && it->second->table_storage.mode() == storage_mode_t::IN_MEMORY) {
                 std::vector<components::table::column_definition_t> new_columns;
@@ -475,8 +475,8 @@ namespace services::disk {
 
                     if (keep_rows.size() < data->size()) {
                         auto filtered = std::make_unique<components::vector::data_chunk_t>(resource(),
-                                                                                            data->types(),
-                                                                                            keep_rows.size());
+                                                                                           data->types(),
+                                                                                           keep_rows.size());
                         for (uint64_t col = 0; col < data->column_count(); col++) {
                             for (uint64_t i = 0; i < keep_rows.size(); i++) {
                                 auto val = data->data[col].value(keep_rows[i]);
@@ -528,9 +528,9 @@ namespace services::disk {
 
     manager_disk_t::unique_future<std::pair<int64_t, uint64_t>>
     manager_disk_t::storage_update(execution_context_t ctx,
-                                    catalog::oid_t table_oid,
-                                    components::vector::vector_t row_ids,
-                                    std::unique_ptr<components::vector::data_chunk_t> data) {
+                                   catalog::oid_t table_oid,
+                                   components::vector::vector_t row_ids,
+                                   std::unique_ptr<components::vector::data_chunk_t> data) {
         auto* s = get_storage(table_oid);
         if (!s) {
             co_return std::pair<int64_t, uint64_t>{0, 0};
@@ -538,11 +538,10 @@ namespace services::disk {
         co_return s->update(row_ids, *data, ctx.txn);
     }
 
-    manager_disk_t::unique_future<uint64_t>
-    manager_disk_t::storage_delete_rows(execution_context_t ctx,
-                                         catalog::oid_t table_oid,
-                                         components::vector::vector_t row_ids,
-                                         uint64_t count) {
+    manager_disk_t::unique_future<uint64_t> manager_disk_t::storage_delete_rows(execution_context_t ctx,
+                                                                                catalog::oid_t table_oid,
+                                                                                components::vector::vector_t row_ids,
+                                                                                uint64_t count) {
         auto* s = get_storage(table_oid);
         if (!s) {
             co_return 0;
@@ -566,20 +565,18 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_t::unique_future<void>
-    manager_disk_t::storage_revert_append(execution_context_t /*ctx*/,
-                                           catalog::oid_t table_oid,
-                                           int64_t row_start,
-                                           uint64_t count) {
+    manager_disk_t::unique_future<void> manager_disk_t::storage_revert_append(execution_context_t /*ctx*/,
+                                                                              catalog::oid_t table_oid,
+                                                                              int64_t row_start,
+                                                                              uint64_t count) {
         auto* s = get_storage(table_oid);
         if (s)
             s->revert_append(row_start, count);
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::storage_commit_delete(execution_context_t ctx,
-                                                                              catalog::oid_t table_oid,
-                                                                              uint64_t commit_id) {
+    manager_disk_t::unique_future<void>
+    manager_disk_t::storage_commit_delete(execution_context_t ctx, catalog::oid_t table_oid, uint64_t commit_id) {
         auto* s = get_storage(table_oid);
         if (s) {
             s->commit_all_deletes(ctx.txn.transaction_id, commit_id);
@@ -589,41 +586,45 @@ namespace services::disk {
 
     manager_disk_t::unique_future<void>
     manager_disk_t::storage_commit_appends(execution_context_t /*ctx*/,
-                                            uint64_t commit_id,
-                                            std::vector<components::pg_catalog_append_range_t> ranges) {
+                                           uint64_t commit_id,
+                                           std::vector<components::pg_catalog_append_range_t> ranges) {
         for (const auto& r : ranges) {
-            if (r.count == 0) continue;
+            if (r.count == 0)
+                continue;
             auto* s = get_storage(r.table_oid);
-            if (s) s->commit_append(commit_id, r.start_row, r.count);
+            if (s)
+                s->commit_append(commit_id, r.start_row, r.count);
         }
         co_return;
     }
 
-    manager_disk_t::unique_future<void>
-    manager_disk_t::storage_commit_deletes(execution_context_t ctx,
-                                            uint64_t commit_id,
-                                            std::set<catalog::oid_t> tables) {
+    manager_disk_t::unique_future<void> manager_disk_t::storage_commit_deletes(execution_context_t ctx,
+                                                                               uint64_t commit_id,
+                                                                               std::set<catalog::oid_t> tables) {
         const auto txn_id = ctx.txn.transaction_id;
-        if (txn_id == 0) co_return;
+        if (txn_id == 0)
+            co_return;
         for (const auto& tbl_oid : tables) {
             auto* s = get_storage(tbl_oid);
-            if (s) s->commit_all_deletes(txn_id, commit_id);
+            if (s)
+                s->commit_all_deletes(txn_id, commit_id);
         }
         co_return;
     }
 
     manager_disk_t::unique_future<void>
     manager_disk_t::storage_revert_appends(execution_context_t /*ctx*/,
-                                            std::vector<components::pg_catalog_append_range_t> ranges) {
+                                           std::vector<components::pg_catalog_append_range_t> ranges) {
         for (auto it = ranges.rbegin(); it != ranges.rend(); ++it) {
-            if (it->count == 0) continue;
+            if (it->count == 0)
+                continue;
             auto* s = get_storage(it->table_oid);
-            if (s) s->revert_append(it->start_row, it->count);
+            if (s)
+                s->revert_append(it->start_row, it->count);
         }
         co_return;
     }
 
     auto manager_disk_t::agent() -> actor_zeta::address_t { return agents_[0]->address(); }
-
 
 } //namespace services::disk

@@ -26,8 +26,7 @@ namespace services::wal {
         std::vector<record_t> merged;
 
         if (!std::filesystem::exists(config_.path)) {
-            trace(log_, "wal_reader::read_committed_records , WAL path does not exist : {}",
-                  config_.path.string());
+            trace(log_, "wal_reader::read_committed_records , WAL path does not exist : {}", config_.path.string());
             return merged;
         }
 
@@ -46,11 +45,9 @@ namespace services::wal {
         }
 
         // Sort the merged result by wal_id ascending.
-        std::sort(merged.begin(), merged.end(),
-                  [](const record_t& a, const record_t& b) { return a.id < b.id; });
+        std::sort(merged.begin(), merged.end(), [](const record_t& a, const record_t& b) { return a.id < b.id; });
 
-        trace(log_, "wal_reader::read_committed_records , total committed records : {}",
-              merged.size());
+        trace(log_, "wal_reader::read_committed_records , total committed records : {}", merged.size());
         return merged;
     }
 
@@ -61,9 +58,7 @@ namespace services::wal {
     // apply the 2-pass committed-transaction filter.
     // -----------------------------------------------------------------------
 
-    std::vector<record_t>
-    wal_reader_t::read_database_segments(const std::filesystem::path& db_dir,
-                                         id_t after_wal_id) {
+    std::vector<record_t> wal_reader_t::read_database_segments(const std::filesystem::path& db_dir, id_t after_wal_id) {
         // Discover segment files. WAL segments are named wal_<db>_NNNNNN.
         std::vector<std::filesystem::path> segments;
 
@@ -90,8 +85,9 @@ namespace services::wal {
             // will still return valid records up to the corruption point (STOP-A).
             bool chain_ok = reader.verify_chain();
             if (!chain_ok) {
-                warn(log_, "wal_reader , CRC chain broken in segment '{}' , "
-                           "stopping at corruption point",
+                warn(log_,
+                     "wal_reader , CRC chain broken in segment '{}' , "
+                     "stopping at corruption point",
                      seg_path.filename().string());
             }
 
@@ -125,8 +121,7 @@ namespace services::wal {
             }
             // Records with txn_id==0 are "system" records (always included).
             // Physical and commit records are included if their txn is committed.
-            if (r.transaction_id == 0 ||
-                committed_txns.count(r.transaction_id) > 0) {
+            if (r.transaction_id == 0 || committed_txns.count(r.transaction_id) > 0) {
                 result.push_back(std::move(r));
             }
         }

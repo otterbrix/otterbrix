@@ -54,9 +54,7 @@ namespace components::sql::transform {
         std::string schemaname;
         std::string uuid;
 
-        bool empty() const noexcept {
-            return dbname.empty() && relname.empty() && schemaname.empty() && uuid.empty();
-        }
+        bool empty() const noexcept { return dbname.empty() && relname.empty() && schemaname.empty() && uuid.empty(); }
     };
 
     inline qualified_name rangevar_to_qualified_name(RangeVar* table) {
@@ -217,17 +215,20 @@ namespace components::sql::transform {
     core::result_wrapper_t<std::string> deparse_check_expr(std::pmr::memory_resource* resource, Node* node);
 
     core::result_wrapper_t<types::complex_logical_type> get_type(std::pmr::memory_resource* resource, TypeName* type);
-    core::result_wrapper_t<std::pmr::vector<types::complex_logical_type>> get_types(std::pmr::memory_resource* resource, PGList& list);
+    core::result_wrapper_t<std::pmr::vector<types::complex_logical_type>> get_types(std::pmr::memory_resource* resource,
+                                                                                    PGList& list);
 
     core::result_wrapper_t<types::logical_value_t> get_value(std::pmr::memory_resource* resource, Node* node);
     core::result_wrapper_t<types::logical_value_t> get_array(std::pmr::memory_resource* resource, PGList* list);
 
     // Evaluate constant arithmetic expression at parse time (e.g., 10 * 5 in INSERT VALUES)
-    core::result_wrapper_t<types::logical_value_t> evaluate_const_a_expr(std::pmr::memory_resource* resource, A_Expr* node);
+    core::result_wrapper_t<types::logical_value_t> evaluate_const_a_expr(std::pmr::memory_resource* resource,
+                                                                         A_Expr* node);
 
     core::result_wrapper_t<std::vector<table::column_definition_t>>
     get_column_definitions(std::pmr::memory_resource* resource, PGList& table_elts);
-    core::result_wrapper_t<std::vector<table::table_constraint_t>> extract_table_constraints(std::pmr::memory_resource* resource, PGList& table_elts);
+    core::result_wrapper_t<std::vector<table::table_constraint_t>>
+    extract_table_constraints(std::pmr::memory_resource* resource, PGList& table_elts);
 
     // Transformer catalog-resolve emission.
     //
@@ -243,32 +244,36 @@ namespace components::sql::transform {
     // `with_constraints` is set, a catalog_resolve_constraint_t with the
     // matching direction is appended right after the resolve_table (used for
     // INSERT/UPDATE → outgoing, DELETE → referencing).
-    enum class constraint_resolve_kind { none, outgoing, referencing };
+    enum class constraint_resolve_kind
+    {
+        none,
+        outgoing,
+        referencing
+    };
 
-    logical_plan::node_ptr maybe_wrap_with_catalog_resolve_table(
-        std::pmr::memory_resource* resource,
-        const std::string& dbname,
-        const std::string& relname,
-        logical_plan::node_ptr main_node,
-        constraint_resolve_kind with_constraints = constraint_resolve_kind::none);
+    logical_plan::node_ptr
+    maybe_wrap_with_catalog_resolve_table(std::pmr::memory_resource* resource,
+                                          const std::string& dbname,
+                                          const std::string& relname,
+                                          logical_plan::node_ptr main_node,
+                                          constraint_resolve_kind with_constraints = constraint_resolve_kind::none);
 
     // Wrap `main_node` (a database-scoped DDL — CREATE DATABASE, DROP DATABASE,
     // CREATE TYPE, etc.) in
     //   sequence_t(catalog_resolve_namespace_t, main_node)
     // when the toggle is enabled.
-    logical_plan::node_ptr maybe_wrap_with_catalog_resolve_namespace(
-        std::pmr::memory_resource* resource,
-        const std::string& dbname,
-        logical_plan::node_ptr main_node);
+    logical_plan::node_ptr maybe_wrap_with_catalog_resolve_namespace(std::pmr::memory_resource* resource,
+                                                                     const std::string& dbname,
+                                                                     logical_plan::node_ptr main_node);
 
     // Multi-target wrap: prepends a catalog_resolve_namespace for every distinct
     // dbname in `targets`, then a catalog_resolve_table for each (dbname,
     // relname) pair. Used by DDL transformers that touch multiple tables in a
     // single statement (CREATE CONSTRAINT FK with ref_table, DROP INDEX with
     // parent table + index name).
-    logical_plan::node_ptr maybe_wrap_with_catalog_resolve_tables(
-        std::pmr::memory_resource* resource,
-        std::vector<std::pair<std::string, std::string>> targets,
-        logical_plan::node_ptr main_node);
+    logical_plan::node_ptr
+    maybe_wrap_with_catalog_resolve_tables(std::pmr::memory_resource* resource,
+                                           std::vector<std::pair<std::string, std::string>> targets,
+                                           logical_plan::node_ptr main_node);
 
 } // namespace components::sql::transform

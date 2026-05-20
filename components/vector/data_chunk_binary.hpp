@@ -26,8 +26,6 @@ namespace components::vector {
     /// record framing). On any buffer-overflow or format violation, sets \p ok to
     /// false and returns an empty (0-column / 0-row) chunk — caller must discard.
     /// Sets \p ok to true on success.
-    data_chunk_t deserialize_binary(const char* data, size_t len,
-                                     std::pmr::memory_resource* resource,
-                                     bool& ok);
+    data_chunk_t deserialize_binary(const char* data, size_t len, std::pmr::memory_resource* resource, bool& ok);
 
 } // namespace components::vector

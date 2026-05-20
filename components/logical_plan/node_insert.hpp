@@ -43,8 +43,7 @@ namespace components::logical_plan {
     node_insert_ptr make_node_insert(std::pmr::memory_resource* resource,
                                      const components::vector::data_chunk_t& chunk);
 
-    node_insert_ptr make_node_insert(std::pmr::memory_resource* resource,
-                                     components::vector::data_chunk_t&& chunk);
+    node_insert_ptr make_node_insert(std::pmr::memory_resource* resource, components::vector::data_chunk_t&& chunk);
 
     node_insert_ptr make_node_insert(std::pmr::memory_resource* resource,
                                      components::vector::data_chunk_t&& chunk,

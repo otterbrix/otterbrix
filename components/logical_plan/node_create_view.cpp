@@ -19,9 +19,8 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    node_create_view_ptr make_node_create_view(std::pmr::memory_resource* resource,
-                                               core::viewname_t viewname,
-                                               core::query_sql_t query_sql) {
+    node_create_view_ptr
+    make_node_create_view(std::pmr::memory_resource* resource, core::viewname_t viewname, core::query_sql_t query_sql) {
         return {new node_create_view_t{resource, std::move(viewname), std::move(query_sql)}};
     }
 

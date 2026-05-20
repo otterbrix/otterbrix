@@ -48,10 +48,9 @@ namespace components::sql::transform {
         }
 
         auto v = logical_plan::make_node_create_view(resource_,
-                                                      core::viewname_t{std::move(qn.relname)},
-                                                      core::query_sql_t{std::move(query_sql)});
-        return maybe_wrap_with_catalog_resolve_namespace(
-            resource_, db_for_resolve, std::move(v));
+                                                     core::viewname_t{std::move(qn.relname)},
+                                                     core::query_sql_t{std::move(query_sql)});
+        return maybe_wrap_with_catalog_resolve_namespace(resource_, db_for_resolve, std::move(v));
     }
 
 } // namespace components::sql::transform

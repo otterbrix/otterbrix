@@ -83,12 +83,12 @@ TEST_CASE("services::disk::ddl::add_column_round_trip") {
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto table_oid = test_create_table(fx, ns_oid, "t", cols);
     components::table::column_definition_t new_col(
-        "added", components::types::complex_logical_type{components::types::logical_type::INTEGER});
+        "added",
+        components::types::complex_logical_type{components::types::logical_type::INTEGER});
     auto attoid = test_add_column(fx, table_oid, std::move(new_col), 2);
     REQUIRE(attoid >= FIRST_USER_OID);
     // After add, the column count visible via resolve_table grows.
-    auto rs = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid,
-                         std::string("t"), std::uint64_t{0});
+    auto rs = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("t"), std::uint64_t{0});
     REQUIRE(rs.found);
     REQUIRE(rs.columns.size() == 2);
 }
@@ -99,24 +99,23 @@ TEST_CASE("services::disk::ddl::add_column_round_trip") {
 TEST_CASE("services::disk::ddl::computed_register_type_evolution") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "nstype");
-    auto table_oid = test_create_table(fx, ns_oid, "agg",
-                                        std::vector<components::table::column_definition_t>{},
-                                        catalog::relkind::computed);
+    auto table_oid = test_create_table(fx,
+                                       ns_oid,
+                                       "agg",
+                                       std::vector<components::table::column_definition_t>{},
+                                       catalog::relkind::computed);
 
     // Register "a" as INT.
-    auto attoid_int = test_computed_register(fx, table_oid, "a",
-                                              components::catalog::well_known_oid::int64_type);
+    auto attoid_int = test_computed_register(fx, table_oid, "a", components::catalog::well_known_oid::int64_type);
     REQUIRE(attoid_int >= FIRST_USER_OID);
 
     // Register "a" as TEXT — type changed → fresh attoid + bumped attversion.
-    auto attoid_text = test_computed_register(fx, table_oid, "a",
-                                               components::catalog::well_known_oid::string_type);
+    auto attoid_text = test_computed_register(fx, table_oid, "a", components::catalog::well_known_oid::string_type);
     REQUIRE(attoid_text >= FIRST_USER_OID);
     REQUIRE(attoid_text != attoid_int);
 
     // resolve_table must report the latest version (TEXT) of column "a".
-    auto rs = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid,
-                         std::string("agg"), std::uint64_t{0});
+    auto rs = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("agg"), std::uint64_t{0});
     REQUIRE(rs.found);
     REQUIRE(rs.relkind == components::catalog::relkind::computed);
     REQUIRE(rs.columns.size() == 1);
@@ -129,11 +128,12 @@ TEST_CASE("services::disk::ddl::computed_register_type_evolution") {
 TEST_CASE("services::disk::ddl::computed_append_new_field") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "nsca");
-    auto table_oid = test_create_table(fx, ns_oid, "agg",
-                                        std::vector<components::table::column_definition_t>{},
-                                        catalog::relkind::computed);
-    auto attoid = test_computed_append_simple(fx, table_oid, "count",
-                                               components::catalog::well_known_oid::int64_type);
+    auto table_oid = test_create_table(fx,
+                                       ns_oid,
+                                       "agg",
+                                       std::vector<components::table::column_definition_t>{},
+                                       catalog::relkind::computed);
+    auto attoid = test_computed_append_simple(fx, table_oid, "count", components::catalog::well_known_oid::int64_type);
     REQUIRE(attoid >= FIRST_USER_OID);
 }
 
@@ -143,17 +143,17 @@ TEST_CASE("services::disk::ddl::computed_append_new_field") {
 TEST_CASE("services::disk::ddl::computed_register_same_type_idempotent") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "nsidem");
-    auto table_oid = test_create_table(fx, ns_oid, "agg",
-                                        std::vector<components::table::column_definition_t>{},
-                                        catalog::relkind::computed);
+    auto table_oid = test_create_table(fx,
+                                       ns_oid,
+                                       "agg",
+                                       std::vector<components::table::column_definition_t>{},
+                                       catalog::relkind::computed);
 
-    auto attoid1 = test_computed_register(fx, table_oid, "count",
-                                           components::catalog::well_known_oid::int64_type);
+    auto attoid1 = test_computed_register(fx, table_oid, "count", components::catalog::well_known_oid::int64_type);
     REQUIRE(attoid1 >= FIRST_USER_OID);
 
     // Second register with same (name, type) → no-op.
-    auto attoid2 = test_computed_register(fx, table_oid, "count",
-                                           components::catalog::well_known_oid::int64_type);
+    auto attoid2 = test_computed_register(fx, table_oid, "count", components::catalog::well_known_oid::int64_type);
     REQUIRE(attoid2 == catalog::INVALID_OID);
 
     // Single column visible at version 0, refcount=1.
@@ -166,13 +166,11 @@ TEST_CASE("services::disk::ddl::computed_register_same_type_idempotent") {
     std::pmr::vector<components::types::logical_value_t> v1{&fx.resource};
     v1.emplace_back(toid_lv);
     v1.emplace_back(name_lv);
-    auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc,
-                          std::move(k1), std::move(v1));
+    auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc, std::move(k1), std::move(v1));
     REQUIRE(rows.size() == 1);
     REQUIRE(rows[0][6].value<std::int64_t>() == 1);
 
-    auto rs = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid,
-                         std::string("agg"), std::uint64_t{0});
+    auto rs = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("agg"), std::uint64_t{0});
     REQUIRE(rs.found);
     REQUIRE(rs.columns.size() == 1);
 }
@@ -184,17 +182,17 @@ TEST_CASE("services::disk::ddl::computed_register_same_type_idempotent") {
 TEST_CASE("services::disk::ddl::computed_unregister_then_resolve_hides_column") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "nshide");
-    auto table_oid = test_create_table(fx, ns_oid, "agg",
-                                        std::vector<components::table::column_definition_t>{},
-                                        catalog::relkind::computed);
+    auto table_oid = test_create_table(fx,
+                                       ns_oid,
+                                       "agg",
+                                       std::vector<components::table::column_definition_t>{},
+                                       catalog::relkind::computed);
 
-    auto attoid = test_computed_register(fx, table_oid, "count",
-                                          components::catalog::well_known_oid::int64_type);
+    auto attoid = test_computed_register(fx, table_oid, "count", components::catalog::well_known_oid::int64_type);
     REQUIRE(attoid >= FIRST_USER_OID);
 
     // Confirm column visible before unregister.
-    auto rs_before = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid,
-                                std::string("agg"), std::uint64_t{0});
+    auto rs_before = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("agg"), std::uint64_t{0});
     REQUIRE(rs_before.found);
     REQUIRE(rs_before.columns.size() == 1);
     REQUIRE(rs_before.columns[0].attname == "count");
@@ -203,8 +201,7 @@ TEST_CASE("services::disk::ddl::computed_unregister_then_resolve_hides_column") 
     REQUIRE(test_computed_unregister(fx, table_oid, "count"));
 
     // Column hidden from resolve_table.
-    auto rs_after = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid,
-                               std::string("agg"), std::uint64_t{0});
+    auto rs_after = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("agg"), std::uint64_t{0});
     REQUIRE(rs_after.found);
     REQUIRE(rs_after.relkind == components::catalog::relkind::computed);
     REQUIRE(rs_after.columns.empty());
@@ -217,12 +214,13 @@ TEST_CASE("services::disk::ddl::computed_unregister_then_resolve_hides_column") 
 TEST_CASE("services::disk::ddl::computed_unregister_marks_dead") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "nstomb");
-    auto table_oid = test_create_table(fx, ns_oid, "agg",
-                                        std::vector<components::table::column_definition_t>{},
-                                        catalog::relkind::computed);
+    auto table_oid = test_create_table(fx,
+                                       ns_oid,
+                                       "agg",
+                                       std::vector<components::table::column_definition_t>{},
+                                       catalog::relkind::computed);
 
-    auto attoid = test_computed_register(fx, table_oid, "count",
-                                          components::catalog::well_known_oid::int64_type);
+    auto attoid = test_computed_register(fx, table_oid, "count", components::catalog::well_known_oid::int64_type);
     REQUIRE(attoid >= FIRST_USER_OID);
     REQUIRE(test_computed_unregister(fx, table_oid, "count"));
 
@@ -236,20 +234,25 @@ TEST_CASE("services::disk::ddl::computed_unregister_marks_dead") {
     std::pmr::vector<components::types::logical_value_t> v2{&fx.resource};
     v2.emplace_back(toid_lv);
     v2.emplace_back(name_lv);
-    auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc,
-                          std::move(k2), std::move(v2));
+    auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc, std::move(k2), std::move(v2));
     REQUIRE(rows.size() == 2);
 
     bool found_live = false;
     bool found_tomb = false;
-    std::int64_t live_v  = -1;
-    std::int64_t tomb_v  = -1;
+    std::int64_t live_v = -1;
+    std::int64_t tomb_v = -1;
     for (const auto& row : rows) {
         REQUIRE(row.size() >= 7);
-        const auto v  = row[5].value<std::int64_t>();
+        const auto v = row[5].value<std::int64_t>();
         const auto rc = row[6].value<std::int64_t>();
-        if (rc > 0) { found_live = true; live_v  = v; }
-        if (rc == 0) { found_tomb = true; tomb_v  = v; }
+        if (rc > 0) {
+            found_live = true;
+            live_v = v;
+        }
+        if (rc == 0) {
+            found_tomb = true;
+            tomb_v = v;
+        }
     }
     REQUIRE(found_live);
     REQUIRE(found_tomb);
@@ -281,15 +284,15 @@ TEST_CASE("services::disk::ddl::computed_unregister_marks_dead") {
 TEST_CASE("services::disk::ddl::computed_field_drop_then_readd") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "nsreadd");
-    auto table_oid = test_create_table(fx, ns_oid, "foo",
-                                        std::vector<components::table::column_definition_t>{},
-                                        catalog::relkind::computed);
+    auto table_oid = test_create_table(fx,
+                                       ns_oid,
+                                       "foo",
+                                       std::vector<components::table::column_definition_t>{},
+                                       catalog::relkind::computed);
 
     // 1) Register a (BIGINT) and b (STRING).
-    auto attoid_a = test_computed_register(fx, table_oid, "a",
-                                            components::catalog::well_known_oid::int64_type);
-    auto attoid_b = test_computed_register(fx, table_oid, "b",
-                                            components::catalog::well_known_oid::string_type);
+    auto attoid_a = test_computed_register(fx, table_oid, "a", components::catalog::well_known_oid::int64_type);
+    auto attoid_b = test_computed_register(fx, table_oid, "b", components::catalog::well_known_oid::string_type);
     REQUIRE(attoid_a >= FIRST_USER_OID);
     REQUIRE(attoid_b >= FIRST_USER_OID);
 
@@ -299,8 +302,7 @@ TEST_CASE("services::disk::ddl::computed_field_drop_then_readd") {
     // 3) Re-register b with the SAME atttypid (STRING). By the same-type rule
     //    in operator_computed_field_register_t this is a no-op: the helper
     //    returns INVALID_OID and pg_computed_column gains no new row.
-    auto attoid_b2 = test_computed_register(fx, table_oid, "b",
-                                             components::catalog::well_known_oid::string_type);
+    auto attoid_b2 = test_computed_register(fx, table_oid, "b", components::catalog::well_known_oid::string_type);
 
     constexpr catalog::oid_t pg_cc = catalog::well_known_oid::pg_computed_column_table;
     components::types::logical_value_t toid_lv(&fx.resource, table_oid);
@@ -308,8 +310,7 @@ TEST_CASE("services::disk::ddl::computed_field_drop_then_readd") {
     k3.emplace_back("relid");
     std::pmr::vector<components::types::logical_value_t> v3{&fx.resource};
     v3.emplace_back(toid_lv);
-    auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc,
-                          std::move(k3), std::move(v3));
+    auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc, std::move(k3), std::move(v3));
 
     // Branch on observed register-side behavior so the test stays useful even
     // if the operator's same-type policy is later relaxed (e.g. to revive
@@ -330,7 +331,7 @@ TEST_CASE("services::disk::ddl::computed_field_drop_then_readd") {
         for (const auto& row : rows) {
             REQUIRE(row.size() >= 7);
             const auto attname = std::string(row[2].value<std::string_view>());
-            const auto v  = row[5].value<std::int64_t>();
+            const auto v = row[5].value<std::int64_t>();
             const auto rc = row[6].value<std::int64_t>();
             if (attname == "a") {
                 ++rows_a;
@@ -365,8 +366,7 @@ TEST_CASE("services::disk::ddl::computed_field_drop_then_readd") {
     }
 
     // resolve_table reflects the resolver's refcount>0 + max-attversion gate.
-    auto rs = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid,
-                         std::string("foo"), std::uint64_t{0});
+    auto rs = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("foo"), std::uint64_t{0});
     REQUIRE(rs.found);
     REQUIRE(rs.relkind == components::catalog::relkind::computed);
 
@@ -380,7 +380,8 @@ TEST_CASE("services::disk::ddl::computed_field_drop_then_readd") {
         bool has_a = false;
         bool has_b = false;
         for (const auto& c : rs.columns) {
-            if (c.attname == "a") has_a = true;
+            if (c.attname == "a")
+                has_a = true;
             if (c.attname == "b") {
                 has_b = true;
                 REQUIRE(c.atttypid == components::catalog::well_known_oid::string_type);
@@ -411,17 +412,16 @@ TEST_CASE("services::disk::ddl::computed_field_drop_then_readd") {
 TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "nsvac");
-    auto table_oid = test_create_table(fx, ns_oid, "agg",
-                                        std::vector<components::table::column_definition_t>{},
-                                        catalog::relkind::computed);
+    auto table_oid = test_create_table(fx,
+                                       ns_oid,
+                                       "agg",
+                                       std::vector<components::table::column_definition_t>{},
+                                       catalog::relkind::computed);
 
     // Register 3 columns.
-    auto attoid_a = test_computed_register(fx, table_oid, "a",
-                                            components::catalog::well_known_oid::int64_type);
-    auto attoid_b = test_computed_register(fx, table_oid, "b",
-                                            components::catalog::well_known_oid::string_type);
-    auto attoid_c = test_computed_register(fx, table_oid, "c",
-                                            components::catalog::well_known_oid::float64_type);
+    auto attoid_a = test_computed_register(fx, table_oid, "a", components::catalog::well_known_oid::int64_type);
+    auto attoid_b = test_computed_register(fx, table_oid, "b", components::catalog::well_known_oid::string_type);
+    auto attoid_c = test_computed_register(fx, table_oid, "c", components::catalog::well_known_oid::float64_type);
     REQUIRE(attoid_a >= FIRST_USER_OID);
     REQUIRE(attoid_b >= FIRST_USER_OID);
     REQUIRE(attoid_c >= FIRST_USER_OID);
@@ -438,8 +438,7 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
         kk.emplace_back("relid");
         std::pmr::vector<components::types::logical_value_t> vv{&fx.resource};
         vv.emplace_back(toid_lv);
-        auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc,
-                              std::move(kk), std::move(vv));
+        auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc, std::move(kk), std::move(vv));
         REQUIRE(rows.size() == 4);
     }
 
@@ -453,8 +452,7 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
         kk.emplace_back("relid");
         std::pmr::vector<components::types::logical_value_t> vv{&fx.resource};
         vv.emplace_back(toid_lv);
-        auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc,
-                              std::move(kk), std::move(vv));
+        auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc, std::move(kk), std::move(vv));
         std::vector<catalog::oid_t> dead_attoids;
         for (const auto& row : rows) {
             REQUIRE(row.size() >= 7);
@@ -467,12 +465,10 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
         REQUIRE(dead_attoids[0] == attoid_b);
 
         for (const auto attoid : dead_attoids) {
-            fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_cc,
-                       std::int64_t{1}, attoid);
+            fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_cc, std::int64_t{1}, attoid);
         }
         std::set<catalog::oid_t> deletes_local{pg_cc};
-        fx.invoke(&manager_disk_t::storage_commit_deletes, txn_ctx(),
-                   std::uint64_t{1000}, std::move(deletes_local));
+        fx.invoke(&manager_disk_t::storage_commit_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
     }
 
     // Post-VACUUM: 2 rows left (a, c). b's live row was wiped together with
@@ -483,8 +479,7 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
         kk.emplace_back("relid");
         std::pmr::vector<components::types::logical_value_t> vv{&fx.resource};
         vv.emplace_back(toid_lv);
-        auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc,
-                              std::move(kk), std::move(vv));
+        auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc, std::move(kk), std::move(vv));
         REQUIRE(rows.size() == 2);
         std::vector<std::string> names;
         for (const auto& row : rows) {
@@ -495,8 +490,7 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
     }
 
     // resolve_table sees only {a, c}.
-    auto rs = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid,
-                         std::string("agg"), std::uint64_t{0});
+    auto rs = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("agg"), std::uint64_t{0});
     REQUIRE(rs.found);
     REQUIRE(rs.relkind == components::catalog::relkind::computed);
     REQUIRE(rs.columns.size() == 2);
@@ -519,22 +513,20 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
 
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "nscompact");
-    auto table_oid = test_create_table(fx, ns_oid, "agg",
-                                        std::vector<components::table::column_definition_t>{},
-                                        catalog::relkind::computed);
+    auto table_oid = test_create_table(fx,
+                                       ns_oid,
+                                       "agg",
+                                       std::vector<components::table::column_definition_t>{},
+                                       catalog::relkind::computed);
     REQUIRE(table_oid >= FIRST_USER_OID);
 
     // Storage entry must exist for storage_append / compact to operate on.
-    fx.invoke(&manager_disk_t::create_storage, session_id_t{}, table_oid,
-              catalog::well_known_oid::main_database);
+    fx.invoke(&manager_disk_t::create_storage, session_id_t{}, table_oid, catalog::well_known_oid::main_database);
 
     // Register columns a/b/c in pg_computed_column.
-    auto attoid_a = test_computed_register(fx, table_oid, "a",
-                                            components::catalog::well_known_oid::int64_type);
-    auto attoid_b = test_computed_register(fx, table_oid, "b",
-                                            components::catalog::well_known_oid::int64_type);
-    auto attoid_c = test_computed_register(fx, table_oid, "c",
-                                            components::catalog::well_known_oid::int64_type);
+    auto attoid_a = test_computed_register(fx, table_oid, "a", components::catalog::well_known_oid::int64_type);
+    auto attoid_b = test_computed_register(fx, table_oid, "b", components::catalog::well_known_oid::int64_type);
+    auto attoid_c = test_computed_register(fx, table_oid, "c", components::catalog::well_known_oid::int64_type);
     REQUIRE(attoid_a >= FIRST_USER_OID);
     REQUIRE(attoid_b >= FIRST_USER_OID);
     REQUIRE(attoid_c >= FIRST_USER_OID);
@@ -554,8 +546,8 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
         chunk->set_value(1, 0, logical_value_t(&fx.resource, std::int64_t{2}));
         chunk->set_value(2, 0, logical_value_t(&fx.resource, std::int64_t{3}));
         components::execution_context_t append_ctx{session_id_t{},
-                                                    components::table::transaction_data{0, 0},
-                                                    table_oid};
+                                                   components::table::transaction_data{0, 0},
+                                                   table_oid};
         fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, std::move(chunk));
     }
 
@@ -574,8 +566,7 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
         kk.emplace_back("relid");
         std::pmr::vector<logical_value_t> vv{&fx.resource};
         vv.emplace_back(toid_lv);
-        auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc,
-                              std::move(kk), std::move(vv));
+        auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc, std::move(kk), std::move(vv));
         std::vector<catalog::oid_t> dead_attoids;
         for (const auto& row : rows) {
             if (row[6].value<std::int64_t>() <= 0) {
@@ -583,20 +574,17 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
             }
         }
         for (const auto attoid : dead_attoids) {
-            fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_cc,
-                       std::int64_t{1}, attoid);
+            fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_cc, std::int64_t{1}, attoid);
         }
         std::set<catalog::oid_t> deletes_local{pg_cc};
-        fx.invoke(&manager_disk_t::storage_commit_deletes, txn_ctx(),
-                   std::uint64_t{1000}, std::move(deletes_local));
+        fx.invoke(&manager_disk_t::storage_commit_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
     }
 
     // Now run step 5b: compact_relkind_g_storage with live = {a, c}. Storage
     // must drop column "b" physically.
     {
         std::set<std::string> live{"a", "c"};
-        auto dropped = fx.invoke(&manager_disk_t::compact_relkind_g_storage,
-                                  fx.ctx(), table_oid, std::move(live));
+        auto dropped = fx.invoke(&manager_disk_t::compact_relkind_g_storage, fx.ctx(), table_oid, std::move(live));
         REQUIRE(dropped == 1);
     }
 
@@ -609,16 +597,14 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
     // Calling compact_* again with the same live set is a no-op.
     {
         std::set<std::string> live{"a", "c"};
-        auto dropped = fx.invoke(&manager_disk_t::compact_relkind_g_storage,
-                                  fx.ctx(), table_oid, std::move(live));
+        auto dropped = fx.invoke(&manager_disk_t::compact_relkind_g_storage, fx.ctx(), table_oid, std::move(live));
         REQUIRE(dropped == 0);
     }
 
     // Empty live set drops everything.
     {
         std::set<std::string> live{};
-        auto dropped = fx.invoke(&manager_disk_t::compact_relkind_g_storage,
-                                  fx.ctx(), table_oid, std::move(live));
+        auto dropped = fx.invoke(&manager_disk_t::compact_relkind_g_storage, fx.ctx(), table_oid, std::move(live));
         REQUIRE(dropped == 2);
     }
     {
@@ -631,8 +617,7 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
         // A never-allocated user oid: definitely not in storages_.
         const catalog::oid_t missing_oid{FIRST_USER_OID + 9999};
         std::set<std::string> live{};
-        auto dropped = fx.invoke(&manager_disk_t::compact_relkind_g_storage,
-                                  fx.ctx(), missing_oid, std::move(live));
+        auto dropped = fx.invoke(&manager_disk_t::compact_relkind_g_storage, fx.ctx(), missing_oid, std::move(live));
         REQUIRE(dropped == 0);
     }
 }
@@ -676,17 +661,18 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
 
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "nsdyn");
-    auto table_oid = test_create_table(fx, ns_oid, "docs",
-                                        std::vector<components::table::column_definition_t>{},
-                                        catalog::relkind::computed);
+    auto table_oid = test_create_table(fx,
+                                       ns_oid,
+                                       "docs",
+                                       std::vector<components::table::column_definition_t>{},
+                                       catalog::relkind::computed);
     REQUIRE(table_oid >= FIRST_USER_OID);
 
     // The user-table storage is not allocated by test_create_table (which only
     // writes catalog rows). storage_append needs a storage entry to operate on,
     // so create one explicitly (schema-less, mirroring the runtime path that
     // create_collection takes for fresh tables).
-    fx.invoke(&manager_disk_t::create_storage, session_id_t{}, table_oid,
-              catalog::well_known_oid::main_database);
+    fx.invoke(&manager_disk_t::create_storage, session_id_t{}, table_oid, catalog::well_known_oid::main_database);
 
     auto append_ctx = [&](catalog::oid_t toid) {
         return components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, toid};
@@ -707,20 +693,17 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
     };
 
     // Step 1: register column "a" then storage_append a row with just "a".
-    auto attoid_a = test_computed_register(fx, table_oid, "a",
-                                            components::catalog::well_known_oid::int64_type);
+    auto attoid_a = test_computed_register(fx, table_oid, "a", components::catalog::well_known_oid::int64_type);
     REQUIRE(attoid_a >= FIRST_USER_OID);
     {
         auto chunk = build_chunk(
             {{"a", complex_logical_type{logical_type::BIGINT}}},
-            [&](data_chunk_t& c) {
-                c.set_value(0, 0, logical_value_t(&fx.resource, std::int64_t{1}));
-            },
+            [&](data_chunk_t& c) { c.set_value(0, 0, logical_value_t(&fx.resource, std::int64_t{1})); },
             /*rows=*/1);
-        auto [start, count] = fx.invoke(&manager_disk_t::storage_append, append_ctx(table_oid),
-                                         table_oid, std::move(chunk));
+        auto [start, count] =
+            fx.invoke(&manager_disk_t::storage_append, append_ctx(table_oid), table_oid, std::move(chunk));
         REQUIRE(count == 1);
-        (void)start;
+        (void) start;
     }
 
     // Step 2: register column "b" and storage_append a row with both "a" and "b".
@@ -729,8 +712,7 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
     // appended (adopt_schema is one-shot). The "b" column in the incoming chunk
     // is silently dropped by manager_disk_storage.cpp:316 (only iterates over
     // table_columns). storage_total_rows grows to 2, but column count stays 1.
-    auto attoid_b = test_computed_register(fx, table_oid, "b",
-                                            components::catalog::well_known_oid::string_type);
+    auto attoid_b = test_computed_register(fx, table_oid, "b", components::catalog::well_known_oid::string_type);
     REQUIRE(attoid_b >= FIRST_USER_OID);
     {
         auto chunk = build_chunk(
@@ -751,16 +733,18 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
         // (zero-initialized) values for the new column.
         auto types = fx.invoke(&manager_disk_t::storage_types, session_id_t{}, table_oid);
         REQUIRE(types.size() == 2);
-        auto rows = fx.invoke(&manager_disk_t::storage_scan, session_id_t{}, table_oid,
-                               std::unique_ptr<components::table::table_filter_t>{}, /*limit=*/-1,
-                               components::table::transaction_data{0, 0});
+        auto rows = fx.invoke(&manager_disk_t::storage_scan,
+                              session_id_t{},
+                              table_oid,
+                              std::unique_ptr<components::table::table_filter_t>{},
+                              /*limit=*/-1,
+                              components::table::transaction_data{0, 0});
         REQUIRE(rows);
         REQUIRE(rows->size() == 2);
     }
 
     // Step 3: register "c" and storage_append a row with all three columns.
-    auto attoid_c = test_computed_register(fx, table_oid, "c",
-                                            components::catalog::well_known_oid::float64_type);
+    auto attoid_c = test_computed_register(fx, table_oid, "c", components::catalog::well_known_oid::float64_type);
     REQUIRE(attoid_c >= FIRST_USER_OID);
     {
         auto chunk = build_chunk(
@@ -779,9 +763,12 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
     {
         auto types = fx.invoke(&manager_disk_t::storage_types, session_id_t{}, table_oid);
         REQUIRE(types.size() == 3);
-        auto rows = fx.invoke(&manager_disk_t::storage_scan, session_id_t{}, table_oid,
-                               std::unique_ptr<components::table::table_filter_t>{}, /*limit=*/-1,
-                               components::table::transaction_data{0, 0});
+        auto rows = fx.invoke(&manager_disk_t::storage_scan,
+                              session_id_t{},
+                              table_oid,
+                              std::unique_ptr<components::table::table_filter_t>{},
+                              /*limit=*/-1,
+                              components::table::transaction_data{0, 0});
         REQUIRE(rows);
         REQUIRE(rows->size() == 3);
     }
@@ -790,8 +777,7 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
     // pg_computed_column, which DOES grow correctly across the three
     // test_computed_register calls. This is the path the runtime relies on
     // for dynamic-schema growth — independent of what storage_append does.
-    auto rs = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid,
-                         std::string("docs"), std::uint64_t{0});
+    auto rs = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("docs"), std::uint64_t{0});
     REQUIRE(rs.found);
     REQUIRE(rs.relkind == components::catalog::relkind::computed);
     REQUIRE(rs.columns.size() == 3);
@@ -804,12 +790,13 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
 TEST_CASE("services::disk::ddl::computing_table_pg_attribute_empty") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "nscempty");
-    auto table_oid = test_create_table(fx, ns_oid, "agg",
-                                        std::vector<components::table::column_definition_t>{},
-                                        catalog::relkind::computed);
+    auto table_oid = test_create_table(fx,
+                                       ns_oid,
+                                       "agg",
+                                       std::vector<components::table::column_definition_t>{},
+                                       catalog::relkind::computed);
     REQUIRE(table_oid >= FIRST_USER_OID);
-    auto rr = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid,
-                         std::string("agg"), std::uint64_t{0});
+    auto rr = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("agg"), std::uint64_t{0});
     REQUIRE(rr.found);
     REQUIRE(rr.relkind == components::catalog::relkind::computed);
     REQUIRE(rr.columns.empty());
@@ -817,10 +804,8 @@ TEST_CASE("services::disk::ddl::computing_table_pg_attribute_empty") {
     // After a primitive pg_computed_column write the field lives in pg_computed_column.
     // V4 resolve_table for relkind='g' tables fills `columns` from pg_computed_column
     // (latest non-zero refcount per attname).
-    test_computed_append_simple(fx, table_oid, "count",
-                                 components::catalog::well_known_oid::int64_type);
-    auto rr2 = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid,
-                          std::string("agg"), std::uint64_t{0});
+    test_computed_append_simple(fx, table_oid, "count", components::catalog::well_known_oid::int64_type);
+    auto rr2 = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("agg"), std::uint64_t{0});
     REQUIRE(rr2.found);
     REQUIRE(rr2.relkind == components::catalog::relkind::computed);
     REQUIRE(rr2.columns.size() == 1);

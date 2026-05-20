@@ -46,9 +46,8 @@ namespace otterbrix {
         if (!config.disk.path.empty()) {
             const auto legacy_catalog_otbx = config.disk.path / "catalog.otbx";
             if (std::filesystem::exists(legacy_catalog_otbx)) {
-                throw std::runtime_error(
-                    "Legacy catalog format detected at " + legacy_catalog_otbx.string() +
-                    ". Remove the file and restart — pg_catalog is the source of truth.");
+                throw std::runtime_error("Legacy catalog format detected at " + legacy_catalog_otbx.string() +
+                                         ". Remove the file and restart — pg_catalog is the source of truth.");
             }
         }
 
@@ -108,9 +107,7 @@ namespace otterbrix {
 
         // When WAL is disabled, pass empty_address so all wal_address_ != empty()
         // guards in dispatcher and disk manager skip every WAL round-trip at no cost.
-        auto effective_wal_address = config.wal.on
-                                         ? manager_wal_address
-                                         : actor_zeta::address_t::empty_address();
+        auto effective_wal_address = config.wal.on ? manager_wal_address : actor_zeta::address_t::empty_address();
 
         manager_dispatcher_->sync(std::make_tuple(effective_wal_address, manager_disk_address, manager_index_address));
 
@@ -148,12 +145,9 @@ namespace otterbrix {
         //
         // WAL records carry table_oid directly — no cfn-resolve roundtrip.
         if (disk_ptr && !wal_records.empty()) {
-            std::unordered_map<components::catalog::oid_t, std::vector<services::wal::record_t*>>
-                system_by_oid;
-            std::unordered_map<components::catalog::oid_t, std::vector<services::wal::record_t*>>
-                user_by_oid;
-            constexpr components::catalog::oid_t main_db_oid =
-                components::catalog::well_known_oid::main_database;
+            std::unordered_map<components::catalog::oid_t, std::vector<services::wal::record_t*>> system_by_oid;
+            std::unordered_map<components::catalog::oid_t, std::vector<services::wal::record_t*>> user_by_oid;
+            constexpr components::catalog::oid_t main_db_oid = components::catalog::well_known_oid::main_database;
             // .otbx + sidecar are authoritative for *all* checkpointed
             // tables (system and user alike). Records at or before
             // sidecar.wal_id are already absorbed into the loaded storage;
@@ -186,9 +180,8 @@ namespace otterbrix {
             }
 
             auto replay_one = [disk_ptr](components::catalog::oid_t table_oid,
-                                          std::vector<services::wal::record_t*>& records) {
-                constexpr components::catalog::oid_t main_db_oid =
-                    components::catalog::well_known_oid::main_database;
+                                         std::vector<services::wal::record_t*>& records) {
+                constexpr components::catalog::oid_t main_db_oid = components::catalog::well_known_oid::main_database;
                 for (auto* r : records) {
                     switch (r->record_type) {
                         case services::wal::wal_record_type::PHYSICAL_INSERT:
@@ -203,12 +196,11 @@ namespace otterbrix {
                                         std::vector<components::table::column_definition_t> cols;
                                         cols.reserve(types.size());
                                         for (const auto& t : types) {
-                                            cols.emplace_back(
-                                                t.has_alias() ? t.alias() : std::string{},
-                                                t);
+                                            cols.emplace_back(t.has_alias() ? t.alias() : std::string{}, t);
                                         }
-                                        disk_ptr->create_storage_with_columns_sync(table_oid, main_db_oid,
-                                                                                    std::move(cols));
+                                        disk_ptr->create_storage_with_columns_sync(table_oid,
+                                                                                   main_db_oid,
+                                                                                   std::move(cols));
                                     }
                                 }
                                 disk_ptr->direct_append_sync(table_oid, *r->physical_data);
@@ -267,7 +259,7 @@ namespace otterbrix {
 
             uint64_t physical_count = 0;
             for (auto& [oid, records] : system_by_oid) physical_count += records.size();
-            for (auto& [oid, records] : user_by_oid)   physical_count += records.size();
+            for (auto& [oid, records] : user_by_oid) physical_count += records.size();
             if (physical_count > 0) {
                 trace(log_,
                       "spaces::replayed {} physical WAL records across {} tables",
@@ -288,7 +280,7 @@ namespace otterbrix {
 
         // NOT NULL overlays are recorded in pg_attribute (attnotnull) and applied
         // lazily by resolve_table when the storage is first loaded.
-        (void)disk_ptr;
+        (void) disk_ptr;
 
         if (!wal_records.empty()) {
             trace(log_, "spaces::PHASE 3 - Skipping {} indexes (WAL replay handled them)", index_definitions.size());

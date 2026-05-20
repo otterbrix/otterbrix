@@ -11,8 +11,8 @@
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
-#include <services/wal/wal_reader.hpp>
 #include <services/wal/record.hpp>
+#include <services/wal/wal_reader.hpp>
 
 #include "disk_test_helpers.hpp"
 
@@ -96,18 +96,30 @@ namespace {
     namespace wk = components::catalog::well_known_oid;
 
     components::catalog::oid_t pg_catalog_oid_for(const std::string& collection) {
-        if (collection == "pg_namespace")        return wk::pg_namespace_table;
-        if (collection == "pg_class")            return wk::pg_class_table;
-        if (collection == "pg_attribute")        return wk::pg_attribute_table;
-        if (collection == "pg_type")             return wk::pg_type_table;
-        if (collection == "pg_proc")             return wk::pg_proc_table;
-        if (collection == "pg_depend")           return wk::pg_depend_table;
-        if (collection == "pg_constraint")       return wk::pg_constraint_table;
-        if (collection == "pg_index")            return wk::pg_index_table;
-        if (collection == "pg_computed_column")  return wk::pg_computed_column_table;
-        if (collection == "pg_database")         return wk::pg_database_table;
-        if (collection == "pg_sequence")         return wk::pg_sequence_table;
-        if (collection == "pg_rewrite")          return wk::pg_rewrite_table;
+        if (collection == "pg_namespace")
+            return wk::pg_namespace_table;
+        if (collection == "pg_class")
+            return wk::pg_class_table;
+        if (collection == "pg_attribute")
+            return wk::pg_attribute_table;
+        if (collection == "pg_type")
+            return wk::pg_type_table;
+        if (collection == "pg_proc")
+            return wk::pg_proc_table;
+        if (collection == "pg_depend")
+            return wk::pg_depend_table;
+        if (collection == "pg_constraint")
+            return wk::pg_constraint_table;
+        if (collection == "pg_index")
+            return wk::pg_index_table;
+        if (collection == "pg_computed_column")
+            return wk::pg_computed_column_table;
+        if (collection == "pg_database")
+            return wk::pg_database_table;
+        if (collection == "pg_sequence")
+            return wk::pg_sequence_table;
+        if (collection == "pg_rewrite")
+            return wk::pg_rewrite_table;
         return components::catalog::INVALID_OID;
     }
 
@@ -120,8 +132,7 @@ namespace {
         auto records = reader.read_committed_records(services::wal::id_t{0});
         std::size_t n = 0;
         for (auto& r : records) {
-            if (r.is_physical() &&
-                r.table_oid != components::catalog::INVALID_OID &&
+            if (r.is_physical() && r.table_oid != components::catalog::INVALID_OID &&
                 r.table_oid < components::catalog::FIRST_USER_OID)
                 ++n;
         }
@@ -152,7 +163,7 @@ TEST_CASE("services::disk::wal_catalog::bootstrap_alone_no_wal") {
     cleanup_dir(dir);
     {
         fixture fx(dir);
-        (void)fx;
+        (void) fx;
     }
     // No ddl_* invoked → no WAL records expected.
     REQUIRE(pg_catalog_physical_count(dir) == 0);
@@ -186,7 +197,8 @@ TEST_CASE("services::disk::wal_catalog::create_table_writes_pg_class_and_pg_attr
         auto ns_oid = test_create_namespace(fx, "ns");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
-        cols.emplace_back("name", components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL});
+        cols.emplace_back("name",
+                          components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL});
         cols.emplace_back("count", components::types::complex_logical_type{components::types::logical_type::INTEGER});
         test_create_table(fx, ns_oid, "t", cols);
     }
@@ -354,7 +366,7 @@ TEST_CASE("services::disk::wal_catalog::record_count_grows_with_ddl") {
     std::size_t after_each[4] = {0, 0, 0, 0};
     {
         fixture fx(dir);
-        after_each[0] = pg_catalog_physical_count(dir);  // bootstrap baseline
+        after_each[0] = pg_catalog_physical_count(dir); // bootstrap baseline
         auto ns1_oid = test_create_namespace(fx, "ns1");
         after_each[1] = pg_catalog_physical_count(dir);
         std::vector<components::table::column_definition_t> cols;

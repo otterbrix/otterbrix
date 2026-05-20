@@ -83,17 +83,13 @@ namespace components::logical_plan {
 
     node_alter_table_ptr make_node_alter_table_drop_column(std::pmr::memory_resource* resource,
                                                            std::string column_name) {
-        return {new node_alter_table_t{resource,
-                                       alter_table_kind::drop_column,
-                                       std::move(column_name)}};
+        return {new node_alter_table_t{resource, alter_table_kind::drop_column, std::move(column_name)}};
     }
 
     node_alter_table_ptr make_node_alter_table_rename_column(std::pmr::memory_resource* resource,
                                                              std::string old_name,
                                                              std::string new_name) {
-        return {new node_alter_table_t{resource,
-                                       std::move(old_name),
-                                       std::move(new_name)}};
+        return {new node_alter_table_t{resource, std::move(old_name), std::move(new_name)}};
     }
 
     node_alter_table_ptr make_node_alter_table_multi(std::pmr::memory_resource* resource,

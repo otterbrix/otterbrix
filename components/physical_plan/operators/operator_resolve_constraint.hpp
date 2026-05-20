@@ -33,8 +33,8 @@ namespace components::operators {
     class operator_resolve_constraint_t final : public read_write_operator_t {
     public:
         operator_resolve_constraint_t(std::pmr::memory_resource* resource,
-                                       log_t log,
-                                       components::logical_plan::node_catalog_resolve_constraint_t* target_node);
+                                      log_t log,
+                                      components::logical_plan::node_catalog_resolve_constraint_t* target_node);
 
     private:
         void on_execute_impl(pipeline::context_t* ctx) override;

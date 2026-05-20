@@ -67,8 +67,8 @@ namespace components::operators {
                 continue;
             }
             vector::data_chunk_t out_chunk = sparse
-                ? vector::data_chunk_t(resource, types, populated_cols, chunk.size())
-                : vector::data_chunk_t(resource, types, chunk.size());
+                                                 ? vector::data_chunk_t(resource, types, populated_cols, chunk.size())
+                                                 : vector::data_chunk_t(resource, types, chunk.size());
             vector::indexing_vector_t all_indices(nullptr, nullptr);
             auto results = predicate->batch_check(chunk, chunk, all_indices, all_indices, chunk.size());
             if (results.has_error()) {

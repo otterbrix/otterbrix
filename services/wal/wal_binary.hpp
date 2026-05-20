@@ -52,10 +52,7 @@ namespace services::wal {
                           const components::vector::data_chunk_t& new_data,
                           uint64_t count);
 
-    crc32_t encode_commit(buffer_t& buffer,
-                          crc32_t last_crc32,
-                          id_t wal_id,
-                          uint64_t txn_id);
+    crc32_t encode_commit(buffer_t& buffer, crc32_t last_crc32, id_t wal_id, uint64_t txn_id);
 
     // -----------------------------------------------------------------------
     // Decode

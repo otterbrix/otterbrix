@@ -172,5 +172,5 @@ TEST_CASE("catalog::type_spec::unknown_prefix_no_crash") {
     // Garbage input must not crash. The msgpack fallback may return any type for
     // accidentally-valid msgpack bytes — we only verify no exception is thrown.
     auto t = decode_type_spec(g_resource, "garbage_that_is_not_msgpack");
-    (void)t; // result type is implementation-defined for garbage input
+    (void) t; // result type is implementation-defined for garbage input
 }

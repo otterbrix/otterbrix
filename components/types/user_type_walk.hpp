@@ -14,9 +14,8 @@ namespace components::types {
     // not recursed (see commented note inside the impl for the memory
     // safety reason — child_types() does an unchecked cast on primitives).
     inline void walk_user_type_refs(const complex_logical_type& type,
-                                     const std::function<void(std::string_view)>& visit) {
-        if (type.type() == logical_type::STRUCT ||
-            type.type() == logical_type::ENUM ||
+                                    const std::function<void(std::string_view)>& visit) {
+        if (type.type() == logical_type::STRUCT || type.type() == logical_type::ENUM ||
             type.type() == logical_type::UNKNOWN) {
             auto name = type.type_name();
             if (!name.empty()) {

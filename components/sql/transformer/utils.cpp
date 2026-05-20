@@ -297,10 +297,10 @@ namespace components::sql::transform {
     }
 
     template<typename Container>
-    void fill_with_types(Container& container, PGList& list) {
-    }
+    void fill_with_types(Container& container, PGList& list) {}
 
-    core::result_wrapper_t<std::pmr::vector<types::complex_logical_type>> get_types(std::pmr::memory_resource* resource, PGList& list) {
+    core::result_wrapper_t<std::pmr::vector<types::complex_logical_type>> get_types(std::pmr::memory_resource* resource,
+                                                                                    PGList& list) {
         std::pmr::vector<types::complex_logical_type> types(resource);
         types.reserve(list.lst.size());
         for (auto data : list.lst) {
@@ -394,7 +394,8 @@ namespace components::sql::transform {
         return types::logical_value_t::create_array(resource, fist_type, std::move(values));
     }
 
-    core::result_wrapper_t<types::logical_value_t> evaluate_const_a_expr(std::pmr::memory_resource* resource, A_Expr* node) {
+    core::result_wrapper_t<types::logical_value_t> evaluate_const_a_expr(std::pmr::memory_resource* resource,
+                                                                         A_Expr* node) {
         if (node->kind != AEXPR_OP) {
             return core::error_t(core::error_code_t::sql_parse_error,
                                  std::pmr::string{"Only AEXPR_OP supported in constant arithmetic", resource});
@@ -489,7 +490,8 @@ namespace components::sql::transform {
         return std::move(out);
     }
 
-    core::result_wrapper_t<std::vector<table::table_constraint_t>> extract_table_constraints(std::pmr::memory_resource* resource, PGList& table_elts) {
+    core::result_wrapper_t<std::vector<table::table_constraint_t>>
+    extract_table_constraints(std::pmr::memory_resource* resource, PGList& table_elts) {
         std::vector<table::table_constraint_t> result;
         for (auto data : table_elts.lst) {
             if (nodeTag(data.data) != T_Constraint) {
@@ -697,19 +699,21 @@ namespace components::sql::transform {
                 return std::move(arg.value()) + (nt->nulltesttype == IS_NULL ? " IS NULL" : " IS NOT NULL");
             }
             default:
-                return core::error_t(core::error_code_t::sql_parse_error,std::pmr::string{"CHECK constraint contains unsupported expression type " +
-                        node_tag_to_string(nodeTag(node)) +
-                        "; allowed: column references, constants, comparison/arithmetic operators, "
-                        "AND/OR/NOT, IS NULL/IS NOT NULL", resource});
+                return core::error_t(
+                    core::error_code_t::sql_parse_error,
+                    std::pmr::string{"CHECK constraint contains unsupported expression type " +
+                                         node_tag_to_string(nodeTag(node)) +
+                                         "; allowed: column references, constants, comparison/arithmetic operators, "
+                                         "AND/OR/NOT, IS NULL/IS NOT NULL",
+                                     resource});
         }
     }
 
-    logical_plan::node_ptr maybe_wrap_with_catalog_resolve_table(
-        std::pmr::memory_resource* resource,
-        const std::string& dbname,
-        const std::string& relname,
-        logical_plan::node_ptr main_node,
-        constraint_resolve_kind with_constraints) {
+    logical_plan::node_ptr maybe_wrap_with_catalog_resolve_table(std::pmr::memory_resource* resource,
+                                                                 const std::string& dbname,
+                                                                 const std::string& relname,
+                                                                 logical_plan::node_ptr main_node,
+                                                                 constraint_resolve_kind with_constraints) {
         if (!main_node) {
             return main_node;
         }
@@ -724,8 +728,9 @@ namespace components::sql::transform {
         }
         logical_plan::node_catalog_resolve_table_t* table_node_ptr = nullptr;
         if (!relname.empty()) {
-            auto table_node =
-                logical_plan::make_node_catalog_resolve_table(resource, core::dbname_t{dbname}, core::relname_t{relname});
+            auto table_node = logical_plan::make_node_catalog_resolve_table(resource,
+                                                                            core::dbname_t{dbname},
+                                                                            core::relname_t{relname});
             table_node_ptr = table_node.get();
             seq->append_child(std::move(table_node));
         }
@@ -733,17 +738,15 @@ namespace components::sql::transform {
             const auto dir = (with_constraints == constraint_resolve_kind::outgoing)
                                  ? logical_plan::node_catalog_resolve_constraint_t::direction_t::outgoing
                                  : logical_plan::node_catalog_resolve_constraint_t::direction_t::referencing;
-            seq->append_child(logical_plan::make_node_catalog_resolve_constraint(
-                resource, table_node_ptr, dir));
+            seq->append_child(logical_plan::make_node_catalog_resolve_constraint(resource, table_node_ptr, dir));
         }
         seq->append_child(std::move(main_node));
         return seq;
     }
 
-    logical_plan::node_ptr maybe_wrap_with_catalog_resolve_namespace(
-        std::pmr::memory_resource* resource,
-        const std::string& dbname,
-        logical_plan::node_ptr main_node) {
+    logical_plan::node_ptr maybe_wrap_with_catalog_resolve_namespace(std::pmr::memory_resource* resource,
+                                                                     const std::string& dbname,
+                                                                     logical_plan::node_ptr main_node) {
         if (!main_node) {
             return main_node;
         }
@@ -756,10 +759,10 @@ namespace components::sql::transform {
         return seq;
     }
 
-    logical_plan::node_ptr maybe_wrap_with_catalog_resolve_tables(
-        std::pmr::memory_resource* resource,
-        std::vector<std::pair<std::string, std::string>> targets,
-        logical_plan::node_ptr main_node) {
+    logical_plan::node_ptr
+    maybe_wrap_with_catalog_resolve_tables(std::pmr::memory_resource* resource,
+                                           std::vector<std::pair<std::string, std::string>> targets,
+                                           logical_plan::node_ptr main_node) {
         if (!main_node || targets.empty()) {
             return main_node;
         }
@@ -767,18 +770,25 @@ namespace components::sql::transform {
         // Dedupe dbname for namespace resolves; preserve table order.
         std::vector<std::string> seen_dbs;
         for (const auto& [db, rel] : targets) {
-            if (db.empty()) continue;
+            if (db.empty())
+                continue;
             bool already = false;
             for (const auto& s : seen_dbs) {
-                if (s == db) { already = true; break; }
+                if (s == db) {
+                    already = true;
+                    break;
+                }
             }
-            if (already) continue;
+            if (already)
+                continue;
             seen_dbs.push_back(db);
             seq->append_child(logical_plan::make_node_catalog_resolve_namespace(resource, core::dbname_t{db}));
         }
         for (auto& [db, rel] : targets) {
-            if (rel.empty()) continue;
-            seq->append_child(logical_plan::make_node_catalog_resolve_table(resource, core::dbname_t{db}, core::relname_t{rel}));
+            if (rel.empty())
+                continue;
+            seq->append_child(
+                logical_plan::make_node_catalog_resolve_table(resource, core::dbname_t{db}, core::relname_t{rel}));
         }
         seq->append_child(std::move(main_node));
         return seq;

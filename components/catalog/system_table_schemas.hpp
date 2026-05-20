@@ -81,10 +81,10 @@ namespace components::catalog {
     // databases get OIDs from oid_generator and are stored as additional rows in pg_database.
 
     struct system_table_def_t {
-        std::string_view name;             // e.g. "pg_class"
-        oid_t relation_oid;                // pg_class.oid for this relation itself
-        oid_t namespace_oid;               // always well_known_oid::pg_catalog_namespace
-        char relkind;                      // 'r' relation, 'i' index, etc.
+        std::string_view name; // e.g. "pg_class"
+        oid_t relation_oid;    // pg_class.oid for this relation itself
+        oid_t namespace_oid;   // always well_known_oid::pg_catalog_namespace
+        char relkind;          // 'r' relation, 'i' index, etc.
         std::vector<table::column_definition_t> columns;
     };
 
@@ -108,8 +108,7 @@ namespace components::catalog {
     // fields, enum entries, etc. across restart. `decode_type_spec` returns
     // logical_type::UNKNOWN on empty/malformed input — non-throwing best-effort.
     std::string encode_type_spec(const types::complex_logical_type& t);
-    types::complex_logical_type decode_type_spec(std::pmr::memory_resource* resource,
-                                                  std::string_view spec);
+    types::complex_logical_type decode_type_spec(std::pmr::memory_resource* resource, std::string_view spec);
 
     // Encode the per-arg `input_type` tagged matcher to a flat text format suitable
     // for pg_proc.proargmatchers. Format per arg: "e:N" exact, "n" numeric, "i" integer,
@@ -142,7 +141,7 @@ namespace components::catalog {
     // pg_attribute.attdefspec. Format: "type_name:value" for scalars, "NULL" for null.
     // Returns "" for complex types (ARRAY/STRUCT/LIST) — treated as no default on decode.
     std::string encode_default_spec(const types::logical_value_t& v);
-    std::optional<types::logical_value_t>
-        decode_default_spec(std::pmr::memory_resource* resource, const std::string& spec);
+    std::optional<types::logical_value_t> decode_default_spec(std::pmr::memory_resource* resource,
+                                                              const std::string& spec);
 
 } // namespace components::catalog

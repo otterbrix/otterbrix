@@ -32,6 +32,7 @@
 #include <components/logical_plan/node_create_macro.hpp>
 #include <components/logical_plan/node_create_sequence.hpp>
 #include <components/logical_plan/node_create_view.hpp>
+#include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_drop_collection.hpp>
 #include <components/logical_plan/node_drop_database.hpp>
@@ -42,7 +43,6 @@
 #include <components/logical_plan/node_drop_view.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_having.hpp>
-#include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_limit.hpp>
@@ -63,10 +63,9 @@ namespace services::dispatcher {
         // stamped by operator_resolve_*_t Pass 1). All catalog reads in
         // enrich flow through these.
         const components::logical_plan::resolved_table_metadata_t*
-        lookup_table_md_local(const enrich_resolve_idx_t* idx,
-                               std::string_view db,
-                               std::string_view rel) {
-            if (!idx) return nullptr;
+        lookup_table_md_local(const enrich_resolve_idx_t* idx, std::string_view db, std::string_view rel) {
+            if (!idx)
+                return nullptr;
             std::string key;
             key.reserve(db.size() + 1 + rel.size());
             key.append(db).push_back('|');
@@ -76,9 +75,9 @@ namespace services::dispatcher {
         }
 
         const components::logical_plan::resolved_table_metadata_t*
-        lookup_table_md_by_oid_local(const enrich_resolve_idx_t* idx,
-                                      components::catalog::oid_t oid) {
-            if (!idx) return nullptr;
+        lookup_table_md_by_oid_local(const enrich_resolve_idx_t* idx, components::catalog::oid_t oid) {
+            if (!idx)
+                return nullptr;
             auto it = idx->tbl_md_by_oid.find(oid);
             return it != idx->tbl_md_by_oid.end() ? it->second : nullptr;
         }
@@ -93,14 +92,15 @@ namespace services::dispatcher {
             }
         }
 
-        void enrich_insert_sync(components::logical_plan::node_insert_t* node,
-                                const enrich_resolve_idx_t* idx) {
+        void enrich_insert_sync(components::logical_plan::node_insert_t* node, const enrich_resolve_idx_t* idx) {
             // Insert node carries only its table_oid (stamped by
             // stamp_drop_oids_from_resolves from the sibling resolve_table);
             // look up table metadata by OID rather than (db, rel) strings.
-            if (node->table_oid() == components::catalog::INVALID_OID) return;
+            if (node->table_oid() == components::catalog::INVALID_OID)
+                return;
             const auto* md = lookup_table_md_by_oid_local(idx, node->table_oid());
-            if (!md) return;
+            if (!md)
+                return;
             std::vector<std::string> nn;
             fill_not_null(*md, nn, /*include_with_defaults=*/false);
             node->set_not_null_cols(std::move(nn));
@@ -115,11 +115,9 @@ namespace services::dispatcher {
             // with the 8-byte payload. Rebuild each column vector with the
             // table's declared type; cast_as on logical_value_t handles the
             // recursive STRUCT/ARRAY descent.
-            if (!node->children().empty() &&
-                node->children().front() &&
+            if (!node->children().empty() && node->children().front() &&
                 node->children().front()->type() == components::logical_plan::node_type::data_t) {
-                auto* dat = static_cast<components::logical_plan::node_data_t*>(
-                    node->children().front().get());
+                auto* dat = static_cast<components::logical_plan::node_data_t*>(node->children().front().get());
                 auto& chunk = dat->data_chunk();
                 const auto& kt = node->key_translation();
                 for (std::size_t ci = 0; ci < chunk.column_count(); ++ci) {
@@ -134,9 +132,13 @@ namespace services::dispatcher {
                     }
                     const components::types::complex_logical_type* target_type = nullptr;
                     for (const auto& tc : md->columns) {
-                        if (tc.attname == col_name) { target_type = &tc.type; break; }
+                        if (tc.attname == col_name) {
+                            target_type = &tc.type;
+                            break;
+                        }
                     }
-                    if (!target_type) continue;
+                    if (!target_type)
+                        continue;
                     // complex_logical_type::operator== only compares the top-
                     // level logical_type enum, so STRUCT-vs-STRUCT compares
                     // equal regardless of children. For composite types (where
@@ -145,18 +147,15 @@ namespace services::dispatcher {
                     // cast_as recurses into children. Scalars get the cheap
                     // identity check.
                     using LT = components::types::logical_type;
-                    const bool is_composite =
-                        col.type().type() == LT::STRUCT ||
-                        col.type().type() == LT::LIST ||
-                        col.type().type() == LT::ARRAY ||
-                        col.type().type() == LT::MAP;
-                    if (!is_composite && col.type() == *target_type) continue;
+                    const bool is_composite = col.type().type() == LT::STRUCT || col.type().type() == LT::LIST ||
+                                              col.type().type() == LT::ARRAY || col.type().type() == LT::MAP;
+                    if (!is_composite && col.type() == *target_type)
+                        continue;
                     // Build a fresh vector with the table's declared type and
                     // copy every row via cast_as. complex_logical_type::cast_as
                     // recurses STRUCT children, so nested ROW(int_literal,...)
                     // → STRUCT(INTEGER,...) is fully retyped.
-                    components::vector::vector_t replacement(
-                        col.resource(), *target_type, chunk.capacity());
+                    components::vector::vector_t replacement(col.resource(), *target_type, chunk.capacity());
                     const auto rows = chunk.size();
                     for (std::uint64_t row = 0; row < rows; ++row) {
                         auto v = col.value(row);
@@ -175,12 +174,13 @@ namespace services::dispatcher {
             }
         }
 
-        void enrich_update_sync(components::logical_plan::node_update_t* node,
-                                const enrich_resolve_idx_t* idx) {
+        void enrich_update_sync(components::logical_plan::node_update_t* node, const enrich_resolve_idx_t* idx) {
             // Lookup by table_oid stamped from the sibling resolve_table.
-            if (node->table_oid() == components::catalog::INVALID_OID) return;
+            if (node->table_oid() == components::catalog::INVALID_OID)
+                return;
             const auto* md = lookup_table_md_by_oid_local(idx, node->table_oid());
-            if (!md) return;
+            if (!md)
+                return;
             std::vector<std::string> nn;
             fill_not_null(*md, nn, /*include_with_defaults=*/true);
             node->set_not_null_cols(std::move(nn));
@@ -190,7 +190,7 @@ namespace services::dispatcher {
                                            const enrich_resolve_idx_t* /*idx*/) {
             // namespace_oid stamped by stamp_drop_oids_from_resolves from the
             // sibling catalog_resolve_namespace_t; no per-node work here.
-            (void)node;
+            (void) node;
         }
 
         // Walk the plan tree, harvest namespace_oid / table_oid stamped
@@ -198,10 +198,10 @@ namespace services::dispatcher {
         // the plan has no resolve wrap (DDL paths, disk-less harnesses).
         // The caller (enrich_plan top-level) builds this once and threads
         // the const-ptr through recursive calls.
-        void gather_enrich_resolve_idx(components::logical_plan::node_t* root,
-                                        enrich_resolve_idx_t& out) {
+        void gather_enrich_resolve_idx(components::logical_plan::node_t* root, enrich_resolve_idx_t& out) {
             using namespace components::logical_plan;
-            if (!root) return;
+            if (!root)
+                return;
             std::queue<node_t*> q;
             q.push(root);
             while (!q.empty()) {
@@ -231,23 +231,23 @@ namespace services::dispatcher {
                             if (rt->resolved_metadata().has_value()) {
                                 const auto* md_ptr = &rt->resolved_metadata().value();
                                 out.tbl_md_by_qname[std::move(key)] = md_ptr;
-                                out.tbl_md_by_oid[rt->table_oid()]  = md_ptr;
+                                out.tbl_md_by_oid[rt->table_oid()] = md_ptr;
                             }
                         }
                         break;
                     }
                     case node_type::catalog_resolve_constraint_t: {
                         auto* cr = static_cast<node_catalog_resolve_constraint_t*>(n);
-                        if (!cr->target()) break;
+                        if (!cr->target())
+                            break;
                         const auto& md = cr->target()->resolved_metadata();
-                        if (!md.has_value() ||
-                            md->table_oid == components::catalog::INVALID_OID) {
+                        if (!md.has_value() || md->table_oid == components::catalog::INVALID_OID) {
                             break;
                         }
                         using direction_t = node_catalog_resolve_constraint_t::direction_t;
                         if (cr->direction() == direction_t::outgoing) {
                             out.outgoing_fks_by_oid[md->table_oid] = cr->fks();
-                            out.check_exprs_by_oid[md->table_oid]  = cr->check_exprs();
+                            out.check_exprs_by_oid[md->table_oid] = cr->check_exprs();
                         } else {
                             out.referencing_fks_by_oid[md->table_oid] = cr->fks();
                         }
@@ -255,30 +255,31 @@ namespace services::dispatcher {
                     }
                     case node_type::catalog_resolve_type_t: {
                         auto* tr = static_cast<node_catalog_resolve_type_t*>(n);
-                        if (!tr->resolved_metadata().has_value()) break;
+                        if (!tr->resolved_metadata().has_value())
+                            break;
                         std::string key;
                         key.reserve(tr->dbname().size() + 1 + tr->type_name().size());
                         key.append(tr->dbname()).push_back('|');
                         key.append(tr->type_name());
-                        out.type_md_by_qname[std::move(key)] =
-                            &tr->resolved_metadata().value();
+                        out.type_md_by_qname[std::move(key)] = &tr->resolved_metadata().value();
                         break;
                     }
                     default:
                         break;
                 }
                 for (const auto& c : n->children()) {
-                    if (c) q.push(c.get());
+                    if (c)
+                        q.push(c.get());
                 }
             }
         }
 
         // Name→OID lookup via plan-tree index (Pass 1 results). Returns
         // INVALID_OID on miss; the caller decides whether a miss is fatal.
-        components::catalog::oid_t lookup_table_oid(const enrich_resolve_idx_t* idx,
-                                                      std::string_view db,
-                                                      std::string_view rel) {
-            if (!idx) return components::catalog::INVALID_OID;
+        components::catalog::oid_t
+        lookup_table_oid(const enrich_resolve_idx_t* idx, std::string_view db, std::string_view rel) {
+            if (!idx)
+                return components::catalog::INVALID_OID;
             std::string key;
             key.reserve(db.size() + 1 + rel.size());
             key.append(db).push_back('|');
@@ -297,223 +298,227 @@ namespace services::dispatcher {
     // calls no-ops. Called by dispatcher (after Pass 1, before validate)
     // and by enrich_plan (defensive depth, second call is no-op).
     void stamp_oids_from_resolves(components::logical_plan::node_t* root) {
-            using namespace components::logical_plan;
-            if (!root) return;
-            std::queue<node_t*> q;
-            q.push(root);
-            while (!q.empty()) {
-                auto* n = q.front();
-                q.pop();
-                if (n->type() == node_type::sequence_t) {
-                    node_catalog_resolve_namespace_t* rn = nullptr;
-                    node_catalog_resolve_table_t* rt = nullptr;
-                    node_catalog_resolve_table_t* rt_index = nullptr;
-                    node_catalog_resolve_type_t* ry = nullptr;
-                    for (const auto& c : n->children()) {
-                        if (!c) continue;
-                        switch (c->type()) {
-                            case node_type::catalog_resolve_namespace_t:
-                                rn = static_cast<node_catalog_resolve_namespace_t*>(c.get());
-                                break;
-                            case node_type::catalog_resolve_table_t:
-                                // For DROP INDEX the transformer emits two resolve_table
-                                // siblings — the first is the parent table, the second
-                                // is the index entry (also a pg_class row).
-                                if (!rt) {
-                                    rt = static_cast<node_catalog_resolve_table_t*>(c.get());
-                                } else if (!rt_index) {
-                                    rt_index = static_cast<node_catalog_resolve_table_t*>(c.get());
-                                }
-                                break;
-                            case node_type::catalog_resolve_type_t:
-                                ry = static_cast<node_catalog_resolve_type_t*>(c.get());
-                                break;
-                            default:
-                                break;
-                        }
-                    }
-                    for (const auto& c : n->children()) {
-                        if (!c) continue;
-                        switch (c->type()) {
-                            case node_type::drop_database_t: {
-                                auto* d = static_cast<node_drop_database_t*>(c.get());
-                                if (rn && rn->namespace_oid() != components::catalog::INVALID_OID) {
-                                    d->set_namespace_oid(rn->namespace_oid());
-                                }
-                                break;
+        using namespace components::logical_plan;
+        if (!root)
+            return;
+        std::queue<node_t*> q;
+        q.push(root);
+        while (!q.empty()) {
+            auto* n = q.front();
+            q.pop();
+            if (n->type() == node_type::sequence_t) {
+                node_catalog_resolve_namespace_t* rn = nullptr;
+                node_catalog_resolve_table_t* rt = nullptr;
+                node_catalog_resolve_table_t* rt_index = nullptr;
+                node_catalog_resolve_type_t* ry = nullptr;
+                for (const auto& c : n->children()) {
+                    if (!c)
+                        continue;
+                    switch (c->type()) {
+                        case node_type::catalog_resolve_namespace_t:
+                            rn = static_cast<node_catalog_resolve_namespace_t*>(c.get());
+                            break;
+                        case node_type::catalog_resolve_table_t:
+                            // For DROP INDEX the transformer emits two resolve_table
+                            // siblings — the first is the parent table, the second
+                            // is the index entry (also a pg_class row).
+                            if (!rt) {
+                                rt = static_cast<node_catalog_resolve_table_t*>(c.get());
+                            } else if (!rt_index) {
+                                rt_index = static_cast<node_catalog_resolve_table_t*>(c.get());
                             }
-                            case node_type::drop_collection_t: {
-                                auto* d = static_cast<node_drop_collection_t*>(c.get());
-                                if (rn && rn->namespace_oid() != components::catalog::INVALID_OID) {
-                                    d->set_namespace_oid(rn->namespace_oid());
-                                } else if (rt && rt->namespace_oid() != components::catalog::INVALID_OID) {
-                                    d->set_namespace_oid(rt->namespace_oid());
-                                }
-                                if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
-                                    d->set_table_oid(rt->table_oid());
-                                }
-                                break;
-                            }
-                            case node_type::drop_view_t: {
-                                auto* d = static_cast<node_drop_view_t*>(c.get());
-                                if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
-                                    d->set_relation_oid(rt->table_oid());
-                                }
-                                break;
-                            }
-                            case node_type::drop_sequence_t: {
-                                auto* d = static_cast<node_drop_sequence_t*>(c.get());
-                                if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
-                                    d->set_relation_oid(rt->table_oid());
-                                }
-                                break;
-                            }
-                            case node_type::drop_macro_t: {
-                                auto* d = static_cast<node_drop_macro_t*>(c.get());
-                                if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
-                                    d->set_relation_oid(rt->table_oid());
-                                }
-                                break;
-                            }
-                            case node_type::drop_index_t: {
-                                auto* d = static_cast<node_drop_index_t*>(c.get());
-                                if (rn && rn->namespace_oid() != components::catalog::INVALID_OID) {
-                                    d->set_namespace_oid(rn->namespace_oid());
-                                } else if (rt && rt->namespace_oid() != components::catalog::INVALID_OID) {
-                                    d->set_namespace_oid(rt->namespace_oid());
-                                }
-                                if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
-                                    d->set_table_oid(rt->table_oid());
-                                }
-                                if (rt_index && rt_index->table_oid() != components::catalog::INVALID_OID) {
-                                    d->set_index_oid(rt_index->table_oid());
-                                }
-                                // Stamp the runtime name used by manager_index_t::drop_index
-                                // (the index actor keys engine entries by (table_oid, name)).
-                                if (rt_index) {
-                                    d->set_runtime_index_name(rt_index->relname());
-                                }
-                                break;
-                            }
-                            case node_type::drop_type_t: {
-                                auto* d = static_cast<node_drop_type_t*>(c.get());
-                                if (ry && ry->type_oid() != components::catalog::INVALID_OID) {
-                                    d->set_type_oid(ry->type_oid());
-                                }
-                                break;
-                            }
-                            case node_type::create_collection_t: {
-                                auto* d = static_cast<node_create_collection_t*>(c.get());
-                                if (rn && rn->namespace_oid() != components::catalog::INVALID_OID) {
-                                    d->set_namespace_oid(rn->namespace_oid());
-                                }
-                                break;
-                            }
-                            case node_type::create_sequence_t: {
-                                auto* d = static_cast<node_create_sequence_t*>(c.get());
-                                if (rn && rn->namespace_oid() != components::catalog::INVALID_OID) {
-                                    d->set_namespace_oid(rn->namespace_oid());
-                                }
-                                break;
-                            }
-                            case node_type::create_view_t: {
-                                auto* d = static_cast<node_create_view_t*>(c.get());
-                                if (rn && rn->namespace_oid() != components::catalog::INVALID_OID) {
-                                    d->set_namespace_oid(rn->namespace_oid());
-                                }
-                                break;
-                            }
-                            case node_type::create_macro_t: {
-                                auto* d = static_cast<node_create_macro_t*>(c.get());
-                                if (rn && rn->namespace_oid() != components::catalog::INVALID_OID) {
-                                    d->set_namespace_oid(rn->namespace_oid());
-                                }
-                                break;
-                            }
-                            case node_type::create_index_t: {
-                                auto* d = static_cast<node_create_index_t*>(c.get());
-                                if (rt && rt->namespace_oid() != components::catalog::INVALID_OID) {
-                                    d->set_namespace_oid(rt->namespace_oid());
-                                } else if (rn && rn->namespace_oid() != components::catalog::INVALID_OID) {
-                                    d->set_namespace_oid(rn->namespace_oid());
-                                }
-                                if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
-                                    d->set_table_oid(rt->table_oid());
-                                }
-                                break;
-                            }
-                            case node_type::create_constraint_t: {
-                                auto* d = static_cast<node_create_constraint_t*>(c.get());
-                                if (rt_index && rt_index->table_oid() != components::catalog::INVALID_OID) {
-                                    d->set_ref_table_oid(rt_index->table_oid());
-                                }
-                                break;
-                            }
-                            // DML consumers carry only OIDs now; stamp
-                            // table_oid (and table_oid_from for update/delete
-                            // with UPDATE FROM / DELETE USING) from the sibling
-                            // resolve_table nodes inside the same sequence_t.
-                            case node_type::insert_t: {
-                                auto* d = static_cast<node_insert_t*>(c.get());
-                                if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
-                                    d->set_table_oid(rt->table_oid());
-                                }
-                                break;
-                            }
-                            case node_type::update_t: {
-                                auto* d = static_cast<node_update_t*>(c.get());
-                                if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
-                                    d->set_table_oid(rt->table_oid());
-                                }
-                                if (rt_index && rt_index->table_oid() != components::catalog::INVALID_OID) {
-                                    d->set_table_oid_from(rt_index->table_oid());
-                                }
-                                break;
-                            }
-                            case node_type::delete_t: {
-                                auto* d = static_cast<node_delete_t*>(c.get());
-                                if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
-                                    d->set_table_oid(rt->table_oid());
-                                }
-                                if (rt_index && rt_index->table_oid() != components::catalog::INVALID_OID) {
-                                    d->set_table_oid_from(rt_index->table_oid());
-                                }
-                                break;
-                            }
-                            // alter_* nodes carry only OIDs now; stamp
-                            // table_oid from the sibling resolve_table inside
-                            // the wrapping sequence_t. The child-emitting
-                            // planner cases (alter_column_*) keep their own
-                            // table_oid set at construction time — re-stamping
-                            // from a sibling resolve here is a no-op for them.
-                            case node_type::alter_table_t:
-                            case node_type::alter_column_add_t:
-                            case node_type::alter_column_drop_t:
-                            case node_type::alter_column_rename_t: {
-                                if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
-                                    c->set_table_oid(rt->table_oid());
-                                }
-                                break;
-                            }
-                            default:
-                                break;
-                        }
+                            break;
+                        case node_type::catalog_resolve_type_t:
+                            ry = static_cast<node_catalog_resolve_type_t*>(c.get());
+                            break;
+                        default:
+                            break;
                     }
                 }
                 for (const auto& c : n->children()) {
-                    if (c) q.push(c.get());
+                    if (!c)
+                        continue;
+                    switch (c->type()) {
+                        case node_type::drop_database_t: {
+                            auto* d = static_cast<node_drop_database_t*>(c.get());
+                            if (rn && rn->namespace_oid() != components::catalog::INVALID_OID) {
+                                d->set_namespace_oid(rn->namespace_oid());
+                            }
+                            break;
+                        }
+                        case node_type::drop_collection_t: {
+                            auto* d = static_cast<node_drop_collection_t*>(c.get());
+                            if (rn && rn->namespace_oid() != components::catalog::INVALID_OID) {
+                                d->set_namespace_oid(rn->namespace_oid());
+                            } else if (rt && rt->namespace_oid() != components::catalog::INVALID_OID) {
+                                d->set_namespace_oid(rt->namespace_oid());
+                            }
+                            if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
+                                d->set_table_oid(rt->table_oid());
+                            }
+                            break;
+                        }
+                        case node_type::drop_view_t: {
+                            auto* d = static_cast<node_drop_view_t*>(c.get());
+                            if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
+                                d->set_relation_oid(rt->table_oid());
+                            }
+                            break;
+                        }
+                        case node_type::drop_sequence_t: {
+                            auto* d = static_cast<node_drop_sequence_t*>(c.get());
+                            if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
+                                d->set_relation_oid(rt->table_oid());
+                            }
+                            break;
+                        }
+                        case node_type::drop_macro_t: {
+                            auto* d = static_cast<node_drop_macro_t*>(c.get());
+                            if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
+                                d->set_relation_oid(rt->table_oid());
+                            }
+                            break;
+                        }
+                        case node_type::drop_index_t: {
+                            auto* d = static_cast<node_drop_index_t*>(c.get());
+                            if (rn && rn->namespace_oid() != components::catalog::INVALID_OID) {
+                                d->set_namespace_oid(rn->namespace_oid());
+                            } else if (rt && rt->namespace_oid() != components::catalog::INVALID_OID) {
+                                d->set_namespace_oid(rt->namespace_oid());
+                            }
+                            if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
+                                d->set_table_oid(rt->table_oid());
+                            }
+                            if (rt_index && rt_index->table_oid() != components::catalog::INVALID_OID) {
+                                d->set_index_oid(rt_index->table_oid());
+                            }
+                            // Stamp the runtime name used by manager_index_t::drop_index
+                            // (the index actor keys engine entries by (table_oid, name)).
+                            if (rt_index) {
+                                d->set_runtime_index_name(rt_index->relname());
+                            }
+                            break;
+                        }
+                        case node_type::drop_type_t: {
+                            auto* d = static_cast<node_drop_type_t*>(c.get());
+                            if (ry && ry->type_oid() != components::catalog::INVALID_OID) {
+                                d->set_type_oid(ry->type_oid());
+                            }
+                            break;
+                        }
+                        case node_type::create_collection_t: {
+                            auto* d = static_cast<node_create_collection_t*>(c.get());
+                            if (rn && rn->namespace_oid() != components::catalog::INVALID_OID) {
+                                d->set_namespace_oid(rn->namespace_oid());
+                            }
+                            break;
+                        }
+                        case node_type::create_sequence_t: {
+                            auto* d = static_cast<node_create_sequence_t*>(c.get());
+                            if (rn && rn->namespace_oid() != components::catalog::INVALID_OID) {
+                                d->set_namespace_oid(rn->namespace_oid());
+                            }
+                            break;
+                        }
+                        case node_type::create_view_t: {
+                            auto* d = static_cast<node_create_view_t*>(c.get());
+                            if (rn && rn->namespace_oid() != components::catalog::INVALID_OID) {
+                                d->set_namespace_oid(rn->namespace_oid());
+                            }
+                            break;
+                        }
+                        case node_type::create_macro_t: {
+                            auto* d = static_cast<node_create_macro_t*>(c.get());
+                            if (rn && rn->namespace_oid() != components::catalog::INVALID_OID) {
+                                d->set_namespace_oid(rn->namespace_oid());
+                            }
+                            break;
+                        }
+                        case node_type::create_index_t: {
+                            auto* d = static_cast<node_create_index_t*>(c.get());
+                            if (rt && rt->namespace_oid() != components::catalog::INVALID_OID) {
+                                d->set_namespace_oid(rt->namespace_oid());
+                            } else if (rn && rn->namespace_oid() != components::catalog::INVALID_OID) {
+                                d->set_namespace_oid(rn->namespace_oid());
+                            }
+                            if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
+                                d->set_table_oid(rt->table_oid());
+                            }
+                            break;
+                        }
+                        case node_type::create_constraint_t: {
+                            auto* d = static_cast<node_create_constraint_t*>(c.get());
+                            if (rt_index && rt_index->table_oid() != components::catalog::INVALID_OID) {
+                                d->set_ref_table_oid(rt_index->table_oid());
+                            }
+                            break;
+                        }
+                        // DML consumers carry only OIDs now; stamp
+                        // table_oid (and table_oid_from for update/delete
+                        // with UPDATE FROM / DELETE USING) from the sibling
+                        // resolve_table nodes inside the same sequence_t.
+                        case node_type::insert_t: {
+                            auto* d = static_cast<node_insert_t*>(c.get());
+                            if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
+                                d->set_table_oid(rt->table_oid());
+                            }
+                            break;
+                        }
+                        case node_type::update_t: {
+                            auto* d = static_cast<node_update_t*>(c.get());
+                            if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
+                                d->set_table_oid(rt->table_oid());
+                            }
+                            if (rt_index && rt_index->table_oid() != components::catalog::INVALID_OID) {
+                                d->set_table_oid_from(rt_index->table_oid());
+                            }
+                            break;
+                        }
+                        case node_type::delete_t: {
+                            auto* d = static_cast<node_delete_t*>(c.get());
+                            if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
+                                d->set_table_oid(rt->table_oid());
+                            }
+                            if (rt_index && rt_index->table_oid() != components::catalog::INVALID_OID) {
+                                d->set_table_oid_from(rt_index->table_oid());
+                            }
+                            break;
+                        }
+                        // alter_* nodes carry only OIDs now; stamp
+                        // table_oid from the sibling resolve_table inside
+                        // the wrapping sequence_t. The child-emitting
+                        // planner cases (alter_column_*) keep their own
+                        // table_oid set at construction time — re-stamping
+                        // from a sibling resolve here is a no-op for them.
+                        case node_type::alter_table_t:
+                        case node_type::alter_column_add_t:
+                        case node_type::alter_column_drop_t:
+                        case node_type::alter_column_rename_t: {
+                            if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
+                                c->set_table_oid(rt->table_oid());
+                            }
+                            break;
+                        }
+                        default:
+                            break;
+                    }
                 }
             }
+            for (const auto& c : n->children()) {
+                if (c)
+                    q.push(c.get());
+            }
         }
+    }
 
-    actor_zeta::unique_future<void>
-    enrich_plan(components::logical_plan::node_ptr root,
-                actor_zeta::address_t disk_address,
-                components::execution_context_t ctx,
-                std::pmr::memory_resource* resource,
-                const enrich_resolve_idx_t* idx) {
+    actor_zeta::unique_future<void> enrich_plan(components::logical_plan::node_ptr root,
+                                                actor_zeta::address_t disk_address,
+                                                components::execution_context_t ctx,
+                                                std::pmr::memory_resource* resource,
+                                                const enrich_resolve_idx_t* idx) {
         using namespace components::logical_plan;
-        if (!root) co_return;
+        if (!root)
+            co_return;
         // Top-level entry: gather plan-tree resolve index once, then re-enter
         // with the gathered pointer. Recursive callers already supply a non-null
         // `idx` so this gather runs at most once per public enrich_plan call.
@@ -538,37 +543,44 @@ namespace services::dispatcher {
             switch (root->type()) {
                 case node_type::aggregate_t: {
                     auto* d = static_cast<node_aggregate_t*>(root.get());
-                    db = d->dbname().t; rel = d->relname().t;
+                    db = d->dbname().t;
+                    rel = d->relname().t;
                     break;
                 }
                 case node_type::match_t: {
                     auto* d = static_cast<node_match_t*>(root.get());
-                    db = d->dbname(); rel = d->relname();
+                    db = d->dbname();
+                    rel = d->relname();
                     break;
                 }
                 case node_type::group_t: {
                     auto* d = static_cast<node_group_t*>(root.get());
-                    db = d->dbname(); rel = d->relname();
+                    db = d->dbname();
+                    rel = d->relname();
                     break;
                 }
                 case node_type::sort_t: {
                     auto* d = static_cast<node_sort_t*>(root.get());
-                    db = d->dbname(); rel = d->relname();
+                    db = d->dbname();
+                    rel = d->relname();
                     break;
                 }
                 case node_type::join_t: {
                     auto* d = static_cast<node_join_t*>(root.get());
-                    db = d->dbname(); rel = d->relname();
+                    db = d->dbname();
+                    rel = d->relname();
                     break;
                 }
                 case node_type::limit_t: {
                     auto* d = static_cast<node_limit_t*>(root.get());
-                    db = d->dbname(); rel = d->relname();
+                    db = d->dbname();
+                    rel = d->relname();
                     break;
                 }
                 case node_type::having_t: {
                     auto* d = static_cast<node_having_t*>(root.get());
-                    db = d->dbname(); rel = d->relname();
+                    db = d->dbname();
+                    rel = d->relname();
                     break;
                 }
                 default:
@@ -582,200 +594,208 @@ namespace services::dispatcher {
             }
         }
         switch (root->type()) {
-        case node_type::insert_t: {
-            auto* node = static_cast<node_insert_t*>(root.get());
-            enrich_insert_sync(node, idx);
-            const auto tbl_oid = node->table_oid();
-            // FK + CHECK populated by operator_resolve_constraint_t
-            // (Pass 1, direction=outgoing) and gathered into idx. No catalog
-            // probe here — pure plan-tree read.
-            if (tbl_oid != components::catalog::INVALID_OID && idx) {
-                if (auto it = idx->outgoing_fks_by_oid.find(tbl_oid);
-                    it != idx->outgoing_fks_by_oid.end()) {
-                    auto fks = it->second;
-                    // Resolve child column names → positions in the INSERT chunk.
-                    const auto& kt = node->key_translation();
-                    for (auto& fk : fks) {
-                        for (const auto& col_name : fk.child_col_names) {
-                            std::size_t pos = std::numeric_limits<std::size_t>::max();
-                            for (std::size_t i = 0; i < kt.size(); ++i) {
-                                if (kt[i].as_string() == col_name) { pos = i; break; }
-                            }
-                            fk.child_col_indices.push_back(pos);
-                        }
-                    }
-                    node->set_outgoing_fks(std::move(fks));
-                }
-                if (auto it = idx->check_exprs_by_oid.find(tbl_oid);
-                    it != idx->check_exprs_by_oid.end()) {
-                    node->set_check_exprs(it->second);
-                }
-            }
-            break;
-        }
-        case node_type::update_t: {
-            auto* node = static_cast<node_update_t*>(root.get());
-            enrich_update_sync(node, idx);
-            const auto tbl_oid = node->table_oid();
-            if (tbl_oid != components::catalog::INVALID_OID && idx) {
-                if (auto it = idx->outgoing_fks_by_oid.find(tbl_oid);
-                    it != idx->outgoing_fks_by_oid.end()) {
-                    node->set_outgoing_fks(it->second);
-                }
-            }
-            break;
-        }
-        case node_type::delete_t: {
-            auto* node = static_cast<node_delete_t*>(root.get());
-            // Parent table metadata + referencing FK rows are both stamped
-            // by Pass 1 (operator_resolve_table_t + operator_resolve_constraint_t,
-            // direction=referencing). Descendant child column positions and
-            // defspecs are pre-populated by the resolve_constraint operator
-            // itself — see operator_resolve_constraint.cpp.
-            const auto* tbl =
-                (node->table_oid() != components::catalog::INVALID_OID)
-                    ? lookup_table_md_by_oid_local(idx, node->table_oid())
-                    : nullptr;
-            if (tbl && idx) {
-                const auto tbl_oid = tbl->table_oid;
-                if (auto it = idx->referencing_fks_by_oid.find(tbl_oid);
-                    it != idx->referencing_fks_by_oid.end()) {
-                    auto fks = it->second;
-                    // Resolve parent column positions in the parent table's
-                    // attnum-ordered columns (used by operator_fk_cascade
-                    // SET NULL / SET DEFAULT to locate FK cols in a fetched
-                    // parent row).
-                    for (auto& fk : fks) {
-                        for (const auto& col_name : fk.parent_col_names) {
-                            std::size_t pos = std::numeric_limits<std::size_t>::max();
-                            for (std::size_t i = 0; i < tbl->columns.size(); ++i) {
-                                if (tbl->columns[i].attname == col_name) { pos = i; break; }
-                            }
-                            fk.parent_col_indices.push_back(pos);
-                        }
-                    }
-                    node->set_referencing_fks(std::move(fks));
-                }
-            }
-            break;
-        }
-        case node_type::create_collection_t: {
-            auto* node = static_cast<node_create_collection_t*>(root.get());
-            enrich_create_collection_sync(node, idx);
-            // resolve_column_definitions takes an explicit plan-tree idx.
-            // enrich's `enrich_resolve_idx_t` is a different shape; build
-            // a small plan_resolve_index_t locally from the same root tree so
-            // UDT columns get resolved without thread_local state.
-            impl::plan_resolve_index_t local_plan_idx;
-            impl::gather_plan_resolve_index(root.get(), local_plan_idx);
-            resolve_column_definitions(node->column_definitions(), &local_plan_idx);
-            break;
-        }
-        case node_type::create_sequence_t:
-        case node_type::create_view_t:
-        case node_type::create_macro_t: {
-            // OIDs stamped by stamp_drop_oids_from_resolves from sibling resolve nodes.
-            break;
-        }
-        case node_type::create_index_t: {
-            // namespace_oid + table_oid are stamped by stamp_drop_oids_from_resolves
-            // from the sibling catalog_resolve_table_t. We still resolve column
-            // attoids + indkey here since they need the table's column list.
-            auto* node = static_cast<node_create_index_t*>(root.get());
-            if (node->table_oid() == components::catalog::INVALID_OID) break;
-            const auto* tbl = lookup_table_md_by_oid_local(idx, node->table_oid());
-            if (!tbl) break;
-
-            std::vector<components::catalog::oid_t> col_attoids;
-            std::string indkey;
-            col_attoids.reserve(node->keys().size());
-            for (std::size_t i = 0; i < node->keys().size(); ++i) {
-                const std::string cn = node->keys()[i].as_string();
-                components::catalog::oid_t attoid = components::catalog::INVALID_OID;
-                for (const auto& ci : tbl->columns) {
-                    if (ci.attname == cn) { attoid = ci.attoid; break; }
-                }
-                col_attoids.push_back(attoid);
-                if (i) indkey += ",";
-                indkey += std::to_string(attoid);
-            }
-            node->set_column_attoids(std::move(col_attoids));
-            node->set_indkey(std::move(indkey));
-            break;
-        }
-        case node_type::drop_index_t: {
-            // OIDs are stamped by stamp_drop_oids_from_resolves at the
-            // top of enrich_plan from sibling resolve nodes; no per-node work.
-            break;
-        }
-        case node_type::create_constraint_t: {
-            // idx provides ns/table metadata for the target. The FK
-            // reference table (when constraint is FK) needs a separate
-            // resolve_table emitted by the transformer.
-            auto* node = static_cast<node_create_constraint_t*>(root.get());
-            const std::string& ns_name = node->dbname();
-            const auto* tbl = lookup_table_md_local(idx, ns_name, node->relname());
-            if (!tbl) break;
-            node->set_table_oid(tbl->table_oid);
-
-            // Resolve local (child) column names → attoids.
-            std::vector<components::catalog::oid_t> fk_attoids;
-            for (const auto& col_name : node->local_col_names()) {
-                for (const auto& ci : tbl->columns) {
-                    if (ci.attname == col_name) {
-                        fk_attoids.push_back(ci.attoid);
-                        break;
-                    }
-                }
-            }
-            node->set_fk_col_attoids(std::move(fk_attoids));
-
-            // FK only — resolve referenced table + parent column attoids.
-            // ref_table_oid was stamped by stamp_drop_oids_from_resolves from
-            // the 2nd resolve_table sibling (transformer emits FK ref table).
-            if (node->kind() == constraint_kind::foreign_key &&
-                node->ref_table_oid() != components::catalog::INVALID_OID) {
-                const auto* rrt = lookup_table_md_by_oid_local(idx, node->ref_table_oid());
-                if (rrt) {
-                    std::vector<components::catalog::oid_t> ref_attoids;
-                    for (const auto& col_name : node->ref_col_names()) {
-                        for (const auto& ci : rrt->columns) {
-                            if (ci.attname == col_name) {
-                                ref_attoids.push_back(ci.attoid);
-                                break;
+            case node_type::insert_t: {
+                auto* node = static_cast<node_insert_t*>(root.get());
+                enrich_insert_sync(node, idx);
+                const auto tbl_oid = node->table_oid();
+                // FK + CHECK populated by operator_resolve_constraint_t
+                // (Pass 1, direction=outgoing) and gathered into idx. No catalog
+                // probe here — pure plan-tree read.
+                if (tbl_oid != components::catalog::INVALID_OID && idx) {
+                    if (auto it = idx->outgoing_fks_by_oid.find(tbl_oid); it != idx->outgoing_fks_by_oid.end()) {
+                        auto fks = it->second;
+                        // Resolve child column names → positions in the INSERT chunk.
+                        const auto& kt = node->key_translation();
+                        for (auto& fk : fks) {
+                            for (const auto& col_name : fk.child_col_names) {
+                                std::size_t pos = std::numeric_limits<std::size_t>::max();
+                                for (std::size_t i = 0; i < kt.size(); ++i) {
+                                    if (kt[i].as_string() == col_name) {
+                                        pos = i;
+                                        break;
+                                    }
+                                }
+                                fk.child_col_indices.push_back(pos);
                             }
                         }
+                        node->set_outgoing_fks(std::move(fks));
                     }
-                    node->set_ref_col_attoids(std::move(ref_attoids));
+                    if (auto it = idx->check_exprs_by_oid.find(tbl_oid); it != idx->check_exprs_by_oid.end()) {
+                        node->set_check_exprs(it->second);
+                    }
                 }
+                break;
             }
-            break;
-        }
-        case node_type::alter_table_t: {
-            // table_oid stamped by stamp_drop_oids_from_resolves from
-            // the sibling resolve_table; we only need to look up relkind for
-            // the planner rewrite (computed-vs-regular routing).
-            auto* node = static_cast<node_alter_table_t*>(root.get());
-            if (node->table_oid() != components::catalog::INVALID_OID) {
+            case node_type::update_t: {
+                auto* node = static_cast<node_update_t*>(root.get());
+                enrich_update_sync(node, idx);
+                const auto tbl_oid = node->table_oid();
+                if (tbl_oid != components::catalog::INVALID_OID && idx) {
+                    if (auto it = idx->outgoing_fks_by_oid.find(tbl_oid); it != idx->outgoing_fks_by_oid.end()) {
+                        node->set_outgoing_fks(it->second);
+                    }
+                }
+                break;
+            }
+            case node_type::delete_t: {
+                auto* node = static_cast<node_delete_t*>(root.get());
+                // Parent table metadata + referencing FK rows are both stamped
+                // by Pass 1 (operator_resolve_table_t + operator_resolve_constraint_t,
+                // direction=referencing). Descendant child column positions and
+                // defspecs are pre-populated by the resolve_constraint operator
+                // itself — see operator_resolve_constraint.cpp.
+                const auto* tbl = (node->table_oid() != components::catalog::INVALID_OID)
+                                      ? lookup_table_md_by_oid_local(idx, node->table_oid())
+                                      : nullptr;
+                if (tbl && idx) {
+                    const auto tbl_oid = tbl->table_oid;
+                    if (auto it = idx->referencing_fks_by_oid.find(tbl_oid); it != idx->referencing_fks_by_oid.end()) {
+                        auto fks = it->second;
+                        // Resolve parent column positions in the parent table's
+                        // attnum-ordered columns (used by operator_fk_cascade
+                        // SET NULL / SET DEFAULT to locate FK cols in a fetched
+                        // parent row).
+                        for (auto& fk : fks) {
+                            for (const auto& col_name : fk.parent_col_names) {
+                                std::size_t pos = std::numeric_limits<std::size_t>::max();
+                                for (std::size_t i = 0; i < tbl->columns.size(); ++i) {
+                                    if (tbl->columns[i].attname == col_name) {
+                                        pos = i;
+                                        break;
+                                    }
+                                }
+                                fk.parent_col_indices.push_back(pos);
+                            }
+                        }
+                        node->set_referencing_fks(std::move(fks));
+                    }
+                }
+                break;
+            }
+            case node_type::create_collection_t: {
+                auto* node = static_cast<node_create_collection_t*>(root.get());
+                enrich_create_collection_sync(node, idx);
+                // resolve_column_definitions takes an explicit plan-tree idx.
+                // enrich's `enrich_resolve_idx_t` is a different shape; build
+                // a small plan_resolve_index_t locally from the same root tree so
+                // UDT columns get resolved without thread_local state.
+                impl::plan_resolve_index_t local_plan_idx;
+                impl::gather_plan_resolve_index(root.get(), local_plan_idx);
+                resolve_column_definitions(node->column_definitions(), &local_plan_idx);
+                break;
+            }
+            case node_type::create_sequence_t:
+            case node_type::create_view_t:
+            case node_type::create_macro_t: {
+                // OIDs stamped by stamp_drop_oids_from_resolves from sibling resolve nodes.
+                break;
+            }
+            case node_type::create_index_t: {
+                // namespace_oid + table_oid are stamped by stamp_drop_oids_from_resolves
+                // from the sibling catalog_resolve_table_t. We still resolve column
+                // attoids + indkey here since they need the table's column list.
+                auto* node = static_cast<node_create_index_t*>(root.get());
+                if (node->table_oid() == components::catalog::INVALID_OID)
+                    break;
                 const auto* tbl = lookup_table_md_by_oid_local(idx, node->table_oid());
-                if (tbl) {
-                    node->set_relkind(tbl->relkind);
+                if (!tbl)
+                    break;
+
+                std::vector<components::catalog::oid_t> col_attoids;
+                std::string indkey;
+                col_attoids.reserve(node->keys().size());
+                for (std::size_t i = 0; i < node->keys().size(); ++i) {
+                    const std::string cn = node->keys()[i].as_string();
+                    components::catalog::oid_t attoid = components::catalog::INVALID_OID;
+                    for (const auto& ci : tbl->columns) {
+                        if (ci.attname == cn) {
+                            attoid = ci.attoid;
+                            break;
+                        }
+                    }
+                    col_attoids.push_back(attoid);
+                    if (i)
+                        indkey += ",";
+                    indkey += std::to_string(attoid);
                 }
+                node->set_column_attoids(std::move(col_attoids));
+                node->set_indkey(std::move(indkey));
+                break;
             }
-            break;
-        }
-        case node_type::drop_database_t:
-        case node_type::drop_collection_t:
-        case node_type::drop_type_t:
-        case node_type::drop_sequence_t:
-        case node_type::drop_view_t:
-        case node_type::drop_macro_t: {
-            // OIDs are stamped by stamp_drop_oids_from_resolves at the
-            // top of enrich_plan from sibling resolve nodes; no per-node work.
-            break;
-        }
-        default:
-            break;
+            case node_type::drop_index_t: {
+                // OIDs are stamped by stamp_drop_oids_from_resolves at the
+                // top of enrich_plan from sibling resolve nodes; no per-node work.
+                break;
+            }
+            case node_type::create_constraint_t: {
+                // idx provides ns/table metadata for the target. The FK
+                // reference table (when constraint is FK) needs a separate
+                // resolve_table emitted by the transformer.
+                auto* node = static_cast<node_create_constraint_t*>(root.get());
+                const std::string& ns_name = node->dbname();
+                const auto* tbl = lookup_table_md_local(idx, ns_name, node->relname());
+                if (!tbl)
+                    break;
+                node->set_table_oid(tbl->table_oid);
+
+                // Resolve local (child) column names → attoids.
+                std::vector<components::catalog::oid_t> fk_attoids;
+                for (const auto& col_name : node->local_col_names()) {
+                    for (const auto& ci : tbl->columns) {
+                        if (ci.attname == col_name) {
+                            fk_attoids.push_back(ci.attoid);
+                            break;
+                        }
+                    }
+                }
+                node->set_fk_col_attoids(std::move(fk_attoids));
+
+                // FK only — resolve referenced table + parent column attoids.
+                // ref_table_oid was stamped by stamp_drop_oids_from_resolves from
+                // the 2nd resolve_table sibling (transformer emits FK ref table).
+                if (node->kind() == constraint_kind::foreign_key &&
+                    node->ref_table_oid() != components::catalog::INVALID_OID) {
+                    const auto* rrt = lookup_table_md_by_oid_local(idx, node->ref_table_oid());
+                    if (rrt) {
+                        std::vector<components::catalog::oid_t> ref_attoids;
+                        for (const auto& col_name : node->ref_col_names()) {
+                            for (const auto& ci : rrt->columns) {
+                                if (ci.attname == col_name) {
+                                    ref_attoids.push_back(ci.attoid);
+                                    break;
+                                }
+                            }
+                        }
+                        node->set_ref_col_attoids(std::move(ref_attoids));
+                    }
+                }
+                break;
+            }
+            case node_type::alter_table_t: {
+                // table_oid stamped by stamp_drop_oids_from_resolves from
+                // the sibling resolve_table; we only need to look up relkind for
+                // the planner rewrite (computed-vs-regular routing).
+                auto* node = static_cast<node_alter_table_t*>(root.get());
+                if (node->table_oid() != components::catalog::INVALID_OID) {
+                    const auto* tbl = lookup_table_md_by_oid_local(idx, node->table_oid());
+                    if (tbl) {
+                        node->set_relkind(tbl->relkind);
+                    }
+                }
+                break;
+            }
+            case node_type::drop_database_t:
+            case node_type::drop_collection_t:
+            case node_type::drop_type_t:
+            case node_type::drop_sequence_t:
+            case node_type::drop_view_t:
+            case node_type::drop_macro_t: {
+                // OIDs are stamped by stamp_drop_oids_from_resolves at the
+                // top of enrich_plan from sibling resolve nodes; no per-node work.
+                break;
+            }
+            default:
+                break;
         }
         // Recurse into ALL children after the per-type enrichment, regardless
         // of which case ran. DML cases (insert/update/delete) own a match_t /
@@ -785,7 +805,8 @@ namespace services::dispatcher {
         // the function without descending) left those sub-nodes at
         // INVALID_OID — DELETE WHERE was then a no-op.
         for (auto& child : root->children()) {
-            if (!child) continue;
+            if (!child)
+                continue;
             co_await enrich_plan(child, disk_address, ctx, resource, idx);
         }
     }

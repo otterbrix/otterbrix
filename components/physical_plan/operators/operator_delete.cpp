@@ -19,8 +19,7 @@ namespace components::operators {
 
     void operator_delete::accept_resolved_metadata(resolved_table_metadata_t metadata) {
         // See operator_insert for the contract.
-        if (table_oid_ == components::catalog::INVALID_OID &&
-            metadata.table_oid != components::catalog::INVALID_OID) {
+        if (table_oid_ == components::catalog::INVALID_OID && metadata.table_oid != components::catalog::INVALID_OID) {
             table_oid_ = metadata.table_oid;
         }
         resolved_metadata_ = std::move(metadata);
@@ -108,8 +107,7 @@ namespace components::operators {
         }
     }
 
-    actor_zeta::unique_future<void>
-    operator_delete::await_async_and_resume(pipeline::context_t* ctx) {
+    actor_zeta::unique_future<void> operator_delete::await_async_and_resume(pipeline::context_t* ctx) {
         using components::vector::data_chunk_t;
         using components::vector::vector_t;
 
@@ -155,28 +153,26 @@ namespace components::operators {
             row_ids.data<int64_t>()[i] = static_cast<int64_t>(ids[i]);
         }
         auto [_d, df] = actor_zeta::send(ctx->disk_address,
-                                          &services::disk::manager_disk_t::storage_delete_rows,
-                                          exec_ctx,
-                                          table_oid_,
-                                          std::move(row_ids),
-                                          static_cast<uint64_t>(modified_size));
+                                         &services::disk::manager_disk_t::storage_delete_rows,
+                                         exec_ctx,
+                                         table_oid_,
+                                         std::move(row_ids),
+                                         static_cast<uint64_t>(modified_size));
         co_await std::move(df);
 
         // 3. WAL physical_delete.
         if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
             auto count = static_cast<uint64_t>(wal_row_ids.size());
             auto [_w, wf] = actor_zeta::send(ctx->wal_address,
-                                              &services::wal::manager_wal_replicate_t::write_physical_delete,
-                                              ctx->session,
-                                              table_oid_,
-                                              std::move(wal_row_ids),
-                                              count,
-                                              ctx->txn.transaction_id);
+                                             &services::wal::manager_wal_replicate_t::write_physical_delete,
+                                             ctx->session,
+                                             table_oid_,
+                                             std::move(wal_row_ids),
+                                             count,
+                                             ctx->txn.transaction_id);
             auto wal_id = co_await std::move(wf);
-            auto [_df2, dff] = actor_zeta::send(ctx->disk_address,
-                                                 &services::disk::manager_disk_t::flush,
-                                                 ctx->session,
-                                                 wal_id);
+            auto [_df2, dff] =
+                actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::flush, ctx->session, wal_id);
             ctx->add_pending_disk_future(std::move(dff));
         }
 
@@ -192,11 +188,11 @@ namespace components::operators {
                     idx_ids.emplace_back(sc.row_ids.data<int64_t>()[i]);
                 }
                 auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
-                                                    &services::index::manager_index_t::delete_rows,
-                                                    exec_ctx,
-                                                    table_oid_,
-                                                    std::move(idx_data),
-                                                    std::move(idx_ids));
+                                                   &services::index::manager_index_t::delete_rows,
+                                                   exec_ctx,
+                                                   table_oid_,
+                                                   std::move(idx_data),
+                                                   std::move(idx_ids));
                 co_await std::move(ixf);
             }
         }
@@ -207,9 +203,9 @@ namespace components::operators {
 
         // 6. Build result chunk (need types from storage).
         auto [_t, tf] = actor_zeta::send(ctx->disk_address,
-                                          &services::disk::manager_disk_t::storage_types,
-                                          ctx->session,
-                                          table_oid_);
+                                         &services::disk::manager_disk_t::storage_types,
+                                         ctx->session,
+                                         table_oid_);
         auto types = co_await std::move(tf);
         data_chunk_t chunk(resource_, types, modified_size);
         chunk.set_cardinality(modified_size);

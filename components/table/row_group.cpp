@@ -126,9 +126,9 @@ namespace components::table {
 
         uint64_t rows_to_write = count;
         if (rows_to_write > 0) {
-            const types::logical_value_t fill_value = default_value.has_value()
-                                                          ? *default_value
-                                                          : types::logical_value_t{collection_->resource(), new_column.type()};
+            const types::logical_value_t fill_value =
+                default_value.has_value() ? *default_value
+                                          : types::logical_value_t{collection_->resource(), new_column.type()};
             column_append_state state;
             added_column->initialize_append(state);
             for (uint64_t i = 0; i < rows_to_write; i += vector::DEFAULT_VECTOR_CAPACITY) {
@@ -415,12 +415,10 @@ namespace components::table {
                 state.valid_indexing = indexing;
             }
             auto* row_ids_data = result.row_ids.data<int64_t>();
-            const int64_t row_id_base =
-                static_cast<int64_t>(state.vector_index * vector::DEFAULT_VECTOR_CAPACITY);
+            const int64_t row_id_base = static_cast<int64_t>(state.vector_index * vector::DEFAULT_VECTOR_CAPACITY);
             const uint64_t write_start = result.size();
             for (uint64_t i = 0; i < count; i++) {
-                row_ids_data[write_start + i] =
-                    row_id_base + static_cast<int64_t>(state.valid_indexing.get_index(i));
+                row_ids_data[write_start + i] = row_id_base + static_cast<int64_t>(state.valid_indexing.get_index(i));
             }
             result.set_cardinality(result.size() + count);
             state.vector_index++;
@@ -693,17 +691,17 @@ namespace components::table {
     }
 
     uint64_t row_group_t::committed_indexing_vector(uint64_t vector_idx,
-                                                   vector::indexing_vector_t& indexing_vector,
-                                                   uint64_t max_count) {
+                                                    vector::indexing_vector_t& indexing_vector,
+                                                    uint64_t max_count) {
         auto vinfo = version_info();
         if (!vinfo) {
             return max_count;
         }
         return vinfo->committed_indexing_vector(current_version_,
-                                               current_version_,
-                                               vector_idx,
-                                               indexing_vector,
-                                               max_count);
+                                                current_version_,
+                                                vector_idx,
+                                                indexing_vector,
+                                                max_count);
     }
 
     std::shared_ptr<row_version_manager_t> row_group_t::get_or_create_version_info_internal() {

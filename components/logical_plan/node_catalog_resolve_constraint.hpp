@@ -25,7 +25,11 @@ namespace components::logical_plan {
     //   Stamps fks() (contype='f', parent=target) including child table info.
     class node_catalog_resolve_constraint_t final : public node_t {
     public:
-        enum class direction_t : uint8_t { outgoing, referencing };
+        enum class direction_t : uint8_t
+        {
+            outgoing,
+            referencing
+        };
 
         node_catalog_resolve_constraint_t(std::pmr::memory_resource* resource,
                                           node_catalog_resolve_table_t* target,
@@ -37,12 +41,8 @@ namespace components::logical_plan {
         const std::vector<components::catalog::fk_info_t>& fks() const noexcept { return fks_; }
         void set_fks(std::vector<components::catalog::fk_info_t> v) { fks_ = std::move(v); }
 
-        const std::vector<std::pair<std::string, std::string>>& check_exprs() const noexcept {
-            return check_exprs_;
-        }
-        void set_check_exprs(std::vector<std::pair<std::string, std::string>> v) {
-            check_exprs_ = std::move(v);
-        }
+        const std::vector<std::pair<std::string, std::string>>& check_exprs() const noexcept { return check_exprs_; }
+        void set_check_exprs(std::vector<std::pair<std::string, std::string>> v) { check_exprs_ = std::move(v); }
 
     private:
         hash_t hash_impl() const override;
@@ -58,7 +58,7 @@ namespace components::logical_plan {
 
     node_catalog_resolve_constraint_ptr
     make_node_catalog_resolve_constraint(std::pmr::memory_resource* resource,
-                                          node_catalog_resolve_table_t* target,
-                                          node_catalog_resolve_constraint_t::direction_t direction);
+                                         node_catalog_resolve_table_t* target,
+                                         node_catalog_resolve_constraint_t::direction_t direction);
 
 } // namespace components::logical_plan

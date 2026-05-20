@@ -10,9 +10,7 @@ namespace components::operators {
 
     class operator_insert final : public read_write_operator_t {
     public:
-        operator_insert(std::pmr::memory_resource* resource,
-                        log_t log,
-                        catalog::oid_t table_oid);
+        operator_insert(std::pmr::memory_resource* resource, log_t log, catalog::oid_t table_oid);
 
         catalog::oid_t table_oid() const noexcept { return table_oid_; }
 

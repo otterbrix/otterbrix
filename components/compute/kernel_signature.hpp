@@ -45,7 +45,16 @@ namespace components::compute {
     //     `custom`; the closure is opaque and cannot be persisted (used by
     //     tests or runtime-only callsites).
     struct input_type {
-        enum class kind_t : uint8_t { custom, exact, numeric, integer, floating, any_of, always_true };
+        enum class kind_t : uint8_t
+        {
+            custom,
+            exact,
+            numeric,
+            integer,
+            floating,
+            any_of,
+            always_true
+        };
 
         static input_type make_exact(types::logical_type t);
         static input_type make_numeric();
@@ -79,7 +88,12 @@ namespace components::compute {
     // pg_proc.prorettype persistence; `computed(resolver)` keeps an arbitrary
     // closure for runtime-only callsites (kind_=custom, not persistable).
     struct output_type {
-        enum class kind_t : uint8_t { custom, fixed_value, same_type_at_index };
+        enum class kind_t : uint8_t
+        {
+            custom,
+            fixed_value,
+            same_type_at_index
+        };
 
         static output_type fixed(fixed_t type);
         static output_type same_type_at(size_t input_index);

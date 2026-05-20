@@ -31,16 +31,13 @@ namespace components::operators {
         : read_write_operator_t(resource, std::move(log), operator_type::resolve_constraint)
         , target_node_(target_node) {}
 
-    void operator_resolve_constraint_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
-        async_wait();
-    }
+    void operator_resolve_constraint_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
 
-    actor_zeta::unique_future<void>
-    operator_resolve_constraint_t::await_async_and_resume(pipeline::context_t* ctx) {
+    actor_zeta::unique_future<void> operator_resolve_constraint_t::await_async_and_resume(pipeline::context_t* ctx) {
         constexpr catalog::oid_t kPgConstraint = catalog::well_known_oid::pg_constraint_table;
-        constexpr catalog::oid_t kPgAttribute  = catalog::well_known_oid::pg_attribute_table;
-        constexpr catalog::oid_t kPgClass      = catalog::well_known_oid::pg_class_table;
-        constexpr catalog::oid_t kPgNamespace  = catalog::well_known_oid::pg_namespace_table;
+        constexpr catalog::oid_t kPgAttribute = catalog::well_known_oid::pg_attribute_table;
+        constexpr catalog::oid_t kPgClass = catalog::well_known_oid::pg_class_table;
+        constexpr catalog::oid_t kPgNamespace = catalog::well_known_oid::pg_namespace_table;
 
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
@@ -84,51 +81,67 @@ namespace components::operators {
         con_keys.emplace_back(key_col);
         std::pmr::vector<types::logical_value_t> con_vals(resource_);
         con_vals.emplace_back(table_lv);
-        auto [_c, fut_con] = actor_zeta::send(
-            ctx->disk_address,
-            &services::disk::manager_disk_t::read_rows_by_key,
-            exec_ctx, kPgConstraint,
-            std::move(con_keys),
-            std::move(con_vals));
+        auto [_c, fut_con] = actor_zeta::send(ctx->disk_address,
+                                              &services::disk::manager_disk_t::read_rows_by_key,
+                                              exec_ctx,
+                                              kPgConstraint,
+                                              std::move(con_keys),
+                                              std::move(con_vals));
         auto con_rows = co_await std::move(fut_con);
 
         for (const auto& row : con_rows) {
-            if (row.size() <= catalog::pg_constraint_col::confupdtype) continue;
-            if (row[catalog::pg_constraint_col::contype].is_null()) continue;
+            if (row.size() <= catalog::pg_constraint_col::confupdtype)
+                continue;
+            if (row[catalog::pg_constraint_col::contype].is_null())
+                continue;
             const auto contype_sv = row[catalog::pg_constraint_col::contype].value<std::string_view>();
-            if (contype_sv.empty()) continue;
+            if (contype_sv.empty())
+                continue;
             const char contype = contype_sv[0];
 
             if (contype == 'f') {
                 catalog::fk_info_t fk;
-                fk.constraint_oid = static_cast<catalog::oid_t>(row[catalog::pg_constraint_col::oid].value<std::uint32_t>());
+                fk.constraint_oid =
+                    static_cast<catalog::oid_t>(row[catalog::pg_constraint_col::oid].value<std::uint32_t>());
                 if (direction == direction_t::outgoing) {
-                    fk.child_table_oid  = table_oid;
-                    fk.parent_table_oid = static_cast<catalog::oid_t>(row[catalog::pg_constraint_col::confrelid].value<std::uint32_t>());
+                    fk.child_table_oid = table_oid;
+                    fk.parent_table_oid =
+                        static_cast<catalog::oid_t>(row[catalog::pg_constraint_col::confrelid].value<std::uint32_t>());
                 } else {
-                    fk.child_table_oid  = static_cast<catalog::oid_t>(row[catalog::pg_constraint_col::conrelid].value<std::uint32_t>());
+                    fk.child_table_oid =
+                        static_cast<catalog::oid_t>(row[catalog::pg_constraint_col::conrelid].value<std::uint32_t>());
                     fk.parent_table_oid = table_oid;
                 }
-                fk.matchtype  = row[catalog::pg_constraint_col::confmatch].is_null()   ? 's' : row[catalog::pg_constraint_col::confmatch].value<std::string_view>()[0];
-                fk.del_action = row[catalog::pg_constraint_col::confdeltype].is_null() ? 'a' : row[catalog::pg_constraint_col::confdeltype].value<std::string_view>()[0];
-                fk.upd_action = row[catalog::pg_constraint_col::confupdtype].is_null() ? 'a' : row[catalog::pg_constraint_col::confupdtype].value<std::string_view>()[0];
+                fk.matchtype = row[catalog::pg_constraint_col::confmatch].is_null()
+                                   ? 's'
+                                   : row[catalog::pg_constraint_col::confmatch].value<std::string_view>()[0];
+                fk.del_action = row[catalog::pg_constraint_col::confdeltype].is_null()
+                                    ? 'a'
+                                    : row[catalog::pg_constraint_col::confdeltype].value<std::string_view>()[0];
+                fk.upd_action = row[catalog::pg_constraint_col::confupdtype].is_null()
+                                    ? 'a'
+                                    : row[catalog::pg_constraint_col::confupdtype].value<std::string_view>()[0];
 
-                const auto child_attoids  = catalog::parse_oid_csv(
-                    row[catalog::pg_constraint_col::conkey].is_null()  ? std::string{} : std::string(row[catalog::pg_constraint_col::conkey].value<std::string_view>()));
+                const auto child_attoids = catalog::parse_oid_csv(
+                    row[catalog::pg_constraint_col::conkey].is_null()
+                        ? std::string{}
+                        : std::string(row[catalog::pg_constraint_col::conkey].value<std::string_view>()));
                 const auto parent_attoids = catalog::parse_oid_csv(
-                    row[catalog::pg_constraint_col::confkey].is_null() ? std::string{} : std::string(row[catalog::pg_constraint_col::confkey].value<std::string_view>()));
+                    row[catalog::pg_constraint_col::confkey].is_null()
+                        ? std::string{}
+                        : std::string(row[catalog::pg_constraint_col::confkey].value<std::string_view>()));
 
                 types::logical_value_t child_lv(resource_, fk.child_table_oid);
                 std::pmr::vector<std::string> attr_c_keys(resource_);
                 attr_c_keys.emplace_back("attrelid");
                 std::pmr::vector<types::logical_value_t> attr_c_vals(resource_);
                 attr_c_vals.emplace_back(child_lv);
-                auto [_a, fut_attr_c] = actor_zeta::send(
-                    ctx->disk_address,
-                    &services::disk::manager_disk_t::read_rows_by_key,
-                    exec_ctx, kPgAttribute,
-                    std::move(attr_c_keys),
-                    std::move(attr_c_vals));
+                auto [_a, fut_attr_c] = actor_zeta::send(ctx->disk_address,
+                                                         &services::disk::manager_disk_t::read_rows_by_key,
+                                                         exec_ctx,
+                                                         kPgAttribute,
+                                                         std::move(attr_c_keys),
+                                                         std::move(attr_c_vals));
                 auto child_attr = co_await std::move(fut_attr_c);
                 fk.child_col_names = catalog::attoids_to_names(child_attr, child_attoids);
 
@@ -141,17 +154,19 @@ namespace components::operators {
                     child_cols.reserve(child_attr.size());
                     struct row_meta_t {
                         std::int32_t attnum{0};
-                        std::string  attname;
-                        std::string  attdefspec;
+                        std::string attname;
+                        std::string attdefspec;
                     };
                     std::vector<row_meta_t> ordered;
                     ordered.reserve(child_attr.size());
-                    constexpr std::uint64_t kAttnum       = 4;
+                    constexpr std::uint64_t kAttnum = 4;
                     constexpr std::uint64_t kAttisdropped = 7;
-                    constexpr std::uint64_t kAttdefspec   = 9;
+                    constexpr std::uint64_t kAttdefspec = 9;
                     for (const auto& row : child_attr) {
-                        if (row.size() <= kAttisdropped) continue;
-                        if (!row[kAttisdropped].is_null() && row[kAttisdropped].value<bool>()) continue;
+                        if (row.size() <= kAttisdropped)
+                            continue;
+                        if (!row[kAttisdropped].is_null() && row[kAttisdropped].value<bool>())
+                            continue;
                         row_meta_t r;
                         if (!row[catalog::pg_attribute_col::attname].is_null()) {
                             r.attname.assign(row[catalog::pg_attribute_col::attname].value<std::string_view>());
@@ -162,16 +177,15 @@ namespace components::operators {
                         }
                         ordered.push_back(std::move(r));
                     }
-                    std::sort(ordered.begin(), ordered.end(),
-                              [](const row_meta_t& a, const row_meta_t& b) {
-                                  return a.attnum < b.attnum;
-                              });
+                    std::sort(ordered.begin(), ordered.end(), [](const row_meta_t& a, const row_meta_t& b) {
+                        return a.attnum < b.attnum;
+                    });
                     for (const auto& col_name : fk.child_col_names) {
                         std::size_t pos = std::numeric_limits<std::size_t>::max();
                         std::string def_spec;
                         for (std::size_t i = 0; i < ordered.size(); ++i) {
                             if (ordered[i].attname == col_name) {
-                                pos      = i;
+                                pos = i;
                                 def_spec = ordered[i].attdefspec;
                                 break;
                             }
@@ -186,12 +200,12 @@ namespace components::operators {
                 attr_p_keys.emplace_back("attrelid");
                 std::pmr::vector<types::logical_value_t> attr_p_vals(resource_);
                 attr_p_vals.emplace_back(parent_lv);
-                auto [_b, fut_attr_p] = actor_zeta::send(
-                    ctx->disk_address,
-                    &services::disk::manager_disk_t::read_rows_by_key,
-                    exec_ctx, kPgAttribute,
-                    std::move(attr_p_keys),
-                    std::move(attr_p_vals));
+                auto [_b, fut_attr_p] = actor_zeta::send(ctx->disk_address,
+                                                         &services::disk::manager_disk_t::read_rows_by_key,
+                                                         exec_ctx,
+                                                         kPgAttribute,
+                                                         std::move(attr_p_keys),
+                                                         std::move(attr_p_vals));
                 auto parent_attr = co_await std::move(fut_attr_p);
                 fk.parent_col_names = catalog::attoids_to_names(parent_attr, parent_attoids);
 
@@ -204,12 +218,12 @@ namespace components::operators {
                     cls_keys.emplace_back("oid");
                     std::pmr::vector<types::logical_value_t> cls_vals(resource_);
                     cls_vals.emplace_back(child_oid_lv);
-                    auto [_cls, fut_cls] = actor_zeta::send(
-                        ctx->disk_address,
-                        &services::disk::manager_disk_t::read_rows_by_key,
-                        exec_ctx, kPgClass,
-                        std::move(cls_keys),
-                        std::move(cls_vals));
+                    auto [_cls, fut_cls] = actor_zeta::send(ctx->disk_address,
+                                                            &services::disk::manager_disk_t::read_rows_by_key,
+                                                            exec_ctx,
+                                                            kPgClass,
+                                                            std::move(cls_keys),
+                                                            std::move(cls_vals));
                     auto cls_rows = co_await std::move(fut_cls);
                     if (!cls_rows.empty() && cls_rows[0].size() > catalog::pg_class_col::relname) {
                         fk.child_collection_name =
@@ -222,12 +236,12 @@ namespace components::operators {
                         ns_keys.emplace_back("oid");
                         std::pmr::vector<types::logical_value_t> ns_vals(resource_);
                         ns_vals.emplace_back(ns_oid_lv);
-                        auto [_ns, fut_ns] = actor_zeta::send(
-                            ctx->disk_address,
-                            &services::disk::manager_disk_t::read_rows_by_key,
-                            exec_ctx, kPgNamespace,
-                            std::move(ns_keys),
-                            std::move(ns_vals));
+                        auto [_ns, fut_ns] = actor_zeta::send(ctx->disk_address,
+                                                              &services::disk::manager_disk_t::read_rows_by_key,
+                                                              exec_ctx,
+                                                              kPgNamespace,
+                                                              std::move(ns_keys),
+                                                              std::move(ns_vals));
                         auto ns_rows = co_await std::move(fut_ns);
                         if (!ns_rows.empty() && ns_rows[0].size() > catalog::pg_namespace_col::nspname) {
                             fk.child_schema =
@@ -240,9 +254,11 @@ namespace components::operators {
                     fks.push_back(std::move(fk));
                 }
             } else if (contype == 'c' && direction == direction_t::outgoing) {
-                if (row[catalog::pg_constraint_col::conexpr].is_null()) continue;
+                if (row[catalog::pg_constraint_col::conexpr].is_null())
+                    continue;
                 const auto conexpr_sv = row[catalog::pg_constraint_col::conexpr].value<std::string_view>();
-                if (conexpr_sv.empty()) continue;
+                if (conexpr_sv.empty())
+                    continue;
                 std::string name;
                 if (!row[catalog::pg_constraint_col::conname].is_null()) {
                     name = std::string(row[catalog::pg_constraint_col::conname].value<std::string_view>());

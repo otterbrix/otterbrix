@@ -32,8 +32,7 @@ using session_id_t = components::session::session_id_t;
 
 namespace {
     std::string clean_break_dir() {
-        static std::string p =
-            "/tmp/test_otterbrix_clean_break_" + std::to_string(::getpid());
+        static std::string p = "/tmp/test_otterbrix_clean_break_" + std::to_string(::getpid());
         return p;
     }
 
@@ -82,13 +81,14 @@ TEST_CASE("integration::clean_break_startup::fresh_install_creates_pg_catalog") 
     // On-disk layout is oid-keyed (<db_oid>/<tbl_oid>/table.otbx) — system
     // tables live under well_known_oid::main_database. Count .otbx files
     // under that directory.
-    auto sys = std::filesystem::path(dir) /
-               std::to_string(static_cast<unsigned>(well_known_oid::main_database));
+    auto sys = std::filesystem::path(dir) / std::to_string(static_cast<unsigned>(well_known_oid::main_database));
     REQUIRE(std::filesystem::exists(sys));
     size_t count = 0;
     for (const auto& tbl_dir : std::filesystem::directory_iterator(sys)) {
-        if (!tbl_dir.is_directory()) continue;
-        if (std::filesystem::exists(tbl_dir.path() / "table.otbx")) ++count;
+        if (!tbl_dir.is_directory())
+            continue;
+        if (std::filesystem::exists(tbl_dir.path() / "table.otbx"))
+            ++count;
     }
     REQUIRE(count == all_system_tables().size());
     std::filesystem::remove_all(dir);
@@ -126,11 +126,11 @@ TEST_CASE("integration::clean_break_startup::oid_generator_seeded_max_plus_1") {
         }
         // Checkpoint so on-disk metadata is up to date.
         auto [_, cf] = actor_zeta::otterbrix::send(fd.manager->address(),
-                                                     &manager_disk_t::checkpoint_all,
-                                                     session_id_t{},
-                                                     services::wal::id_t{0});
+                                                   &manager_disk_t::checkpoint_all,
+                                                   session_id_t{},
+                                                   services::wal::id_t{0});
         fd.scheduler->run(10000);
-        (void)std::move(cf).get();
+        (void) std::move(cf).get();
     }
     {
         fresh_disk fd2(dir);
@@ -153,22 +153,22 @@ TEST_CASE("integration::clean_break_startup::namespace_round_trip") {
         fd.manager->bootstrap_system_tables_sync();
         ns_oid = test_create_namespace(fd, "durable_ns");
         auto [_, cf] = actor_zeta::otterbrix::send(fd.manager->address(),
-                                                      &manager_disk_t::checkpoint_all,
-                                                      session_id_t{},
-                                                      services::wal::id_t{0});
+                                                   &manager_disk_t::checkpoint_all,
+                                                   session_id_t{},
+                                                   services::wal::id_t{0});
         fd.scheduler->run(10000);
-        (void)std::move(cf).get();
+        (void) std::move(cf).get();
     }
     {
         fresh_disk fd2(dir);
         fd2.manager->load_system_tables_sync();
         fd2.manager->restore_oid_generator_sync();
-        components::execution_context_t ctx{session_id_t{},
-                                             components::table::transaction_data{0, 0}, {}};
+        components::execution_context_t ctx{session_id_t{}, components::table::transaction_data{0, 0}, {}};
         auto [_, fut] = actor_zeta::otterbrix::send(fd2.manager->address(),
-                                                      &manager_disk_t::resolve_namespace,
-                                                      ctx, std::string("durable_ns"),
-                                                      std::uint64_t{0});
+                                                    &manager_disk_t::resolve_namespace,
+                                                    ctx,
+                                                    std::string("durable_ns"),
+                                                    std::uint64_t{0});
         fd2.scheduler->run(10000);
         auto rr = std::move(fut).get();
         REQUIRE(rr.found);
@@ -189,35 +189,35 @@ TEST_CASE("integration::clean_break_startup::table_round_trip_with_columns") {
         fd.manager->bootstrap_system_tables_sync();
         auto ns_oid = test_create_namespace(fd, "ns");
         std::vector<components::table::column_definition_t> cols;
-        cols.emplace_back("id",
-                           components::types::complex_logical_type{components::types::logical_type::BIGINT});
+        cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         tbl_oid = test_create_table(fd, ns_oid, "tbl", std::move(cols));
         auto [_, cf] = actor_zeta::otterbrix::send(fd.manager->address(),
-                                                       &manager_disk_t::checkpoint_all,
-                                                       session_id_t{},
-                                                       services::wal::id_t{0});
+                                                   &manager_disk_t::checkpoint_all,
+                                                   session_id_t{},
+                                                   services::wal::id_t{0});
         fd.scheduler->run(10000);
-        (void)std::move(cf).get();
+        (void) std::move(cf).get();
     }
     {
         fresh_disk fd2(dir);
         fd2.manager->load_system_tables_sync();
         fd2.manager->restore_oid_generator_sync();
-        components::execution_context_t ctx{session_id_t{},
-                                             components::table::transaction_data{0, 0}, {}};
+        components::execution_context_t ctx{session_id_t{}, components::table::transaction_data{0, 0}, {}};
         auto [_, nfut] = actor_zeta::otterbrix::send(fd2.manager->address(),
-                                                      &manager_disk_t::resolve_namespace,
-                                                      ctx, std::string("ns"),
-                                                      std::uint64_t{0});
+                                                     &manager_disk_t::resolve_namespace,
+                                                     ctx,
+                                                     std::string("ns"),
+                                                     std::uint64_t{0});
         fd2.scheduler->run(10000);
         auto rns = std::move(nfut).get();
         REQUIRE(rns.found);
 
         auto [__, tfut] = actor_zeta::otterbrix::send(fd2.manager->address(),
-                                                       &manager_disk_t::resolve_table,
-                                                       ctx, rns.oid,
-                                                       std::string("tbl"),
-                                                       std::uint64_t{0});
+                                                      &manager_disk_t::resolve_table,
+                                                      ctx,
+                                                      rns.oid,
+                                                      std::string("tbl"),
+                                                      std::uint64_t{0});
         fd2.scheduler->run(10000);
         auto rt = std::move(tfut).get();
         REQUIRE(rt.found);
@@ -241,30 +241,29 @@ TEST_CASE("integration::clean_break_startup::index_round_trip") {
         fd.manager->bootstrap_system_tables_sync();
         ns_oid = test_create_namespace(fd, "idx_ns");
         std::vector<components::table::column_definition_t> cols;
-        cols.emplace_back("id",
-                           components::types::complex_logical_type{components::types::logical_type::BIGINT});
+        cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         auto tbl_oid = test_create_table(fd, ns_oid, "tbl", std::move(cols));
         idx_oid = test_create_index(fd, ns_oid, tbl_oid, "tbl_idx", std::vector<std::string>{"id"});
 
         auto [_c, cf] = actor_zeta::otterbrix::send(fd.manager->address(),
-                                                     &manager_disk_t::checkpoint_all,
-                                                     session_id_t{},
-                                                     services::wal::id_t{0});
+                                                    &manager_disk_t::checkpoint_all,
+                                                    session_id_t{},
+                                                    services::wal::id_t{0});
         fd.scheduler->run(10000);
-        (void)std::move(cf).get();
+        (void) std::move(cf).get();
     }
     {
         fresh_disk fd2(dir);
         fd2.manager->load_system_tables_sync();
         fd2.manager->restore_oid_generator_sync();
-        components::execution_context_t ctx{session_id_t{},
-                                             components::table::transaction_data{0, 0}, {}};
+        components::execution_context_t ctx{session_id_t{}, components::table::transaction_data{0, 0}, {}};
         // Index lives in pg_class with relkind='i'; resolve_table finds it by name.
         auto [_, ifut] = actor_zeta::otterbrix::send(fd2.manager->address(),
-                                                      &manager_disk_t::resolve_table,
-                                                      ctx, ns_oid,
-                                                      std::string("tbl_idx"),
-                                                      std::uint64_t{0});
+                                                     &manager_disk_t::resolve_table,
+                                                     ctx,
+                                                     ns_oid,
+                                                     std::string("tbl_idx"),
+                                                     std::uint64_t{0});
         fd2.scheduler->run(10000);
         auto ri = std::move(ifut).get();
         REQUIRE(ri.found);
@@ -287,22 +286,22 @@ TEST_CASE("integration::clean_break_startup::resolve_after_restart") {
         fd.manager->bootstrap_system_tables_sync();
         test_create_namespace(fd, "post_restart");
         auto [_, cf] = actor_zeta::otterbrix::send(fd.manager->address(),
-                                                      &manager_disk_t::checkpoint_all,
-                                                      session_id_t{},
-                                                      services::wal::id_t{0});
+                                                   &manager_disk_t::checkpoint_all,
+                                                   session_id_t{},
+                                                   services::wal::id_t{0});
         fd.scheduler->run(10000);
-        (void)std::move(cf).get();
+        (void) std::move(cf).get();
     }
     {
         fresh_disk fd2(dir);
         fd2.manager->load_system_tables_sync();
         fd2.manager->restore_oid_generator_sync();
-        components::execution_context_t ctx{session_id_t{},
-                                             components::table::transaction_data{0, 0}, {}};
+        components::execution_context_t ctx{session_id_t{}, components::table::transaction_data{0, 0}, {}};
         auto [_, fut] = actor_zeta::otterbrix::send(fd2.manager->address(),
-                                                      &manager_disk_t::resolve_namespace,
-                                                      ctx, std::string("post_restart"),
-                                                      std::uint64_t{0});
+                                                    &manager_disk_t::resolve_namespace,
+                                                    ctx,
+                                                    std::string("post_restart"),
+                                                    std::uint64_t{0});
         fd2.scheduler->run(10000);
         auto rns = std::move(fut).get();
         REQUIRE(rns.found);
@@ -322,17 +321,16 @@ TEST_CASE("integration::clean_break_startup::sequence_view_macro_via_pg_class") 
         fresh_disk fd(dir);
         fd.manager->bootstrap_system_tables_sync();
         auto ns_oid = test_create_namespace(fd, "ns");
-        seq_oid = test_create_sequence(fd, ns_oid, "seq1", 1, 1, 1,
-                                        std::numeric_limits<std::int64_t>::max(), false);
+        seq_oid = test_create_sequence(fd, ns_oid, "seq1", 1, 1, 1, std::numeric_limits<std::int64_t>::max(), false);
         view_oid = test_create_view(fd, ns_oid, "v1");
         macro_oid = test_create_macro(fd, ns_oid, "m1");
 
         auto [_, cf] = actor_zeta::otterbrix::send(fd.manager->address(),
-                                                      &manager_disk_t::checkpoint_all,
-                                                      session_id_t{},
-                                                      services::wal::id_t{0});
+                                                   &manager_disk_t::checkpoint_all,
+                                                   session_id_t{},
+                                                   services::wal::id_t{0});
         fd.scheduler->run(10000);
-        (void)std::move(cf).get();
+        (void) std::move(cf).get();
     }
     {
         fresh_disk fd2(dir);
@@ -387,4 +385,3 @@ TEST_CASE("integration::clean_break_startup::wal_replay_split_pg_catalog_first")
             "replay sequentially, user collections in parallel — see test_wal_pool for the "
             "replay path itself");
 }
-

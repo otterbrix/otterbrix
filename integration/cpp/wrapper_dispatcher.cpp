@@ -55,8 +55,8 @@ namespace otterbrix {
         // sibling catalog_resolve_namespace_t wrapped in a sequence_t. Pass 1
         // in the dispatcher resolves namespace_oid and stamps it on the drop.
         auto drop = components::logical_plan::make_node_drop_database(resource());
-        components::logical_plan::node_ptr plan = components::sql::transform::maybe_wrap_with_catalog_resolve_namespace(
-            resource(), database, drop);
+        components::logical_plan::node_ptr plan =
+            components::sql::transform::maybe_wrap_with_catalog_resolve_namespace(resource(), database, drop);
         return send_plan(session, plan, components::logical_plan::make_parameter_node(resource()));
     }
 
@@ -70,8 +70,8 @@ namespace otterbrix {
                                                                             core::relname_t{collection},
                                                                             std::move(column_definitions),
                                                                             std::move(constraints));
-        components::logical_plan::node_ptr plan = components::sql::transform::maybe_wrap_with_catalog_resolve_namespace(
-            resource(), database, create);
+        components::logical_plan::node_ptr plan =
+            components::sql::transform::maybe_wrap_with_catalog_resolve_namespace(resource(), database, create);
         return send_plan(session, plan, components::logical_plan::make_parameter_node(resource()));
     }
 
@@ -82,8 +82,8 @@ namespace otterbrix {
         // sibling catalog_resolve_namespace / catalog_resolve_table nodes wrapped
         // in a sequence_t. Pass 1 stamps namespace_oid + table_oid on the drop.
         auto drop = components::logical_plan::make_node_drop_collection(resource());
-        components::logical_plan::node_ptr plan = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-            resource(), database, collection, drop);
+        components::logical_plan::node_ptr plan =
+            components::sql::transform::maybe_wrap_with_catalog_resolve_table(resource(), database, collection, drop);
         return send_plan(session, plan, components::logical_plan::make_parameter_node(resource()));
     }
 
@@ -121,10 +121,12 @@ namespace otterbrix {
         // itself carries only payload + table_oid() stamped at enrich time.
         const std::string db = condition->dbname();
         const std::string rel = condition->relname();
-        components::logical_plan::node_ptr del =
-            components::logical_plan::make_node_delete_one(resource(), condition);
+        components::logical_plan::node_ptr del = components::logical_plan::make_node_delete_one(resource(), condition);
         auto plan = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-            resource(), db, rel, std::move(del),
+            resource(),
+            db,
+            rel,
+            std::move(del),
             components::sql::transform::constraint_resolve_kind::referencing);
         return send_plan(session, std::move(plan), std::move(params));
     }
@@ -139,10 +141,12 @@ namespace otterbrix {
               condition->relname());
         const std::string db = condition->dbname();
         const std::string rel = condition->relname();
-        components::logical_plan::node_ptr del =
-            components::logical_plan::make_node_delete_many(resource(), condition);
+        components::logical_plan::node_ptr del = components::logical_plan::make_node_delete_many(resource(), condition);
         auto plan = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-            resource(), db, rel, std::move(del),
+            resource(),
+            db,
+            rel,
+            std::move(del),
             components::sql::transform::constraint_resolve_kind::referencing);
         return send_plan(session, std::move(plan), std::move(params));
     }
@@ -162,7 +166,10 @@ namespace otterbrix {
         components::logical_plan::node_ptr upd =
             components::logical_plan::make_node_update_one(resource(), condition, updates, upsert);
         auto plan = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-            resource(), db, rel, std::move(upd),
+            resource(),
+            db,
+            rel,
+            std::move(upd),
             components::sql::transform::constraint_resolve_kind::outgoing);
         return send_plan(session, std::move(plan), std::move(params));
     }
@@ -182,7 +189,10 @@ namespace otterbrix {
         components::logical_plan::node_ptr upd =
             components::logical_plan::make_node_update_many(resource(), condition, updates, upsert);
         auto plan = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-            resource(), db, rel, std::move(upd),
+            resource(),
+            db,
+            rel,
+            std::move(upd),
             components::sql::transform::constraint_resolve_kind::outgoing);
         return send_plan(session, std::move(plan), std::move(params));
     }
@@ -229,16 +239,18 @@ namespace otterbrix {
                                             components::logical_plan::node_create_index_ptr node)
         -> components::cursor::cursor_t_ptr {
         trace(log_, "wrapper_dispatcher_t::create_index session: {}, index: {}", session.data(), node->name());
-        components::logical_plan::node_ptr plan = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
-            resource(), dbname, relname, node);
+        components::logical_plan::node_ptr plan =
+            components::sql::transform::maybe_wrap_with_catalog_resolve_table(resource(), dbname, relname, node);
         return send_plan(session, plan, components::logical_plan::make_parameter_node(resource()));
     }
 
     auto wrapper_dispatcher_t::drop_index(const session_id_t& session,
                                           components::logical_plan::node_drop_index_ptr node)
         -> components::cursor::cursor_t_ptr {
-        trace(log_, "wrapper_dispatcher_t::drop_index session: {}, index_oid: {}",
-              session.data(), static_cast<unsigned>(node->index_oid()));
+        trace(log_,
+              "wrapper_dispatcher_t::drop_index session: {}, index_oid: {}",
+              session.data(),
+              static_cast<unsigned>(node->index_oid()));
         return send_plan(session, node, components::logical_plan::make_parameter_node(resource()));
     }
 

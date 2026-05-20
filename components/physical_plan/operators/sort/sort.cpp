@@ -34,8 +34,7 @@ namespace components::sort {
 
     } // anonymous namespace
 
-    int columnar_sorter_t::compare_raw(const vector::vector_t& va, size_t a,
-                                       const vector::vector_t& vb, size_t b) {
+    int columnar_sorter_t::compare_raw(const vector::vector_t& va, size_t a, const vector::vector_t& vb, size_t b) {
         // Handle NULLs: NULLs sort last
         bool a_null = va.is_null(a);
         bool b_null = vb.is_null(b);
@@ -86,8 +85,10 @@ namespace components::sort {
         }
     }
 
-    int columnar_sorter_t::compare_cross(const vector::data_chunk_t& a, size_t row_a,
-                                         const vector::data_chunk_t& b, size_t row_b) const {
+    int columnar_sorter_t::compare_cross(const vector::data_chunk_t& a,
+                                         size_t row_a,
+                                         const vector::data_chunk_t& b,
+                                         size_t row_b) const {
         for (const auto& k : keys_) {
             assert(!k.col_path.empty());
             const auto* va = a.at(k.col_path);

@@ -21,7 +21,6 @@ namespace components::planner {
     //
     // Schema info is read from the plan tree itself (sibling resolves);
     // the optimizer is self-contained and needs no external catalog handle.
-    logical_plan::node_ptr post_validate_optimize(std::pmr::memory_resource* resource,
-                                                  logical_plan::node_ptr node);
+    logical_plan::node_ptr post_validate_optimize(std::pmr::memory_resource* resource, logical_plan::node_ptr node);
 
 } // namespace components::planner

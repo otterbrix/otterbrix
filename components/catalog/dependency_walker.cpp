@@ -26,8 +26,10 @@ namespace components::catalog {
                  const fetch_deps_fn& fetch_deps,
                  oid_t cls,
                  oid_t oid) {
-            if (st.cycle_at != INVALID_OID) return; // propagating up after cycle hit
-            if (st.black.count(oid)) return;
+            if (st.cycle_at != INVALID_OID)
+                return; // propagating up after cycle hit
+            if (st.black.count(oid))
+                return;
             if (st.gray.count(oid)) {
                 st.cycle_at = oid;
                 return;
@@ -36,7 +38,8 @@ namespace components::catalog {
 
             for (const auto& dep : fetch_deps(resource, cls, oid)) {
                 dfs(st, resource, fetch_deps, dep.classid, dep.objid);
-                if (st.cycle_at != INVALID_OID) return;
+                if (st.cycle_at != INVALID_OID)
+                    return;
                 st.order.push_back(dep);
             }
 
@@ -45,12 +48,11 @@ namespace components::catalog {
         }
     } // namespace
 
-    std::pmr::vector<dependency_t>
-    topological_drop_order(std::pmr::memory_resource* resource,
-                           oid_t seed_cls,
-                           oid_t seed_oid,
-                           const fetch_deps_fn& fetch_deps,
-                           oid_t& cycle_at) {
+    std::pmr::vector<dependency_t> topological_drop_order(std::pmr::memory_resource* resource,
+                                                          oid_t seed_cls,
+                                                          oid_t seed_oid,
+                                                          const fetch_deps_fn& fetch_deps,
+                                                          oid_t& cycle_at) {
         walk_state st{resource};
         dfs(st, resource, fetch_deps, seed_cls, seed_oid);
         cycle_at = st.cycle_at;

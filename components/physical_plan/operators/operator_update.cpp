@@ -24,8 +24,7 @@ namespace components::operators {
 
     void operator_update::accept_resolved_metadata(resolved_table_metadata_t metadata) {
         // See operator_insert for the contract.
-        if (table_oid_ == components::catalog::INVALID_OID &&
-            metadata.table_oid != components::catalog::INVALID_OID) {
+        if (table_oid_ == components::catalog::INVALID_OID && metadata.table_oid != components::catalog::INVALID_OID) {
             table_oid_ = metadata.table_oid;
         }
         resolved_metadata_ = std::move(metadata);
@@ -60,7 +59,7 @@ namespace components::operators {
                     for (const auto& expr : updates_) {
                         expr->execute(empty_left, empty_right, 0, 0, &pipeline_context->parameters);
                     }
-                    (void)out_chunk;
+                    (void) out_chunk;
                     modified_ = operators::make_operator_write_data(resource);
                 }
             } else {
@@ -101,19 +100,12 @@ namespace components::operators {
                                 }
                                 out_chunk.row_ids.data<int64_t>()[index] = chunk_left.row_ids.data<int64_t>()[i];
                                 for (size_t k = 0; k < chunk_left.column_count(); ++k) {
-                                    vector::vector_ops::copy(chunk_left.data[k],
-                                                             out_chunk.data[k],
-                                                             i + 1,
-                                                             i,
-                                                             index);
+                                    vector::vector_ops::copy(chunk_left.data[k], out_chunk.data[k], i + 1, i, index);
                                 }
                                 bool modified = false;
                                 for (const auto& expr : updates_) {
-                                    modified |= expr->execute(out_chunk,
-                                                              chunk_right,
-                                                              index,
-                                                              j,
-                                                              &pipeline_context->parameters);
+                                    modified |=
+                                        expr->execute(out_chunk, chunk_right, index, j, &pipeline_context->parameters);
                                 }
                                 if (modified) {
                                     modified_->append(index);
@@ -216,8 +208,7 @@ namespace components::operators {
         }
     }
 
-    actor_zeta::unique_future<void>
-    operator_update::await_async_and_resume(pipeline::context_t* ctx) {
+    actor_zeta::unique_future<void> operator_update::await_async_and_resume(pipeline::context_t* ctx) {
         using components::vector::data_chunk_t;
         using components::vector::vector_t;
 
@@ -260,29 +251,27 @@ namespace components::operators {
         auto data_copy = std::make_unique<data_chunk_t>(resource_, out_chunk.types(), out_chunk.size());
         out_chunk.copy(*data_copy, 0);
         auto [_u, uf] = actor_zeta::send(ctx->disk_address,
-                                          &services::disk::manager_disk_t::storage_update,
-                                          exec_ctx,
-                                          table_oid_,
-                                          std::move(row_ids),
-                                          std::move(data_copy));
+                                         &services::disk::manager_disk_t::storage_update,
+                                         exec_ctx,
+                                         table_oid_,
+                                         std::move(row_ids),
+                                         std::move(data_copy));
         auto [upd_row_start, upd_row_count] = co_await std::move(uf);
 
         // 3. WAL physical_update.
         if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
             auto upd_count = static_cast<uint64_t>(wal_row_ids.size());
             auto [_w, wf] = actor_zeta::send(ctx->wal_address,
-                                              &services::wal::manager_wal_replicate_t::write_physical_update,
-                                              ctx->session,
-                                              table_oid_,
-                                              std::move(wal_row_ids),
-                                              std::move(wal_update_data),
-                                              upd_count,
-                                              ctx->txn.transaction_id);
+                                             &services::wal::manager_wal_replicate_t::write_physical_update,
+                                             ctx->session,
+                                             table_oid_,
+                                             std::move(wal_row_ids),
+                                             std::move(wal_update_data),
+                                             upd_count,
+                                             ctx->txn.transaction_id);
             auto wal_id = co_await std::move(wf);
-            auto [_df, dff] = actor_zeta::send(ctx->disk_address,
-                                                 &services::disk::manager_disk_t::flush,
-                                                 ctx->session,
-                                                 wal_id);
+            auto [_df, dff] =
+                actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::flush, ctx->session, wal_id);
             ctx->add_pending_disk_future(std::move(dff));
         }
 
@@ -300,13 +289,13 @@ namespace components::operators {
                     idx_ids.push_back(out_chunk.row_ids.data<int64_t>()[i]);
                 }
                 auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
-                                                    &services::index::manager_index_t::update_rows,
-                                                    exec_ctx,
-                                                    table_oid_,
-                                                    std::move(old_data),
-                                                    std::move(new_data),
-                                                    std::move(idx_ids),
-                                                    static_cast<int64_t>(upd_row_start));
+                                                   &services::index::manager_index_t::update_rows,
+                                                   exec_ctx,
+                                                   table_oid_,
+                                                   std::move(old_data),
+                                                   std::move(new_data),
+                                                   std::move(idx_ids),
+                                                   static_cast<int64_t>(upd_row_start));
                 co_await std::move(ixf);
             }
         }
@@ -315,8 +304,8 @@ namespace components::operators {
         // so both append_row_* and delete_txn_id must be populated.
         ctx->dml_append_row_start = upd_row_start;
         ctx->dml_append_row_count = upd_row_count;
-        ctx->dml_delete_txn_id    = ctx->txn.transaction_id;
-        ctx->dml_table_oid        = table_oid_;
+        ctx->dml_delete_txn_id = ctx->txn.transaction_id;
+        ctx->dml_table_oid = table_oid_;
 
         // output_ already set by on_execute_impl (contains updated rows).
         mark_executed();

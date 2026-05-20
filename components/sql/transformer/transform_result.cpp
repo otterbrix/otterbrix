@@ -9,10 +9,9 @@ namespace components::sql::transform {
         // for catalog-resolve enrichment. The bind / finalize logic still cares
         // about the consumer type (insert_t carries param_insert_map_; others use
         // param_map_), so dig through the wrapper to find it.
-        components::logical_plan::node_type effective_consumer_type(
-            const components::logical_plan::node_ptr& n) noexcept {
-            if (n && n->type() == components::logical_plan::node_type::sequence_t &&
-                !n->children().empty()) {
+        components::logical_plan::node_type
+        effective_consumer_type(const components::logical_plan::node_ptr& n) noexcept {
+            if (n && n->type() == components::logical_plan::node_type::sequence_t && !n->children().empty()) {
                 return n->children().back()->type();
             }
             return n ? n->type() : components::logical_plan::node_type::alias_t;
@@ -70,8 +69,8 @@ namespace components::sql::transform {
 
         bool prev_finalized = std::exchange(finalized_, false);
         auto* consumer = (node_->type() == logical_plan::node_type::sequence_t && !node_->children().empty())
-                              ? node_->children().back().get()
-                              : node_.get();
+                             ? node_->children().back().get()
+                             : node_.get();
         if (effective_consumer_type(node_) == logical_plan::node_type::insert_t) {
             if (prev_finalized) {
                 // first bind after finalize - restore "binding" state of data node
@@ -173,10 +172,9 @@ namespace components::sql::transform {
             if (effective_consumer_type(node_) == logical_plan::node_type::insert_t) {
                 // Reach the insert_t consumer through the sequence_t wrap (if present)
                 // and rewrite its data child with the bound row chunk.
-                auto* consumer =
-                    (node_->type() == logical_plan::node_type::sequence_t && !node_->children().empty())
-                        ? node_->children().back().get()
-                        : node_.get();
+                auto* consumer = (node_->type() == logical_plan::node_type::sequence_t && !node_->children().empty())
+                                     ? node_->children().back().get()
+                                     : node_.get();
                 consumer->children().front() =
                     logical_plan::make_node_raw_data(node_->resource(), std::move(param_insert_rows_));
             }

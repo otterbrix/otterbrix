@@ -17,8 +17,7 @@ namespace services::dispatcher {
     // Resolves a single UNKNOWN type from the plan-tree idx (passed
     // explicitly). Pure sync — Pass 1's resolve_type operators must have
     // stamped the relevant metadata before this is called.
-    void resolve_one_type(components::types::complex_logical_type& ct,
-                          const impl::plan_resolve_index_t* idx);
+    void resolve_one_type(components::types::complex_logical_type& ct, const impl::plan_resolve_index_t* idx);
 
     // Resolves UNKNOWN types in all columns (including STRUCT fields and
     // ARRAY element types) using the plan-tree idx.

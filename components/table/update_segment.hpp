@@ -284,10 +284,10 @@ namespace components::table {
 
         template<typename T>
         static void templated_fetch_committed_range(update_info_t& info,
-                                                   uint64_t start,
-                                                   uint64_t end,
-                                                   uint64_t result_offset,
-                                                   vector::vector_t& result);
+                                                    uint64_t start,
+                                                    uint64_t end,
+                                                    uint64_t result_offset,
+                                                    vector::vector_t& result);
 
         static void
         fetch_row_validity(update_info_t& info, uint64_t row_index, vector::vector_t& result, uint64_t result_index);
@@ -884,10 +884,10 @@ namespace components::table {
 
     template<typename T>
     void update_segment_t::templated_fetch_committed_range(update_info_t& info,
-                                                          uint64_t start,
-                                                          uint64_t end,
-                                                          uint64_t result_offset,
-                                                          vector::vector_t& result) {
+                                                           uint64_t start,
+                                                           uint64_t end,
+                                                           uint64_t result_offset,
+                                                           vector::vector_t& result) {
         auto result_data = result.data<T>();
         merge_update_info_range<T>(info, start, end, result_offset, result_data);
     }

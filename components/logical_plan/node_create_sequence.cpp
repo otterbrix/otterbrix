@@ -31,12 +31,7 @@ namespace components::logical_plan {
                                                        int64_t increment,
                                                        int64_t min_value,
                                                        int64_t max_value) {
-        return {new node_create_sequence_t{resource,
-                                           std::move(seqname),
-                                           start,
-                                           increment,
-                                           min_value,
-                                           max_value}};
+        return {new node_create_sequence_t{resource, std::move(seqname), start, increment, min_value, max_value}};
     }
 
 } // namespace components::logical_plan

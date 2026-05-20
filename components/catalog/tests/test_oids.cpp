@@ -143,8 +143,7 @@ TEST_CASE("test_oid_immutability") {
     }
 
     SECTION("column_definition_t::set_attoid") {
-        components::table::column_definition_t col("price",
-                                                   components::types::logical_type::DOUBLE);
+        components::table::column_definition_t col("price", components::types::logical_type::DOUBLE);
         col.set_attoid(42);
         col.set_attoid(42); // idempotent
         REQUIRE(col.attoid() == 42);

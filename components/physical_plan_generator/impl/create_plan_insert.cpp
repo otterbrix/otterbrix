@@ -13,9 +13,7 @@ namespace services::planner::impl {
                        components::logical_plan::limit_t limit,
                        const components::logical_plan::storage_parameters* params) {
         auto plan = boost::intrusive_ptr(
-            new components::operators::operator_insert(context.resource,
-                                                       context.log.clone(),
-                                                       node->table_oid()));
+            new components::operators::operator_insert(context.resource, context.log.clone(), node->table_oid()));
         plan->set_children(create_plan(context, function_registry, node->children().front(), std::move(limit), params));
 
         return plan;

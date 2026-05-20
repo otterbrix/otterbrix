@@ -1,8 +1,6 @@
 #pragma once
 
-#include <limits>
 #include "agent_disk.hpp"
-#include <components/catalog/dependency_walker.hpp>
 #include "disk_contract.hpp"
 #include <actor-zeta/actor/basic_actor.hpp>
 #include <actor-zeta/actor/dispatch.hpp>
@@ -15,8 +13,13 @@
 #include <actor-zeta/mailbox/message.hpp>
 #include <atomic>
 #include <chrono>
-#include <optional>
+#include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/dependency_walker.hpp>
+#include <components/catalog/results/ddl_result.hpp>
+#include <components/catalog/results/resolve_result.hpp>
 #include <components/configuration/configuration.hpp>
+#include <components/context/execution_context.hpp>
+#include <components/context/pg_catalog_swap.hpp>
 #include <components/log/log.hpp>
 #include <components/physical_plan/operators/operator_write_data.hpp>
 #include <components/storage/storage.hpp>
@@ -30,17 +33,14 @@
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <components/vector/data_chunk.hpp>
-#include <components/catalog/results/ddl_result.hpp>
-#include <components/catalog/results/resolve_result.hpp>
-#include <components/catalog/catalog_oids.hpp>
-#include <components/context/execution_context.hpp>
-#include <components/context/pg_catalog_swap.hpp>
 #include <core/executor.hpp>
-#include <set>
-#include <unordered_set>
+#include <limits>
 #include <mutex>
+#include <optional>
 #include <services/wal/base.hpp>
+#include <set>
 #include <thread>
+#include <unordered_set>
 
 namespace services::disk {
 
@@ -150,19 +150,21 @@ namespace services::disk {
         // checkpointed records. Returns 0 for unknown OIDs.
         uint64_t total_rows_sync(components::catalog::oid_t table_oid) const noexcept {
             auto it = storages_.find(table_oid);
-            if (it == storages_.end()) return 0;
+            if (it == storages_.end())
+                return 0;
             return it->second->table_storage.table().calculate_size();
         }
         // Returns the persisted checkpoint_wal_id for `table_oid` (0 if never checkpointed or unknown).
         wal::id_t checkpoint_wal_id_sync(components::catalog::oid_t table_oid) const noexcept {
             auto it = storages_.find(table_oid);
-            if (it == storages_.end()) return wal::id_t{0};
+            if (it == storages_.end())
+                return wal::id_t{0};
             return it->second->table_storage.checkpoint_wal_id();
         }
 
         // Read the .otbx.wal_id sidecar directly from disk without loading the storage.
         wal::id_t peek_checkpoint_wal_id_from_disk(components::catalog::oid_t table_oid,
-                                                    components::catalog::oid_t database_oid) const noexcept;
+                                                   components::catalog::oid_t database_oid) const noexcept;
 
         // Load a user-table storage from its .otbx file on demand. Called by WAL replay
         // when it encounters a record for a disk-backed table that hasn't been loaded yet.
@@ -208,25 +210,23 @@ namespace services::disk {
         // на disk actor thread и возвращает найденный объект (или {found=false}).
         // Параметр since_version сохранён для совместимости с message dispatch (всегда
         // игнорируется — версионирование больше не используется).
-        unique_future<resolve_namespace_result_t> resolve_namespace(execution_context_t ctx,
-                                                                     std::string name,
-                                                                     std::uint64_t since_version);
+        unique_future<resolve_namespace_result_t>
+        resolve_namespace(execution_context_t ctx, std::string name, std::uint64_t since_version);
         unique_future<resolve_table_result_t> resolve_table(execution_context_t ctx,
-                                                             components::catalog::oid_t namespace_oid,
-                                                             std::string name,
-                                                             std::uint64_t since_version);
+                                                            components::catalog::oid_t namespace_oid,
+                                                            std::string name,
+                                                            std::uint64_t since_version);
         unique_future<resolve_type_result_t> resolve_type(execution_context_t ctx,
-                                                           components::catalog::oid_t namespace_oid,
-                                                           std::string name,
-                                                           std::uint64_t since_version);
+                                                          components::catalog::oid_t namespace_oid,
+                                                          std::string name,
+                                                          std::uint64_t since_version);
         // Sync internal: pg_type → pg_class fallback. Self-recurses for composite STRUCT
         // field references (UNKNOWN-by-name) without going through actor messaging.
-        resolve_type_result_t resolve_type_sync(components::catalog::oid_t namespace_oid,
-                                                 const std::string& name);
+        resolve_type_result_t resolve_type_sync(components::catalog::oid_t namespace_oid, const std::string& name);
         unique_future<resolve_function_result_t> resolve_function(execution_context_t ctx,
-                                                                   components::catalog::oid_t namespace_oid,
-                                                                   std::string name,
-                                                                   std::uint64_t since_version);
+                                                                  components::catalog::oid_t namespace_oid,
+                                                                  std::string name,
+                                                                  std::uint64_t since_version);
 
         // Cross-namespace function lookup: returns ALL pg_proc rows whose proname matches
         // `name`, regardless of pronamespace. Used by the UDF admin paths (#41 Path 2/4):
@@ -234,23 +234,19 @@ namespace services::disk {
         // every row sharing the name. The single-namespace resolve_function above is the
         // hot-path query API; this one is admin-scope and may return an empty vector.
         unique_future<std::pmr::vector<resolve_function_result_t>>
-        resolve_function_by_name(execution_context_t ctx,
-                                  std::string name,
-                                  std::uint64_t since_version);
+        resolve_function_by_name(execution_context_t ctx, std::string name, std::uint64_t since_version);
 
         // V4 admin-path enumerators. Bypass the per-name cache (cache is per-(name, ns_oid)
         // keyed; enumeration of "all namespaces" / "all tables in ns" cannot be served by
         // it). Used by the dispatcher's collections_ rebuild and UDF namespace pick.
-        unique_future<std::pmr::vector<std::string>>
-        list_namespaces(execution_context_t ctx);
+        unique_future<std::pmr::vector<std::string>> list_namespaces(execution_context_t ctx);
 
         // Allocate a batch of fresh OIDs from the disk-local oid_gen_. Called by the
         // dispatcher before invoking planner_t::create_plan for DDL statements, so that
         // the planner can build pg_class / pg_attribute rows without needing async access
         // to the disk actor. Wasted OIDs (plan rejected before execution) are acceptable —
         // same trade-off as PostgreSQL's pre-allocation approach.
-        unique_future<std::vector<components::catalog::oid_t>>
-        allocate_oids_batch(std::size_t count);
+        unique_future<std::vector<components::catalog::oid_t>> allocate_oids_batch(std::size_t count);
 
         // WAL-safe append of a single pre-built row into a pg_catalog table.
         unique_future<components::pg_catalog_append_range_t>
@@ -260,9 +256,9 @@ namespace services::disk {
 
         // WAL-safe delete of all rows where column[oid_col_idx] == target_oid.
         unique_future<void> delete_pg_catalog_rows(execution_context_t ctx,
-                                                    components::catalog::oid_t table_oid,
-                                                    std::int64_t oid_col_idx,
-                                                    components::catalog::oid_t target_oid);
+                                                   components::catalog::oid_t table_oid,
+                                                   std::int64_t oid_col_idx,
+                                                   components::catalog::oid_t target_oid);
 
         // Pure storage scan: row_ids of txn-visible rows in the table with `table_oid`
         // where key_col_names[i] == key_values[i] for every i.
@@ -276,9 +272,9 @@ namespace services::disk {
         // where key_col_names[i] == key_values[i].
         unique_future<std::pmr::vector<std::pmr::vector<components::types::logical_value_t>>>
         read_rows_by_key(execution_context_t ctx,
-                          components::catalog::oid_t table_oid,
-                          std::pmr::vector<std::string> key_col_names,
-                          std::pmr::vector<components::types::logical_value_t> key_values);
+                         components::catalog::oid_t table_oid,
+                         std::pmr::vector<std::string> key_col_names,
+                         std::pmr::vector<components::types::logical_value_t> key_values);
 
         // Physical column compaction. For an IN_MEMORY relkind='g' storage,
         // drop every physical column whose name is NOT in `live_attnames`. Called by
@@ -287,10 +283,9 @@ namespace services::disk {
         // reclaimed. Returns the number of columns physically dropped (0 if storage
         // is DISK-mode, missing, or already compact). DISK-backed storages would
         // need segment rewrites + checkpoint coordination.
-        unique_future<std::uint64_t>
-        compact_relkind_g_storage(execution_context_t ctx,
-                                   components::catalog::oid_t table_oid,
-                                   std::set<std::string> live_attnames);
+        unique_future<std::uint64_t> compact_relkind_g_storage(execution_context_t ctx,
+                                                               components::catalog::oid_t table_oid,
+                                                               std::set<std::string> live_attnames);
 
         // ALTER TABLE ADD COLUMN owned by operator_alter_column_add_t; computed
         // tables maintained via operator_computed_field_register_t.
@@ -333,8 +328,8 @@ namespace services::disk {
 
         // Storage management
         unique_future<void> create_storage(session_id_t session,
-                                            components::catalog::oid_t table_oid,
-                                            components::catalog::oid_t database_oid);
+                                           components::catalog::oid_t table_oid,
+                                           components::catalog::oid_t database_oid);
         unique_future<void> create_storage_with_columns(session_id_t session,
                                                         components::catalog::oid_t table_oid,
                                                         components::catalog::oid_t database_oid,
@@ -373,10 +368,7 @@ namespace services::disk {
                       components::vector::vector_t row_ids,
                       uint64_t count);
         unique_future<std::unique_ptr<components::vector::data_chunk_t>>
-        storage_scan_segment(session_id_t session,
-                              components::catalog::oid_t table_oid,
-                              int64_t start,
-                              uint64_t count);
+        storage_scan_segment(session_id_t session, components::catalog::oid_t table_oid, int64_t start, uint64_t count);
         unique_future<std::pair<uint64_t, uint64_t>>
         storage_append(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
@@ -387,40 +379,34 @@ namespace services::disk {
                        components::catalog::oid_t table_oid,
                        components::vector::vector_t row_ids,
                        std::unique_ptr<components::vector::data_chunk_t> data);
-        unique_future<uint64_t>
-        storage_delete_rows(execution_context_t ctx,
-                             components::catalog::oid_t table_oid,
-                             components::vector::vector_t row_ids,
-                             uint64_t count);
+        unique_future<uint64_t> storage_delete_rows(execution_context_t ctx,
+                                                    components::catalog::oid_t table_oid,
+                                                    components::vector::vector_t row_ids,
+                                                    uint64_t count);
         // MVCC commit/revert
-        unique_future<void>
-        storage_commit_append(execution_context_t ctx,
-                               components::catalog::oid_t table_oid,
-                               uint64_t commit_id,
-                               int64_t row_start,
-                               uint64_t count);
+        unique_future<void> storage_commit_append(execution_context_t ctx,
+                                                  components::catalog::oid_t table_oid,
+                                                  uint64_t commit_id,
+                                                  int64_t row_start,
+                                                  uint64_t count);
         unique_future<void> storage_revert_append(execution_context_t ctx,
-                                                   components::catalog::oid_t table_oid,
-                                                   int64_t row_start,
-                                                   uint64_t count);
-        unique_future<void> storage_commit_delete(execution_context_t ctx,
-                                                   components::catalog::oid_t table_oid,
-                                                   uint64_t commit_id);
+                                                  components::catalog::oid_t table_oid,
+                                                  int64_t row_start,
+                                                  uint64_t count);
+        unique_future<void>
+        storage_commit_delete(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id);
 
         // Batched MVCC swap. Each range carries its own table_oid.
-        unique_future<void>
-        storage_commit_appends(execution_context_t ctx,
-                               uint64_t commit_id,
-                               std::vector<components::pg_catalog_append_range_t> ranges);
+        unique_future<void> storage_commit_appends(execution_context_t ctx,
+                                                   uint64_t commit_id,
+                                                   std::vector<components::pg_catalog_append_range_t> ranges);
 
-        unique_future<void>
-        storage_commit_deletes(execution_context_t ctx,
-                               uint64_t commit_id,
-                               std::set<components::catalog::oid_t> tables);
+        unique_future<void> storage_commit_deletes(execution_context_t ctx,
+                                                   uint64_t commit_id,
+                                                   std::set<components::catalog::oid_t> tables);
 
-        unique_future<void>
-        storage_revert_appends(execution_context_t ctx,
-                               std::vector<components::pg_catalog_append_range_t> ranges);
+        unique_future<void> storage_revert_appends(execution_context_t ctx,
+                                                   std::vector<components::pg_catalog_append_range_t> ranges);
 
         using dispatch_traits = actor_zeta::implements<disk_contract,
                                                        &manager_disk_t::flush,
@@ -472,8 +458,8 @@ namespace services::disk {
                                       std::vector<components::table::column_definition_t> columns,
                                       const std::filesystem::path& otbx_path);
         void load_storage_disk_sync(components::catalog::oid_t table_oid,
-                                     components::catalog::oid_t database_oid,
-                                     const std::filesystem::path& otbx_path);
+                                    components::catalog::oid_t database_oid,
+                                    const std::filesystem::path& otbx_path);
 
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
@@ -514,15 +500,15 @@ namespace services::disk {
                                        std::vector<components::table::column_definition_t> columns,
                                        const std::filesystem::path& otbx_path_in)
                 : table_storage(resource, std::move(columns), otbx_path_in)
-                , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
-                                                                                         resource))
+                , storage(
+                      std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), resource))
                 , otbx_path(otbx_path_in) {}
 
             /// Disk: load existing table.otbx
             collection_storage_entry_t(std::pmr::memory_resource* resource, const std::filesystem::path& otbx_path_in)
                 : table_storage(resource, otbx_path_in)
-                , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
-                                                                                         resource))
+                , storage(
+                      std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), resource))
                 , otbx_path(otbx_path_in) {}
 
             /// Update live in-memory schema: add new column to table_ and recreate the storage adapter.
@@ -542,8 +528,7 @@ namespace services::disk {
                 return true;
             }
         };
-        std::unordered_map<components::catalog::oid_t, std::unique_ptr<collection_storage_entry_t>>
-            storages_;
+        std::unordered_map<components::catalog::oid_t, std::unique_ptr<collection_storage_entry_t>> storages_;
 
         components::storage::storage_t* get_storage(components::catalog::oid_t table_oid);
 
@@ -579,6 +564,5 @@ namespace services::disk {
 
         return std::move(future);
     }
-
 
 } //namespace services::disk

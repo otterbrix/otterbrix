@@ -1088,32 +1088,29 @@ TEST_CASE("integration::cpp::test_sql_features::check_constraint") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(
-                session,
-                "CREATE TABLE TestDatabase.items (id bigint, age bigint, name text);");
+            dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.items (id bigint, age bigint, name text);");
         }
     }
 
     INFO("simple check: age > 0") {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "ALTER TABLE TestDatabase.items ADD CONSTRAINT chk_age CHECK (age > 0);");
+            auto cur =
+                dispatcher->execute_sql(session,
+                                        "ALTER TABLE TestDatabase.items ADD CONSTRAINT chk_age CHECK (age > 0);");
             REQUIRE(cur->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "INSERT INTO TestDatabase.items (id, age, name) VALUES (1, -1, 'bad');");
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.items (id, age, name) VALUES (1, -1, 'bad');");
             REQUIRE(cur->is_error());
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "INSERT INTO TestDatabase.items (id, age, name) VALUES (1, 25, 'alice');");
+            auto cur =
+                dispatcher->execute_sql(session,
+                                        "INSERT INTO TestDatabase.items (id, age, name) VALUES (1, 25, 'alice');");
             INFO("second insert error: " << (cur->is_error() ? cur->get_error().what : "none"));
             REQUIRE(cur->is_success());
         }
@@ -1143,23 +1140,17 @@ TEST_CASE("integration::cpp::test_sql_features::check_constraint") {
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = d2->execute_sql(
-                session,
-                "INSERT INTO TestDatabase.scores (id, val) VALUES (1, 0);");
+            auto cur = d2->execute_sql(session, "INSERT INTO TestDatabase.scores (id, val) VALUES (1, 0);");
             REQUIRE(cur->is_error());
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = d2->execute_sql(
-                session,
-                "INSERT INTO TestDatabase.scores (id, val) VALUES (2, 100);");
+            auto cur = d2->execute_sql(session, "INSERT INTO TestDatabase.scores (id, val) VALUES (2, 100);");
             REQUIRE(cur->is_error());
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = d2->execute_sql(
-                session,
-                "INSERT INTO TestDatabase.scores (id, val) VALUES (3, 50);");
+            auto cur = d2->execute_sql(session, "INSERT INTO TestDatabase.scores (id, val) VALUES (3, 50);");
             REQUIRE(cur->is_success());
         }
     }
@@ -1181,16 +1172,14 @@ TEST_CASE("integration::cpp::test_sql_features::check_constraint") {
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = d3->execute_sql(
-                session,
-                "ALTER TABLE TestDatabase.data ADD CONSTRAINT chk_notnull CHECK (val IS NOT NULL);");
+            auto cur =
+                d3->execute_sql(session,
+                                "ALTER TABLE TestDatabase.data ADD CONSTRAINT chk_notnull CHECK (val IS NOT NULL);");
             REQUIRE(cur->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = d3->execute_sql(
-                session,
-                "INSERT INTO TestDatabase.data (id, val) VALUES (1, 42);");
+            auto cur = d3->execute_sql(session, "INSERT INTO TestDatabase.data (id, val) VALUES (1, 42);");
             REQUIRE(cur->is_success());
         }
     }
@@ -1214,16 +1203,17 @@ TEST_CASE("integration::cpp::test_sql_features::check_constraint_invalid_expr") 
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "CREATE TABLE TestDatabase.items (id bigint, x bigint);")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.items (id bigint, x bigint);")
+                        ->is_success());
         }
     }
 
     INFO("CHECK with function call is rejected at constraint creation") {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                "ALTER TABLE TestDatabase.items ADD CONSTRAINT chk_func CHECK (abs(x) > 0);");
+            auto cur =
+                dispatcher->execute_sql(session,
+                                        "ALTER TABLE TestDatabase.items ADD CONSTRAINT chk_func CHECK (abs(x) > 0);");
             REQUIRE(cur->is_error());
         }
     }
@@ -1231,18 +1221,19 @@ TEST_CASE("integration::cpp::test_sql_features::check_constraint_invalid_expr") 
     INFO("valid CHECK still works after rejection") {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "ALTER TABLE TestDatabase.items ADD CONSTRAINT chk_pos CHECK (x > 0);")->is_success());
+            REQUIRE(
+                dispatcher->execute_sql(session, "ALTER TABLE TestDatabase.items ADD CONSTRAINT chk_pos CHECK (x > 0);")
+                    ->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "INSERT INTO TestDatabase.items (id, x) VALUES (1, -1);")->is_error());
+            REQUIRE(
+                dispatcher->execute_sql(session, "INSERT INTO TestDatabase.items (id, x) VALUES (1, -1);")->is_error());
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "INSERT INTO TestDatabase.items (id, x) VALUES (2, 5);")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO TestDatabase.items (id, x) VALUES (2, 5);")
+                        ->is_success());
         }
     }
 }
@@ -1269,9 +1260,7 @@ TEST_CASE("integration::cpp::test_sql_features::ddl_error_propagation") {
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "CREATE TABLE TestDatabase.items (id bigint, val bigint);");
+            auto cur = dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.items (id bigint, val bigint);");
             REQUIRE(cur->is_success());
         }
     }
@@ -1279,9 +1268,7 @@ TEST_CASE("integration::cpp::test_sql_features::ddl_error_propagation") {
     INFO("alter table: add column propagates success") {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "ALTER TABLE TestDatabase.items ADD COLUMN extra bigint;");
+            auto cur = dispatcher->execute_sql(session, "ALTER TABLE TestDatabase.items ADD COLUMN extra bigint;");
             REQUIRE(cur->is_success());
         }
     }
@@ -1289,9 +1276,7 @@ TEST_CASE("integration::cpp::test_sql_features::ddl_error_propagation") {
     INFO("alter table: drop column propagates success") {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "ALTER TABLE TestDatabase.items DROP COLUMN extra;");
+            auto cur = dispatcher->execute_sql(session, "ALTER TABLE TestDatabase.items DROP COLUMN extra;");
             REQUIRE(cur->is_success());
         }
     }
@@ -1299,9 +1284,9 @@ TEST_CASE("integration::cpp::test_sql_features::ddl_error_propagation") {
     INFO("alter table: add check constraint propagates success") {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "ALTER TABLE TestDatabase.items ADD CONSTRAINT chk_val CHECK (val > 0);");
+            auto cur =
+                dispatcher->execute_sql(session,
+                                        "ALTER TABLE TestDatabase.items ADD CONSTRAINT chk_val CHECK (val > 0);");
             REQUIRE(cur->is_success());
         }
     }
@@ -1309,16 +1294,12 @@ TEST_CASE("integration::cpp::test_sql_features::ddl_error_propagation") {
     INFO("check constraint violation surfaces as error cursor (not silent pass-through)") {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "INSERT INTO TestDatabase.items (id, val) VALUES (1, -5);");
+            auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.items (id, val) VALUES (1, -5);");
             REQUIRE(cur->is_error());
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "INSERT INTO TestDatabase.items (id, val) VALUES (2, 10);");
+            auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.items (id, val) VALUES (2, 10);");
             REQUIRE(cur->is_success());
         }
     }
@@ -1352,13 +1333,15 @@ TEST_CASE("integration::cpp::test_sql_features::check_pred_cache") {
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "CREATE TABLE TestDatabase.items (id bigint, x bigint, extra bigint);")->is_success());
+            REQUIRE(
+                dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.items (id bigint, x bigint, extra bigint);")
+                    ->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "ALTER TABLE TestDatabase.items ADD CONSTRAINT chk_x CHECK (x > 0);")->is_success());
+            REQUIRE(
+                dispatcher->execute_sql(session, "ALTER TABLE TestDatabase.items ADD CONSTRAINT chk_x CHECK (x > 0);")
+                    ->is_success());
         }
     }
 
@@ -1366,8 +1349,8 @@ TEST_CASE("integration::cpp::test_sql_features::check_pred_cache") {
         for (int i = 1; i <= 50; ++i) {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
-                "INSERT INTO TestDatabase.items (id, x, extra) VALUES ("
-                + std::to_string(i) + ", " + std::to_string(i) + ", 0);");
+                                               "INSERT INTO TestDatabase.items (id, x, extra) VALUES (" +
+                                                   std::to_string(i) + ", " + std::to_string(i) + ", 0);");
             REQUIRE(cur->is_success());
         }
     }
@@ -1375,8 +1358,8 @@ TEST_CASE("integration::cpp::test_sql_features::check_pred_cache") {
     INFO("violation still detected after cached inserts") {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                "INSERT INTO TestDatabase.items (id, x, extra) VALUES (99, -1, 0);");
+            auto cur =
+                dispatcher->execute_sql(session, "INSERT INTO TestDatabase.items (id, x, extra) VALUES (99, -1, 0);");
             REQUIRE(cur->is_error());
         }
     }
@@ -1384,8 +1367,8 @@ TEST_CASE("integration::cpp::test_sql_features::check_pred_cache") {
     INFO("valid insert after violation") {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                "INSERT INTO TestDatabase.items (id, x, extra) VALUES (100, 100, 0);");
+            auto cur =
+                dispatcher->execute_sql(session, "INSERT INTO TestDatabase.items (id, x, extra) VALUES (100, 100, 0);");
             REQUIRE(cur->is_success());
         }
     }
@@ -1393,19 +1376,17 @@ TEST_CASE("integration::cpp::test_sql_features::check_pred_cache") {
     INFO("drop extra column invalidates cache (column_count changes), constraint still enforced") {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "ALTER TABLE TestDatabase.items DROP COLUMN extra;")->is_success());
+            REQUIRE(
+                dispatcher->execute_sql(session, "ALTER TABLE TestDatabase.items DROP COLUMN extra;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                "INSERT INTO TestDatabase.items (id, x) VALUES (101, -5);");
+            auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.items (id, x) VALUES (101, -5);");
             REQUIRE(cur->is_error());
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                "INSERT INTO TestDatabase.items (id, x) VALUES (102, 5);");
+            auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.items (id, x) VALUES (102, 5);");
             REQUIRE(cur->is_success());
         }
     }
@@ -1426,36 +1407,41 @@ TEST_CASE("integration::cpp::test_sql_features::fk_enforcement") {
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "CREATE TABLE TestDatabase.departments (id bigint, name text);")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.departments (id bigint, name text);")
+                        ->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "CREATE TABLE TestDatabase.employees "
-                "(id bigint, dept_id bigint, name text);")->is_success());
+            REQUIRE(dispatcher
+                        ->execute_sql(session,
+                                      "CREATE TABLE TestDatabase.employees "
+                                      "(id bigint, dept_id bigint, name text);")
+                        ->is_success());
         }
         {
             // Add FK constraint: employees.dept_id REFERENCES departments.id
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "ALTER TABLE TestDatabase.employees ADD CONSTRAINT fk_dept "
-                "FOREIGN KEY (dept_id) REFERENCES TestDatabase.departments (id);")->is_success());
+            REQUIRE(dispatcher
+                        ->execute_sql(session,
+                                      "ALTER TABLE TestDatabase.employees ADD CONSTRAINT fk_dept "
+                                      "FOREIGN KEY (dept_id) REFERENCES TestDatabase.departments (id);")
+                        ->is_success());
         }
     }
 
     INFO("insert into parent table") {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                "INSERT INTO TestDatabase.departments (id, name) VALUES (1, 'Engineering');");
+            auto cur =
+                dispatcher->execute_sql(session,
+                                        "INSERT INTO TestDatabase.departments (id, name) VALUES (1, 'Engineering');");
             INFO("dept insert error: " << (cur->is_error() ? cur->get_error().what : "none"));
             REQUIRE(cur->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                "INSERT INTO TestDatabase.departments (id, name) VALUES (2, 'HR');");
+            auto cur =
+                dispatcher->execute_sql(session, "INSERT INTO TestDatabase.departments (id, name) VALUES (2, 'HR');");
             REQUIRE(cur->is_success());
         }
     }
@@ -1463,7 +1449,8 @@ TEST_CASE("integration::cpp::test_sql_features::fk_enforcement") {
     INFO("insert child row referencing existing parent: success") {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
+            auto cur = dispatcher->execute_sql(
+                session,
                 "INSERT INTO TestDatabase.employees (id, dept_id, name) VALUES (1, 1, 'Alice');");
             INFO("employee insert error: " << (cur->is_error() ? cur->get_error().what : "none"));
             REQUIRE(cur->is_success());
@@ -1473,7 +1460,8 @@ TEST_CASE("integration::cpp::test_sql_features::fk_enforcement") {
     INFO("insert child row referencing non-existent parent: error") {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
+            auto cur = dispatcher->execute_sql(
+                session,
                 "INSERT INTO TestDatabase.employees (id, dept_id, name) VALUES (2, 99, 'Bob');");
             REQUIRE(cur->is_error());
         }
@@ -1484,7 +1472,7 @@ TEST_CASE("integration::cpp::test_sql_features::fk_enforcement") {
             auto session = otterbrix::session_id_t();
             // NULL dept_id — SIMPLE matchtype skips FK check for NULL
             auto cur = dispatcher->execute_sql(session,
-                "INSERT INTO TestDatabase.employees (id, name) VALUES (3, 'Charlie');");
+                                               "INSERT INTO TestDatabase.employees (id, name) VALUES (3, 'Charlie');");
             INFO("null fk insert error: " << (cur->is_error() ? cur->get_error().what : "none"));
             REQUIRE(cur->is_success());
         }
@@ -1506,40 +1494,41 @@ TEST_CASE("integration::cpp::test_sql_features::fk_cascade_restrict") {
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "CREATE TABLE TestDatabase.parent (id bigint, val text);")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.parent (id bigint, val text);")
+                        ->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "CREATE TABLE TestDatabase.child (id bigint, parent_id bigint);")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.child (id bigint, parent_id bigint);")
+                        ->is_success());
         }
         {
             // RESTRICT: delete parent fails if child references it
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "ALTER TABLE TestDatabase.child ADD CONSTRAINT fk_parent "
-                "FOREIGN KEY (parent_id) REFERENCES TestDatabase.parent (id) "
-                "ON DELETE RESTRICT;")->is_success());
+            REQUIRE(dispatcher
+                        ->execute_sql(session,
+                                      "ALTER TABLE TestDatabase.child ADD CONSTRAINT fk_parent "
+                                      "FOREIGN KEY (parent_id) REFERENCES TestDatabase.parent (id) "
+                                      "ON DELETE RESTRICT;")
+                        ->is_success());
         }
         // Seed data
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "INSERT INTO TestDatabase.parent (id, val) VALUES (1, 'p1');")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO TestDatabase.parent (id, val) VALUES (1, 'p1');")
+                        ->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "INSERT INTO TestDatabase.child (id, parent_id) VALUES (10, 1);")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO TestDatabase.child (id, parent_id) VALUES (10, 1);")
+                        ->is_success());
         }
     }
 
     INFO("delete parent with referencing child: RESTRICT blocks it") {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                "DELETE FROM TestDatabase.parent WHERE id = 1;");
+            auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.parent WHERE id = 1;");
             REQUIRE(cur->is_error());
         }
     }
@@ -1548,13 +1537,12 @@ TEST_CASE("integration::cpp::test_sql_features::fk_cascade_restrict") {
         {
             // Add an unreferenced parent row
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "INSERT INTO TestDatabase.parent (id, val) VALUES (2, 'p2');")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO TestDatabase.parent (id, val) VALUES (2, 'p2');")
+                        ->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                "DELETE FROM TestDatabase.parent WHERE id = 2;");
+            auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.parent WHERE id = 2;");
             INFO("unreferenced delete error: " << (cur->is_error() ? cur->get_error().what : "none"));
             REQUIRE(cur->is_success());
         }
@@ -1576,32 +1564,33 @@ TEST_CASE("integration::cpp::test_sql_features::fk_match_full") {
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "CREATE TABLE TestDatabase.parent (a bigint, b bigint);")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.parent (a bigint, b bigint);")
+                        ->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "CREATE TABLE TestDatabase.child (x bigint, y bigint);")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.child (x bigint, y bigint);")
+                        ->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "ALTER TABLE TestDatabase.child ADD CONSTRAINT fk_full "
-                "FOREIGN KEY (x, y) REFERENCES TestDatabase.parent (a, b) MATCH FULL;")->is_success());
+            REQUIRE(dispatcher
+                        ->execute_sql(session,
+                                      "ALTER TABLE TestDatabase.child ADD CONSTRAINT fk_full "
+                                      "FOREIGN KEY (x, y) REFERENCES TestDatabase.parent (a, b) MATCH FULL;")
+                        ->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "INSERT INTO TestDatabase.parent (a, b) VALUES (1, 2);")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO TestDatabase.parent (a, b) VALUES (1, 2);")
+                        ->is_success());
         }
     }
 
     INFO("all-NULL FK columns: passes (MATCH FULL skips check)") {
         auto session = otterbrix::session_id_t();
         // Both x and y are absent (NULL) — MATCH FULL: all-NULL skips the check
-        auto cur = dispatcher->execute_sql(session,
-            "INSERT INTO TestDatabase.child (x, y) VALUES (NULL, NULL);");
+        auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.child (x, y) VALUES (NULL, NULL);");
         INFO("all-null error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
     }
@@ -1609,23 +1598,20 @@ TEST_CASE("integration::cpp::test_sql_features::fk_match_full") {
     INFO("partial-NULL FK columns: rejected (MATCH FULL requires all-or-none)") {
         // x=1 present, y absent (NULL) — partial null under MATCH FULL → error
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-            "INSERT INTO TestDatabase.child (x) VALUES (1);");
+        auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.child (x) VALUES (1);");
         REQUIRE(cur->is_error());
     }
 
     INFO("no-NULL FK matching existing parent: passes") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-            "INSERT INTO TestDatabase.child (x, y) VALUES (1, 2);");
+        auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.child (x, y) VALUES (1, 2);");
         INFO("full match error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
     }
 
     INFO("no-NULL FK not matching any parent: rejected") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-            "INSERT INTO TestDatabase.child (x, y) VALUES (1, 99);");
+        auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.child (x, y) VALUES (1, 99);");
         REQUIRE(cur->is_error());
     }
 }
@@ -1645,46 +1631,50 @@ TEST_CASE("integration::cpp::test_sql_features::fk_cascade_delete") {
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "CREATE TABLE TestDatabase.parent (id bigint, val text);")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.parent (id bigint, val text);")
+                        ->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "CREATE TABLE TestDatabase.child (id bigint, parent_id bigint);")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.child (id bigint, parent_id bigint);")
+                        ->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "ALTER TABLE TestDatabase.child ADD CONSTRAINT fk_cascade "
-                "FOREIGN KEY (parent_id) REFERENCES TestDatabase.parent (id) "
-                "ON DELETE CASCADE;")->is_success());
+            REQUIRE(dispatcher
+                        ->execute_sql(session,
+                                      "ALTER TABLE TestDatabase.child ADD CONSTRAINT fk_cascade "
+                                      "FOREIGN KEY (parent_id) REFERENCES TestDatabase.parent (id) "
+                                      "ON DELETE CASCADE;")
+                        ->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "INSERT INTO TestDatabase.parent (id, val) VALUES (1, 'p1'), (2, 'p2');")->is_success());
+            REQUIRE(dispatcher
+                        ->execute_sql(session, "INSERT INTO TestDatabase.parent (id, val) VALUES (1, 'p1'), (2, 'p2');")
+                        ->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "INSERT INTO TestDatabase.child (id, parent_id) VALUES (10, 1), (11, 1), (12, 2);")->is_success());
+            REQUIRE(
+                dispatcher
+                    ->execute_sql(session,
+                                  "INSERT INTO TestDatabase.child (id, parent_id) VALUES (10, 1), (11, 1), (12, 2);")
+                    ->is_success());
         }
     }
 
     INFO("delete parent cascades to child rows") {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                "DELETE FROM TestDatabase.parent WHERE id = 1;");
+            auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.parent WHERE id = 1;");
             INFO("cascade delete error: " << (cur->is_error() ? cur->get_error().what : "none"));
             REQUIRE(cur->is_success());
         }
         {
             // child rows 10 and 11 (parent_id=1) must be gone; row 12 (parent_id=2) survives
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                "SELECT id FROM TestDatabase.child;");
+            auto cur = dispatcher->execute_sql(session, "SELECT id FROM TestDatabase.child;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
         }
@@ -1692,8 +1682,7 @@ TEST_CASE("integration::cpp::test_sql_features::fk_cascade_delete") {
 
     INFO("remaining child row still references surviving parent") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-            "SELECT id FROM TestDatabase.child WHERE parent_id = 2;");
+        auto cur = dispatcher->execute_sql(session, "SELECT id FROM TestDatabase.child WHERE parent_id = 2;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
     }
@@ -1714,46 +1703,48 @@ TEST_CASE("integration::cpp::test_sql_features::fk_set_null") {
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "CREATE TABLE TestDatabase.parent (id bigint, val text);")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.parent (id bigint, val text);")
+                        ->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "CREATE TABLE TestDatabase.child (id bigint, parent_id bigint);")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.child (id bigint, parent_id bigint);")
+                        ->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "ALTER TABLE TestDatabase.child ADD CONSTRAINT fk_setnull "
-                "FOREIGN KEY (parent_id) REFERENCES TestDatabase.parent (id) "
-                "ON DELETE SET NULL;")->is_success());
+            REQUIRE(dispatcher
+                        ->execute_sql(session,
+                                      "ALTER TABLE TestDatabase.child ADD CONSTRAINT fk_setnull "
+                                      "FOREIGN KEY (parent_id) REFERENCES TestDatabase.parent (id) "
+                                      "ON DELETE SET NULL;")
+                        ->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "INSERT INTO TestDatabase.parent (id, val) VALUES (1, 'p1');")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO TestDatabase.parent (id, val) VALUES (1, 'p1');")
+                        ->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                "INSERT INTO TestDatabase.child (id, parent_id) VALUES (10, 1), (11, 1);")->is_success());
+            REQUIRE(
+                dispatcher
+                    ->execute_sql(session, "INSERT INTO TestDatabase.child (id, parent_id) VALUES (10, 1), (11, 1);")
+                    ->is_success());
         }
     }
 
     INFO("delete parent NULLs FK column in child rows") {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                "DELETE FROM TestDatabase.parent WHERE id = 1;");
+            auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.parent WHERE id = 1;");
             INFO("set null delete error: " << (cur->is_error() ? cur->get_error().what : "none"));
             REQUIRE(cur->is_success());
         }
         {
             // Child rows survive, but parent_id must now be NULL
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                "SELECT id FROM TestDatabase.child WHERE parent_id IS NULL;");
+            auto cur = dispatcher->execute_sql(session, "SELECT id FROM TestDatabase.child WHERE parent_id IS NULL;");
             INFO("null check error: " << (cur->is_error() ? cur->get_error().what : "none"));
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 2);
@@ -1779,7 +1770,8 @@ namespace {
     bool has_column(const components::cursor::cursor_t& cur, std::string_view name) {
         const auto& chunk = cur.chunk_data();
         for (uint64_t i = 0; i < chunk.column_count(); ++i) {
-            if (chunk.data[i].type().alias() == name) return true;
+            if (chunk.data[i].type().alias() == name)
+                return true;
         }
         return false;
     }
@@ -1866,8 +1858,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_drop_column") {
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "INSERT INTO TestDatabase.foo (a, b) VALUES (1, 'x');");
+            auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.foo (a, b) VALUES (1, 'x');");
             REQUIRE(cur->is_success());
         }
         {
@@ -1882,8 +1873,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_drop_column") {
             // operator_computed_field_unregister_t, which appends a
             // refcount=0 tombstone so subsequent SELECTs hide the column.
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "ALTER TABLE TestDatabase.foo DROP COLUMN b;");
+            auto cur = dispatcher->execute_sql(session, "ALTER TABLE TestDatabase.foo DROP COLUMN b;");
             REQUIRE(cur->is_success());
         }
     }
@@ -1925,16 +1915,14 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_multi_statement_t
 
     INFO("first INSERT registers column 'a' (operator_computed_field_register_t)") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           "INSERT INTO TestDatabase.docs (a) VALUES (1);");
+        auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.docs (a) VALUES (1);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
     }
 
     INFO("second INSERT extends with 'b' AND re-uses 'a' — register is idempotent for same type") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           "INSERT INTO TestDatabase.docs (a, b) VALUES (2, 'x');");
+        auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.docs (a, b) VALUES (2, 'x');");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
     }
@@ -1987,23 +1975,17 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_type_evolution_mu
 
     INFO("INSERT 1 — column 'a' as INT, attversion=0") {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session,
-                                        "INSERT INTO TestDatabase.foo (a) VALUES (1);")
-                    ->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "INSERT INTO TestDatabase.foo (a) VALUES (1);")->is_success());
     }
 
     INFO("INSERT 2 — column 'a' as TEXT, attversion=1, fresh attoid") {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session,
-                                        "INSERT INTO TestDatabase.foo (a) VALUES ('text');")
-                    ->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "INSERT INTO TestDatabase.foo (a) VALUES ('text');")->is_success());
     }
 
     INFO("INSERT 3 — column 'a' as DOUBLE, attversion=2, fresh attoid") {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session,
-                                        "INSERT INTO TestDatabase.foo (a) VALUES (3.14);")
-                    ->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "INSERT INTO TestDatabase.foo (a) VALUES (3.14);")->is_success());
     }
 
     INFO("SELECT * returns 3 rows; column 'a' is visible at the latest version") {
@@ -2034,24 +2016,18 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_re_add_after_drop
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                                            "INSERT INTO TestDatabase.foo (a) VALUES (1);")
-                        ->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO TestDatabase.foo (a) VALUES (1);")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                                            "ALTER TABLE TestDatabase.foo DROP COLUMN a;")
-                        ->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "ALTER TABLE TestDatabase.foo DROP COLUMN a;")->is_success());
         }
         {
             // Re-INSERT after DROP — operator_computed_field_register_t appends a
             // fresh row with bumped attversion and refcount=1, so column 'a'
             // becomes visible again.
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                                            "INSERT INTO TestDatabase.foo (a) VALUES (2);")
-                        ->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO TestDatabase.foo (a) VALUES (2);")->is_success());
         }
     }
 
@@ -2117,14 +2093,12 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_drop_then_readd_p
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "INSERT INTO TestDatabase.foo (a, b) VALUES (1, 'x');");
+            auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.foo (a, b) VALUES (1, 'x');");
             REQUIRE(cur->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "ALTER TABLE TestDatabase.foo DROP COLUMN b;");
+            auto cur = dispatcher->execute_sql(session, "ALTER TABLE TestDatabase.foo DROP COLUMN b;");
             REQUIRE(cur->is_success());
         }
     }
@@ -2140,8 +2114,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_drop_then_readd_p
 
     INFO("re-INSERT b='y' (same STRING type as the dropped column)") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           "INSERT INTO TestDatabase.foo (b) VALUES ('y');");
+        auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.foo (b) VALUES ('y');");
         if (!cur->is_success()) {
             WARN("re-INSERT after DROP failed at SQL level — register no-op path "
                  "may have left storage in a state the planner rejects; revisit "
@@ -2215,15 +2188,11 @@ TEST_CASE("integration::cpp::test_sql_features::drop_database_cascade_cleanup") 
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                                            "CREATE TABLE DropMe.t1 (id bigint, name string);")
-                        ->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE DropMe.t1 (id bigint, name string);")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                                            "CREATE TABLE DropMe.t2 (k bigint);")
-                        ->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE DropMe.t2 (k bigint);")->is_success());
         }
         {
             // Schemaless (relkind='g') — exercises pg_computed_column cleanup.
@@ -2232,23 +2201,18 @@ TEST_CASE("integration::cpp::test_sql_features::drop_database_cascade_cleanup") 
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                                            "INSERT INTO DropMe.t1 (id, name) VALUES (1, 'a'), (2, 'b');")
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO DropMe.t1 (id, name) VALUES (1, 'a'), (2, 'b');")
                         ->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                                            "INSERT INTO DropMe.t2 (k) VALUES (10);")
-                        ->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO DropMe.t2 (k) VALUES (10);")->is_success());
         }
         {
             // Schemaless insert lands in pg_computed_column — these rows must
             // also be wiped on DROP DATABASE.
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                                            "INSERT INTO DropMe.t3 (col_a) VALUES (42);")
-                        ->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO DropMe.t3 (col_a) VALUES (42);")->is_success());
         }
     }
 
@@ -2272,9 +2236,7 @@ TEST_CASE("integration::cpp::test_sql_features::drop_database_cascade_cleanup") 
         // rows because storage was dropped and pg_attribute was rebuilt.
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                                            "CREATE TABLE DropMe.t1 (id bigint, name string);")
-                        ->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE DropMe.t1 (id bigint, name string);")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -2309,9 +2271,7 @@ TEST_CASE("integration::cpp::test_sql_features::drop_database_cascade_cleanup") 
         // col_b. has_column(col_a)=true would prove a stale leak.
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                                            "INSERT INTO DropMe.t3 (col_b) VALUES (7);")
-                        ->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO DropMe.t3 (col_b) VALUES (7);")->is_success());
         }
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM DropMe.t3;");
@@ -2324,8 +2284,7 @@ TEST_CASE("integration::cpp::test_sql_features::drop_database_cascade_cleanup") 
     INFO("re-INSERT into recreated tables works (no orphaned pg_attribute rows)") {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session,
-                                            "INSERT INTO DropMe.t1 (id, name) VALUES (100, 'fresh');")
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO DropMe.t1 (id, name) VALUES (100, 'fresh');")
                         ->is_success());
         }
         {
@@ -2414,16 +2373,13 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_join_static") {
         {
             // Non-empty CREATE TABLE → relkind='r'.
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher
-                        ->execute_sql(session,
-                                      "CREATE TABLE TestDatabase.static_users (id bigint, name string);")
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.static_users (id bigint, name string);")
                         ->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
             REQUIRE(dispatcher
-                        ->execute_sql(session,
-                                      "INSERT INTO TestDatabase.static_users (id, name) VALUES (1, 'Alice');")
+                        ->execute_sql(session, "INSERT INTO TestDatabase.static_users (id, name) VALUES (1, 'Alice');")
                         ->is_success());
         }
         {
@@ -2434,8 +2390,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_join_static") {
         {
             auto session = otterbrix::session_id_t();
             REQUIRE(dispatcher
-                        ->execute_sql(session,
-                                      "INSERT INTO TestDatabase.dyn_orders (user_id, item) VALUES (1, 'pen');")
+                        ->execute_sql(session, "INSERT INTO TestDatabase.dyn_orders (user_id, item) VALUES (1, 'pen');")
                         ->is_success());
         }
     }
@@ -2474,9 +2429,8 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_union") {
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher
-                        ->execute_sql(session, "INSERT INTO TestDatabase.t1 (a, b) VALUES (1, 'x');")
-                        ->is_success());
+            REQUIRE(
+                dispatcher->execute_sql(session, "INSERT INTO TestDatabase.t1 (a, b) VALUES (1, 'x');")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -2484,9 +2438,8 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_union") {
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher
-                        ->execute_sql(session, "INSERT INTO TestDatabase.t2 (a, b) VALUES (2, 'y');")
-                        ->is_success());
+            REQUIRE(
+                dispatcher->execute_sql(session, "INSERT INTO TestDatabase.t2 (a, b) VALUES (2, 'y');")->is_success());
         }
     }
 
@@ -2523,17 +2476,14 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_subquery") {
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher
-                        ->execute_sql(session,
-                                      "INSERT INTO TestDatabase.foo (a, b) VALUES (1, 'x'), (2, 'y');")
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO TestDatabase.foo (a, b) VALUES (1, 'x'), (2, 'y');")
                         ->is_success());
         }
     }
 
     INFO("SELECT a FROM (SELECT a, b FROM foo) AS sub returns 2 rows, only column a") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           "SELECT a FROM (SELECT a, b FROM TestDatabase.foo) AS sub;");
+        auto cur = dispatcher->execute_sql(session, "SELECT a FROM (SELECT a, b FROM TestDatabase.foo) AS sub;");
         if (!cur->is_success()) {
             WARN("TODO: SQL transformer rejects derived-table subquery over relkind='g'");
         } else {
@@ -2613,8 +2563,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_orderby") {
 
     INFO("ORDER BY on dynamic column 'price' yields names in 'a','b','c' order") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           "SELECT name FROM TestDatabase.items ORDER BY price;");
+        auto cur = dispatcher->execute_sql(session, "SELECT name FROM TestDatabase.items ORDER BY price;");
         if (!cur->is_success()) {
             WARN("TODO: SQL planner rejects ORDER BY on relkind='g' column");
         } else {
@@ -2720,9 +2669,9 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_struct") {
         // logical_value_t. Field names are positional / unnamed.
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "INSERT INTO TestDatabase.addresses (id, addr) VALUES (1, ROW('NYC', 10001));");
+            auto cur =
+                dispatcher->execute_sql(session,
+                                        "INSERT INTO TestDatabase.addresses (id, addr) VALUES (1, ROW('NYC', 10001));");
             if (!cur->is_success()) {
                 WARN("TODO: STRUCT-typed dynamic column unsupported "
                      "(builtin_type_to_oid() rejects logical_type::STRUCT)");
@@ -2731,9 +2680,9 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_struct") {
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "INSERT INTO TestDatabase.addresses (id, addr) VALUES (2, ROW('LA', 90001));");
+            auto cur =
+                dispatcher->execute_sql(session,
+                                        "INSERT INTO TestDatabase.addresses (id, addr) VALUES (2, ROW('LA', 90001));");
             if (!cur->is_success()) {
                 WARN("TODO: second STRUCT INSERT failed — schema-extension path may not handle STRUCT");
                 return;
@@ -2776,9 +2725,9 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_array") {
     INFO("INSERT string ARRAY into dynamic schema") {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "INSERT INTO TestDatabase.tagged (id, tags) VALUES (1, ARRAY['a', 'b']);");
+            auto cur =
+                dispatcher->execute_sql(session,
+                                        "INSERT INTO TestDatabase.tagged (id, tags) VALUES (1, ARRAY['a', 'b']);");
             if (!cur->is_success()) {
                 WARN("TODO: ARRAY-typed dynamic column unsupported in 'g' schema-extension");
                 return;
@@ -2786,9 +2735,8 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_array") {
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "INSERT INTO TestDatabase.tagged (id, tags) VALUES (2, ARRAY['c']);");
+            auto cur =
+                dispatcher->execute_sql(session, "INSERT INTO TestDatabase.tagged (id, tags) VALUES (2, ARRAY['c']);");
             if (!cur->is_success()) {
                 WARN("TODO: second ARRAY INSERT failed");
                 return;
@@ -2841,9 +2789,8 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_mixed_complex") {
 
     INFO("row 2 carries scalar + addr (STRUCT) — schema must extend with addr, leave embedding NULL") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(
-            session,
-            "INSERT INTO TestDatabase.docs (id, name, addr) VALUES (2, 'bar', ROW(1));");
+        auto cur = dispatcher->execute_sql(session,
+                                           "INSERT INTO TestDatabase.docs (id, name, addr) VALUES (2, 'bar', ROW(1));");
         if (!cur->is_success()) {
             WARN("TODO: mixed scalar+STRUCT INSERT failed — STRUCT dynamic columns may not register");
             return;
@@ -2927,8 +2874,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_stress_1000_rando
             }
             first = false;
         }
-        const std::string sql =
-            "INSERT INTO TestDatabase.docs (" + columns + ") VALUES (" + values + ");";
+        const std::string sql = "INSERT INTO TestDatabase.docs (" + columns + ") VALUES (" + values + ");";
 
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, sql);
@@ -2941,16 +2887,14 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_stress_1000_rando
     }
 
     const auto elapsed = std::chrono::steady_clock::now() - start_time;
-    const auto elapsed_ms =
-        std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
-    INFO("1000 dynamic-schema INSERTs took " << elapsed_ms << " ms ("
-         << successful_inserts << " succeeded)");
+    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+    INFO("1000 dynamic-schema INSERTs took " << elapsed_ms << " ms (" << successful_inserts << " succeeded)");
 
     if (successful_inserts < kRowCount) {
         // Pipeline blew up part-way through — surface as WARN, do not fail the
         // suite (tracked separately like #102).
         WARN("dynamic_schema_stress: only " << successful_inserts << "/" << kRowCount
-             << " INSERTs succeeded; skipping post-conditions");
+                                            << " INSERTs succeeded; skipping post-conditions");
         return;
     }
 

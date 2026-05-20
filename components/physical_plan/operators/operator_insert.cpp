@@ -8,9 +8,7 @@
 
 namespace components::operators {
 
-    operator_insert::operator_insert(std::pmr::memory_resource* resource,
-                                       log_t log,
-                                       catalog::oid_t table_oid)
+    operator_insert::operator_insert(std::pmr::memory_resource* resource, log_t log, catalog::oid_t table_oid)
         : read_write_operator_t(resource, log, operator_type::insert)
         , table_oid_(table_oid) {}
 
@@ -20,8 +18,7 @@ namespace components::operators {
         // Adopt table_oid_ from the resolver when this operator was constructed
         // without one (oid-only DML routing typically passes the oid through
         // node_insert, but the resolve-sibling form is the alternative).
-        if (table_oid_ == catalog::INVALID_OID &&
-            metadata.table_oid != catalog::INVALID_OID) {
+        if (table_oid_ == catalog::INVALID_OID && metadata.table_oid != catalog::INVALID_OID) {
             table_oid_ = metadata.table_oid;
         }
         resolved_metadata_ = std::move(metadata);
@@ -37,8 +34,7 @@ namespace components::operators {
         }
     }
 
-    actor_zeta::unique_future<void>
-    operator_insert::await_async_and_resume(pipeline::context_t* ctx) {
+    actor_zeta::unique_future<void> operator_insert::await_async_and_resume(pipeline::context_t* ctx) {
         using components::vector::data_chunk_t;
 
         if (!output_) {
@@ -74,10 +70,10 @@ namespace components::operators {
         auto data_copy = std::make_unique<data_chunk_t>(resource_, out_chunk.types(), out_chunk.size());
         out_chunk.copy(*data_copy, 0);
         auto [_a, af] = actor_zeta::send(ctx->disk_address,
-                                          &services::disk::manager_disk_t::storage_append,
-                                          exec_ctx,
-                                          table_oid_,
-                                          std::move(data_copy));
+                                         &services::disk::manager_disk_t::storage_append,
+                                         exec_ctx,
+                                         table_oid_,
+                                         std::move(data_copy));
         auto [start_row, actual_count] = co_await std::move(af);
 
         if (actual_count == 0) {
@@ -90,18 +86,16 @@ namespace components::operators {
         // 3. WAL physical_insert (synchronous; flush is fire-and-forget).
         if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
             auto [_w, wf] = actor_zeta::send(ctx->wal_address,
-                                              &services::wal::manager_wal_replicate_t::write_physical_insert,
-                                              ctx->session,
-                                              table_oid_,
-                                              std::move(wal_data),
-                                              static_cast<uint64_t>(start_row),
-                                              actual_count,
-                                              ctx->txn.transaction_id);
+                                             &services::wal::manager_wal_replicate_t::write_physical_insert,
+                                             ctx->session,
+                                             table_oid_,
+                                             std::move(wal_data),
+                                             static_cast<uint64_t>(start_row),
+                                             actual_count,
+                                             ctx->txn.transaction_id);
             auto wal_id = co_await std::move(wf);
-            auto [_d, df] = actor_zeta::send(ctx->disk_address,
-                                              &services::disk::manager_disk_t::flush,
-                                              ctx->session,
-                                              wal_id);
+            auto [_d, df] =
+                actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::flush, ctx->session, wal_id);
             ctx->add_pending_disk_future(std::move(df));
         }
 
@@ -110,12 +104,12 @@ namespace components::operators {
             auto idx_data = std::make_unique<data_chunk_t>(resource_, out_chunk.types(), out_chunk.size());
             out_chunk.copy(*idx_data, 0);
             auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
-                                                &services::index::manager_index_t::insert_rows,
-                                                exec_ctx,
-                                                table_oid_,
-                                                std::move(idx_data),
-                                                static_cast<uint64_t>(start_row),
-                                                actual_count);
+                                               &services::index::manager_index_t::insert_rows,
+                                               exec_ctx,
+                                               table_oid_,
+                                               std::move(idx_data),
+                                               static_cast<uint64_t>(start_row),
+                                               actual_count);
             co_await std::move(ixf);
         }
 

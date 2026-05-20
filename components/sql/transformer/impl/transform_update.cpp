@@ -223,15 +223,16 @@ namespace components::sql::transform {
         // resolve_table for the FROM source into the wrapping sequence_t so
         // enrich's stamp_drop_oids_from_resolves picks it up as `rt_index` and
         // stamps node->table_oid_from().
-        auto wrapped = maybe_wrap_with_catalog_resolve_table(
-            resource_, names.left_name.dbname, names.left_name.relname, std::move(upd),
-            constraint_resolve_kind::outgoing);
-        if (!names.right_name.empty() &&
-            wrapped->type() == logical_plan::node_type::sequence_t) {
-            auto from_resolve = logical_plan::make_node_catalog_resolve_table(
-                resource_,
-                core::dbname_t{names.right_name.dbname},
-                core::relname_t{names.right_name.relname});
+        auto wrapped = maybe_wrap_with_catalog_resolve_table(resource_,
+                                                             names.left_name.dbname,
+                                                             names.left_name.relname,
+                                                             std::move(upd),
+                                                             constraint_resolve_kind::outgoing);
+        if (!names.right_name.empty() && wrapped->type() == logical_plan::node_type::sequence_t) {
+            auto from_resolve =
+                logical_plan::make_node_catalog_resolve_table(resource_,
+                                                              core::dbname_t{names.right_name.dbname},
+                                                              core::relname_t{names.right_name.relname});
             auto& kids = wrapped->children();
             kids.insert(kids.end() - 1, from_resolve);
         }

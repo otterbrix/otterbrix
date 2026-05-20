@@ -50,8 +50,8 @@ namespace components::pipeline {
 
         // Phase 5b: aggregated by operators that touch pg_catalog. Drained by
         // execute_sub_plan_ into result_tracking after pipeline runs.
-        std::vector<pg_catalog_append_range_t>           pg_catalog_appends;
-        std::set<catalog::oid_t>                         pg_catalog_delete_tables;
+        std::vector<pg_catalog_append_range_t> pg_catalog_appends;
+        std::set<catalog::oid_t> pg_catalog_delete_tables;
 
         // Phase 5: DML operators (operator_insert / operator_delete /
         // operator_update) record their MVCC swap-info here from inside
@@ -60,10 +60,10 @@ namespace components::pipeline {
         // txn_manager_->commit using these fields. WAL physical writes happen
         // inside the operators themselves; only the commit-side swap requires
         // back-channel.
-        int64_t                 dml_append_row_start{0};
-        uint64_t                dml_append_row_count{0};
-        uint64_t                dml_delete_txn_id{0};
-        catalog::oid_t          dml_table_oid{catalog::INVALID_OID};
+        int64_t dml_append_row_start{0};
+        uint64_t dml_append_row_count{0};
+        uint64_t dml_delete_txn_id{0};
+        catalog::oid_t dml_table_oid{catalog::INVALID_OID};
 
         explicit context_t(logical_plan::storage_parameters init_parameters);
         context_t(context_t&& context) noexcept;

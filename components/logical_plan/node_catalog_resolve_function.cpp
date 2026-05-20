@@ -23,10 +23,9 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    node_catalog_resolve_function_ptr
-    make_node_catalog_resolve_function(std::pmr::memory_resource* resource,
-                                       core::dbname_t dbname,
-                                       core::function_name_t function_name) {
+    node_catalog_resolve_function_ptr make_node_catalog_resolve_function(std::pmr::memory_resource* resource,
+                                                                         core::dbname_t dbname,
+                                                                         core::function_name_t function_name) {
         return {new node_catalog_resolve_function_t{resource, std::move(dbname), std::move(function_name)}};
     }
 

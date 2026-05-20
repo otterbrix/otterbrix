@@ -14,7 +14,7 @@ namespace components::sql::transform {
             }
             return logical_plan::index_type::single;
         }
-    }
+    } // namespace
 
     logical_plan::node_ptr transformer::transform_create_index(IndexStmt& node) {
         if (!(node.relation && node.relation->relname && node.relation->catalogname && node.idxname)) {
@@ -34,8 +34,10 @@ namespace components::sql::transform {
         }
         // Wrap with catalog_resolve so Pass 1 stamps ns_oid + table_oid +
         // columns; enrich_logical_plan reads from the plan-tree idx.
-        return maybe_wrap_with_catalog_resolve_table(
-            resource_, dbname_for_resolve, relname_for_resolve, std::move(create_index));
+        return maybe_wrap_with_catalog_resolve_table(resource_,
+                                                     dbname_for_resolve,
+                                                     relname_for_resolve,
+                                                     std::move(create_index));
     }
 
 } // namespace components::sql::transform

@@ -1,8 +1,8 @@
 #include "executor.hpp"
 
 #include <components/catalog/catalog_codes.hpp>
-#include <components/planner/planner.hpp>
 #include <components/context/execution_context.hpp>
+#include <components/planner/planner.hpp>
 #include <components/table/transaction_manager.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
@@ -11,16 +11,16 @@
 
 #include <components/logical_plan/forward.hpp>
 #include <components/logical_plan/node_alter_table.hpp>
-#include <components/logical_plan/node_create_constraint.hpp>
-#include <components/logical_plan/node_create_collection.hpp>
-#include <components/logical_plan/node_create_macro.hpp>
-#include <components/logical_plan/node_create_sequence.hpp>
-#include <components/logical_plan/node_create_type.hpp>
-#include <components/logical_plan/node_create_view.hpp>
 #include <components/logical_plan/node_catalog_resolve_function.hpp>
 #include <components/logical_plan/node_catalog_resolve_namespace.hpp>
 #include <components/logical_plan/node_catalog_resolve_table.hpp>
 #include <components/logical_plan/node_catalog_resolve_type.hpp>
+#include <components/logical_plan/node_create_collection.hpp>
+#include <components/logical_plan/node_create_constraint.hpp>
+#include <components/logical_plan/node_create_macro.hpp>
+#include <components/logical_plan/node_create_sequence.hpp>
+#include <components/logical_plan/node_create_type.hpp>
+#include <components/logical_plan/node_create_view.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/param_storage.hpp>
 // operator_{insert,delete,update}.hpp no longer included — the
@@ -34,69 +34,67 @@ using namespace components::cursor;
 
 namespace {
 
-// Walk through planner-added constraint wrapper nodes (check_constraint,
-// sequence) to find the base DML node type.
-// Needed because the planner may wrap insert/update/delete with constraint nodes,
-// changing the top-level type from insert_t to e.g. check_constraint_t.
-//
-// Dispatcher may wrap INSERT into a sequence_t when the target is a
-// relkind='g' (computing/dynamic-schema) table — e.g. sequence_t(insert,
-// computed_field_register). Recurse through that wrapper so the executor
-// still recognizes the plan as DML and runs the begin_transaction /
-// commit-side pg_catalog swap path.
-//
-// The transformer wraps DML into
-//   sequence_t(catalog_resolve_namespace_t, catalog_resolve_table_t,
-//              <dml_consumer>).
-// We skip catalog_resolve_* prefix children and probe the FIRST non-resolve
-// child for the DML test. Without this, is_dml=false → no begin_transaction
-// → operator_insert writes invisible at commit (cursor reports 0 rows on
-// subsequent SELECT).
-components::logical_plan::node_type find_effective_dml_type(
-    const components::logical_plan::node_ptr& plan) {
-    using namespace components::logical_plan;
-    auto is_catalog_resolve = [](node_type t) {
-        return t == node_type::catalog_resolve_namespace_t ||
-               t == node_type::catalog_resolve_table_t ||
-               t == node_type::catalog_resolve_type_t ||
-               t == node_type::catalog_resolve_function_t ||
-               t == node_type::catalog_resolve_constraint_t;
-    };
-    auto* n = plan.get();
-    while (n) {
-        switch (n->type()) {
-        case node_type::check_constraint_t:
-            if (!n->children().empty()) {
-                n = n->children().front().get();
-                continue;
+    // Walk through planner-added constraint wrapper nodes (check_constraint,
+    // sequence) to find the base DML node type.
+    // Needed because the planner may wrap insert/update/delete with constraint nodes,
+    // changing the top-level type from insert_t to e.g. check_constraint_t.
+    //
+    // Dispatcher may wrap INSERT into a sequence_t when the target is a
+    // relkind='g' (computing/dynamic-schema) table — e.g. sequence_t(insert,
+    // computed_field_register). Recurse through that wrapper so the executor
+    // still recognizes the plan as DML and runs the begin_transaction /
+    // commit-side pg_catalog swap path.
+    //
+    // The transformer wraps DML into
+    //   sequence_t(catalog_resolve_namespace_t, catalog_resolve_table_t,
+    //              <dml_consumer>).
+    // We skip catalog_resolve_* prefix children and probe the FIRST non-resolve
+    // child for the DML test. Without this, is_dml=false → no begin_transaction
+    // → operator_insert writes invisible at commit (cursor reports 0 rows on
+    // subsequent SELECT).
+    components::logical_plan::node_type find_effective_dml_type(const components::logical_plan::node_ptr& plan) {
+        using namespace components::logical_plan;
+        auto is_catalog_resolve = [](node_type t) {
+            return t == node_type::catalog_resolve_namespace_t || t == node_type::catalog_resolve_table_t ||
+                   t == node_type::catalog_resolve_type_t || t == node_type::catalog_resolve_function_t ||
+                   t == node_type::catalog_resolve_constraint_t;
+        };
+        auto* n = plan.get();
+        while (n) {
+            switch (n->type()) {
+                case node_type::check_constraint_t:
+                    if (!n->children().empty()) {
+                        n = n->children().front().get();
+                        continue;
+                    }
+                    return n->type();
+                case node_type::sequence_t: {
+                    if (n->children().empty())
+                        return n->type();
+                    // Skip catalog_resolve_* prefix children — they are
+                    // metadata-stamping leaves emitted by the transformer wrap;
+                    // the DML consumer is the first non-resolve child.
+                    const auto& kids = n->children();
+                    std::size_t i = 0;
+                    while (i < kids.size() && kids[i] && is_catalog_resolve(kids[i]->type())) {
+                        ++i;
+                    }
+                    if (i >= kids.size() || !kids[i])
+                        return n->type();
+                    const auto consumer_type = kids[i]->type();
+                    if (consumer_type == node_type::insert_t || consumer_type == node_type::update_t ||
+                        consumer_type == node_type::delete_t) {
+                        n = kids[i].get();
+                        continue;
+                    }
+                    return n->type();
+                }
+                default:
+                    return n->type();
             }
-            return n->type();
-        case node_type::sequence_t: {
-            if (n->children().empty()) return n->type();
-            // Skip catalog_resolve_* prefix children — they are
-            // metadata-stamping leaves emitted by the transformer wrap;
-            // the DML consumer is the first non-resolve child.
-            const auto& kids = n->children();
-            std::size_t i = 0;
-            while (i < kids.size() && kids[i] && is_catalog_resolve(kids[i]->type())) {
-                ++i;
-            }
-            if (i >= kids.size() || !kids[i]) return n->type();
-            const auto consumer_type = kids[i]->type();
-            if (consumer_type == node_type::insert_t ||
-                consumer_type == node_type::update_t ||
-                consumer_type == node_type::delete_t) {
-                n = kids[i].get();
-                continue;
-            }
-            return n->type();
         }
-        default:
-            return n->type();
-        }
+        return node_type::unused;
     }
-    return node_type::unused;
-}
 
 } // namespace
 
@@ -227,10 +225,9 @@ namespace services::collection::executor {
             if (is_dml) {
                 txn_manager_->abort(session);
             }
-            co_return execute_result_t{
-                make_cursor(resource(),
-                            core::error_t(core::error_code_t::create_physical_plan_error,
-                                          std::pmr::string{"invalid query plan", resource()}))};
+            co_return execute_result_t{make_cursor(resource(),
+                                                   core::error_t(core::error_code_t::create_physical_plan_error,
+                                                                 std::pmr::string{"invalid query plan", resource()}))};
         }
 
         plan->set_as_root();
@@ -283,8 +280,11 @@ namespace services::collection::executor {
             }
             if (result.dml_delete_txn_id != 0 && commit_id > 0) {
                 components::execution_context_t del_ctx{session, txn_data, result.dml_table_oid};
-                auto [_cd, cdf] =
-                    actor_zeta::send(disk_address_, &disk::manager_disk_t::storage_commit_delete, del_ctx, result.dml_table_oid, commit_id);
+                auto [_cd, cdf] = actor_zeta::send(disk_address_,
+                                                   &disk::manager_disk_t::storage_commit_delete,
+                                                   del_ctx,
+                                                   result.dml_table_oid,
+                                                   commit_id);
                 co_await std::move(cdf);
                 if (index_address_ != actor_zeta::address_t::empty_address()) {
                     auto [_cdi, cdif] = actor_zeta::send(index_address_,
@@ -313,18 +313,20 @@ namespace services::collection::executor {
                 if (!result.pg_catalog_appends.empty()) {
                     components::execution_context_t pgc_ctx{session, txn_data, {}};
                     auto [_pa, paf] = actor_zeta::send(disk_address_,
-                                                        &disk::manager_disk_t::storage_commit_appends,
-                                                        pgc_ctx, commit_id,
-                                                        std::move(result.pg_catalog_appends));
+                                                       &disk::manager_disk_t::storage_commit_appends,
+                                                       pgc_ctx,
+                                                       commit_id,
+                                                       std::move(result.pg_catalog_appends));
                     co_await std::move(paf);
                     result.pg_catalog_appends.clear();
                 }
                 if (!result.pg_catalog_delete_tables.empty()) {
                     components::execution_context_t pgc_ctx{session, txn_data, {}};
                     auto [_pd, pdf] = actor_zeta::send(disk_address_,
-                                                        &disk::manager_disk_t::storage_commit_deletes,
-                                                        pgc_ctx, commit_id,
-                                                        std::move(result.pg_catalog_delete_tables));
+                                                       &disk::manager_disk_t::storage_commit_deletes,
+                                                       pgc_ctx,
+                                                       commit_id,
+                                                       std::move(result.pg_catalog_delete_tables));
                     co_await std::move(pdf);
                     result.pg_catalog_delete_tables.clear();
                 }
@@ -379,9 +381,9 @@ namespace services::collection::executor {
             if (!result.pg_catalog_appends.empty()) {
                 components::execution_context_t pgc_ctx{session, txn_data, {}};
                 auto [_pa, paf] = actor_zeta::send(disk_address_,
-                                                    &disk::manager_disk_t::storage_revert_appends,
-                                                    pgc_ctx,
-                                                    std::move(result.pg_catalog_appends));
+                                                   &disk::manager_disk_t::storage_revert_appends,
+                                                   pgc_ctx,
+                                                   std::move(result.pg_catalog_appends));
                 co_await std::move(paf);
                 result.pg_catalog_appends.clear();
             }
@@ -618,16 +620,16 @@ namespace services::collection::executor {
             if (pipeline_context.dml_append_row_count > 0) {
                 result_tracking.dml_append_row_start = pipeline_context.dml_append_row_start;
                 result_tracking.dml_append_row_count = pipeline_context.dml_append_row_count;
-                result_tracking.dml_table_oid        = pipeline_context.dml_table_oid;
+                result_tracking.dml_table_oid = pipeline_context.dml_table_oid;
             }
             if (pipeline_context.dml_delete_txn_id != 0) {
                 result_tracking.dml_delete_txn_id = pipeline_context.dml_delete_txn_id;
-                result_tracking.dml_table_oid     = pipeline_context.dml_table_oid;
+                result_tracking.dml_table_oid = pipeline_context.dml_table_oid;
             }
             pipeline_context.dml_append_row_start = 0;
             pipeline_context.dml_append_row_count = 0;
-            pipeline_context.dml_delete_txn_id    = 0;
-            pipeline_context.dml_table_oid        = components::catalog::INVALID_OID;
+            pipeline_context.dml_delete_txn_id = 0;
+            pipeline_context.dml_table_oid = components::catalog::INVALID_OID;
 
             plan_data.sub_plans.pop();
         }
@@ -638,5 +640,5 @@ namespace services::collection::executor {
         co_return std::move(result_tracking);
     }
 
-// HEAD: intercept_dml_io_ removed — DML I/O now happens inside each operator's await_async_and_resume.
+    // HEAD: intercept_dml_io_ removed — DML I/O now happens inside each operator's await_async_and_resume.
 } // namespace services::collection::executor

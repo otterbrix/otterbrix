@@ -144,10 +144,9 @@ namespace components::index {
         }
     }
 
-    void
-    hash_single_field_index_t::for_each_pending_insert_impl(uint64_t txn_id,
-                                                            const std::function<void(const value_t&, int64_t)>& fn)
-        const {
+    void hash_single_field_index_t::for_each_pending_insert_impl(
+        uint64_t txn_id,
+        const std::function<void(const value_t&, int64_t)>& fn) const {
         auto it = pending_inserts_.find(txn_id);
         if (it == pending_inserts_.end())
             return;
@@ -156,10 +155,9 @@ namespace components::index {
         }
     }
 
-    void
-    hash_single_field_index_t::for_each_pending_delete_impl(uint64_t txn_id,
-                                                            const std::function<void(const value_t&, int64_t)>& fn)
-        const {
+    void hash_single_field_index_t::for_each_pending_delete_impl(
+        uint64_t txn_id,
+        const std::function<void(const value_t&, int64_t)>& fn) const {
         auto it = pending_deletes_.find(txn_id);
         if (it == pending_deletes_.end())
             return;

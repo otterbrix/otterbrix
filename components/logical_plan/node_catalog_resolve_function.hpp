@@ -36,9 +36,8 @@ namespace components::logical_plan {
 
     using node_catalog_resolve_function_ptr = boost::intrusive_ptr<node_catalog_resolve_function_t>;
 
-    node_catalog_resolve_function_ptr
-    make_node_catalog_resolve_function(std::pmr::memory_resource* resource,
-                                       core::dbname_t dbname,
-                                       core::function_name_t function_name);
+    node_catalog_resolve_function_ptr make_node_catalog_resolve_function(std::pmr::memory_resource* resource,
+                                                                         core::dbname_t dbname,
+                                                                         core::function_name_t function_name);
 
 } // namespace components::logical_plan

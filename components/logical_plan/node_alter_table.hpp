@@ -29,19 +29,13 @@ namespace components::logical_plan {
     class node_alter_table_t final : public node_t {
     public:
         // ADD COLUMN form.
-        node_alter_table_t(std::pmr::memory_resource* resource,
-                           components::table::column_definition_t column);
+        node_alter_table_t(std::pmr::memory_resource* resource, components::table::column_definition_t column);
         // DROP COLUMN form.
-        node_alter_table_t(std::pmr::memory_resource* resource,
-                           alter_table_kind kind,
-                           std::string column_name);
+        node_alter_table_t(std::pmr::memory_resource* resource, alter_table_kind kind, std::string column_name);
         // RENAME COLUMN form.
-        node_alter_table_t(std::pmr::memory_resource* resource,
-                           std::string old_name,
-                           std::string new_name);
+        node_alter_table_t(std::pmr::memory_resource* resource, std::string old_name, std::string new_name);
         // Multi-clause form.
-        node_alter_table_t(std::pmr::memory_resource* resource,
-                           std::vector<alter_table_subcommand_t> subcommands);
+        node_alter_table_t(std::pmr::memory_resource* resource, std::vector<alter_table_subcommand_t> subcommands);
 
         alter_table_kind kind() const noexcept { return subcommands_.front().kind; }
         const std::string& column_name() const noexcept { return subcommands_.front().column_name; }
@@ -64,13 +58,13 @@ namespace components::logical_plan {
     using node_alter_table_ptr = boost::intrusive_ptr<node_alter_table_t>;
 
     node_alter_table_ptr make_node_alter_table_add_column(std::pmr::memory_resource* resource,
-                                                           components::table::column_definition_t column);
+                                                          components::table::column_definition_t column);
     node_alter_table_ptr make_node_alter_table_drop_column(std::pmr::memory_resource* resource,
-                                                            std::string column_name);
+                                                           std::string column_name);
     node_alter_table_ptr make_node_alter_table_rename_column(std::pmr::memory_resource* resource,
-                                                              std::string old_name,
-                                                              std::string new_name);
+                                                             std::string old_name,
+                                                             std::string new_name);
     node_alter_table_ptr make_node_alter_table_multi(std::pmr::memory_resource* resource,
-                                                      std::vector<alter_table_subcommand_t> subcommands);
+                                                     std::vector<alter_table_subcommand_t> subcommands);
 
 } // namespace components::logical_plan

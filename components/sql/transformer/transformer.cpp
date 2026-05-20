@@ -12,9 +12,9 @@ namespace components::sql::transform {
         // dbname/relname off the root aggregate is sufficient for the primary
         // table. TODO: emit one resolve per joined table (depth walk over the
         // SELECT plan).
-        std::pair<std::string, std::string>
-        select_primary_table_identity(const logical_plan::node_ptr& sel) {
-            if (!sel) return {};
+        std::pair<std::string, std::string> select_primary_table_identity(const logical_plan::node_ptr& sel) {
+            if (!sel)
+                return {};
             using namespace logical_plan;
             if (sel->type() == node_type::aggregate_t) {
                 const auto* agg = static_cast<const node_aggregate_t*>(sel.get());
@@ -36,16 +36,14 @@ namespace components::sql::transform {
                 log_node = transform_create_database(n);
                 // Resolve the namespace name so a later patch can use the
                 // resolve node to detect duplicates through the pipeline.
-                log_node = maybe_wrap_with_catalog_resolve_namespace(
-                    resource_, dbname, std::move(log_node));
+                log_node = maybe_wrap_with_catalog_resolve_namespace(resource_, dbname, std::move(log_node));
                 break;
             }
             case T_DropdbStmt: {
                 auto& n = pg_cast<DropdbStmt>(node);
                 const std::string dbname = n.dbname ? std::string(n.dbname) : std::string{};
                 log_node = transform_drop_database(n);
-                log_node = maybe_wrap_with_catalog_resolve_namespace(
-                    resource_, dbname, std::move(log_node));
+                log_node = maybe_wrap_with_catalog_resolve_namespace(resource_, dbname, std::move(log_node));
                 break;
             }
             case T_CreateStmt:
@@ -72,8 +70,7 @@ namespace components::sql::transform {
                 // additional resolves.
                 auto [db, rel] = select_primary_table_identity(log_node);
                 if (!rel.empty()) {
-                    log_node = maybe_wrap_with_catalog_resolve_table(
-                        resource_, db, rel, std::move(log_node));
+                    log_node = maybe_wrap_with_catalog_resolve_table(resource_, db, rel, std::move(log_node));
                 }
                 break;
             }

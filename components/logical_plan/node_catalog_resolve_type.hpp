@@ -34,12 +34,8 @@ namespace components::logical_plan {
         // Stamped by operator_resolve_type_t after pg_type read +
         // typdefspec decode. Empty optional means the resolve did not find a
         // matching type (caller treats as not-found).
-        const std::optional<resolved_type_metadata_t>& resolved_metadata() const noexcept {
-            return resolved_metadata_;
-        }
-        void set_resolved_metadata(resolved_type_metadata_t md) {
-            resolved_metadata_ = std::move(md);
-        }
+        const std::optional<resolved_type_metadata_t>& resolved_metadata() const noexcept { return resolved_metadata_; }
+        void set_resolved_metadata(resolved_type_metadata_t md) { resolved_metadata_ = std::move(md); }
 
     private:
         std::string dbname_;

@@ -8,9 +8,8 @@
 
 namespace services::planner::impl {
 
-    components::operators::operator_ptr
-    create_plan_get_schema(const context_storage_t& context,
-                            const components::logical_plan::node_ptr& node) {
+    components::operators::operator_ptr create_plan_get_schema(const context_storage_t& context,
+                                                               const components::logical_plan::node_ptr& node) {
         auto* n = static_cast<components::logical_plan::node_get_schema_t*>(node.get());
 
         // Re-pack pmr-vector<pair> → std::vector<pair> so the operator owns a
@@ -23,10 +22,8 @@ namespace services::planner::impl {
             ids.emplace_back(db, name);
         }
 
-        return boost::intrusive_ptr(new components::operators::operator_get_schema_t(
-            context.resource,
-            context.log.clone(),
-            std::move(ids)));
+        return boost::intrusive_ptr(
+            new components::operators::operator_get_schema_t(context.resource, context.log.clone(), std::move(ids)));
     }
 
 } // namespace services::planner::impl

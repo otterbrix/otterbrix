@@ -8,14 +8,13 @@
 
 namespace components::operators {
 
-    operator_fk_check_t::operator_fk_check_t(std::pmr::memory_resource* resource,
-                                               log_t                      log,
-                                               catalog::fk_info_t         fk)
+    operator_fk_check_t::operator_fk_check_t(std::pmr::memory_resource* resource, log_t log, catalog::fk_info_t fk)
         : read_write_operator_t(resource, log, operator_type::fk_check)
         , fk_(std::move(fk)) {}
 
     void operator_fk_check_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
-        if (!left_) return;
+        if (!left_)
+            return;
         // After intercept_dml_io_, the DML operator's output is replaced with a
         // zero-column result chunk. Fall back to the DML op's data source.
         output_ = left_->output();
@@ -29,8 +28,7 @@ namespace components::operators {
         }
     }
 
-    actor_zeta::unique_future<void>
-    operator_fk_check_t::await_async_and_resume(pipeline::context_t* ctx) {
+    actor_zeta::unique_future<void> operator_fk_check_t::await_async_and_resume(pipeline::context_t* ctx) {
         if (!output_ || output_->size() == 0) {
             mark_executed();
             co_return;
@@ -47,20 +45,26 @@ namespace components::operators {
             for (std::size_t i = 0; i < indices.size(); ++i) {
                 const auto idx = indices[i];
                 const bool is_null = (idx == absent || !chunk.data[idx].validity().row_is_valid(row));
-                if (is_null)  any_null = true;
-                else          all_null = false;
+                if (is_null)
+                    any_null = true;
+                else
+                    all_null = false;
             }
 
             if (fk_.matchtype == 'f') {
                 // MATCH FULL: all-NULL → skip; partial-NULL → error; no-NULL → check.
-                if (all_null) continue;
+                if (all_null)
+                    continue;
                 if (any_null) {
-                    set_error(core::error_t{core::error_code_t::other_error, std::pmr::string{"FK MATCH FULL: partial null in foreign key columns", resource_}});
+                    set_error(core::error_t{
+                        core::error_code_t::other_error,
+                        std::pmr::string{"FK MATCH FULL: partial null in foreign key columns", resource_}});
                     co_return;
                 }
             } else {
                 // MATCH SIMPLE (default): any-NULL → skip.
-                if (any_null) continue;
+                if (any_null)
+                    continue;
             }
 
             // Build key_values from pre-resolved column positions.
@@ -68,10 +72,14 @@ namespace components::operators {
             key_values.reserve(indices.size());
             bool has_absent = false;
             for (auto idx : indices) {
-                if (idx == absent) { has_absent = true; break; }
+                if (idx == absent) {
+                    has_absent = true;
+                    break;
+                }
                 key_values.push_back(chunk.value(idx, row));
             }
-            if (has_absent || key_values.empty()) continue;
+            if (has_absent || key_values.empty())
+                continue;
 
             std::pmr::vector<std::string> parent_col_names(resource_);
             parent_col_names.reserve(fk_.parent_col_names.size());
@@ -79,14 +87,16 @@ namespace components::operators {
                 parent_col_names.emplace_back(n);
             }
             auto [_, fut] = actor_zeta::send(ctx->disk_address,
-                                              &services::disk::manager_disk_t::scan_by_key,
-                                              exec_ctx,
-                                              fk_.parent_table_oid,
-                                              std::move(parent_col_names),
-                                              std::move(key_values));
+                                             &services::disk::manager_disk_t::scan_by_key,
+                                             exec_ctx,
+                                             fk_.parent_table_oid,
+                                             std::move(parent_col_names),
+                                             std::move(key_values));
             auto parent_ids = co_await std::move(fut);
             if (parent_ids.empty()) {
-                set_error(core::error_t{core::error_code_t::other_error, std::pmr::string{"FK constraint violated: referenced row not found in parent table", resource_}});
+                set_error(core::error_t{
+                    core::error_code_t::other_error,
+                    std::pmr::string{"FK constraint violated: referenced row not found in parent table", resource_}});
                 co_return;
             }
         }

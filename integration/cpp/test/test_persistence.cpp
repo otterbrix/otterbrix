@@ -1231,8 +1231,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_drop_table_survives_restart"
 
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "INSERT INTO TestDatabase.TestCollection (val) VALUES (42);");
+            auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.TestCollection (val) VALUES (42);");
             REQUIRE(cur->is_success());
         }
 
@@ -1282,8 +1281,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_add_column_survives_restart"
 
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "ALTER TABLE TestDatabase.TestCollection ADD COLUMN score double;");
+            auto cur =
+                dispatcher->execute_sql(session, "ALTER TABLE TestDatabase.TestCollection ADD COLUMN score double;");
             REQUIRE(cur->is_success());
         }
 
@@ -1312,8 +1311,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_add_column_survives_restart"
 
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "SELECT * FROM TestDatabase.TestCollection WHERE count = 99;");
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE count = 99;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
         }

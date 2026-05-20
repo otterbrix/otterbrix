@@ -386,7 +386,6 @@ namespace components::types {
         const std::string& type_name() const { return type_name_; }
         const std::vector<logical_value_t>& entries() const noexcept { return entries_; }
 
-
     private:
         std::string type_name_;
         std::vector<logical_value_t> entries_; // integer literal for value and alias for entry name
@@ -398,7 +397,6 @@ namespace components::types {
 
         const std::string& catalog() const noexcept { return catalog_; }
         const std::vector<logical_value_t>& user_type_modifiers() const noexcept { return user_type_modifiers_; }
-
 
     private:
         std::string catalog_;

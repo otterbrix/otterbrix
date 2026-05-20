@@ -40,10 +40,7 @@ namespace components::operators {
                 filled_ = 0;
             }
 
-            void emit_matched(const vector::data_chunk_t& L,
-                              uint64_t li,
-                              const vector::data_chunk_t& R,
-                              uint64_t rj) {
+            void emit_matched(const vector::data_chunk_t& L, uint64_t li, const vector::data_chunk_t& R, uint64_t rj) {
                 ensure_space();
                 copy_left_row(L, li);
                 copy_right_row(R, rj);
@@ -79,14 +76,16 @@ namespace components::operators {
 
             void copy_left_row(const vector::data_chunk_t& L, uint64_t li) {
                 for (size_t c = 0; c < L.column_count(); ++c) {
-                    if (is_placeholder(L.data[c])) continue;
+                    if (is_placeholder(L.data[c]))
+                        continue;
                     vector::vector_ops::copy(L.data[c], cur_.data[indices_left_[c]], li + 1, li, filled_);
                 }
             }
 
             void copy_right_row(const vector::data_chunk_t& R, uint64_t rj) {
                 for (size_t c = 0; c < R.column_count(); ++c) {
-                    if (is_placeholder(R.data[c])) continue;
+                    if (is_placeholder(R.data[c]))
+                        continue;
                     vector::vector_ops::copy(R.data[c], cur_.data[indices_right_[c]], rj + 1, rj, filled_);
                 }
             }
@@ -144,9 +143,8 @@ namespace components::operators {
         }
         for (size_t i = 0; i < right_col_count; ++i) {
             const auto& alias = right_types[i].alias();
-            auto dup = std::find_if(res_types.begin(), res_types.end(), [&](const auto& t) {
-                return t.alias() == alias;
-            });
+            auto dup =
+                std::find_if(res_types.begin(), res_types.end(), [&](const auto& t) { return t.alias() == alias; });
             if (dup != res_types.end()) {
                 indices_right_.emplace_back(static_cast<size_t>(std::distance(res_types.begin(), dup)));
             } else {

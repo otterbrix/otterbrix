@@ -124,8 +124,8 @@ TEST_CASE("services::disk::d4::resolve_table_finds_unloaded_user_table") {
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto rt_oid = test_create_table(fx, ns_oid, "orders", std::move(cols));
-    auto resolved = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(),
-                                ns_oid, std::string("orders"), std::uint64_t{0});
+    auto resolved =
+        fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("orders"), std::uint64_t{0});
     REQUIRE(resolved.found);
     REQUIRE(resolved.oid == rt_oid);
     // resolve_table did not need storage to be present in storages_ to answer the lookup.
@@ -142,8 +142,8 @@ TEST_CASE("services::disk::d4::drop_unloaded_table") {
     REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
     test_drop_table(fx, rt_oid);
     // After drop the table is no longer resolvable.
-    auto resolved = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(),
-                                ns_oid, std::string("temp_t"), std::uint64_t{0});
+    auto resolved =
+        fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("temp_t"), std::uint64_t{0});
     REQUIRE_FALSE(resolved.found);
 }
 
@@ -158,13 +158,14 @@ TEST_CASE("services::disk::d4::alter_unloaded_table_add_column") {
     auto rt_oid = test_create_table(fx, ns_oid, "alter_me", std::move(cols));
     REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
     components::table::column_definition_t new_col(
-        "name", components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL});
+        "name",
+        components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL});
     test_add_column(fx, rt_oid, std::move(new_col), 2);
     // No user-storage materialisation as a side-effect of ALTER.
     REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
     // The new column shows up via resolve_table.
-    auto resolved = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(),
-                                ns_oid, std::string("alter_me"), std::uint64_t{0});
+    auto resolved =
+        fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("alter_me"), std::uint64_t{0});
     REQUIRE(resolved.found);
     REQUIRE(resolved.columns.size() == 2);
 }
@@ -179,8 +180,7 @@ TEST_CASE("services::disk::d4::repeated_resolve_does_not_create_storage") {
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto rt_oid = test_create_table(fx, ns_oid, "readme", std::move(cols));
     for (int i = 0; i < 3; ++i) {
-        auto r = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(),
-                           ns_oid, std::string("readme"), std::uint64_t{0});
+        auto r = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("readme"), std::uint64_t{0});
         REQUIRE(r.found);
     }
     REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
@@ -196,8 +196,7 @@ TEST_CASE("services::disk::d4::resolve_table_collects_columns_by_attrelid") {
     cols.emplace_back("b", components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL});
     cols.emplace_back("c", components::types::complex_logical_type{components::types::logical_type::DOUBLE});
     auto rt_oid = test_create_table(fx, ns_oid, "multi", std::move(cols));
-    auto r = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(),
-                        ns_oid, std::string("multi"), std::uint64_t{0});
+    auto r = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("multi"), std::uint64_t{0});
     REQUIRE(r.found);
     REQUIRE(r.oid == rt_oid);
     REQUIRE(r.columns.size() == 3);
@@ -211,8 +210,8 @@ TEST_CASE("services::disk::d4::resolve_table_collects_columns_by_attrelid") {
 TEST_CASE("services::disk::d4::peek_checkpoint_wal_id_unknown_returns_zero") {
     fixture fx;
     // A table that was never created has no sidecar: peek returns 0.
-    auto v = fx.manager->peek_checkpoint_wal_id_from_disk(
-        catalog::oid_t{FIRST_USER_OID + 9000}, well_known_oid::main_database);
+    auto v = fx.manager->peek_checkpoint_wal_id_from_disk(catalog::oid_t{FIRST_USER_OID + 9000},
+                                                          well_known_oid::main_database);
     REQUIRE(v == services::wal::id_t{0});
 }
 
@@ -226,6 +225,5 @@ TEST_CASE("services::disk::d4::load_storage_for_wal_replay_noop_when_loaded") {
     auto rt_oid = test_create_table(fx, ns_oid, "lazy_t", std::move(cols));
 
     // Calling load_storage_for_wal_replay_sync on a table that has no .otbx must not crash.
-    REQUIRE_NOTHROW(
-        fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database));
+    REQUIRE_NOTHROW(fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database));
 }

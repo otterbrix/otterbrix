@@ -9,9 +9,7 @@ namespace components::logical_plan {
 
     class node_create_view_t final : public node_t {
     public:
-        node_create_view_t(std::pmr::memory_resource* resource,
-                           core::viewname_t viewname,
-                           core::query_sql_t query_sql);
+        node_create_view_t(std::pmr::memory_resource* resource, core::viewname_t viewname, core::query_sql_t query_sql);
 
         const std::string& query_sql() const { return query_sql_; }
 
@@ -30,8 +28,7 @@ namespace components::logical_plan {
     };
 
     using node_create_view_ptr = boost::intrusive_ptr<node_create_view_t>;
-    node_create_view_ptr make_node_create_view(std::pmr::memory_resource* resource,
-                                               core::viewname_t viewname,
-                                               core::query_sql_t query_sql);
+    node_create_view_ptr
+    make_node_create_view(std::pmr::memory_resource* resource, core::viewname_t viewname, core::query_sql_t query_sql);
 
 } // namespace components::logical_plan

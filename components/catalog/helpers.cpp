@@ -18,7 +18,8 @@ namespace components::catalog {
                     out.push_back(static_cast<oid_t>(v));
                 }
             }
-            if (j == std::string::npos) break;
+            if (j == std::string::npos)
+                break;
             i = j + 1;
         }
         return out;
@@ -27,7 +28,8 @@ namespace components::catalog {
     std::string encode_oid_csv(const std::vector<oid_t>& oids) {
         std::string out;
         for (std::size_t i = 0; i < oids.size(); ++i) {
-            if (i) out += ',';
+            if (i)
+                out += ',';
             out += std::to_string(oids[i]);
         }
         return out;
@@ -40,9 +42,9 @@ namespace components::catalog {
         out.reserve(attoids.size());
         for (const auto& wanted_oid : attoids) {
             for (const auto& row : attr_rows) {
-                if (row.size() <= pg_attribute_col::attname) continue;
-                auto row_attoid =
-                    static_cast<oid_t>(row[pg_attribute_col::attoid].value<std::uint32_t>());
+                if (row.size() <= pg_attribute_col::attname)
+                    continue;
+                auto row_attoid = static_cast<oid_t>(row[pg_attribute_col::attoid].value<std::uint32_t>());
                 if (row_attoid == wanted_oid) {
                     out.emplace_back(std::string(row[pg_attribute_col::attname].value<std::string_view>()));
                     break;

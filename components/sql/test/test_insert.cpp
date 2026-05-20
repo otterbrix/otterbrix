@@ -28,7 +28,10 @@ TEST_CASE("components::sql::insert_into") {
         auto select =
             linitial(raw_parser(&arena_resource,
                                 "INSERT INTO TestDatabase.TestCollection (id, name, count) VALUES (1, 'Name', 1);"));
-        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));
         auto node = dml_consumer(result.node);
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         const auto& chunk =
@@ -42,7 +45,10 @@ TEST_CASE("components::sql::insert_into") {
     SECTION("insert into without TestDatabase") {
         auto select = linitial(
             raw_parser(&arena_resource, "INSERT INTO TestCollection (id, name, count) VALUES (1, 'Name', 1);"));
-        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));
         auto node = dml_consumer(result.node);
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         const auto& chunk =
@@ -56,7 +62,10 @@ TEST_CASE("components::sql::insert_into") {
     SECTION("insert into with quoted") {
         auto select = linitial(
             raw_parser(&arena_resource, R"(INSERT INTO TestCollection (id, "name", "count") VALUES (1, 'Name', 1);)"));
-        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));
         auto node = dml_consumer(result.node);
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         const auto& chunk =
@@ -71,7 +80,10 @@ TEST_CASE("components::sql::insert_into") {
         auto select = linitial(raw_parser(
             &arena_resource,
             R"(INSERT INTO TestCollection (struct_type.field_1, struct_type.field_3) VALUES(43, 'some text');)"));
-        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));
         auto node = dml_consumer(result.node);
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         const auto& chunk =
@@ -84,7 +96,10 @@ TEST_CASE("components::sql::insert_into") {
     SECTION("insert into array") {
         auto select =
             linitial(raw_parser(&arena_resource, R"(INSERT INTO TestCollection (array_type) VALUES(ARRAY[1, 2, 3]);)"));
-        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));
         auto node = dml_consumer(result.node);
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         const auto& chunk =
@@ -107,7 +122,10 @@ TEST_CASE("components::sql::insert_into") {
                                           "(3, 'Name3', 3), "
                                           "(4, 'Name4', 4), "
                                           "(5, 'Name5', 5);"));
-        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));
         auto node = dml_consumer(result.node);
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         const auto& chunk =
@@ -126,14 +144,19 @@ TEST_CASE("components::sql::insert_into") {
 SELECT column1, column2, column3
 FROM table1
 WHERE condition = true;)_"));
-        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));
         auto node = dml_consumer(result.node);
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
-        REQUIRE(static_cast<const std::string&>(
-                    reinterpret_cast<components::logical_plan::node_aggregate_ptr&>(node->children().front())
-                        ->dbname()) == "");
-        REQUIRE(static_cast<const std::string&>(
-                    reinterpret_cast<components::logical_plan::node_aggregate_ptr&>(node->children().front())
-                        ->relname()) == "table1");
+        REQUIRE(
+            static_cast<const std::string&>(
+                reinterpret_cast<components::logical_plan::node_aggregate_ptr&>(node->children().front())->dbname()) ==
+            "");
+        REQUIRE(
+            static_cast<const std::string&>(
+                reinterpret_cast<components::logical_plan::node_aggregate_ptr&>(node->children().front())->relname()) ==
+            "table1");
     }
 }

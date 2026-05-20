@@ -32,9 +32,7 @@ namespace components::table {
         // the row from ALL readers as soon as any txn issued a tombstone — the bug behind
         // resolve_*'s incorrect view of pg_catalog during in-flight DDL.
         static bool use_deleted_version(uint64_t min_start_time, uint64_t /* min_transaction_id */, uint64_t id) {
-            return id == NOT_DELETED_ID ||
-                   id >= TRANSACTION_ID_START ||
-                   id >= min_start_time;
+            return id == NOT_DELETED_ID || id >= TRANSACTION_ID_START || id >= min_start_time;
         }
     };
 
@@ -75,13 +73,13 @@ namespace components::table {
     }
 
     uint64_t chunk_constant_info::committed_indexing_vector(uint64_t min_start_id,
-                                                           uint64_t min_transaction_id,
-                                                           vector::indexing_vector_t& indexing_vector,
-                                                           uint64_t max_count) {
+                                                            uint64_t min_transaction_id,
+                                                            vector::indexing_vector_t& indexing_vector,
+                                                            uint64_t max_count) {
         return templated_indexing_vector<committed_version_operator>(min_start_id,
-                                                                    min_transaction_id,
-                                                                    indexing_vector,
-                                                                    max_count);
+                                                                     min_transaction_id,
+                                                                     indexing_vector,
+                                                                     max_count);
     }
 
     bool chunk_constant_info::fetch(transaction_data transaction, int64_t) {
@@ -175,13 +173,13 @@ namespace components::table {
     }
 
     uint64_t chunk_vector_info::committed_indexing_vector(uint64_t min_start_id,
-                                                         uint64_t min_transaction_id,
-                                                         vector::indexing_vector_t& indexing_vector,
-                                                         uint64_t max_count) {
+                                                          uint64_t min_transaction_id,
+                                                          vector::indexing_vector_t& indexing_vector,
+                                                          uint64_t max_count) {
         return templated_indexing_vector<committed_version_operator>(min_start_id,
-                                                                    min_transaction_id,
-                                                                    indexing_vector,
-                                                                    max_count);
+                                                                     min_transaction_id,
+                                                                     indexing_vector,
+                                                                     max_count);
     }
 
     uint64_t chunk_vector_info::indexing_vector(transaction_data transaction,
@@ -372,10 +370,10 @@ namespace components::table {
     }
 
     uint64_t row_version_manager_t::committed_indexing_vector(uint64_t start_time,
-                                                             uint64_t transaction_id,
-                                                             uint64_t vector_idx,
-                                                             vector::indexing_vector_t& indexing_vector,
-                                                             uint64_t max_count) {
+                                                              uint64_t transaction_id,
+                                                              uint64_t vector_idx,
+                                                              vector::indexing_vector_t& indexing_vector,
+                                                              uint64_t max_count) {
         std::lock_guard l(version_lock_);
         auto info = get_chunk_info(vector_idx);
         if (!info) {

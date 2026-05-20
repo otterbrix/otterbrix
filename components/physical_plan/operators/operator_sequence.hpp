@@ -10,9 +10,7 @@ namespace components::operators {
     // Used for DDL pipelines where multiple catalog-write operators run in order.
     class operator_sequence_t final : public read_write_operator_t {
     public:
-        operator_sequence_t(std::pmr::memory_resource* resource,
-                             log_t                      log,
-                             std::vector<operator_ptr>  steps);
+        operator_sequence_t(std::pmr::memory_resource* resource, log_t log, std::vector<operator_ptr> steps);
 
         const std::vector<operator_ptr>& steps() const { return steps_; }
 

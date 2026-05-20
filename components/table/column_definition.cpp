@@ -73,8 +73,8 @@ namespace components::table {
         // attoid is immutable after first assignment — programmer-error precondition.
         // Hot DDL/resolve path: drop the throw, assert in debug, no-op in release if
         // someone tries to reassign with a different value.
-        assert((attoid_ == 0 || attoid_ == v)
-               && "column_definition_t::set_attoid: attoid is immutable after assignment");
+        assert((attoid_ == 0 || attoid_ == v) &&
+               "column_definition_t::set_attoid: attoid is immutable after assignment");
         if (attoid_ != 0 && attoid_ != v) {
             return;
         }

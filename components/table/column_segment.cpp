@@ -268,7 +268,8 @@ namespace components::table {
                 string_length = static_cast<uint32_t>(std::abs(dict_offset) - std::abs(base_data[row_id - 1]));
             }
 
-            return table_filter_dispatch(filter, fetch_string_from_dict(segment, dict, baseptr, dict_offset, string_length));
+            return table_filter_dispatch(filter,
+                                         fetch_string_from_dict(segment, dict, baseptr, dict_offset, string_length));
         }
 
         struct standard_fixed_size_t {

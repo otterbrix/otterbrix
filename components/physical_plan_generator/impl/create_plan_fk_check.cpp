@@ -13,10 +13,7 @@ namespace services::planner::impl {
                          const components::logical_plan::storage_parameters* params) {
         auto* n = static_cast<components::logical_plan::node_fk_check_t*>(node.get());
         auto plan = boost::intrusive_ptr(
-            new components::operators::operator_fk_check_t(
-                context.resource,
-                context.log.clone(),
-                n->fk()));
+            new components::operators::operator_fk_check_t(context.resource, context.log.clone(), n->fk()));
         if (!node->children().empty()) {
             plan->set_children(create_plan(context, function_registry, node->children().front(), {}, params));
         }

@@ -16,27 +16,30 @@ namespace components::sql::transform {
         // stamps type_md_by_qname for each emitted resolve_type; dispatcher's
         // check_type_exists / probe_type_in_path then read from idx.
         logical_plan::node_ptr wrap_create_type(std::pmr::memory_resource* resource,
-                                                 const types::complex_logical_type& type,
-                                                 logical_plan::node_ptr main_node) {
+                                                const types::complex_logical_type& type,
+                                                logical_plan::node_ptr main_node) {
             std::set<std::string> nested_names;
             if (type.type() == types::logical_type::STRUCT) {
                 for (const auto& field : type.child_types()) {
-                    types::walk_user_type_refs(
-                        field, [&](std::string_view nm) { nested_names.emplace(nm); });
+                    types::walk_user_type_refs(field, [&](std::string_view nm) { nested_names.emplace(nm); });
                 }
             }
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(resource));
-            seq->append_child(logical_plan::make_node_catalog_resolve_namespace(
-                resource, core::dbname_t{std::string{"public"}}));
+            seq->append_child(
+                logical_plan::make_node_catalog_resolve_namespace(resource, core::dbname_t{std::string{"public"}}));
             // Resolve the new type's own name → collision detection (Pass 1
             // returns a stamp iff pg_type already has the name).
-            seq->append_child(logical_plan::make_node_catalog_resolve_type(
-                resource, core::dbname_t{std::string{"public"}}, core::typename_t{std::string(type.type_name())}));
+            seq->append_child(
+                logical_plan::make_node_catalog_resolve_type(resource,
+                                                             core::dbname_t{std::string{"public"}},
+                                                             core::typename_t{std::string(type.type_name())}));
             // Nested STRUCT field UDTs (only those referenced by name).
             for (const auto& nm : nested_names) {
-                if (nm == type.type_name()) continue; // self-ref already emitted
-                seq->append_child(logical_plan::make_node_catalog_resolve_type(
-                    resource, core::dbname_t{std::string{"public"}}, core::typename_t{nm}));
+                if (nm == type.type_name())
+                    continue; // self-ref already emitted
+                seq->append_child(logical_plan::make_node_catalog_resolve_type(resource,
+                                                                               core::dbname_t{std::string{"public"}},
+                                                                               core::typename_t{nm}));
             }
             seq->append_child(std::move(main_node));
             return seq;

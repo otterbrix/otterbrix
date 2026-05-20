@@ -13,12 +13,12 @@ namespace components::logical_plan {
     // Planner-emitted DDL leaf for `ALTER TABLE ... DROP COLUMN`.
     class node_alter_column_drop_t final : public node_t {
     public:
-        node_alter_column_drop_t(std::pmr::memory_resource* resource,
-                                 components::catalog::oid_t table_oid,
-                                 components::catalog::oid_t namespace_oid,
-                                 core::columnname_t column_name,
-                                 components::catalog::drop_behavior_t behavior =
-                                     components::catalog::drop_behavior_t::cascade_);
+        node_alter_column_drop_t(
+            std::pmr::memory_resource* resource,
+            components::catalog::oid_t table_oid,
+            components::catalog::oid_t namespace_oid,
+            core::columnname_t column_name,
+            components::catalog::drop_behavior_t behavior = components::catalog::drop_behavior_t::cascade_);
 
         components::catalog::oid_t namespace_oid() const noexcept { return namespace_oid_; }
         const std::string& column_name() const noexcept { return column_name_; }

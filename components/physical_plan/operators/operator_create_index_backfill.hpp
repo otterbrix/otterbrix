@@ -22,25 +22,25 @@ namespace components::operators {
     // commits successfully.
     class operator_create_index_backfill_t final : public read_write_operator_t {
     public:
-        operator_create_index_backfill_t(std::pmr::memory_resource*           resource,
-                                          log_t                                log,
-                                          std::string                          index_name,
-                                          components::logical_plan::index_type index_type,
-                                          std::pmr::vector<components::expressions::key_t> keys,
-                                          components::catalog::oid_t           table_oid,
-                                          components::catalog::oid_t           index_oid,
-                                          std::string                          indkey);
+        operator_create_index_backfill_t(std::pmr::memory_resource* resource,
+                                         log_t log,
+                                         std::string index_name,
+                                         components::logical_plan::index_type index_type,
+                                         std::pmr::vector<components::expressions::key_t> keys,
+                                         components::catalog::oid_t table_oid,
+                                         components::catalog::oid_t index_oid,
+                                         std::string indkey);
 
     private:
         void on_execute_impl(pipeline::context_t* ctx) override;
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
-        std::string                              index_name_;
-        components::logical_plan::index_type     index_type_;
+        std::string index_name_;
+        components::logical_plan::index_type index_type_;
         std::pmr::vector<components::expressions::key_t> keys_;
-        components::catalog::oid_t               table_oid_;
-        components::catalog::oid_t               index_oid_;
-        std::string                              indkey_;
+        components::catalog::oid_t table_oid_;
+        components::catalog::oid_t index_oid_;
+        std::string indkey_;
     };
 
 } // namespace components::operators

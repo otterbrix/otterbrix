@@ -6,8 +6,8 @@
 #include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/detail/future.hpp>
 
-#include <services/wal/wal_contract.hpp>
 #include <services/wal/wal.hpp>
+#include <services/wal/wal_contract.hpp>
 #include <services/wal/wal_sync_mode.hpp>
 
 #include <components/catalog/catalog_oids.hpp>
@@ -21,8 +21,7 @@
 
 namespace services::wal {
 
-    class manager_wal_replicate_t final
-        : public actor_zeta::actor::actor_mixin<manager_wal_replicate_t> {
+    class manager_wal_replicate_t final : public actor_zeta::actor::actor_mixin<manager_wal_replicate_t> {
     public:
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
@@ -38,8 +37,7 @@ namespace services::wal {
         std::pmr::memory_resource* resource() const noexcept;
         const char* make_type() const noexcept;
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
-        std::pair<bool, actor_zeta::detail::enqueue_result>
-        enqueue_impl(actor_zeta::mailbox::message_ptr msg);
+        std::pair<bool, actor_zeta::detail::enqueue_result> enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
         using run_fn_t = std::function<void()>;
 
@@ -60,39 +58,35 @@ namespace services::wal {
 
         unique_future<wal::id_t> auto_checkpoint_wal_id(session_id_t session);
 
-        unique_future<wal::id_t>
-        write_physical_insert(session_id_t session,
-                              components::catalog::oid_t table_oid,
-                              std::unique_ptr<components::vector::data_chunk_t> data_chunk,
-                              uint64_t row_start,
-                              uint64_t row_count,
-                              uint64_t txn_id);
+        unique_future<wal::id_t> write_physical_insert(session_id_t session,
+                                                       components::catalog::oid_t table_oid,
+                                                       std::unique_ptr<components::vector::data_chunk_t> data_chunk,
+                                                       uint64_t row_start,
+                                                       uint64_t row_count,
+                                                       uint64_t txn_id);
 
-        unique_future<wal::id_t>
-        write_physical_delete(session_id_t session,
-                              components::catalog::oid_t table_oid,
-                              std::pmr::vector<int64_t> row_ids,
-                              uint64_t count,
-                              uint64_t txn_id);
+        unique_future<wal::id_t> write_physical_delete(session_id_t session,
+                                                       components::catalog::oid_t table_oid,
+                                                       std::pmr::vector<int64_t> row_ids,
+                                                       uint64_t count,
+                                                       uint64_t txn_id);
 
-        unique_future<wal::id_t>
-        write_physical_update(session_id_t session,
-                              components::catalog::oid_t table_oid,
-                              std::pmr::vector<int64_t> row_ids,
-                              std::unique_ptr<components::vector::data_chunk_t> new_data,
-                              uint64_t count,
-                              uint64_t txn_id);
+        unique_future<wal::id_t> write_physical_update(session_id_t session,
+                                                       components::catalog::oid_t table_oid,
+                                                       std::pmr::vector<int64_t> row_ids,
+                                                       std::unique_ptr<components::vector::data_chunk_t> new_data,
+                                                       uint64_t count,
+                                                       uint64_t txn_id);
 
-        using dispatch_traits =
-            actor_zeta::implements<wal_contract,
-                                   &manager_wal_replicate_t::load,
-                                   &manager_wal_replicate_t::commit_txn,
-                                   &manager_wal_replicate_t::truncate_before,
-                                   &manager_wal_replicate_t::current_wal_id,
-                                   &manager_wal_replicate_t::auto_checkpoint_wal_id,
-                                   &manager_wal_replicate_t::write_physical_insert,
-                                   &manager_wal_replicate_t::write_physical_delete,
-                                   &manager_wal_replicate_t::write_physical_update>;
+        using dispatch_traits = actor_zeta::implements<wal_contract,
+                                                       &manager_wal_replicate_t::load,
+                                                       &manager_wal_replicate_t::commit_txn,
+                                                       &manager_wal_replicate_t::truncate_before,
+                                                       &manager_wal_replicate_t::current_wal_id,
+                                                       &manager_wal_replicate_t::auto_checkpoint_wal_id,
+                                                       &manager_wal_replicate_t::write_physical_insert,
+                                                       &manager_wal_replicate_t::write_physical_delete,
+                                                       &manager_wal_replicate_t::write_physical_update>;
 
         // Global WAL ID counter — shared across all per-database workers.
         wal::id_t next_wal_id();

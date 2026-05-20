@@ -24,20 +24,20 @@ namespace components::operators {
     class operator_alter_column_rename_t final : public read_write_operator_t {
     public:
         operator_alter_column_rename_t(std::pmr::memory_resource* resource,
-                                        log_t                       log,
-                                        components::catalog::oid_t  table_oid,
-                                        components::catalog::oid_t  attoid,
-                                        std::string                 old_name,
-                                        std::string                 new_name);
+                                       log_t log,
+                                       components::catalog::oid_t table_oid,
+                                       components::catalog::oid_t attoid,
+                                       std::string old_name,
+                                       std::string new_name);
 
     private:
         void on_execute_impl(pipeline::context_t* ctx) override;
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
-        components::catalog::oid_t  table_oid_;
-        components::catalog::oid_t  attoid_;
-        std::string                 old_name_;
-        std::string                 new_name_;
+        components::catalog::oid_t table_oid_;
+        components::catalog::oid_t attoid_;
+        std::string old_name_;
+        std::string new_name_;
     };
 
 } // namespace components::operators

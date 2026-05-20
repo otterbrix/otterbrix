@@ -32,8 +32,7 @@ namespace components::logical_plan {
 
     using node_select_ptr = boost::intrusive_ptr<node_select_t>;
 
-    node_select_ptr make_node_select(std::pmr::memory_resource* resource,
-                                      core::dbname_t dbname,
-                                      core::relname_t relname);
+    node_select_ptr
+    make_node_select(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname);
 
 } // namespace components::logical_plan

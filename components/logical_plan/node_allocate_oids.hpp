@@ -33,7 +33,6 @@ namespace components::logical_plan {
 
     using node_allocate_oids_ptr = boost::intrusive_ptr<node_allocate_oids_t>;
 
-    node_allocate_oids_ptr make_node_allocate_oids(std::pmr::memory_resource* resource,
-                                                    std::size_t count);
+    node_allocate_oids_ptr make_node_allocate_oids(std::pmr::memory_resource* resource, std::size_t count);
 
 } // namespace components::logical_plan

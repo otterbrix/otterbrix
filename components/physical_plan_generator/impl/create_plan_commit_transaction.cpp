@@ -5,12 +5,10 @@
 
 namespace services::planner::impl {
 
-    components::operators::operator_ptr
-    create_plan_commit_transaction(const context_storage_t& context,
-                                    const components::logical_plan::node_ptr& node) {
-        auto op = boost::intrusive_ptr(new components::operators::operator_commit_transaction_t(
-            context.resource,
-            context.log.clone()));
+    components::operators::operator_ptr create_plan_commit_transaction(const context_storage_t& context,
+                                                                       const components::logical_plan::node_ptr& node) {
+        auto op = boost::intrusive_ptr(
+            new components::operators::operator_commit_transaction_t(context.resource, context.log.clone()));
         // Propagate DDL-commit flag + WAL coordinates from the logical
         // node into the operator. DDL mode adds the flush + WAL commit_txn
         // prefix; RPC mode keeps the simpler commit.

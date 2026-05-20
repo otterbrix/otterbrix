@@ -48,10 +48,10 @@ namespace components::operators {
                 std::size_t executor_index)>;
 
         operator_register_udf_t(std::pmr::memory_resource* resource,
-                                 log_t log,
-                                 std::shared_ptr<components::compute::function> function,
-                                 std::size_t executor_count,
-                                 executor_register_fn_t executor_register_fn);
+                                log_t log,
+                                std::shared_ptr<components::compute::function> function,
+                                std::size_t executor_count,
+                                executor_register_fn_t executor_register_fn);
 
         // True iff the registration succeeded across every executor and the
         // pg_proc/pg_depend rows were appended. Caller (dispatcher) reads this

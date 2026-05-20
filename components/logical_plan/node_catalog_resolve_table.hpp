@@ -70,9 +70,7 @@ namespace components::logical_plan {
         const std::optional<resolved_table_metadata_t>& resolved_metadata() const noexcept {
             return resolved_metadata_;
         }
-        void set_resolved_metadata(resolved_table_metadata_t md) {
-            resolved_metadata_ = std::move(md);
-        }
+        void set_resolved_metadata(resolved_table_metadata_t md) { resolved_metadata_ = std::move(md); }
 
     private:
         hash_t hash_impl() const override;

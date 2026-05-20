@@ -13,9 +13,7 @@ namespace components::operators {
     //   'n'/'d' SET NULL / SET DEFAULT — update referencing rows in-place
     class operator_fk_cascade_t final : public read_write_operator_t {
     public:
-        operator_fk_cascade_t(std::pmr::memory_resource* resource,
-                               log_t                      log,
-                               catalog::fk_info_t         fk);
+        operator_fk_cascade_t(std::pmr::memory_resource* resource, log_t log, catalog::fk_info_t fk);
 
     private:
         void on_execute_impl(pipeline::context_t* ctx) override;

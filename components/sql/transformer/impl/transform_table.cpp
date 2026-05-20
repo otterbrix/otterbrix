@@ -68,10 +68,10 @@ namespace components::sql::transform {
         }
 
         created = logical_plan::make_node_create_collection(resource_,
-                                                         core::relname_t{qn.relname},
-                                                         std::move(col_defs.value()),
-                                                         std::move(constraints.value()),
-                                                         disk_storage);
+                                                            core::relname_t{qn.relname},
+                                                            std::move(col_defs.value()),
+                                                            std::move(constraints.value()),
+                                                            disk_storage);
         // Collect every UDT type_name referenced by the column defs
         // (including nested STRUCT children) so Pass 1's resolve_type
         // operator can stamp pg_type metadata into the plan-tree idx.
@@ -79,9 +79,7 @@ namespace components::sql::transform {
         // Re-read col_defs from the constructed node (we moved it above).
         if (auto* cn = dynamic_cast<logical_plan::node_create_collection_t*>(created.get())) {
             for (const auto& col : cn->column_definitions()) {
-                components::types::walk_user_type_refs(
-                    col.type(),
-                    [&](std::string_view nm) { udt_names.emplace(nm); });
+                components::types::walk_user_type_refs(col.type(), [&](std::string_view nm) { udt_names.emplace(nm); });
             }
         }
         if (udt_names.empty()) {
@@ -93,24 +91,23 @@ namespace components::sql::transform {
         // resolve_one_type + dispatcher's existence checks read from idx.
         auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(resource_));
         if (!dbname.empty()) {
-            seq->append_child(
-                logical_plan::make_node_catalog_resolve_namespace(resource_, core::dbname_t{dbname}));
+            seq->append_child(logical_plan::make_node_catalog_resolve_namespace(resource_, core::dbname_t{dbname}));
         }
         for (const auto& nm : udt_names) {
             // Probe "public" namespace by default (resolve_one_type's first
             // hit). pg_catalog builtins are not in udt_names since
             // walk_user_type_refs only emits STRUCT/ENUM/UNKNOWN; pg_catalog
             // scalars resolve via resolve_builtin earlier.
-            seq->append_child(logical_plan::make_node_catalog_resolve_type(
-                resource_, core::dbname_t{std::string{"public"}}, core::typename_t{nm}));
+            seq->append_child(logical_plan::make_node_catalog_resolve_type(resource_,
+                                                                           core::dbname_t{std::string{"public"}},
+                                                                           core::typename_t{nm}));
         }
         seq->append_child(std::move(created));
         return seq;
     }
 
     logical_plan::node_ptr transformer::transform_drop(DropStmt& node) {
-        auto wrap_one = [&](const std::string& db, const std::string& rel,
-                            logical_plan::node_ptr n) {
+        auto wrap_one = [&](const std::string& db, const std::string& rel, logical_plan::node_ptr n) {
             return maybe_wrap_with_catalog_resolve_table(resource_, db, rel, std::move(n));
         };
         switch (node.removeType) {
@@ -135,7 +132,7 @@ namespace components::sql::transform {
                         std::string database = strVal(it++->data);
                         std::string /*schema*/ _ = strVal(it++->data);
                         std::string collection = strVal(it->data);
-                        (void)_;
+                        (void) _;
                         auto n = logical_plan::make_node_drop_collection(resource_);
                         return wrap_one(database, collection, std::move(n));
                     }
@@ -145,7 +142,8 @@ namespace components::sql::transform {
                         std::string database = strVal(it++->data);
                         std::string /*schema*/ _s = strVal(it++->data);
                         std::string collection = strVal(it->data);
-                        (void)_u; (void)_s;
+                        (void) _u;
+                        (void) _s;
                         auto n = logical_plan::make_node_drop_collection(resource_);
                         return wrap_one(database, collection, std::move(n));
                     }
@@ -162,14 +160,14 @@ namespace components::sql::transform {
                                            std::pmr::string{"incorrect drop: arguments size", resource_});
                     return nullptr;
                 }
-                auto wrap_index = [&](const std::string& db, const std::string& rel,
-                                       const std::string& index_name,
-                                       logical_plan::node_ptr n) {
+                auto wrap_index = [&](const std::string& db,
+                                      const std::string& rel,
+                                      const std::string& index_name,
+                                      logical_plan::node_ptr n) {
                     std::vector<std::pair<std::string, std::string>> targets;
                     targets.emplace_back(db, rel);
                     targets.emplace_back(db, index_name);
-                    return maybe_wrap_with_catalog_resolve_tables(
-                        resource_, std::move(targets), std::move(n));
+                    return maybe_wrap_with_catalog_resolve_tables(resource_, std::move(targets), std::move(n));
                 };
                 //when casting to enum -1 is used to account for obligated index name
                 switch (static_cast<table_name>(drop_name.size() - 1)) {
@@ -187,7 +185,7 @@ namespace components::sql::transform {
                         std::string /*schema*/ _ = strVal(it++->data);
                         std::string collection = strVal(it++->data);
                         std::string name = strVal(it->data);
-                        (void)_;
+                        (void) _;
                         auto n = logical_plan::make_node_drop_index(resource_);
                         return wrap_index(database, collection, name, std::move(n));
                     }
@@ -198,7 +196,8 @@ namespace components::sql::transform {
                         std::string /*schema*/ _s = strVal(it++->data);
                         std::string collection = strVal(it++->data);
                         std::string name = strVal(it->data);
-                        (void)_u; (void)_s;
+                        (void) _u;
+                        (void) _s;
                         auto n = logical_plan::make_node_drop_index(resource_);
                         return wrap_index(database, collection, name, std::move(n));
                     }
@@ -221,10 +220,12 @@ namespace components::sql::transform {
                 // resolved_type_metadata. enrich's drop_type_t branch reads
                 // from plan-tree idx (resolve_type_t stamps it at Pass 1).
                 auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(resource_));
-                seq->append_child(logical_plan::make_node_catalog_resolve_namespace(
-                    resource_, core::dbname_t{std::string{"public"}}));
-                seq->append_child(logical_plan::make_node_catalog_resolve_type(
-                    resource_, core::dbname_t{std::string{"public"}}, core::typename_t{type_name}));
+                seq->append_child(
+                    logical_plan::make_node_catalog_resolve_namespace(resource_,
+                                                                      core::dbname_t{std::string{"public"}}));
+                seq->append_child(logical_plan::make_node_catalog_resolve_type(resource_,
+                                                                               core::dbname_t{std::string{"public"}},
+                                                                               core::typename_t{type_name}));
                 seq->append_child(std::move(n));
                 return seq;
             }

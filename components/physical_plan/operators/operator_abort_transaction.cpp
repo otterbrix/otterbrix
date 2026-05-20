@@ -7,16 +7,12 @@
 
 namespace components::operators {
 
-    operator_abort_transaction_t::operator_abort_transaction_t(std::pmr::memory_resource* resource,
-                                                                log_t log)
+    operator_abort_transaction_t::operator_abort_transaction_t(std::pmr::memory_resource* resource, log_t log)
         : read_write_operator_t(resource, std::move(log), operator_type::abort_transaction) {}
 
-    void operator_abort_transaction_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
-        async_wait();
-    }
+    void operator_abort_transaction_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
 
-    actor_zeta::unique_future<void>
-    operator_abort_transaction_t::await_async_and_resume(pipeline::context_t* ctx) {
+    actor_zeta::unique_future<void> operator_abort_transaction_t::await_async_and_resume(pipeline::context_t* ctx) {
         // Snapshot txn_data + swap-appends BEFORE abort() purges the
         // active map. delete_tables on abort: nothing to revert because
         // tombstones written under an uncommitted txn_id stay invisible to
@@ -40,14 +36,13 @@ namespace components::operators {
 
         // Step 3: revert any pg_catalog rows appended under this transaction
         // via the new batched API.
-        if (txn_data.transaction_id != 0 && !swap_appends.empty()
-            && ctx->disk_address != actor_zeta::address_t::empty_address()) {
+        if (txn_data.transaction_id != 0 && !swap_appends.empty() &&
+            ctx->disk_address != actor_zeta::address_t::empty_address()) {
             components::execution_context_t swap_ctx{ctx->session, txn_data, {}};
-            auto [_r, rf] = actor_zeta::send(
-                ctx->disk_address,
-                &services::disk::manager_disk_t::storage_revert_appends,
-                swap_ctx,
-                std::move(swap_appends));
+            auto [_r, rf] = actor_zeta::send(ctx->disk_address,
+                                             &services::disk::manager_disk_t::storage_revert_appends,
+                                             swap_ctx,
+                                             std::move(swap_appends));
             co_await std::move(rf);
         }
 

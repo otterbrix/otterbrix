@@ -17,8 +17,7 @@ namespace components::logical_plan {
 
     std::string node_fk_cascade_t::to_string_impl() const {
         std::ostringstream s;
-        s << "$fk_cascade: " << relname_
-          << " child_oid=" << fk_.child_table_oid;
+        s << "$fk_cascade: " << relname_ << " child_oid=" << fk_.child_table_oid;
         return s.str();
     }
 

@@ -167,17 +167,23 @@ namespace services::planner::impl {
                 }
             }
             if (context.has_table_oid(node->table_oid())) {
-                return boost::intrusive_ptr(
-                    new components::operators::transfer_scan(
-                        context.resource, node->table_oid(), limit, std::move(effective_cols)));
+                return boost::intrusive_ptr(new components::operators::transfer_scan(context.resource,
+                                                                                     node->table_oid(),
+                                                                                     limit,
+                                                                                     std::move(effective_cols)));
             } else {
-                return boost::intrusive_ptr(
-                    new components::operators::transfer_scan(
-                        nullptr, node->table_oid(), limit, std::move(effective_cols)));
+                return boost::intrusive_ptr(new components::operators::transfer_scan(nullptr,
+                                                                                     node->table_oid(),
+                                                                                     limit,
+                                                                                     std::move(effective_cols)));
             }
         } else {
             const auto* match_node = static_cast<const components::logical_plan::node_match_t*>(node.get());
-            return create_plan_match_(context, match_node->table_oid(), match_node->expressions()[0], limit, projected_cols);
+            return create_plan_match_(context,
+                                      match_node->table_oid(),
+                                      match_node->expressions()[0],
+                                      limit,
+                                      projected_cols);
         }
     }
 

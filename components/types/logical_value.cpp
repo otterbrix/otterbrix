@@ -14,7 +14,6 @@ namespace components::types {
         inline constexpr bool ext_is_signed_v = std::is_signed_v<T> || std::is_same_v<T, int128_t>;
     }
 
-
     logical_value_t::~logical_value_t() { destroy_heap(); }
 
     void logical_value_t::destroy_heap() {

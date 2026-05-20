@@ -19,10 +19,10 @@ namespace components::operators {
     namespace catalog = components::catalog;
 
     operator_register_udf_t::operator_register_udf_t(std::pmr::memory_resource* resource,
-                                                      log_t log,
-                                                      std::shared_ptr<components::compute::function> function,
-                                                      std::size_t executor_count,
-                                                      executor_register_fn_t executor_register_fn)
+                                                     log_t log,
+                                                     std::shared_ptr<components::compute::function> function,
+                                                     std::size_t executor_count,
+                                                     executor_register_fn_t executor_register_fn)
         : read_only_operator_t(resource, std::move(log), operator_type::register_udf)
         , function_(std::move(function))
         , executor_count_(executor_count)
@@ -34,8 +34,7 @@ namespace components::operators {
         async_wait();
     }
 
-    actor_zeta::unique_future<void>
-    operator_register_udf_t::await_async_and_resume(pipeline::context_t* ctx) {
+    actor_zeta::unique_future<void> operator_register_udf_t::await_async_and_resume(pipeline::context_t* ctx) {
         success_ = false;
         if (!function_) {
             output_ = nullptr;
@@ -53,10 +52,10 @@ namespace components::operators {
         //    user or pg_catalog). Mirrors #41 Path 2 in the legacy dispatcher.
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             auto [_rfbn, rfbnf] = actor_zeta::send(ctx->disk_address,
-                                                    &services::disk::manager_disk_t::resolve_function_by_name,
-                                                    exec_ctx,
-                                                    func_name,
-                                                    std::uint64_t{0});
+                                                   &services::disk::manager_disk_t::resolve_function_by_name,
+                                                   exec_ctx,
+                                                   func_name,
+                                                   std::uint64_t{0});
             auto matches = co_await std::move(rfbnf);
             if (!matches.empty()) {
                 output_ = nullptr;
@@ -82,11 +81,9 @@ namespace components::operators {
         }
         if (!uids.empty()) {
             const auto first_uid = uids.front();
-            const bool agree = std::all_of(uids.begin(), uids.end(),
-                                            [first_uid](components::compute::function_uid u) {
-                                                return u != components::compute::invalid_function_uid &&
-                                                       u == first_uid;
-                                            });
+            const bool agree = std::all_of(uids.begin(), uids.end(), [first_uid](components::compute::function_uid u) {
+                return u != components::compute::invalid_function_uid && u == first_uid;
+            });
             if (!agree) {
                 output_ = nullptr;
                 mark_executed();
@@ -104,10 +101,8 @@ namespace components::operators {
         //    across tests → expr->function_uid() set from global doesn't match
         //    any local entry, predicate gets a null function pointer at runtime.
         if (auto* def_reg = components::compute::function_registry_t::get_default()) {
-            auto res = uids.empty()
-                           ? def_reg->add_function(function_->get_copy(resource_))
-                           : def_reg->add_function_with_uid(uids.front(),
-                                                            function_->get_copy(resource_));
+            auto res = uids.empty() ? def_reg->add_function(function_->get_copy(resource_))
+                                    : def_reg->add_function_with_uid(uids.front(), function_->get_copy(resource_));
             if (res.has_error()) {
                 output_ = nullptr;
                 mark_executed();
@@ -121,17 +116,16 @@ namespace components::operators {
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             catalog::oid_t target_ns = catalog::well_known_oid::pg_catalog_namespace;
             {
-                auto [_ln, lnf] = actor_zeta::send(ctx->disk_address,
-                                                    &services::disk::manager_disk_t::list_namespaces,
-                                                    exec_ctx);
+                auto [_ln, lnf] =
+                    actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::list_namespaces, exec_ctx);
                 auto ns_names = co_await std::move(lnf);
                 for (auto& nname : ns_names) {
                     if (!nname.empty() && nname != "pg_catalog") {
                         auto [_rn, rnf] = actor_zeta::send(ctx->disk_address,
-                                                            &services::disk::manager_disk_t::resolve_namespace,
-                                                            exec_ctx,
-                                                            std::string(nname),
-                                                            std::uint64_t{0});
+                                                           &services::disk::manager_disk_t::resolve_namespace,
+                                                           exec_ctx,
+                                                           std::string(nname),
+                                                           std::uint64_t{0});
                         auto rns = co_await std::move(rnf);
                         if (rns.found) {
                             target_ns = rns.oid;
@@ -141,12 +135,9 @@ namespace components::operators {
                 }
             }
 
-            std::int32_t pronargs = func_signatures.empty()
-                                        ? 0
-                                        : static_cast<std::int32_t>(func_signatures.front().input_types.size());
-            std::int64_t prouid = uids.empty()
-                                       ? std::int64_t{0}
-                                       : static_cast<std::int64_t>(uids.front());
+            std::int32_t pronargs =
+                func_signatures.empty() ? 0 : static_cast<std::int32_t>(func_signatures.front().input_types.size());
+            std::int64_t prouid = uids.empty() ? std::int64_t{0} : static_cast<std::int64_t>(uids.front());
             // Encode the first signature's per-arg matchers + output types so
             // the function registry can reconstruct real signatures across restart.
             std::string proargmatchers;
@@ -167,25 +158,28 @@ namespace components::operators {
             }
 
             auto [_oa, oaf] = actor_zeta::send(ctx->disk_address,
-                                                &services::disk::manager_disk_t::allocate_oids_batch,
-                                                std::size_t{1});
+                                               &services::disk::manager_disk_t::allocate_oids_batch,
+                                               std::size_t{1});
             catalog::oid_batch_t fn_batch;
             fn_batch.oids = co_await std::move(oaf);
             const catalog::oid_t fn_oid = fn_batch.allocate();
             auto fn_writes = catalog::build_create_function_writes(resource_,
-                                                                    func_name,
-                                                                    target_ns,
-                                                                    fn_oid,
-                                                                    pronargs,
-                                                                    prouid,
-                                                                    std::move(proargmatchers),
-                                                                    std::move(prorettype));
+                                                                   func_name,
+                                                                   target_ns,
+                                                                   fn_oid,
+                                                                   pronargs,
+                                                                   prouid,
+                                                                   std::move(proargmatchers),
+                                                                   std::move(prorettype));
             for (auto& w : fn_writes) {
                 auto [_w, wf] = actor_zeta::send(ctx->disk_address,
-                                                  &services::disk::manager_disk_t::append_pg_catalog_row,
-                                                  exec_ctx, w.table_oid, std::move(w.row));
+                                                 &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                 exec_ctx,
+                                                 w.table_oid,
+                                                 std::move(w.row));
                 auto rng = co_await std::move(wf);
-                if (rng.count > 0) ctx->pg_catalog_appends.push_back(std::move(rng));
+                if (rng.count > 0)
+                    ctx->pg_catalog_appends.push_back(std::move(rng));
             }
         }
 

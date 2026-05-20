@@ -3,8 +3,8 @@
 namespace components::logical_plan {
 
     node_unregister_udf_t::node_unregister_udf_t(std::pmr::memory_resource* resource,
-                                                  core::function_name_t function_name,
-                                                  std::pmr::vector<types::complex_logical_type> inputs)
+                                                 core::function_name_t function_name,
+                                                 std::pmr::vector<types::complex_logical_type> inputs)
         : node_t(resource, node_type::unregister_udf_t)
         , function_name_(std::move(static_cast<std::string&>(function_name)))
         , inputs_(std::move(inputs)) {}

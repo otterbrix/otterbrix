@@ -6,7 +6,7 @@
 namespace components::logical_plan {
 
     node_catalog_resolve_namespace_t::node_catalog_resolve_namespace_t(std::pmr::memory_resource* resource,
-                                                                      core::dbname_t dbname)
+                                                                       core::dbname_t dbname)
         : node_t(resource, node_type::catalog_resolve_namespace_t)
         , dbname_(std::move(static_cast<std::string&>(dbname))) {}
 
@@ -18,8 +18,8 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    node_catalog_resolve_namespace_ptr
-    make_node_catalog_resolve_namespace(std::pmr::memory_resource* resource, core::dbname_t dbname) {
+    node_catalog_resolve_namespace_ptr make_node_catalog_resolve_namespace(std::pmr::memory_resource* resource,
+                                                                           core::dbname_t dbname) {
         return {new node_catalog_resolve_namespace_t{resource, std::move(dbname)}};
     }
 

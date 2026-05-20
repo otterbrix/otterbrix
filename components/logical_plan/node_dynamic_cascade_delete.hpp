@@ -19,21 +19,21 @@ namespace components::logical_plan {
     // (see catalog::drop_behavior_t and cascade_planner.cpp).
     class node_dynamic_cascade_delete_t final : public node_t {
     public:
-        node_dynamic_cascade_delete_t(std::pmr::memory_resource*           resource,
-                                       components::catalog::oid_t           seed_classid,
-                                       components::catalog::oid_t           seed_objid,
-                                       components::catalog::drop_behavior_t behavior);
+        node_dynamic_cascade_delete_t(std::pmr::memory_resource* resource,
+                                      components::catalog::oid_t seed_classid,
+                                      components::catalog::oid_t seed_objid,
+                                      components::catalog::drop_behavior_t behavior);
 
-        components::catalog::oid_t           seed_classid() const noexcept { return seed_classid_; }
-        components::catalog::oid_t           seed_objid()   const noexcept { return seed_objid_; }
-        components::catalog::drop_behavior_t behavior()     const noexcept { return behavior_; }
+        components::catalog::oid_t seed_classid() const noexcept { return seed_classid_; }
+        components::catalog::oid_t seed_objid() const noexcept { return seed_objid_; }
+        components::catalog::drop_behavior_t behavior() const noexcept { return behavior_; }
 
     private:
-        hash_t      hash_impl()      const override;
+        hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
-        components::catalog::oid_t           seed_classid_;
-        components::catalog::oid_t           seed_objid_;
+        components::catalog::oid_t seed_classid_;
+        components::catalog::oid_t seed_objid_;
         components::catalog::drop_behavior_t behavior_;
     };
 

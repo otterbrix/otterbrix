@@ -8,35 +8,35 @@ namespace components::catalog {
 
     // pg_class.relkind
     namespace relkind {
-        inline constexpr char regular          = 'r'; // ordinary table
-        inline constexpr char index            = 'i'; // index
-        inline constexpr char sequence         = 'S'; // sequence
-        inline constexpr char view             = 'v'; // view
-        inline constexpr char composite_type   = 'c'; // composite type
-        inline constexpr char computed         = 'g'; // computed/virtual table (otterbrix extension)
-        inline constexpr char macro            = 'm'; // pg_rewrite-backed macro
-    } // namespace relkind
+        inline constexpr char regular = 'r';        // ordinary table
+        inline constexpr char index = 'i';          // index
+        inline constexpr char sequence = 'S';       // sequence
+        inline constexpr char view = 'v';           // view
+        inline constexpr char composite_type = 'c'; // composite type
+        inline constexpr char computed = 'g';       // computed/virtual table (otterbrix extension)
+        inline constexpr char macro = 'm';          // pg_rewrite-backed macro
+    }                                               // namespace relkind
 
     // pg_constraint.contype
     namespace contype {
-        inline constexpr char check      = 'c';
+        inline constexpr char check = 'c';
         inline constexpr char foreign_key = 'f';
     } // namespace contype
 
     // pg_class.relstoragemode (otterbrix-specific: physical storage backing)
     namespace relstoragemode {
-        inline constexpr char disk      = 'd'; // table.otbx on disk
+        inline constexpr char disk = 'd';      // table.otbx on disk
         inline constexpr char in_memory = 'm'; // no persistence
-    } // namespace relstoragemode
+    }                                          // namespace relstoragemode
 
     // pg_constraint.confmatchtype (FK match strategy)
     namespace fk_match {
-        inline constexpr char simple  = 's';
+        inline constexpr char simple = 's';
     } // namespace fk_match
 
     // pg_constraint.confdeltype / confupdtype (FK referential action)
     namespace fk_action {
-        inline constexpr char no_action   = 'a';
+        inline constexpr char no_action = 'a';
     } // namespace fk_action
 
 } // namespace components::catalog

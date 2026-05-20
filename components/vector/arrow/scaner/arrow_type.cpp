@@ -83,8 +83,7 @@ namespace components::vector::arrow {
             }
             case types::logical_type::UNION: {
                 auto union_info = reinterpret_cast<arrow_struct_info*>(type_info_.get());
-                std::pmr::vector<types::complex_logical_type> new_children(
-                    type_.child_types().get_allocator());
+                std::pmr::vector<types::complex_logical_type> new_children(type_.child_types().get_allocator());
                 new_children.reserve(union_info->child_count());
                 for (size_t i = 0; i < union_info->child_count(); i++) {
                     auto& child = union_info->get_child(i);
@@ -248,9 +247,7 @@ namespace components::vector::arrow {
         } else if (format[0] == 'w') {
             std::string parameters = format.substr(format.find(':') + 1);
             int fixed_size_raw{};
-            auto [p, ec] = std::from_chars(parameters.data(),
-                                            parameters.data() + parameters.size(),
-                                            fixed_size_raw);
+            auto [p, ec] = std::from_chars(parameters.data(), parameters.data() + parameters.size(), fixed_size_raw);
             if (ec != std::errc{}) {
                 return nullptr;
             }
@@ -298,9 +295,7 @@ namespace components::vector::arrow {
         } else if (format[0] == '+' && format[1] == 'w') {
             std::string parameters = format.substr(format.find(':') + 1);
             int fixed_size_raw{};
-            auto [p, ec] = std::from_chars(parameters.data(),
-                                            parameters.data() + parameters.size(),
-                                            fixed_size_raw);
+            auto [p, ec] = std::from_chars(parameters.data(), parameters.data() + parameters.size(), fixed_size_raw);
             if (ec != std::errc{}) {
                 return nullptr;
             }

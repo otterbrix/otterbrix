@@ -1,8 +1,5 @@
 #include <catch2/catch.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
-#include <components/logical_plan/node_create_index.hpp>
-#include <components/logical_plan/node_drop_collection.hpp>
-#include <components/logical_plan/node_drop_index.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/parser/pg_functions.h>
 #include <components/sql/transformer/transformer.hpp>
@@ -16,32 +13,24 @@ using namespace components::sql::transform;
 #define TEST_TRANSFORMER_OK(QUERY, EXPECTED)                                                                           \
     SECTION(QUERY) {                                                                                                   \
         auto stmt = raw_parser(&arena_resource, QUERY)->lst.front().data;                                              \
-        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));             \
-        auto node = result.node;                                                                                       \
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();                                    \
+        REQUIRE(!result.has_error());                                                                                  \
+        auto node = result.value().node;                                                                               \
         REQUIRE(node->to_string() == EXPECTED);                                                                        \
     }
 
 #define TEST_TRANSFORMER_ERROR(QUERY, RESULT)                                                                          \
     SECTION(QUERY) {                                                                                                   \
         auto create = linitial(raw_parser(&arena_resource, QUERY));                                                    \
-        bool exception_thrown = false;                                                                                 \
-        try {                                                                                                          \
-            transformer.transform(pg_cell_to_node_cast(create));                                                       \
-        } catch (const parser_exception_t& e) {                                                                        \
-            exception_thrown = true;                                                                                   \
-            REQUIRE(std::string_view{e.what()} == RESULT);                                                             \
-        }                                                                                                              \
-        REQUIRE(exception_thrown);                                                                                     \
+        REQUIRE(transformer.transform(pg_cell_to_node_cast(create)).has_error());                                      \
     }
 
 #define TEST_TRANSFORMER_EXPECT_SCHEMA(QUERY, CHECK_FN)                                                                \
     SECTION(QUERY) {                                                                                                   \
         auto stmt = linitial(raw_parser(&arena_resource, QUERY));                                                      \
-        auto result = ([](auto _w){ REQUIRE_FALSE(_w.has_error()); return _w.value(); }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));             \
-        auto node = result.node;                                                                                       \
-        if (node->type() == components::logical_plan::node_type::sequence_t) {                                         \
-            node = node->children().back();                                                                            \
-        }                                                                                                              \
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();                                    \
+        REQUIRE(!result.has_error());                                                                                  \
+        auto node = result.value().node;                                                                               \
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);                                               \
         const auto& schema = data->schema();                                                                           \
         CHECK_FN(schema);                                                                                              \
@@ -111,19 +100,14 @@ TEST_CASE("components::sql::table") {
     // No db prefix → only resolve_table sibling (no resolve_namespace), so 2 children.
     TEST_TRANSFORMER_OK("DROP TABLE table_name", R"_($sequence[2])_");
 
-    // Transformer stores types as UNKNOWN(pg_internal_name); OID resolution happens
-    // later via pg_type in the disk manager (PostgreSQL-style bind-time resolution).
     TEST_TRANSFORMER_EXPECT_SCHEMA("CREATE TABLE table_name(test integer, test1 string)",
                                    [](const std::pmr::vector<complex_logical_type>& sch) {
                                        REQUIRE(contains(sch, [](const complex_logical_type& type) {
-                                           return type.alias() == "test" &&
-                                                  type.type() == logical_type::UNKNOWN &&
-                                                  type.type_name() == "int4";
+                                           return type.alias() == "test" && type.type() == logical_type::INTEGER;
                                        }));
                                        REQUIRE(contains(sch, [](const complex_logical_type& type) {
                                            return type.alias() == "test1" &&
-                                                  type.type() == logical_type::UNKNOWN &&
-                                                  type.type_name() == "string";
+                                                  type.type() == logical_type::STRING_LITERAL;
                                        }));
                                    });
 
@@ -131,16 +115,16 @@ TEST_CASE("components::sql::table") {
         "CREATE TABLE table_name(t1 blob, t2 uint, t3 uhugeint, t4 timestamp_sec, t5 decimal(5, 4))",
         [](const std::pmr::vector<complex_logical_type>& sch) {
             REQUIRE(contains(sch, [](const complex_logical_type& t) {
-                return t.alias() == "t1" && t.type() == logical_type::UNKNOWN && t.type_name() == "blob";
+                return t.alias() == "t1" && t.type() == logical_type::BLOB;
             }));
             REQUIRE(contains(sch, [](const complex_logical_type& t) {
-                return t.alias() == "t2" && t.type() == logical_type::UNKNOWN && t.type_name() == "uint";
+                return t.alias() == "t2" && t.type() == logical_type::UINTEGER;
             }));
             REQUIRE(contains(sch, [](const complex_logical_type& t) {
-                return t.alias() == "t3" && t.type() == logical_type::UNKNOWN && t.type_name() == "uhugeint";
+                return t.alias() == "t3" && t.type() == logical_type::UHUGEINT;
             }));
             REQUIRE(contains(sch, [](const complex_logical_type& t) {
-                return t.alias() == "t4" && t.type() == logical_type::UNKNOWN && t.type_name() == "timestamp_sec";
+                return t.alias() == "t4" && t.type() == logical_type::TIMESTAMP_SEC;
             }));
             REQUIRE(contains(sch, [](const complex_logical_type& t) {
                 if (t.type() != logical_type::DECIMAL)
@@ -157,50 +141,39 @@ TEST_CASE("components::sql::table") {
                 if (type.type() != logical_type::ARRAY)
                     return false;
                 auto array = static_cast<array_logical_type_extension*>(type.extension());
-                if (array->internal_type().type() != logical_type::DECIMAL)
+                if (array->internal_type() != logical_type::DECIMAL)
                     return false;
-                auto decimal =
-                    static_cast<decimal_logical_type_extension*>(array->internal_type().extension());
-                return type.alias() == "t1" && decimal->width() == 21 && decimal->scale() == 3 &&
-                       array->size() == 10;
+                auto decimal = static_cast<decimal_logical_type_extension*>(array->internal_type().extension());
+                return type.alias() == "t1" && decimal->width() == 21 && decimal->scale() == 3 && array->size() == 10;
             }));
             REQUIRE(contains(sch, [](const complex_logical_type& type) {
                 if (type.type() != logical_type::ARRAY)
                     return false;
                 auto array = static_cast<array_logical_type_extension*>(type.extension());
-                return type.alias() == "t2" && array->internal_type().type() == logical_type::UNKNOWN &&
-                       array->internal_type().type_name() == "int4" && array->size() == 100;
+                return type.alias() == "t2" && array->internal_type() == logical_type::INTEGER && array->size() == 100;
             }));
             REQUIRE(contains(sch, [](const complex_logical_type& type) {
                 if (type.type() != logical_type::ARRAY)
                     return false;
                 auto array = static_cast<array_logical_type_extension*>(type.extension());
-                return type.alias() == "t3" && array->internal_type().type() == logical_type::UNKNOWN &&
-                       array->internal_type().type_name() == "bool" && array->size() == 8;
+                return type.alias() == "t3" && array->internal_type() == logical_type::BOOLEAN && array->size() == 8;
             }));
         });
 
     TEST_TRANSFORMER_EXPECT_SCHEMA("CREATE TABLE table_name(t1 float, t2 double, t3 float[100])",
                                    [](const std::pmr::vector<complex_logical_type>& sch) {
                                        REQUIRE(contains(sch, [](const complex_logical_type& type) {
-                                           return type.alias() == "t1" &&
-                                                  type.type() == logical_type::UNKNOWN &&
-                                                  type.type_name() == "float4";
+                                           return type.alias() == "t1" && type.type() == logical_type::FLOAT;
                                        }));
                                        REQUIRE(contains(sch, [](const complex_logical_type& type) {
-                                           return type.alias() == "t2" &&
-                                                  type.type() == logical_type::UNKNOWN &&
-                                                  type.type_name() == "double";
+                                           return type.alias() == "t2" && type.type() == logical_type::DOUBLE;
                                        }));
                                        REQUIRE(contains(sch, [](const complex_logical_type& type) {
                                            if (type.type() != logical_type::ARRAY)
                                                return false;
-                                           auto array =
-                                               static_cast<array_logical_type_extension*>(type.extension());
+                                           auto array = static_cast<array_logical_type_extension*>(type.extension());
                                            return type.alias() == "t3" &&
-                                                  array->internal_type().type() == logical_type::UNKNOWN &&
-                                                  array->internal_type().type_name() == "float4" &&
-                                                  array->size() == 100;
+                                                  array->internal_type() == logical_type::FLOAT && array->size() == 100;
                                        }));
                                    });
 
@@ -264,7 +237,7 @@ TEST_CASE("components::sql::types") {
 
     // CREATE TYPE is wrapped in sequence_t(resolve_ns?, resolve_field_types..., create_type).
     TEST_TRANSFORMER_OK("CREATE TYPE custom_type_name AS (f1 int, f2 string);",
-                        R"_($sequence[5])_");
+                        R"_($sequence[3])_");
 
     TEST_TRANSFORMER_OK("CREATE TYPE custom_enum AS ENUM ('f1', 'f2', 'f3');",
                         R"_($sequence[3])_");

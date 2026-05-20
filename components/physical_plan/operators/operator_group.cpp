@@ -230,21 +230,6 @@ namespace components::operators {
         , group_index_(resource_) {}
 
     void operator_group_t::add_key(group_key_t&& key) {
-        // Dedupe: HEAD's transformer emits SELECT-list `get_field` AND GROUP BY
-        // `group_field` into the same node_group_t.expressions(), so both reach
-        // create_plan_group and would both call add_key for the same column.
-        // Main's PR #479 separates them via node_select_t; until that's plumbed
-        // through, skip the duplicate here. Match by name AND resolved path so
-        // legitimately distinct keys with the same SQL alias aren't collapsed.
-        if (key.type == group_key_t::kind::column) {
-            for (const auto& existing : keys_) {
-                if (existing.type == group_key_t::kind::column &&
-                    existing.name == key.name &&
-                    existing.full_path == key.full_path) {
-                    return;
-                }
-            }
-        }
         keys_.push_back(std::move(key));
     }
 

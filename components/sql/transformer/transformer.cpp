@@ -2,8 +2,6 @@
 #include "utils.hpp"
 
 #include <components/logical_plan/node_aggregate.hpp>
-#include <components/logical_plan/node_join.hpp>
-#include <components/sql/parser/parser.h>
 
 namespace components::sql::transform {
 
@@ -120,51 +118,22 @@ namespace components::sql::transform {
                 log_node = transform_transaction(pg_cast<TransactionStmt>(node));
                 break;
             default:
-                throw std::runtime_error("Unsupported node type: " + node_tag_to_string(node.type));
+                error_ = core::error_t(
+                    core::error_code_t::sql_parse_error,
+                    std::pmr::string{"Unsupported node type: " + node_tag_to_string(node.type), resource_});
         }
 
-        return {resource_,
-                std::move(log_node),
-                std::move(params),
-                std::move(parameter_map_),
-                std::move(parameter_insert_map_),
-                std::move(parameter_insert_rows_)};
-    }
-
-    transformer::check_expr_result transformer::parse_where_expr(const std::string& expr_text) {
-        std::string wrapped = "SELECT 1 WHERE " + expr_text;
-        std::pmr::monotonic_buffer_resource arena(resource_);
-        auto* raw_list = raw_parser(&arena, wrapped.c_str());
-        if (!raw_list || raw_list->lst.empty()) {
-            return {};
-        }
-        auto* raw = linitial(raw_list);
-        if (!raw || nodeTag(raw) != T_SelectStmt) {
-            return {};
-        }
-        auto* sel = pg_ptr_cast<SelectStmt>(raw);
-        if (!sel->whereClause) {
-            return {};
-        }
-        auto params = logical_plan::make_parameter_node(resource_);
-        name_collection_t empty_names;
-        try {
-            expressions::expression_ptr expr;
-            if (nodeTag(sel->whereClause) == T_NullTest) {
-                expr = transform_null_test(pg_ptr_cast<NullTest>(sel->whereClause),
-                                           empty_names, params.get());
-            } else if (nodeTag(sel->whereClause) == T_FuncCall) {
-                expr = transform_a_expr_func(pg_ptr_cast<FuncCall>(sel->whereClause),
-                                              empty_names, params.get());
-            } else {
-                expr = transform_a_expr(pg_ptr_cast<A_Expr>(sel->whereClause),
-                                        empty_names, params.get());
-            }
-            if (!expr) return {};
-            return {std::move(expr), std::move(params)};
-        } catch (...) {
-            return {};
+        if (has_error()) {
+            return {resource_, std::move(error_)};
+        } else {
+            return {resource_,
+                    std::move(log_node),
+                    std::move(params),
+                    std::move(parameter_map_),
+                    std::move(parameter_insert_map_),
+                    std::move(parameter_insert_rows_)};
         }
     }
 
+    bool transformer::has_error() const noexcept { return error_.contains_error(); }
 } // namespace components::sql::transform

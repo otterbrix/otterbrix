@@ -8,29 +8,24 @@
 using namespace components::sql;
 
 #define TEST_PARSER_ERROR(QUERY, RESULT)                                                                               \
-    SECTION(QUERY) {                                                                                                   \
-        bool exception_thrown = false;                                                                                 \
-        try {                                                                                                          \
-            auto select = linitial(raw_parser(&arena_resource, QUERY));                                                \
-        } catch (const parser_exception_t& e) {                                                                        \
-            exception_thrown = true;                                                                                   \
-            REQUIRE(std::string_view{e.what()} == RESULT);                                                             \
-        }                                                                                                              \
-        REQUIRE(exception_thrown);                                                                                     \
-    }
+SECTION(QUERY) {                                                                                                   \
+bool exception_thrown = false;                                                                                 \
+try {                                                                                                          \
+auto select = linitial(raw_parser(&arena_resource, QUERY));                                                \
+} catch (const parser_exception_t& e) {                                                                        \
+exception_thrown = true;                                                                                   \
+REQUIRE(std::string_view{e.what()} == RESULT);                                                             \
+}                                                                                                              \
+REQUIRE(exception_thrown);                                                                                     \
+}
 
 #define TEST_TRANSFORMER_ERROR(QUERY, RESULT)                                                                          \
-    SECTION(QUERY) {                                                                                                   \
-        auto select = linitial(raw_parser(&arena_resource, QUERY));                                                    \
-        bool exception_thrown = false;                                                                                 \
-        try {                                                                                                          \
-            transformer.transform(transform::pg_cell_to_node_cast(select));                                            \
-        } catch (const parser_exception_t& e) {                                                                        \
-            exception_thrown = true;                                                                                   \
-            REQUIRE(std::string_view{e.what()} == RESULT);                                                             \
-        }                                                                                                              \
-        REQUIRE(exception_thrown);                                                                                     \
-    }
+SECTION(QUERY) {                                                                                                   \
+auto select = linitial(raw_parser(&arena_resource, QUERY));                                                    \
+auto result = transformer.transform(transform::pg_cell_to_node_cast(select));                                  \
+REQUIRE(std::string_view{result.get_error().what} == RESULT);                                                  \
+}
+
 
 using v = components::types::logical_value_t;
 using vec = std::vector<v>;

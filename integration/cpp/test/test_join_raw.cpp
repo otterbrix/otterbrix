@@ -46,7 +46,9 @@ namespace {
             if (!uid_s.empty()) {
                 auto it = chunks_by_uid.find(uid_s);
                 if (it != chunks_by_uid.end()) {
-                    node = logical_plan::make_node_raw_data(res, it->second());
+                    auto raw = logical_plan::make_node_raw_data(res, it->second());
+                    raw->set_result_alias(agg->result_alias().empty() ? static_cast<const std::string&>(agg->relname()) : agg->result_alias());
+                    node = raw;
                     return; // leaf is now data
                 }
             }

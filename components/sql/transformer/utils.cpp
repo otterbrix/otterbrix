@@ -46,7 +46,20 @@ namespace components::sql::transform {
     }
 
     bool name_collection_t::is_left_table(const std::string& name) const {
-        return name == left_name.relname || name == left_alias;
+        if (name == left_name.relname || name == left_alias) {
+            return true;
+        }
+        for (const auto& alias : extra_left_aliases) {
+            if (alias == name) {
+                return true;
+            }
+        }
+        for (const auto& nm : extra_left_names) {
+            if (nm.relname == name) {
+                return true;
+            }
+        }
+        return false;
     }
 
     bool name_collection_t::is_right_table(const std::string& name) const {
@@ -57,7 +70,7 @@ namespace components::sql::transform {
         if (target_name.empty()) {
             return expressions::side_t::undefined;
         }
-        if (names.left_name.relname == target_name || names.left_alias == target_name) {
+        if (names.is_left_table(target_name)) {
             return expressions::side_t::left;
         } else if (names.right_name.relname == target_name || names.right_alias == target_name) {
             return expressions::side_t::right;
@@ -235,72 +248,89 @@ namespace components::sql::transform {
         }
     }
 
-    types::complex_logical_type get_type(TypeName* type) {
+    core::result_wrapper_t<types::complex_logical_type> get_type(std::pmr::memory_resource* resource, TypeName* type) {
         types::complex_logical_type column;
         if (!type || !type->names) {
             return column;
         }
         if (auto linint_name = strVal(linitial(type->names)); !std::strcmp(linint_name, "pg_catalog")) {
-            auto type_name = strVal(lsecond(type->names));
-            // DECIMAL(w,s) is the only type whose typmods carry semantics (precision, scale).
-            // All other types are stored as UNKNOWN(type_name); the disk manager resolves
-            // the actual OID via pg_type scan when writing pg_attribute.atttypid.
-            if (!std::strcmp(type_name, "numeric")) {
+            if (auto col = get_logical_type(strVal(lsecond(type->names))); col != types::logical_type::DECIMAL) {
+                column = col;
+            } else {
                 if (list_length(type->typmods) != 2) {
-                    throw parser_exception_t{"Incorrect modifiers for DECIMAL, width and scale required", ""};
+                    return core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"Incorrect modifiers for DECIMAL, width and scale required", resource});
+                } else if (nodeTag(linitial(type->typmods)) != T_A_Const ||
+                           nodeTag(lsecond(type->typmods)) != T_A_Const) {
+                    return core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"Incorrect width or scale for DECIMAL, must be integer", resource});
                 }
-                if (nodeTag(linitial(type->typmods)) != T_A_Const ||
-                    nodeTag(lsecond(type->typmods)) != T_A_Const) {
-                    throw parser_exception_t{"Incorrect width or scale for DECIMAL, must be integer", ""};
-                }
+
                 auto width = pg_ptr_cast<A_Const>(linitial(type->typmods));
                 auto scale = pg_ptr_cast<A_Const>(lsecond(type->typmods));
+
                 if (width->val.type != scale->val.type || width->val.type != T_Integer) {
-                    throw parser_exception_t{"Incorrect width or scale for DECIMAL, must be integer", ""};
+                    return core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"Incorrect width or scale for DECIMAL, must be integer", resource});
                 }
                 column = types::complex_logical_type::create_decimal(static_cast<uint8_t>(intVal(&width->val)),
                                                                      static_cast<uint8_t>(intVal(&scale->val)));
-            } else {
-                column = types::complex_logical_type::create_unknown(type_name);
             }
         } else {
-            // Non-pg_catalog prefix (user-defined or other schema) — always create_unknown.
-            column = types::complex_logical_type::create_unknown(linint_name);
+            types::logical_type t = get_logical_type(linint_name);
+            if (t == types::logical_type::UNKNOWN) {
+                column = types::complex_logical_type::create_unknown(linint_name);
+            } else {
+                column = t;
+            }
         }
 
         if (list_length(type->arrayBounds)) {
             auto size = pg_ptr_assert_cast<Value>(linitial(type->arrayBounds), T_Integer);
             column = types::complex_logical_type::create_array(column, intVal(size));
         }
-        return column;
+
+        return std::move(column);
     }
 
     template<typename Container>
     void fill_with_types(Container& container, PGList& list) {
-        container.reserve(list.lst.size());
+    }
+
+    core::result_wrapper_t<std::pmr::vector<types::complex_logical_type>> get_types(std::pmr::memory_resource* resource, PGList& list) {
+        std::pmr::vector<types::complex_logical_type> types(resource);
+        types.reserve(list.lst.size());
         for (auto data : list.lst) {
             if (nodeTag(data.data) != T_ColumnDef) {
                 continue;
             }
             auto coldef = pg_ptr_cast<ColumnDef>(data.data);
-            types::complex_logical_type type = get_type(coldef->typeName);
-            type.set_alias(coldef->colname);
-            container.emplace_back(std::move(type));
+            if (auto type_res = get_type(resource, coldef->typeName); type_res.has_error()) {
+                return type_res.convert_error<std::pmr::vector<types::complex_logical_type>>();
+            } else {
+                type_res.value().set_alias(coldef->colname);
+                types.emplace_back(std::move(type_res.value()));
+            }
         }
-    }
-
-    std::pmr::vector<types::complex_logical_type> get_types(std::pmr::memory_resource* resource, PGList& list) {
-        std::pmr::vector<types::complex_logical_type> types(resource);
-        fill_with_types(types, list);
         return types;
     }
 
-    types::logical_value_t get_value(std::pmr::memory_resource* resource, Node* node) {
+    core::result_wrapper_t<types::logical_value_t> get_value(std::pmr::memory_resource* resource, Node* node) {
         switch (nodeTag(node)) {
             case T_TypeCast: {
-                auto cast = pg_ptr_cast<TypeCast>(node);
-                bool is_true = std::string(strVal(&pg_ptr_cast<A_Const>(cast->arg)->val)) == "t";
-                return types::logical_value_t(resource, is_true);
+                auto constant = pg_ptr_cast<A_Const>(pg_ptr_cast<TypeCast>(node)->arg);
+                if (constant->val.type == T_String) {
+                    std::string str = strVal(&constant->val);
+                    if (str == "t" || str == "f") {
+                        return types::logical_value_t(resource, str == "t");
+                    }
+                    return types::logical_value_t(resource, str);
+                } else {
+                    return types::logical_value_t(resource, constant->val.val.ival);
+                }
             }
             case T_A_Const: {
                 auto* value = &(pg_ptr_cast<A_Const>(node)->val);
@@ -329,73 +359,95 @@ namespace components::sql::transform {
                 std::vector<types::logical_value_t> fields;
                 fields.reserve(row->args->lst.size());
                 for (auto& field : row->args->lst) {
-                    fields.emplace_back(get_value(resource, pg_ptr_cast<Node>(field.data)));
+                    if (auto res = get_value(resource, pg_ptr_cast<Node>(field.data)); res.has_error()) {
+                        return res;
+                    } else {
+                        fields.emplace_back(std::move(res.value()));
+                    }
                 }
                 return types::logical_value_t::create_struct(resource, "", fields);
             }
-            case T_ColumnRef:
-                assert(false);
-                return types::logical_value_t(resource, strVal(pg_ptr_cast<ColumnRef>(node)->fields->lst.back().data));
+            default:
+                return core::error_t(core::error_code_t::sql_parse_error,
+                                     std::pmr::string{"unable to parse value", resource});
         }
-        return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
     }
 
-    types::logical_value_t get_array(std::pmr::memory_resource* resource, PGList* list) {
+    core::result_wrapper_t<types::logical_value_t> get_array(std::pmr::memory_resource* resource, PGList* list) {
         std::vector<types::logical_value_t> values;
         values.reserve(list->lst.size());
         for (auto& elem : list->lst) {
-            values.emplace_back(get_value(resource, pg_ptr_cast<Node>(elem.data)));
+            if (auto res = get_value(resource, pg_ptr_cast<Node>(elem.data)); res.has_error()) {
+                return res;
+            } else {
+                values.emplace_back(std::move(res.value()));
+            }
         }
         assert(!values.empty());
         auto fist_type = values.front().type();
         for (auto it = ++values.begin(); it != values.end(); ++it) {
             if (fist_type != it->type()) {
-                throw parser_exception_t{"array has inconsistent element types", {}};
+                return core::error_t(core::error_code_t::sql_parse_error,
+                                     std::pmr::string{"array has inconsistent element types", resource});
             }
         }
         return types::logical_value_t::create_array(resource, fist_type, std::move(values));
     }
 
-    types::logical_value_t evaluate_const_a_expr(std::pmr::memory_resource* resource, A_Expr* node) {
+    core::result_wrapper_t<types::logical_value_t> evaluate_const_a_expr(std::pmr::memory_resource* resource, A_Expr* node) {
         if (node->kind != AEXPR_OP) {
-            throw parser_exception_t{"Only AEXPR_OP supported in constant arithmetic", ""};
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"Only AEXPR_OP supported in constant arithmetic", resource});
         }
         auto op_str = std::string_view(strVal(node->name->lst.front().data));
 
-        auto resolve = [resource](Node* n) -> types::logical_value_t {
+        auto resolve = [resource](Node* n) -> core::result_wrapper_t<types::logical_value_t> {
             if (nodeTag(n) == T_A_Expr) {
                 return evaluate_const_a_expr(resource, pg_ptr_cast<A_Expr>(n));
             }
             return get_value(resource, n);
         };
 
-        auto left = node->lexpr ? resolve(node->lexpr) : types::logical_value_t(resource, int64_t(0));
+        auto left = node->lexpr
+                        ? resolve(node->lexpr)
+                        : core::result_wrapper_t<types::logical_value_t>{types::logical_value_t(resource, int64_t(0))};
         auto right = resolve(node->rexpr);
+        if (left.has_error()) {
+            return left;
+        }
+        if (right.has_error()) {
+            return right;
+        }
 
         if (op_str == "+")
-            return types::logical_value_t::sum(left, right);
+            return types::logical_value_t::sum(left.value(), right.value());
         if (op_str == "-")
-            return types::logical_value_t::subtract(left, right);
+            return types::logical_value_t::subtract(left.value(), right.value());
         if (op_str == "*")
-            return types::logical_value_t::mult(left, right);
+            return types::logical_value_t::mult(left.value(), right.value());
         if (op_str == "/")
-            return types::logical_value_t::divide(left, right);
+            return types::logical_value_t::divide(left.value(), right.value());
         if (op_str == "%")
-            return types::logical_value_t::modulus(left, right);
-        throw parser_exception_t{"Unknown arithmetic operator in constant expression: " + std::string(op_str), ""};
+            return types::logical_value_t::modulus(left.value(), right.value());
+        return core::error_t(
+            core::error_code_t::sql_parse_error,
+            std::pmr::string{"Unknown arithmetic operator in constant expression: " + std::string(op_str), resource});
     }
 
-    void fill_column_definitions(std::vector<table::column_definition_t>& out,
-                                 std::pmr::memory_resource* resource,
-                                 PGList& table_elts) {
+    core::result_wrapper_t<std::vector<table::column_definition_t>>
+    get_column_definitions(std::pmr::memory_resource* resource, PGList& table_elts) {
+        std::vector<table::column_definition_t> out;
         out.reserve(table_elts.lst.size());
         for (auto data : table_elts.lst) {
             if (nodeTag(data.data) != T_ColumnDef) {
                 continue;
             }
             auto coldef = pg_ptr_cast<ColumnDef>(data.data);
-            auto type = get_type(coldef->typeName);
-            type.set_alias(coldef->colname);
+            auto type = get_type(resource, coldef->typeName);
+            if (type.has_error()) {
+                return type.convert_error<std::vector<table::column_definition_t>>();
+            }
+            type.value().set_alias(coldef->colname);
             bool not_null = coldef->is_not_null;
             std::optional<types::logical_value_t> default_val;
 
@@ -408,8 +460,11 @@ namespace components::sql::transform {
                             break;
                         case CONSTR_DEFAULT:
                             if (constraint->raw_expr) {
-                                auto val = get_value(resource, constraint->raw_expr);
-                                default_val = std::move(val);
+                                if (auto val = get_value(resource, constraint->raw_expr); val.has_error()) {
+                                    return val.convert_error<std::vector<table::column_definition_t>>();
+                                } else {
+                                    default_val = std::move(val.value());
+                                }
                             }
                             break;
                         case CONSTR_PRIMARY:
@@ -422,15 +477,19 @@ namespace components::sql::transform {
             }
 
             if (coldef->raw_default && !default_val) {
-                auto val = get_value(resource, coldef->raw_default);
-                default_val = std::move(val);
+                if (auto val = get_value(resource, coldef->raw_default); val.has_error()) {
+                    return val.convert_error<std::vector<table::column_definition_t>>();
+                } else {
+                    default_val = std::move(val.value());
+                }
             }
 
-            out.emplace_back(coldef->colname, std::move(type), not_null, std::move(default_val));
+            out.emplace_back(coldef->colname, std::move(type.value()), not_null, std::move(default_val));
         }
+        return std::move(out);
     }
 
-    std::vector<table::table_constraint_t> extract_table_constraints(PGList& table_elts) {
+    core::result_wrapper_t<std::vector<table::table_constraint_t>> extract_table_constraints(std::pmr::memory_resource* resource, PGList& table_elts) {
         std::vector<table::table_constraint_t> result;
         for (auto data : table_elts.lst) {
             if (nodeTag(data.data) != T_Constraint) {
@@ -495,7 +554,11 @@ namespace components::sql::transform {
                         tc.name = constraint->conname;
                     }
                     if (constraint->raw_expr) {
-                        tc.check_expression = deparse_check_expr(constraint->raw_expr);
+                        if (auto expr_res = deparse_check_expr(resource, constraint->raw_expr); expr_res.has_error()) {
+                            return expr_res.convert_error<std::vector<table::table_constraint_t>>();
+                        } else {
+                            tc.check_expression = std::move(expr_res.value());
+                        }
                     }
                     result.push_back(std::move(tc));
                     continue;
@@ -542,7 +605,7 @@ namespace components::sql::transform {
         return result;
     }
 
-    std::string deparse_check_expr(Node* node) {
+    core::result_wrapper_t<std::string> deparse_check_expr(std::pmr::memory_resource* resource, Node* node) {
         if (!node) {
             return "";
         }
@@ -572,19 +635,27 @@ namespace components::sql::transform {
                 auto* e = pg_ptr_cast<A_Expr>(node);
                 if (e->kind == AEXPR_OP && e->name && !e->name->lst.empty()) {
                     std::string op = std::string(strVal(e->name->lst.front().data));
-                    std::string left = deparse_check_expr(reinterpret_cast<Node*>(e->lexpr));
-                    std::string right = deparse_check_expr(reinterpret_cast<Node*>(e->rexpr));
-                    if (left.empty() || right.empty()) {
-                        return "";
+                    auto left = deparse_check_expr(resource, e->lexpr);
+                    if (left.has_error() || left.value().empty()) {
+                        return left;
                     }
-                    return left + " " + op + " " + right;
+                    auto right = deparse_check_expr(resource, e->rexpr);
+                    if (right.has_error() || right.value().empty()) {
+                        return right;
+                    }
+                    return std::move(left.value()) + " " + op + " " + std::move(right.value());
                 }
                 if (e->kind == AEXPR_AND || e->kind == AEXPR_OR) {
                     std::string sep = (e->kind == AEXPR_AND) ? " AND " : " OR ";
-                    std::string left = deparse_check_expr(reinterpret_cast<Node*>(e->lexpr));
-                    std::string right = deparse_check_expr(reinterpret_cast<Node*>(e->rexpr));
-                    if (left.empty() || right.empty()) return "";
-                    return "(" + left + ")" + sep + "(" + right + ")";
+                    auto left = deparse_check_expr(resource, e->lexpr);
+                    if (left.has_error() || left.value().empty()) {
+                        return left;
+                    }
+                    auto right = deparse_check_expr(resource, e->rexpr);
+                    if (right.has_error() || right.value().empty()) {
+                        return right;
+                    }
+                    return "(" + std::move(left.value()) + ")" + sep + "(" + std::move(right.value()) + ")";
                 }
                 return "";
             }
@@ -594,39 +665,42 @@ namespace components::sql::transform {
                     return "";
                 }
                 if (b->boolop == NOT_EXPR) {
-                    std::string inner = deparse_check_expr(
-                        reinterpret_cast<Node*>(b->args->lst.front().data));
-                    return inner.empty() ? "" : "NOT (" + inner + ")";
+                    auto inner = deparse_check_expr(resource, pg_ptr_cast<Node>(b->args->lst.front().data));
+                    if (inner.has_error()) {
+                        return inner;
+                    }
+                    return inner.value().empty() ? "" : "NOT (" + std::move(inner.value()) + ")";
                 }
                 std::string sep = (b->boolop == AND_EXPR) ? " AND " : " OR ";
                 std::string result;
                 for (auto& cell : b->args->lst) {
-                    std::string part = deparse_check_expr(reinterpret_cast<Node*>(cell.data));
-                    if (part.empty()) {
-                        return "";
+                    auto part = deparse_check_expr(resource, pg_ptr_cast<Node>(cell.data));
+                    if (part.has_error() || part.value().empty()) {
+                        return part;
                     }
+                    // TODO?
+                    // result here is always empty?
+                    // and separator is not required?
                     if (!result.empty()) {
                         result += sep;
                     }
-                    result += "(" + part + ")";
+                    result += "(" + std::move(part.value()) + ")";
                 }
                 return result;
             }
             case T_NullTest: {
                 auto* nt = pg_ptr_cast<NullTest>(node);
-                std::string arg = deparse_check_expr(reinterpret_cast<Node*>(nt->arg));
-                if (arg.empty()) {
-                    return "";
+                auto arg = deparse_check_expr(resource, pg_ptr_cast<Node>(nt->arg));
+                if (arg.has_error() || arg.value().empty()) {
+                    return arg;
                 }
-                return arg + (nt->nulltesttype == IS_NULL ? " IS NULL" : " IS NOT NULL");
+                return std::move(arg.value()) + (nt->nulltesttype == IS_NULL ? " IS NULL" : " IS NOT NULL");
             }
             default:
-                throw parser_exception_t{
-                    "CHECK constraint contains unsupported expression type " +
+                return core::error_t(core::error_code_t::sql_parse_error,std::pmr::string{"CHECK constraint contains unsupported expression type " +
                         node_tag_to_string(nodeTag(node)) +
                         "; allowed: column references, constants, comparison/arithmetic operators, "
-                        "AND/OR/NOT, IS NULL/IS NOT NULL",
-                    ""};
+                        "AND/OR/NOT, IS NULL/IS NOT NULL", resource});
         }
     }
 

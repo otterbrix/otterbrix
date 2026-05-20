@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cstring>
+#include <mutex>
 #include <shared_mutex>
 #include <stdexcept>
 #include <string_view>

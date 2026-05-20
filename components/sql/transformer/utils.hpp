@@ -1,5 +1,7 @@
 #pragma once
 
+#include <core/result_wrapper.hpp>
+
 #include <components/expressions/forward.hpp>
 #include <components/expressions/key.hpp>
 #include <components/logical_plan/node_join.hpp>
@@ -86,6 +88,10 @@ namespace components::sql::transform {
         qualified_name right_name;
         std::string right_alias;
 
+        // Additional aliases that belong to the left scope but came in through a nested join.
+        std::vector<qualified_name> extra_left_names;
+        std::vector<std::string> extra_left_aliases;
+
         bool is_left_table(const std::string& name) const;
         bool is_right_table(const std::string& name) const;
     };
@@ -121,7 +127,7 @@ namespace components::sql::transform {
             case JOIN_RIGHT:
                 return logical_plan::join_type::right;
             default:
-                throw parser_exception_t{"unsupported join type", ""};
+                return logical_plan::join_type::invalid;
         }
     }
 
@@ -142,7 +148,45 @@ namespace components::sql::transform {
             return it->second;
         }
 
-        throw parser_exception_t{"Unknown comparison operator: " + std::string(str), ""};
+        return expressions::compare_type::invalid;
+    }
+
+    inline types::logical_type get_logical_type(std::string_view str) {
+        static const std::unordered_map<std::string_view, types::logical_type> lookup = {
+            // postgres built-ins
+            {"int2", types::logical_type::SMALLINT},
+            {"int4", types::logical_type::INTEGER},
+            {"int8_t", types::logical_type::BIGINT},
+            {"bool", types::logical_type::BOOLEAN},
+            {"float4", types::logical_type::FLOAT},
+            {"float8", types::logical_type::DOUBLE},
+            {"bit", types::logical_type::BIT},
+            {"numeric", types::logical_type::DECIMAL},
+
+            {"double", types::logical_type::DOUBLE},
+            {"tinyint", types::logical_type::TINYINT},
+            {"hugeint", types::logical_type::HUGEINT},
+            {"timestamp_sec", types::logical_type::TIMESTAMP_SEC},
+            {"timestamp_ms", types::logical_type::TIMESTAMP_MS},
+            {"timestamp_us", types::logical_type::TIMESTAMP_US},
+            {"timestamp_ns", types::logical_type::TIMESTAMP_NS},
+            {"blob", types::logical_type::BLOB},
+            {"utinyint", types::logical_type::UTINYINT},
+            {"usmallint", types::logical_type::USMALLINT},
+            {"uinteger", types::logical_type::UINTEGER},
+            {"uint", types::logical_type::UINTEGER},
+            {"ubigint", types::logical_type::UBIGINT},
+            {"uhugeint", types::logical_type::UHUGEINT},
+            {"pointer", types::logical_type::POINTER},
+            {"uuid", types::logical_type::UUID},
+            {"string", types::logical_type::STRING_LITERAL},
+        };
+
+        if (auto it = lookup.find(str); it != lookup.end()) {
+            return it->second;
+        }
+
+        return types::logical_type::UNKNOWN;
     }
 
     inline bool is_arithmetic_operator(std::string_view op) {
@@ -160,7 +204,7 @@ namespace components::sql::transform {
             return expressions::scalar_type::divide;
         if (op == "%")
             return expressions::scalar_type::mod;
-        throw parser_exception_t{"Unknown arithmetic operator: " + std::string(op), ""};
+        return expressions::scalar_type::invalid;
     }
 
     std::string node_tag_to_string(NodeTag type);
@@ -170,21 +214,20 @@ namespace components::sql::transform {
     // Deparse a CHECK constraint raw expression node back to SQL text.
     // Handles: column refs, integer/float/string constants, comparison operators,
     // AND/OR/NOT, IS NULL / IS NOT NULL. Returns "" for unsupported node types.
-    std::string deparse_check_expr(Node* node);
+    core::result_wrapper_t<std::string> deparse_check_expr(std::pmr::memory_resource* resource, Node* node);
 
-    types::complex_logical_type get_type(TypeName* type);
-    std::pmr::vector<types::complex_logical_type> get_types(std::pmr::memory_resource* resource, PGList& list);
+    core::result_wrapper_t<types::complex_logical_type> get_type(std::pmr::memory_resource* resource, TypeName* type);
+    core::result_wrapper_t<std::pmr::vector<types::complex_logical_type>> get_types(std::pmr::memory_resource* resource, PGList& list);
 
-    types::logical_value_t get_value(std::pmr::memory_resource* resource, Node* node);
-    types::logical_value_t get_array(std::pmr::memory_resource* resource, PGList* list);
+    core::result_wrapper_t<types::logical_value_t> get_value(std::pmr::memory_resource* resource, Node* node);
+    core::result_wrapper_t<types::logical_value_t> get_array(std::pmr::memory_resource* resource, PGList* list);
 
     // Evaluate constant arithmetic expression at parse time (e.g., 10 * 5 in INSERT VALUES)
-    types::logical_value_t evaluate_const_a_expr(std::pmr::memory_resource* resource, A_Expr* node);
+    core::result_wrapper_t<types::logical_value_t> evaluate_const_a_expr(std::pmr::memory_resource* resource, A_Expr* node);
 
-    void fill_column_definitions(std::vector<table::column_definition_t>& out,
-                                 std::pmr::memory_resource* resource,
-                                 PGList& table_elts);
-    std::vector<table::table_constraint_t> extract_table_constraints(PGList& table_elts);
+    core::result_wrapper_t<std::vector<table::column_definition_t>>
+    get_column_definitions(std::pmr::memory_resource* resource, PGList& table_elts);
+    core::result_wrapper_t<std::vector<table::table_constraint_t>> extract_table_constraints(std::pmr::memory_resource* resource, PGList& table_elts);
 
     // Transformer catalog-resolve emission.
     //

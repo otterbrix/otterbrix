@@ -48,16 +48,19 @@ namespace components::sql::transform {
                     PGListCell cell;
                     cell.data = cmd->def;
                     tmp.lst.push_back(cell);
-                    std::vector<components::table::column_definition_t> cols;
-                    fill_column_definitions(cols, resource_, tmp);
-                    if (cols.empty()) {
-                        continue;
+                    if (auto cols_res = get_column_definitions(resource_, tmp); cols_res.has_error()) {
+                        error_ = cols_res.error();
+                        return nullptr;
+                    } else {
+                        if (cols_res.value().empty()) {
+                            continue;
+                        }
+                        logical_plan::alter_table_subcommand_t sub;
+                        sub.kind = logical_plan::alter_table_kind::add_column;
+                        sub.column_name = cols_res.value().front().name();
+                        sub.column = std::move(cols_res.value().front());
+                        subs.push_back(std::move(sub));
                     }
-                    logical_plan::alter_table_subcommand_t sub;
-                    sub.kind = logical_plan::alter_table_kind::add_column;
-                    sub.column_name = cols.front().name();
-                    sub.column = std::move(cols.front());
-                    subs.push_back(std::move(sub));
                     break;
                 }
                 case AT_DropColumn: {
@@ -124,20 +127,21 @@ namespace components::sql::transform {
                             logical_plan::node_ptr{std::move(fk_node)});
                     }
                     if (constr->contype == CONSTR_CHECK && constr->raw_expr) {
-                        std::string expr_text = deparse_check_expr(constr->raw_expr);
-                        if (!expr_text.empty()) {
+                        if (auto expr_text = deparse_check_expr(resource_, constr->raw_expr); expr_text.has_error()) {
+                            error_ = expr_text.error();
+                            return nullptr;
+                        } else if (!expr_text.value().empty()) {
                             std::string con_name = constr->conname ? constr->conname : "";
                             auto check_node = logical_plan::make_node_create_constraint(
                                 resource_, db, rel, core::constraint_name_t{std::move(con_name)},
                                 logical_plan::constraint_kind::check);
-                            check_node->set_check_expr(std::move(expr_text));
+                            check_node->set_check_expr(std::move(expr_text.value()));
                             return wrap_primary(logical_plan::node_ptr{std::move(check_node)});
                         }
-                        throw parser_exception_t{
-                            "CHECK constraint expression contains unsupported constructs; "
+                        error_ = core::error_t(core::error_code_t::sql_parse_error,
+                            std::pmr::string{"CHECK constraint expression contains unsupported constructs; "
                             "allowed: comparisons, AND/OR/NOT, IS NULL/IS NOT NULL, "
-                            "column references, and constants",
-                            ""};
+                            "column references, and constants", resource_});
                     }
                     break;
                 }

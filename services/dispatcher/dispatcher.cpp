@@ -676,19 +676,21 @@ namespace services::dispatcher {
         // / ns_oid_for_dbname read from the explicit `dispatcher_idx`.
         switch (original_type) {
             case node_type::create_database_t:
-                if (!check_namespace_exists(resource(), &dispatcher_idx, id)) {
+                if (!check_namespace_exists(resource(), &dispatcher_idx, id).contains_error()) {
                     error = make_cursor(resource(),
                                         core::error_t{core::error_code_t::database_already_exists,
                                                       std::pmr::string{"database already exists", resource()}});
                 }
                 break;
             case node_type::drop_database_t:
-                error = check_namespace_exists(resource(), &dispatcher_idx, id);
+                if (auto err = check_namespace_exists(resource(), &dispatcher_idx, id); err.contains_error()) {
+                    error = make_cursor(resource(), err);
+                }
                 break;
             case node_type::create_collection_t: {
                 // Target namespace + UDT existence both resolved via
                 // plan-tree idx (no async preloads).
-                if (!check_collection_exists(resource(), &dispatcher_idx, id)) {
+                if (!check_collection_exists(resource(), &dispatcher_idx, id).contains_error()) {
                     error =
                         make_cursor(resource(),
                                     core::error_t{core::error_code_t::table_already_exists,
@@ -721,10 +723,13 @@ namespace services::dispatcher {
                                 }
                                 continue;
                             }
-                            error = check_type_exists(resource(),
-                                                       &dispatcher_idx,
-                                                       col_def.type().type_name(),
-                                                       std::span<const std::string>(str_path));
+                            if (auto err = check_type_exists(resource(),
+                                                               &dispatcher_idx,
+                                                               col_def.type().type_name(),
+                                                               std::span<const std::string>(str_path));
+                                err.contains_error()) {
+                                error = make_cursor(resource(), err);
+                            }
                             if (!error) {
                                 const auto* md = probe_type_in_path(
                                     &dispatcher_idx,
@@ -757,7 +762,9 @@ namespace services::dispatcher {
                                                       std::pmr::string{"collection does not exist", resource()}});
                     break;
                 }
-                error = check_collection_exists(resource(), &dispatcher_idx, id);
+                if (auto err = check_collection_exists(resource(), &dispatcher_idx, id); err.contains_error()) {
+                    error = make_cursor(resource(), err);
+                }
                 break;
             }
             case node_type::create_type_t: {
@@ -774,7 +781,7 @@ namespace services::dispatcher {
                 std::span<const std::string> str_path(default_path);
                 // Collision check — if Pass 1 stamped a type_md for the same
                 // name, the type already exists.
-                if (!check_type_exists(resource(), &dispatcher_idx, n->type().type_name(), str_path)) {
+                if (!check_type_exists(resource(), &dispatcher_idx, n->type().type_name(), str_path).contains_error()) {
                     error = make_cursor(
                         resource(),
                         core::error_t{core::error_code_t::schema_error,
@@ -796,8 +803,9 @@ namespace services::dispatcher {
                                 }
                                 continue;
                             }
-                            error = check_type_exists(resource(), &dispatcher_idx, field.type_name(), str_path);
-                            if (error) {
+                            if (auto err = check_type_exists(resource(), &dispatcher_idx, field.type_name(), str_path);
+                                err.contains_error()) {
+                                error = make_cursor(resource(), err);
                                 break;
                             }
                             const auto* md = probe_type_in_path(
@@ -835,7 +843,9 @@ namespace services::dispatcher {
                 }
                 const std::string default_path[] = {"public", "pg_catalog"};
                 std::span<const std::string> str_path(default_path);
-                error = check_type_exists(resource(), &dispatcher_idx, type_name, str_path);
+                if (auto err = check_type_exists(resource(), &dispatcher_idx, type_name, str_path); err.contains_error()) {
+                    error = make_cursor(resource(), err);
+                }
                 break;
             }
             case node_type::checkpoint_t:
@@ -857,7 +867,9 @@ namespace services::dispatcher {
                 // Target + FK ref tables stamped on plan-tree by Pass 1
                 // (transform_alter_table's CONSTRAINT path uses the multi-target
                 // wrap so both end up in tbl_md_by_qname).
-                error = check_collection_exists(resource(), &dispatcher_idx, id);
+                if (auto err = check_collection_exists(resource(), &dispatcher_idx, id); err.contains_error()) {
+                    error = make_cursor(resource(), err);
+                }
                 // Reject FK / CHECK on dynamic-schema (relkind='g') tables.
                 // FK / CHECK enforcement requires stable column attoids; relkind='g'
                 // attoids may evolve. We probe relkind via the plan-tree idx.
@@ -904,19 +916,12 @@ namespace services::dispatcher {
                 break;
             }
             default: {
-                // Validate: pre-walks the AST collecting referenced tables — co_await
-                // per-cache-miss only. view + ctx already constructed at the top of
-                // execute_plan and shared with DDL branches above.
-                auto [_vt, vtf] = std::pair<bool, actor_zeta::unique_future<cursor_t_ptr>>{
-                    false, validate_types(resource(), ctx, &dispatcher_idx, logic_plan.get())};
-                auto check_result = co_await std::move(vtf);
-                if (check_result->is_error()) {
-                    error = std::move(check_result);
+                auto vt_err = validate_types(resource(), &dispatcher_idx, logic_plan.get());
+                if (vt_err.contains_error()) {
+                    error = make_cursor(resource(), vt_err);
                 } else {
-                    auto [_vs, vsf] = std::pair<bool, actor_zeta::unique_future<schema_result<named_schema>>>{
-                        false, validate_schema(resource(), ctx, &dispatcher_idx, logic_plan.get(), params->parameters())};
-                    auto schema_res = co_await std::move(vsf);
-                    if (schema_res.is_error()) {
+                    auto schema_res = validate_schema(resource(), &dispatcher_idx, logic_plan.get(), params->parameters());
+                    if (schema_res.has_error()) {
                         error = make_cursor(resource(), schema_res.error());
                     }
                 }

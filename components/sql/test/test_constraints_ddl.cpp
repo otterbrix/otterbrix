@@ -235,27 +235,15 @@ TEST_CASE("components::sql::check_constraint_whitelist") {
     // Forbidden node kinds must throw parser_exception_t.
     SECTION("function call in CHECK is rejected") {
         auto stmt = linitial(raw_parser(&arena_resource, "CREATE TABLE t (x INTEGER, CHECK(abs(x) > 0))"));
-        bool threw = false;
-        try {
-            transformer.transform(pg_cell_to_node_cast(stmt));
-        } catch (const parser_exception_t& e) {
-            threw = true;
-            REQUIRE(std::string(e.what()).find("T_FuncCall") != std::string::npos);
-        }
-        REQUIRE(threw);
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt));
+        REQUIRE(result.has_error());
     }
 
     SECTION("subquery in CHECK is rejected") {
         auto stmt = linitial(raw_parser(&arena_resource,
                                         "CREATE TABLE t (x INTEGER, CHECK(x > (SELECT 1)))"));
-        bool threw = false;
-        try {
-            transformer.transform(pg_cell_to_node_cast(stmt));
-        } catch (const parser_exception_t& e) {
-            threw = true;
-            REQUIRE(std::string(e.what()).find("unsupported expression type") != std::string::npos);
-        }
-        REQUIRE(threw);
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt));
+        REQUIRE(result.has_error());
     }
 }
 

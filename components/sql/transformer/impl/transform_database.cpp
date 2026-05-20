@@ -7,8 +7,8 @@ namespace components::sql::transform {
         return logical_plan::make_node_create_database(resource_, core::dbname_t{node.dbname ? std::string(node.dbname) : std::string{}});
     }
 
-    logical_plan::node_ptr transformer::transform_drop_database(DropdbStmt& node) {
-        (void)node; // dbname is captured by the resolve-namespace wrap in transformer::transform
+    logical_plan::node_ptr transformer::transform_drop_database(DropdbStmt&) {
+        // dbname is captured by the resolve-namespace wrap in transformer::transform
         return logical_plan::make_node_drop_database(resource_);
     }
 

@@ -258,20 +258,28 @@ namespace otterbrix {
         using namespace components::sql::transform;
 
         trace(log_, "wrapper_dispatcher_t::execute sql session: {}", session.data());
+        std::pmr::monotonic_buffer_resource parser_arena(resource());
+        void* parse_result;
         try {
-            std::pmr::monotonic_buffer_resource parser_arena(resource());
-            auto parse_result = linitial(raw_parser(&parser_arena, query.c_str()));
-            transformer local_transformer(resource(), query.c_str());
-            auto result = local_transformer.transform(pg_cell_to_node_cast(parse_result)).finalize();
-            if (result.has_error()) {
-                return make_cursor(resource(), result.error());
-            }
-            auto view = result.value();
-            return execute_plan(session, std::move(view.node), std::move(view.params));
-        } catch (const std::exception& e) {
+            parse_result = linitial(raw_parser(&parser_arena, query.c_str()));
+        } catch (const std::exception& exception) {
+            return make_cursor(
+                resource(),
+                core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{exception.what(), resource()}));
+        }
+
+        if (!parse_result) {
             return make_cursor(resource(),
-                               core::error_t{core::error_code_t::sql_parse_error,
-                                             std::pmr::string{e.what(), resource()}});
+                               core::error_t(core::error_code_t::sql_parse_error,
+                                             std::pmr::string{"unknown parser error", resource()}));
+        }
+        transformer local_transformer(resource(), query.c_str());
+        if (auto result = local_transformer.transform(pg_cell_to_node_cast(parse_result)).finalize();
+            result.has_error()) {
+            return make_cursor(resource(), result.error());
+        } else {
+            auto& view = std::move(result).value();
+            return execute_plan(session, std::move(view.node), std::move(view.params));
         }
     }
 

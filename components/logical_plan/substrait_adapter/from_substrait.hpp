@@ -9,8 +9,6 @@ namespace substrait {
 }
 
 
-// Актульность - Otterbrix должен быть интерпортаблеьным с разными фрэймворками => substrait единственный вариант.
-// Задача - объяснить логику работы
 namespace components::logical_plan::substrait_adapter {
 
     enum class import_profile_t { internal_roundtrip, external_canonical };

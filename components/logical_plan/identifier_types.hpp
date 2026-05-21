@@ -17,3 +17,4 @@ STRONG_TYPEDEF_EXPLICIT(std::string, columnname_t);
 STRONG_TYPEDEF_EXPLICIT(std::string, constraint_name_t);
 STRONG_TYPEDEF_EXPLICIT(std::string, body_sql_t);
 STRONG_TYPEDEF_EXPLICIT(std::string, query_sql_t);
+STRONG_TYPEDEF_EXPLICIT(std::string, matviewname_t);

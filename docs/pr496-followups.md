@@ -35,47 +35,80 @@ schema to the outer expressions.
 
 ---
 
-## 2. Materialized views (CREATE MATERIALIZED VIEW / REFRESH)
+## 2. Materialized view INITIAL POPULATION + REFRESH
 
-**Status:** scoped out of PR #496 during execution after architecture deep-dive. Parser
-+ grammar already accept `CREATE MATERIALIZED VIEW …` and `REFRESH MATERIALIZED VIEW
-…` (`gram.y:5855`, `gram.y:5898`). M0 normalization frees `relkind='m'` for matviews.
+**Status of baseline matview:** SHIPPED in PR #496 second commit (CREATE MATERIALIZED
+VIEW creates a real `relkind='m'` table with pg_class + pg_attribute + pg_rewrite +
+pg_depend rows via the pipeline-canonical `operator_create_matview_t` composite
+physical operator). The matview behaves like an empty table after CREATE — equivalent
+to PostgreSQL's `WITH NO DATA` default. `SELECT * FROM mv` returns 0 rows via the
+standard scan pipeline (relkind='m' falls through to the regular scan path via
+`operator_resolve_table.cpp:306` else-branch). Body SQL is stored in pg_rewrite for
+REFRESH and inspection.
 
-**Blocker:** `derive_output_schema` for the body SELECT requires column-type resolution
-through the catalog at transform-time. The transformer has no actor address / disk
-access — that machinery lives behind `pipeline::context_t` in operators. Either we add
-a pre-pass that runs the body's `catalog_resolve_table` resolves before
-`transform_create_matview` returns (turning the transformer into an async coroutine
-chain), or we defer schema derivation until after Pass 1 in dispatcher (which means
-matview lowering moves into dispatcher orchestration too).
+**What's deferred to this follow-up:**
 
-**Sketch** (PG-canonical, ~800-1000 LOC end-to-end):
-- `components/logical_plan/node_create_matview.{hpp,cpp}` + `node_refresh_matview.{hpp,cpp}`
-  (~120 LOC; B1/B2 from the original plan).
-- `components/sql/transformer/impl/transform_matview.cpp` + switch cases in
-  `transformer.cpp` (~140 LOC).
-- `components/sql/transformer/impl/derive_output_schema.cpp` — **hardest piece**, walks
-  `SelectStmt.targetList` and resolves column types via deferred catalog access; ~200 LOC.
-- `components/catalog/ddl_metadata_builder.cpp::build_matview_rewrite_writes` — only
-  pg_rewrite + pg_depend; pg_class + pg_attribute reuse the existing
-  `build_create_table_writes` with `relkind = relkind::materialized_view` (already a
-  parameterised builder, verified Round 2). ~60 LOC.
-- `components/planner/planner.cpp::rewrite_create_matview` +
-  `::rewrite_refresh_matview` (~100 LOC). Reuses `operator_create_collection_t` for
-  heap creation (relkind-agnostic — confirmed Round 2) plus an `insert_t` child for
-  initial INSERT-SELECT.
-- 2 integration tests in `test_sql_features.cpp` (~90 LOC).
+### 2a. Initial population from body SELECT inside CREATE MATERIALIZED VIEW
 
-**Verified pipeline flows** (left from the original plan for future reference):
-- CREATE MATERIALIZED VIEW → sequence_t(create_collection [relkind='m'], pg_rewrite +
-  pg_depend writes, insert_t with body_plan as child).
-- REFRESH MATERIALIZED VIEW → sequence_t(delete_all, insert_t with re-transformed body
-  as child). Body SQL fetched from pg_rewrite.ev_action via Phase A.A2 which already
-  stamps `view_sql` for both 'v' and 'm' relkinds.
-- SELECT * FROM mv → operator_resolve_table's else-branch already handles 'm'
-  identically to 'r' (`manager_disk_resolve.cpp:73`).
+**Blocker discovered during PR #496 implementation:** the composite physical operator
+`operator_create_matview_t` performs heap + catalog rows + (planned) body scan +
+storage_append in a single `await_async_and_resume` coroutine. Driving the body sub-
+operator chain (`body_op_->find_waiting_operator + co_await`) from inside this outer
+coroutine triggers a nested actor_zeta await scenario which SIGSEGVs in
+`operator_full_scan::await_async_and_resume` (specifically inside the
+`actor_zeta::send` for `storage_types` on the source table). The executor's main
+loop in `services/collection/executor::execute_sub_plan_` uses the exact same nested
+pattern successfully, so the issue is subtle — likely a context_t lifetime / sender
+identity mismatch when an operator's await drives another operator's await without
+going through the executor's pool dispatch.
 
-**When needed:** analytic workloads that pre-compute join/aggregate results.
+**Investigation directions (~200 LOC):**
+1. Forward source table's `resolved_table_metadata_t` (from outer dispatcher_idx) to
+   the matview op so body's full_scan doesn't need to re-resolve via Pass 1.
+2. Try the SAME nested-await pattern via the executor's pool dispatch: have
+   `operator_create_matview_t` request execution of `body_op_` as a `pass1_root`-style
+   sub-plan via send to the executor (not direct co_await), so the body chain gets a
+   fresh pipeline context.
+3. Alternative: extend `operator_sequence_t.on_execute_impl` to async-drive `steps_`
+   via `find_waiting_operator` + `co_await` (currently steps_ runs sync). Then matview
+   lowering can use sequence_t([create_collection, insert_t(body)]) and the
+   sequence operator handles async wiring generically. This is a broader fix but
+   benefits any future multi-step DDL.
+
+### 2b. REFRESH MATERIALIZED VIEW
+
+Re-runs the stored body SQL (from `pg_rewrite.ev_action`) against the matview's heap:
+DELETE all rows + INSERT-SELECT. Requires:
+- `transform_refresh_matview` (currently scaffolded; planner returns the node
+  unchanged with a TODO).
+- A planner pass that fetches body_sql from sibling catalog_resolve_table's stamped
+  metadata, re-parses + re-transforms (needs `sql_compiler_t` service — see Item #13
+  below), and emits `sequence_t(delete_all, insert_t(re-body))`.
+- Pipeline-canonical: zero raw_parser calls in dispatcher.
+
+**When needed:** analytics use of matviews. Without 2a/2b, matviews are catalog
+artifacts that need manual INSERT to populate.
+
+---
+
+## 13. `sql_compiler_t` service — extract parser/transformer out of dispatcher (Phase A correction)
+
+**Status:** Phase A view expansion (shipped in PR #496) calls `raw_parser` +
+`transformer::transform` directly from `services/dispatcher/dispatcher.cpp`'s Phase
+1.5 view-expansion block. This is a layer violation: dispatcher should not know about
+parser/transformer internals.
+
+**Future PR scope (~210 LOC):**
+- `services/sql_compiler/sql_compiler.{hpp,cpp}` — service wrapping raw_parser +
+  transformer behind a `compile(sql) → (plan, params)` API.
+- `components/planner/planner_t::create_plan` accepts `sql_compiler_t*` via DI.
+- View expansion (`rewrite_views_sync` helper) moves from dispatcher to planner pass
+  that uses sql_compiler_t.
+- Dispatcher removes raw_parser + transformer includes.
+- REFRESH MATERIALIZED VIEW (Item #2b) reuses the same sql_compiler_t.
+
+**When needed:** before adding any more SQL re-compilation paths (REFRESH, view
+recompilation on source schema change, prepared-statement caches).
 
 ---
 

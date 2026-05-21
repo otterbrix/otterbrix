@@ -60,6 +60,10 @@ namespace components::logical_plan {
                 return "create_macro_t";
             case node_type::drop_macro_t:
                 return "drop_macro_t";
+            case node_type::create_matview_t:
+                return "create_matview_t";
+            case node_type::refresh_matview_t:
+                return "refresh_matview_t";
             case node_type::checkpoint_t:
                 return "checkpoint_t";
             case node_type::vacuum_t:

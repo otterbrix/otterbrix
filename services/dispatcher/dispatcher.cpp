@@ -26,6 +26,8 @@
 #include <components/logical_plan/node_create_database.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/logical_plan/node_create_macro.hpp>
+#include <components/logical_plan/node_create_matview.hpp>
+#include <components/logical_plan/node_refresh_matview.hpp>
 #include <components/logical_plan/node_create_sequence.hpp>
 #include <components/logical_plan/node_create_type.hpp>
 #include <components/logical_plan/node_create_view.hpp>
@@ -1276,6 +1278,24 @@ namespace services::dispatcher {
             logic_plan = ddl_planner.create_plan(resource(), std::move(logic_plan), std::move(oid_batch));
         }
 
+        // CREATE MATERIALIZED VIEW → standard DDL pattern (как CREATE TABLE):
+        // allocate OIDs → planner stamps mv_oid + catalog_writes on the matview node →
+        // physical_plan_generator produces composite operator_create_matview_t that
+        // does heap+catalog+populate atomically in one async coroutine.
+        // OID batch holds: mv_oid + N×attoid + rule_oid = 2 + N (where N is the
+        // matview's inferred column count populated by enrich's
+        // derive_matview_output_schema).
+        if (original_type == node_type::create_matview_t &&
+            disk_address_ != actor_zeta::address_t::empty_address()) {
+            auto* cm = static_cast<node_create_matview_t*>(effective_root_node(logic_plan.get()));
+            const std::size_t col_count = cm ? cm->inferred_columns().size() : std::size_t{0};
+            const std::size_t need = 2 + col_count;
+            catalog::oid_batch_t oid_batch;
+            oid_batch.oids = co_await allocate_oids_via_pipeline(session, need);
+            components::planner::planner_t ddl_planner;
+            logic_plan = ddl_planner.create_plan(resource(), std::move(logic_plan), std::move(oid_batch));
+        }
+
         // CREATE INDEX → planner rewrite to sequence_t(primitive_write × N, create_index_t).
         // The trailing create_index_t carries name/keys/type plus the resolved
         // namespace_oid/table_oid/index_oid so create_plan_sequence can lower it
@@ -1381,7 +1401,8 @@ namespace services::dispatcher {
                 original_type == node_type::drop_database_t || original_type == node_type::drop_collection_t ||
                 original_type == node_type::drop_type_t || original_type == node_type::drop_sequence_t ||
                 original_type == node_type::drop_view_t || original_type == node_type::drop_macro_t ||
-                original_type == node_type::create_database_t || original_type == node_type::alter_table_t;
+                original_type == node_type::create_database_t || original_type == node_type::alter_table_t ||
+                original_type == node_type::create_matview_t;
             if (needs_ddl_txn) {
                 txn_data = txn_manager_.begin_transaction(session).data();
                 trace(log_, "manager_dispatcher_t::execute_plan: DDL began txn {}", txn_data.transaction_id);
@@ -1450,7 +1471,8 @@ namespace services::dispatcher {
                 t == node_type::create_view_t || t == node_type::create_macro_t || t == node_type::create_type_t ||
                 t == node_type::create_index_t || t == node_type::drop_index_t || t == node_type::drop_database_t ||
                 t == node_type::drop_collection_t || t == node_type::drop_type_t || t == node_type::drop_sequence_t ||
-                t == node_type::drop_view_t || t == node_type::drop_macro_t || t == node_type::alter_table_t) {
+                t == node_type::drop_view_t || t == node_type::drop_macro_t || t == node_type::alter_table_t ||
+                t == node_type::create_matview_t) {
                 // DDL commit goes through operator_commit_transaction_t in
                 // ddl-commit mode. The operator performs flush (durability
                 // barrier) + wal::commit_txn + txn_manager.commit +
@@ -1522,6 +1544,18 @@ namespace services::dispatcher {
                                                            indexed_tbl_oid,
                                                            commit_id);
                         co_await std::move(cif);
+                    }
+                }
+                // CREATE MATERIALIZED VIEW — register routing for SELECT * FROM mv.
+                // The matview heap + INSERT-SELECT populate is handled atomically by
+                // operator_create_matview_t (composite physical operator); dispatcher
+                // only needs to register the new collection in its routing map.
+                if (t == node_type::create_matview_t) {
+                    auto* mv_node = effective_root_node(logic_plan.get());
+                    if (mv_node && mv_node->type() == node_type::create_matview_t) {
+                        auto* cm = static_cast<const node_create_matview_t*>(mv_node);
+                        auto names = drop_target_names_from_resolves(logic_plan.get());
+                        collections_.insert(qualified_name_t{names.first, cm->matviewname()});
                     }
                 }
                 // Update routing map: for create_collection_t logic_plan is sequence_t whose

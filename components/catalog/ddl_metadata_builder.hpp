@@ -59,7 +59,8 @@ namespace components::catalog {
                                                           oid_t rule_oid,
                                                           const std::string& body_sql);
 
-    // Writes pg_class (relkind='m') + pg_rewrite + pg_depend (macro→ns 'n').
+    // Writes pg_class (relkind='F') + pg_rewrite + pg_depend (macro→ns 'n').
+    // (Macro reljkind moved 'm' → 'F' in M0 to free 'm' for materialized_view.)
     // oid_batch must hold at least 2 OIDs (macro_oid + rule_oid).
     std::vector<catalog_write_t> build_create_macro_writes(std::pmr::memory_resource* resource,
                                                            const std::string& name,
@@ -67,6 +68,16 @@ namespace components::catalog {
                                                            oid_t macro_oid,
                                                            oid_t rule_oid,
                                                            const std::string& body_sql);
+
+    // Writes pg_rewrite (ev_class=mv_oid, ev_type='m', ev_action=body_sql) +
+    // pg_depend (mv→source 'n'). The matview's pg_class + pg_attribute rows
+    // are written separately via build_create_table_writes(... relkind::materialized_view).
+    std::vector<catalog_write_t> build_matview_rewrite_writes(std::pmr::memory_resource* resource,
+                                                              oid_t mv_oid,
+                                                              oid_t rule_oid,
+                                                              const std::string& mv_name,
+                                                              const std::string& body_sql,
+                                                              oid_t source_table_oid);
 
     // Writes pg_class (relkind='i') + pg_index (indisvalid=false) +
     //   pg_depend (index→table 'a') + N×pg_depend (index→column 'i').

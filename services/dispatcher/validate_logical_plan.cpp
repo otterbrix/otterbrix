@@ -2018,6 +2018,14 @@ namespace services::dispatcher {
             case node_type::drop_index_t:
                 // nothing to check here
                 break;
+            case node_type::create_matview_t:
+            case node_type::refresh_matview_t:
+                // Schema derivation happens in enrich's stamp_oids_from_resolves;
+                // planner reads stamped inferred_columns / source metadata. No
+                // per-clause schema validation needed at this layer (the body
+                // plan is validated via its own catalog_resolve_table sibling
+                // which Pass 1 has stamped before this validate runs).
+                break;
             case node_type::sequence_t: {
                 // The SQL transformer wraps DML/DDL in
                 //   sequence_t(catalog_resolve_*…, consumer)

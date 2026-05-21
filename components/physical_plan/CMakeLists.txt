@@ -96,6 +96,8 @@ target_link_libraries(
         Boost::boost
 )
 
+target_link_libraries(otterbrix_${PROJECT_NAME} PRIVATE FastFloat::fast_float)
+
 target_include_directories(otterbrix_${PROJECT_NAME} PUBLIC
 )
 

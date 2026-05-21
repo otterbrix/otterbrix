@@ -6,6 +6,7 @@
 
 #include <array>
 #include <charconv>
+#include <fast_float/fast_float.h>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -28,7 +29,7 @@ namespace components::operators {
                 return types::logical_value_t(r, std::string(s.substr(1, s.size() - 2)));
             if (s.find('.') != std::string_view::npos) {
                 double v{};
-                auto [ptr, ec] = std::from_chars(s.data(), s.data() + s.size(), v);
+                auto [ptr, ec] = fast_float::from_chars(s.data(), s.data() + s.size(), v);
                 if (ec == std::errc{})
                     return types::logical_value_t(r, v);
             }

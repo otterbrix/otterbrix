@@ -27,10 +27,12 @@ namespace services::planner::impl {
             }
         }
         auto limit = static_cast<components::logical_plan::node_limit_t*>(node_limit.get())->limit();
-        auto coll_name = node->collection_full_name();
-        if (node_delete->collection_from().empty() && !node_raw_data) {
+        auto table_oid = node->table_oid();
+        // Target the simple (no USING) path when neither a USING-side
+        // table_oid nor raw data join input is present.
+        if (node_delete->table_oid_from() == components::catalog::INVALID_OID && !node_raw_data) {
             auto plan = boost::intrusive_ptr(
-                new components::operators::operator_delete(context.resource, context.log.clone(), coll_name));
+                new components::operators::operator_delete(context.resource, context.log.clone(), table_oid));
             plan->set_children(create_plan_match(context, node_match, limit));
 
             return plan;
@@ -39,24 +41,28 @@ namespace services::planner::impl {
                 reinterpret_cast<const components::expressions::compare_expression_ptr*>(&node_match->expressions()[0]);
 
             auto plan = boost::intrusive_ptr(
-                new components::operators::operator_delete(context.resource, context.log.clone(), coll_name, *expr));
+                new components::operators::operator_delete(context.resource, context.log.clone(), table_oid, *expr));
             if (node_raw_data) {
                 plan->set_children(boost::intrusive_ptr(new components::operators::full_scan(context.resource,
                                                                                              context.log.clone(),
-                                                                                             coll_name,
+                                                                                             table_oid,
                                                                                              nullptr,
                                                                                              limit)),
                                    create_plan_data(node_raw_data));
             } else {
-                auto coll_from = node_delete->collection_from();
+                // Read the USING-side table_oid from the node
+                // (enrich_logical_plan stamps it via the same plan-tree
+                // resolve path as the primary table). INVALID_OID would
+                // scan an empty storage and silently drop the join condition.
+                const auto using_oid = node_delete->table_oid_from();
                 plan->set_children(boost::intrusive_ptr(new components::operators::full_scan(context.resource,
                                                                                              context.log.clone(),
-                                                                                             coll_name,
+                                                                                             table_oid,
                                                                                              nullptr,
                                                                                              limit)),
                                    boost::intrusive_ptr(new components::operators::full_scan(context.resource,
                                                                                              context.log.clone(),
-                                                                                             coll_from,
+                                                                                             using_oid,
                                                                                              nullptr,
                                                                                              limit)));
             }

@@ -4,6 +4,20 @@
 
 namespace components::sql::transform {
 
+    namespace {
+        // The transformer wraps DML consumers in sequence_t(resolve_*..., consumer)
+        // for catalog-resolve enrichment. The bind / finalize logic still cares
+        // about the consumer type (insert_t carries param_insert_map_; others use
+        // param_map_), so dig through the wrapper to find it.
+        components::logical_plan::node_type
+        effective_consumer_type(const components::logical_plan::node_ptr& n) noexcept {
+            if (n && n->type() == components::logical_plan::node_type::sequence_t && !n->children().empty()) {
+                return n->children().back()->type();
+            }
+            return n ? n->type() : components::logical_plan::node_type::alias_t;
+        }
+    } // namespace
+
     transform_result::transform_result(std::pmr::memory_resource* resource,
                                        logical_plan::node_ptr&& node,
                                        logical_plan::parameter_node_ptr&& params,
@@ -25,7 +39,7 @@ namespace components::sql::transform {
         }
 
         taken_params_ = params_->take_parameters();
-        if (node_->type() == logical_plan::node_type::insert_t) {
+        if (effective_consumer_type(node_) == logical_plan::node_type::insert_t) {
             bound_flags_.reserve(param_insert_map_.size());
             for (auto& [id, _] : param_insert_map_) {
                 bound_flags_[id] = false;
@@ -54,12 +68,15 @@ namespace components::sql::transform {
         }
 
         bool prev_finalized = std::exchange(finalized_, false);
-        if (node_->type() == logical_plan::node_type::insert_t) {
+        auto* consumer = (node_->type() == logical_plan::node_type::sequence_t && !node_->children().empty())
+                             ? node_->children().back().get()
+                             : node_.get();
+        if (effective_consumer_type(node_) == logical_plan::node_type::insert_t) {
             if (prev_finalized) {
                 // first bind after finalize - restore "binding" state of data node
                 // cannot move rows out of data node - copy
                 const auto& rows =
-                    reinterpret_cast<logical_plan::node_data_ptr&>(node_->children().front())->data_chunk();
+                    reinterpret_cast<logical_plan::node_data_ptr&>(consumer->children().front())->data_chunk();
                 vector::data_chunk_t new_rows(rows.resource(), rows.types(), rows.size());
                 rows.copy(new_rows);
                 param_insert_rows_ = std::move(new_rows);
@@ -115,7 +132,7 @@ namespace components::sql::transform {
     logical_plan::parameter_node_ptr transform_result::params_ptr() const { return params_; }
 
     size_t transform_result::parameter_count() const {
-        if (node_->type() == logical_plan::node_type::insert_t) {
+        if (effective_consumer_type(node_) == logical_plan::node_type::insert_t) {
             return param_insert_map_.size();
         }
 
@@ -152,8 +169,13 @@ namespace components::sql::transform {
         if (parameter_count()) {
             params_->set_parameters(taken_params_);
 
-            if (node_->type() == logical_plan::node_type::insert_t) {
-                node_->children().front() =
+            if (effective_consumer_type(node_) == logical_plan::node_type::insert_t) {
+                // Reach the insert_t consumer through the sequence_t wrap (if present)
+                // and rewrite its data child with the bound row chunk.
+                auto* consumer = (node_->type() == logical_plan::node_type::sequence_t && !node_->children().empty())
+                                     ? node_->children().back().get()
+                                     : node_.get();
+                consumer->children().front() =
                     logical_plan::make_node_raw_data(node_->resource(), std::move(param_insert_rows_));
             }
         }

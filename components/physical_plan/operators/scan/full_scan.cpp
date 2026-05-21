@@ -94,35 +94,25 @@ namespace components::operators {
 
     full_scan::full_scan(std::pmr::memory_resource* resource,
                          log_t log,
-                         collection_full_name_t name,
-                         const expressions::compare_expression_ptr& expression,
-                         logical_plan::limit_t limit)
-        : read_only_operator_t(resource, log, operator_type::full_scan)
-        , name_(std::move(name))
-        , expression_(expression)
-        , limit_(limit) {}
-
-    full_scan::full_scan(std::pmr::memory_resource* resource,
-                         log_t log,
-                         collection_full_name_t name,
+                         components::catalog::oid_t table_oid,
                          const expressions::compare_expression_ptr& expression,
                          logical_plan::limit_t limit,
                          std::vector<size_t> projected_cols)
         : read_only_operator_t(resource, log, operator_type::full_scan)
-        , name_(std::move(name))
+        , table_oid_(table_oid)
         , expression_(expression)
         , limit_(limit)
         , projected_cols_(std::move(projected_cols)) {}
 
     void full_scan::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
-        if (name_.empty())
+        if (table_oid_ == components::catalog::INVALID_OID)
             return;
         async_wait();
     }
 
     actor_zeta::unique_future<void> full_scan::await_async_and_resume(pipeline::context_t* ctx) {
         if (log_.is_valid()) {
-            trace(log(), "full_scan::await_async_and_resume on {}", name_.to_string());
+            trace(log(), "full_scan::await_async_and_resume on oid={}", static_cast<unsigned>(table_oid_));
         }
 
         // Short-circuit: if expression is all_false, return empty result immediately
@@ -133,28 +123,30 @@ namespace components::operators {
         }
 
         // Get types to build filter
-        auto [_t, tf] =
-            actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::storage_types, ctx->session, name_);
+        auto [_t, tf] = actor_zeta::send(ctx->disk_address,
+                                         &services::disk::manager_disk_t::storage_types,
+                                         ctx->session,
+                                         table_oid_);
         auto types = co_await std::move(tf);
 
         // Build filter from expression
         auto filter = transform_predicate(expression_, types, &ctx->parameters, ctx->session_tz);
 
-        // Scan straight into batched chunks (no concat-then-split round-trip).
+        // Scan from storage — batched + projected (PR #477+#483).
         int64_t offset_val = limit_.offset();
         int64_t limit_val = limit_.limit();
         int64_t scan_limit = (limit_val < 0) ? limit_val : limit_val + offset_val;
         auto [_s, sf] = actor_zeta::send(ctx->disk_address,
                                          &services::disk::manager_disk_t::storage_scan_batched,
                                          ctx->session,
-                                         name_,
+                                         table_oid_,
                                          std::move(filter),
                                          scan_limit,
                                          projected_cols_,
                                          ctx->txn);
         auto batches = co_await std::move(sf);
 
-        // Apply OFFSET by trimming leading rows across the head of the batch list.
+        // Skip offset rows across batches.
         if (offset_val > 0) {
             uint64_t remaining = static_cast<uint64_t>(offset_val);
             size_t skip_count = 0;
@@ -164,7 +156,6 @@ namespace components::operators {
                     remaining -= sz;
                     continue;
                 }
-                // Partial trim: keep this batch with the leading `remaining` rows skipped.
                 batches[skip_count] = batches[skip_count].partial_copy(resource_, remaining, sz - remaining);
                 remaining = 0;
                 break;

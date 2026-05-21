@@ -8,16 +8,65 @@ namespace components::compute {
     input_type::input_type(type_matcher_fn m)
         : matcher_(std::move(m)) {}
 
+    input_type input_type::make_exact(types::logical_type t) {
+        input_type r{exact_type_matcher(t)};
+        r.kind_ = kind_t::exact;
+        r.exact_type_ = t;
+        return r;
+    }
+
+    input_type input_type::make_numeric() {
+        input_type r{numeric_types_matcher()};
+        r.kind_ = kind_t::numeric;
+        return r;
+    }
+
+    input_type input_type::make_integer() {
+        input_type r{integer_types_matcher()};
+        r.kind_ = kind_t::integer;
+        return r;
+    }
+
+    input_type input_type::make_floating() {
+        input_type r{floating_types_matcher()};
+        r.kind_ = kind_t::floating;
+        return r;
+    }
+
+    input_type input_type::make_any_of(std::pmr::vector<types::logical_type> types) {
+        input_type r{any_type_matcher(types)};
+        r.kind_ = kind_t::any_of;
+        r.any_of_list_ = std::move(types);
+        return r;
+    }
+
+    input_type input_type::make_always_true() {
+        input_type r{always_true_type_matcher()};
+        r.kind_ = kind_t::always_true;
+        return r;
+    }
+
     bool input_type::matches(const types::complex_logical_type& type) const { return matcher_(type); }
 
     output_type output_type::fixed(fixed_t type) {
         output_type out;
+        out.kind_ = kind_t::fixed_value;
+        out.fixed_value_ = type;
         out.value_ = std::move(type);
+        return out;
+    }
+
+    output_type output_type::same_type_at(size_t input_index) {
+        output_type out;
+        out.kind_ = kind_t::same_type_at_index;
+        out.input_index_ = input_index;
+        out.value_ = same_type_resolver(input_index);
         return out;
     }
 
     output_type output_type::computed(type_resolver_fn resolver) {
         output_type out;
+        out.kind_ = kind_t::custom;
         out.value_ = std::move(resolver);
         return out;
     }

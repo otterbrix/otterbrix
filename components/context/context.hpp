@@ -2,14 +2,22 @@
 
 #include <actor-zeta.hpp>
 #include <actor-zeta/detail/future.hpp>
+#include <components/base/collection_full_name.hpp>
+#include <components/catalog/catalog_oids.hpp>
+#include <components/context/pg_catalog_swap.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/session/session.hpp>
 #include <components/table/row_version_manager.hpp>
+#include <set>
 #include <vector>
 
 namespace components::compute {
     class function_registry_t;
 } // namespace components::compute
+
+namespace components::table {
+    class transaction_manager_t;
+} // namespace components::table
 
 namespace components::pipeline {
 
@@ -24,9 +32,39 @@ namespace components::pipeline {
 
         actor_zeta::address_t disk_address{actor_zeta::address_t::empty_address()};
         actor_zeta::address_t index_address{actor_zeta::address_t::empty_address()};
+        actor_zeta::address_t wal_address{actor_zeta::address_t::empty_address()};
 
         table::transaction_data txn{0, 0};
         core::date::timezone_offset_t session_tz{};
+        // VACUUM/MVCC GC threshold: snapshots older than this start_time are
+        // safe to drop. Populated by the executor from txn_manager_t before
+        // each operator invocation; consumed by operator_vacuum_t (and any
+        // future GC operator) to gate cleanup_versions / cleanup_all_versions.
+        uint64_t lowest_active_start_time{0};
+        // Transaction manager back-reference for operators that need to
+        // mutate the global txn map (Phase 4 #56: operator_commit_transaction_t
+        // / operator_abort_transaction_t — invoked from manager_dispatcher_t
+        // where the txn_manager_t lives, not from the executor pipeline).
+        // Null whenever the operator does not need it (DML/DDL paths leave it
+        // unset).
+        table::transaction_manager_t* txn_manager{nullptr};
+
+        // Phase 5b: aggregated by operators that touch pg_catalog. Drained by
+        // execute_sub_plan_ into result_tracking after pipeline runs.
+        std::vector<pg_catalog_append_range_t> pg_catalog_appends;
+        std::set<catalog::oid_t> pg_catalog_delete_tables;
+
+        // Phase 5: DML operators (operator_insert / operator_delete /
+        // operator_update) record their MVCC swap-info here from inside
+        // await_async_and_resume. The executor's commit-side block then drives
+        // storage_commit_append / storage_commit_delete after
+        // txn_manager_->commit using these fields. WAL physical writes happen
+        // inside the operators themselves; only the commit-side swap requires
+        // back-channel.
+        int64_t dml_append_row_start{0};
+        uint64_t dml_append_row_count{0};
+        uint64_t dml_delete_txn_id{0};
+        catalog::oid_t dml_table_oid{catalog::INVALID_OID};
 
         explicit context_t(logical_plan::storage_parameters init_parameters);
         context_t(context_t&& context) noexcept;

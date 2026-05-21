@@ -1,16 +1,19 @@
 #include "column_pruning.hpp"
 
 #include <algorithm>
-#include <components/catalog/schema.hpp>
+#include <functional>
+#include <unordered_map>
+
+#include <components/catalog/catalog_oids.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/function_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
+#include <components/logical_plan/node_catalog_resolve_table.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_match.hpp>
-#include <functional>
 
 namespace components::planner::optimizer {
 
@@ -21,6 +24,37 @@ namespace components::planner::optimizer {
         using FExpr = expressions::function_expression_t;
         using CExpr = expressions::compare_expression_t;
         using KeyT = expressions::key_t;
+
+        // oid → column_count map built once from the plan tree's
+        // catalog_resolve_table_t siblings. Pure index-based projection
+        // works because all chunks share the table's canonical schema
+        // (verified for both relkind='r' and relkind='g').
+        using table_cols_map = std::unordered_map<components::catalog::oid_t, size_t>;
+
+        // Walks the plan once, collecting column counts from every
+        // catalog_resolve_table_t::resolved_metadata().
+        void collect_table_md(const logical_plan::node_ptr& root, table_cols_map& out) {
+            if (!root)
+                return;
+            std::vector<const logical_plan::node_t*> stack;
+            stack.push_back(root.get());
+            while (!stack.empty()) {
+                const auto* n = stack.back();
+                stack.pop_back();
+                if (!n)
+                    continue;
+                if (n->type() == logical_plan::node_type::catalog_resolve_table_t) {
+                    const auto* rt = static_cast<const logical_plan::node_catalog_resolve_table_t*>(n);
+                    const auto& md_opt = rt->resolved_metadata();
+                    if (md_opt && md_opt->table_oid != components::catalog::INVALID_OID) {
+                        out[md_opt->table_oid] = md_opt->columns.size();
+                    }
+                }
+                for (const auto& c : n->children()) {
+                    stack.push_back(c.get());
+                }
+            }
+        }
 
         // Forward declarations.
         bool collect_cols_from_param(const expressions::param_storage& p, std::vector<size_t>& cols);
@@ -142,30 +176,26 @@ namespace components::planner::optimizer {
 
         // Resolve the output column count for a node's source (table or upstream operator).
         // Returns 0 if unknown (in which case JOIN projection pushdown is disabled for that node).
-        size_t resolve_column_count(const logical_plan::node_ptr& node, const catalog::catalog* catalog) {
+        size_t resolve_column_count(const logical_plan::node_ptr& node, const table_cols_map& md) {
             if (!node)
                 return 0;
             if (node->type() == logical_plan::node_type::aggregate_t) {
-                if (!catalog)
+                const auto oid = node->table_oid();
+                if (oid == components::catalog::INVALID_OID)
                     return 0;
-                catalog::table_id id(node->resource(), node->collection_full_name());
-                if (catalog->table_exists(id)) {
-                    return catalog->get_table_schema(id).columns().size();
-                }
-                if (catalog->table_computes(id)) {
-                    return catalog->get_computing_table_schema(id).latest_types_struct().child_types().size();
-                }
+                auto it = md.find(oid);
+                return it != md.end() ? it->second : 0;
             }
             return 0;
         }
 
         // Walk an aggregate subtree, computing and setting projected_cols on each
         // node_aggregate_t we encounter. Handles JOIN by splitting per side.
-        void process_aggregate(const logical_plan::node_ptr& agg_node, const catalog::catalog* catalog);
+        void process_aggregate(const logical_plan::node_ptr& agg_node, const table_cols_map& md);
 
         void process_join(const logical_plan::node_ptr& join_node,
                           const std::vector<size_t>& parent_projected,
-                          const catalog::catalog* catalog) {
+                          const table_cols_map& md) {
             // A join produces [left_columns..., right_columns...]. Resolve left side's
             // column count so we can split parent_projected correctly.
             if (join_node->children().size() != 2) {
@@ -173,7 +203,7 @@ namespace components::planner::optimizer {
                 // still compute their own projection from their own SELECT lists.
                 for (const auto& child : join_node->children()) {
                     if (child->type() == logical_plan::node_type::aggregate_t) {
-                        process_aggregate(child, catalog);
+                        process_aggregate(child, md);
                     }
                 }
                 return;
@@ -181,7 +211,7 @@ namespace components::planner::optimizer {
 
             const auto& left = join_node->children()[0];
             const auto& right = join_node->children()[1];
-            size_t left_cols = resolve_column_count(left, catalog);
+            size_t left_cols = resolve_column_count(left, md);
 
             std::vector<size_t> left_projected;
             std::vector<size_t> right_projected;
@@ -261,14 +291,8 @@ namespace components::planner::optimizer {
             // still computes its OWN projection from its SELECT list — that gives
             // table-level reads of only the columns each side's subquery references.
             if (left->type() == logical_plan::node_type::aggregate_t) {
-                process_aggregate(left, catalog);
+                process_aggregate(left, md);
                 if (can_split) {
-                    // If the inner aggregate didn't produce its own projection (empty),
-                    // or produced one but we want to intersect with what the parent needs,
-                    // overwrite only if we have a non-empty split. We DO NOT intersect here;
-                    // we only propagate the parent's needs when the inner aggregate itself
-                    // didn't constrain anything further. This keeps inner subqueries' own
-                    // SELECT list authoritative.
                     auto* agg = static_cast<logical_plan::node_aggregate_t*>(left.get());
                     if (agg->projected_cols().empty() && !left_projected.empty()) {
                         agg->set_projected_cols(std::move(left_projected));
@@ -276,7 +300,7 @@ namespace components::planner::optimizer {
                 }
             }
             if (right->type() == logical_plan::node_type::aggregate_t) {
-                process_aggregate(right, catalog);
+                process_aggregate(right, md);
                 if (can_split) {
                     auto* agg = static_cast<logical_plan::node_aggregate_t*>(right.get());
                     if (agg->projected_cols().empty() && !right_projected.empty()) {
@@ -286,7 +310,7 @@ namespace components::planner::optimizer {
             }
         }
 
-        void process_aggregate(const logical_plan::node_ptr& agg_node, const catalog::catalog* catalog) {
+        void process_aggregate(const logical_plan::node_ptr& agg_node, const table_cols_map& md) {
             if (!agg_node || agg_node->type() != logical_plan::node_type::aggregate_t) {
                 return;
             }
@@ -332,9 +356,6 @@ namespace components::planner::optimizer {
                     if (!expr)
                         continue;
                     if (expr->group() != expressions::expression_group::compare) {
-                        // Function / scalar expressions at the top level of WHERE — we don't
-                        // yet enumerate all columns referenced transitively by arbitrary
-                        // function bodies (UDFs etc.). Disable projection to be safe.
                         can_project = false;
                         break;
                     }
@@ -356,29 +377,32 @@ namespace components::planner::optimizer {
                 if (data_child->type() == logical_plan::node_type::join_t) {
                     const auto& projected =
                         static_cast<const logical_plan::node_aggregate_t*>(agg_node.get())->projected_cols();
-                    process_join(data_child, projected, catalog);
+                    process_join(data_child, projected, md);
                 } else if (data_child->type() == logical_plan::node_type::aggregate_t) {
-                    // Nested subquery — it independently computes its own projection
-                    // from its own SELECT list.
-                    process_aggregate(data_child, catalog);
+                    process_aggregate(data_child, md);
                 }
             }
         }
 
     } // namespace
 
-    void prune_columns(const logical_plan::node_ptr& root, const catalog::catalog* catalog) {
+    void prune_columns(const logical_plan::node_ptr& root) {
         if (!root)
             return;
+
+        // Build oid → column_count map from sibling catalog_resolve_table_t
+        // nodes that enrich already populated with resolved_metadata().
+        table_cols_map md;
+        collect_table_md(root, md);
+
         // BFS over the whole plan, processing every aggregate_t we encounter.
         std::vector<logical_plan::node_ptr> stack{root};
         while (!stack.empty()) {
             auto current = std::move(stack.back());
             stack.pop_back();
             if (current->type() == logical_plan::node_type::aggregate_t) {
-                process_aggregate(current, catalog);
-                // process_aggregate already recurses into join_t / nested aggregate_t;
-                // no need to push those children again.
+                process_aggregate(current, md);
+                // process_aggregate already recurses into join_t / nested aggregate_t.
                 continue;
             }
             for (const auto& child : current->children()) {

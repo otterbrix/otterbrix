@@ -4,6 +4,11 @@ add_definitions(-DDEV_MODE)
 
 set( ${PROJECT_NAME}_SOURCES
         test_wal.cpp
+        test_wal_binary.cpp
+        test_wal_page.cpp
+        test_wal_worker.cpp
+        test_wal_manager.cpp
+        test_wal_torn_write.cpp
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})

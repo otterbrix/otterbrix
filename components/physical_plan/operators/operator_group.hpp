@@ -127,10 +127,10 @@ namespace components::operators {
         vector::data_chunk_t calc_aggregate_values(pipeline::context_t* pipeline_context, chunks_vector_t& in_chunks);
         vector::data_chunk_t calc_aggregate_values_fallback(pipeline::context_t* pipeline_context,
                                                             chunks_vector_t& in_chunks);
-        vector::data_chunk_t
-        build_result_chunk(size_t num_groups,
-                           size_t key_count,
-                           std::pmr::vector<std::pmr::vector<types::logical_value_t>>& agg_results);
+        vector::data_chunk_t build_result_chunk(size_t num_groups,
+                                                size_t key_count,
+                                                std::pmr::vector<std::pmr::vector<types::logical_value_t>>& agg_results,
+                                                const chunks_vector_t& in_chunks);
         void calc_post_aggregates(pipeline::context_t* pipeline_context, vector::data_chunk_t& result);
         void filter_having(pipeline::context_t* pipeline_context, vector::data_chunk_t& result);
     };

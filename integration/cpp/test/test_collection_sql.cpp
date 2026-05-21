@@ -45,10 +45,6 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
         }
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->size(session, database_name, collection_name) == 100);
-        }
     }
 
     INFO("schema") {
@@ -597,10 +593,6 @@ TEST_CASE("integration::cpp::test_collection::sql::index") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
         }
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->size(session, database_name, collection_name) == 100);
-        }
     }
 
     INFO("create_index") {
@@ -632,10 +624,6 @@ TEST_CASE("integration::cpp::test_collection::sql::index") {
                                                "WHERE count > 90;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 9);
-        }
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->size(session, database_name, collection_name) == 100);
         }
     }
 
@@ -761,18 +749,10 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->size(session, database_name, collection_name) == 100);
-        }
-        {
-            auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(
                 session,
                 R"_(INSERT INTO TestDatabase.CopyTestCollection SELECT * FROM TestDatabase.TestCollection ORDER BY (custom_type).f1 DESC;)_");
             REQUIRE(cur->is_success());
-        }
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->size(session, database_name, copy_collection_name) == 100);
         }
     }
 

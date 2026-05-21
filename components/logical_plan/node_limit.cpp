@@ -21,9 +21,12 @@ namespace components::logical_plan {
     bool limit_t::is_skipping(int64_t count) const { return count < offset_; }
 
     node_limit_t::node_limit_t(std::pmr::memory_resource* resource,
-                               const collection_full_name_t& collection,
+                               core::dbname_t dbname,
+                               core::relname_t relname,
                                const limit_t& limit)
-        : node_t(resource, node_type::limit_t, collection)
+        : node_t(resource, node_type::limit_t)
+        , dbname_(std::move(static_cast<std::string&>(dbname)))
+        , relname_(std::move(static_cast<std::string&>(relname)))
         , limit_(limit) {}
 
     const limit_t& node_limit_t::limit() const { return limit_; }
@@ -40,9 +43,10 @@ namespace components::logical_plan {
     }
 
     node_limit_ptr make_node_limit(std::pmr::memory_resource* resource,
-                                   const collection_full_name_t& collection,
+                                   core::dbname_t dbname,
+                                   core::relname_t relname,
                                    const limit_t& limit) {
-        return {new node_limit_t{resource, collection, limit}};
+        return {new node_limit_t{resource, std::move(dbname), std::move(relname), limit}};
     }
 
 } // namespace components::logical_plan

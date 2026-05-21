@@ -43,6 +43,12 @@ namespace components::table {
         if (has_updates()) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
+        // set_membership_filter_t has multiple constants; zonemap pruning would need
+        // to compute min(values), max(values) and intersect with the segment range. Until
+        // Future wiring will add zonemap pruning; fall through to per-row dispatch (NO_PRUNING_POSSIBLE).
+        if (dynamic_cast<const set_membership_filter_t*>(&filter)) {
+            return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
+        }
 
         if (filter.filter_type == expressions::compare_type::eq ||
             filter.filter_type == expressions::compare_type::gt ||
@@ -110,6 +116,11 @@ namespace components::table {
         }
         auto& seg_stats = state.current->segment_statistics();
         if (!seg_stats.has_stats() || seg_stats.min_value().is_null() || seg_stats.max_value().is_null()) {
+            return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
+        }
+        // See check_zonemap above — set_membership_filter_t needs min(values)/max(values)
+        // intersection logic, deferred to M4. Until then, no pruning for IN-list filters.
+        if (dynamic_cast<const set_membership_filter_t*>(&filter)) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
 
@@ -338,6 +349,14 @@ namespace components::table {
             apend_transient_segment(l, start_);
         }
         auto segment = data_.last_segment(l);
+        // Disk-loaded segments have block_offset()!=0 (they share a block with other
+        // segments). They are read-only; appending to them would trip the assert in
+        // column_segment_t::append. Create a fresh in-memory segment positioned just
+        // after the last loaded segment so new rows land in appendable storage.
+        if (segment->block_offset() != 0) {
+            apend_transient_segment(l, segment->start + static_cast<int64_t>(segment->count));
+            segment = data_.last_segment(l);
+        }
         state.current = segment;
         state.current->initialize_append(state);
     }
@@ -428,6 +447,10 @@ namespace components::table {
             fetch_row(fetch_state, row_id, result, 0);
             if (!result.validity().row_is_valid(0)) {
                 return false;
+            }
+            // Dispatch handles both constant_filter_t and set_membership_filter_t.
+            if (auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
+                return set->contains(result.value(0));
             }
             const auto& const_filter = filter->cast<constant_filter_t>();
             return const_filter.compare(result.value(0));

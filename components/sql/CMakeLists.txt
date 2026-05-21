@@ -43,6 +43,8 @@ set(SOURCE_${PROJECT_NAME}
     transformer/impl/transform_insert.cpp
     transformer/impl/transform_delete.cpp
     transformer/impl/transform_index.cpp
+    transformer/impl/transform_alter_table.cpp
+    transformer/impl/transform_transaction.cpp
     transformer/impl/transform_checkpoint.cpp
     transformer/impl/transform_set_timezone.cpp
     transformer/impl/transform_vacuum.cpp

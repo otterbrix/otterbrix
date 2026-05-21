@@ -6,7 +6,8 @@
 namespace components::sql::transform {
 
     logical_plan::node_ptr transformer::transform_create_sequence(CreateSeqStmt& node) {
-        auto name = rangevar_to_collection(node.sequence);
+        auto qn = rangevar_to_qualified_name(node.sequence);
+        const std::string db_for_resolve = qn.dbname;
 
         int64_t start = 1;
         int64_t increment = 1;
@@ -31,7 +32,15 @@ namespace components::sql::transform {
             }
         }
 
-        return logical_plan::make_node_create_sequence(resource_, name, start, increment, min_value, max_value);
+        auto seq = logical_plan::make_node_create_sequence(resource_,
+                                                           core::seqname_t{std::move(qn.relname)},
+                                                           start,
+                                                           increment,
+                                                           min_value,
+                                                           max_value);
+        // Wrap with namespace resolve so enrich's create_sequence_t case can
+        // read ns_oid from plan-tree idx.
+        return maybe_wrap_with_catalog_resolve_namespace(resource_, db_for_resolve, std::move(seq));
     }
 
 } // namespace components::sql::transform

@@ -2,6 +2,7 @@
 
 #include <catch2/catch.hpp>
 #include <components/logical_plan/node_insert.hpp>
+#include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
 #include <core/operations_helper.hpp>
 
@@ -173,24 +174,20 @@ TEST_CASE("integration::cpp::test_udfs") {
     }
 
     INFO("insert") {
-        auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
-        auto ins =
-            logical_plan::make_node_insert(dispatcher->resource(), {database_name, collection_name}, std::move(chunk));
-        {
+        // Each insert needs its own freshly-built plan: the data_chunk is moved
+        // into the insert node and consumed at execute time, so re-running the
+        // same `ins` would replay against an emptied chunk.
+        for (int batch = 0; batch < 2; ++batch) {
+            auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
+            auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+                dispatcher->resource(),
+                database_name,
+                collection_name,
+                logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_plan(session, ins);
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
-        }
-        {
-            auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_plan(session, ins);
-            REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == kNumInserts);
-        }
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->size(session, database_name, collection_name) == kNumInserts * 2);
         }
     }
 
@@ -198,28 +195,28 @@ TEST_CASE("integration::cpp::test_udfs") {
         {
             auto session = otterbrix::session_id_t();
             auto result = dispatcher->register_udf(session, make_concat_func(dispatcher->resource()));
-            REQUIRE_FALSE(result.contains_error());
+            REQUIRE(result);
         }
         {
             auto session = otterbrix::session_id_t();
             auto result = dispatcher->register_udf(session, make_mult_func(dispatcher->resource()));
-            REQUIRE_FALSE(result.contains_error());
+            REQUIRE(result);
         }
         {
             auto session = otterbrix::session_id_t();
             auto result = dispatcher->register_udf(session, make_is_even_func(dispatcher->resource()));
-            REQUIRE_FALSE(result.contains_error());
+            REQUIRE(result);
         }
         {
             auto session = otterbrix::session_id_t();
             auto result = dispatcher->register_udf(session, make_modulo_func(dispatcher->resource()));
-            REQUIRE_FALSE(result.contains_error());
+            REQUIRE(result);
         }
         // Trying to create same function will result in error
         {
             auto session = otterbrix::session_id_t();
             auto result = dispatcher->register_udf(session, make_concat_func(dispatcher->resource()));
-            REQUIRE(result.contains_error());
+            REQUIRE_FALSE(result);
         }
     }
 
@@ -385,7 +382,7 @@ TEST_CASE("integration::cpp::test_udfs") {
         {
             auto session = otterbrix::session_id_t();
             auto result = dispatcher->unregister_udf(session, udf1_name, {types::logical_type::STRING_LITERAL});
-            REQUIRE_FALSE(result.contains_error());
+            REQUIRE(result);
         }
         // Trying to delete function with non-existent signature
         {
@@ -393,7 +390,7 @@ TEST_CASE("integration::cpp::test_udfs") {
             auto result = dispatcher->unregister_udf(session,
                                                      udf2_name,
                                                      {types::logical_type::BIGINT, types::logical_type::SMALLINT});
-            REQUIRE(result.contains_error());
+            REQUIRE_FALSE(result);
         }
     }
 

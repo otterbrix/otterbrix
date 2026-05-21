@@ -2,8 +2,10 @@
 
 #include "index_selection_helpers.hpp"
 
+#include <components/catalog/catalog_codes.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/function_expression.hpp>
+#include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/operators/operator_match.hpp>
 #include <components/physical_plan/operators/scan/full_scan.hpp>
@@ -83,11 +85,11 @@ namespace services::planner::impl {
         }
 
         components::operators::operator_ptr create_plan_match_(const context_storage_t& context,
-                                                               const collection_full_name_t& coll_name,
+                                                               components::catalog::oid_t table_oid,
                                                                const components::expressions::expression_ptr& expr,
                                                                components::logical_plan::limit_t limit,
                                                                const std::vector<size_t>& projected_cols) {
-            if (context.has_collection(coll_name)) {
+            if (context.has_table_oid(table_oid)) {
                 // TODO: function_expr in scans
                 if (is_pure_compare(expr)) {
                     auto comp_expr = reinterpret_cast<const expr::compare_expression_ptr&>(expr);
@@ -103,7 +105,7 @@ namespace services::planner::impl {
                             auto ctype = key_on_left ? comp_expr->type() : mirror_compare(comp_expr->type());
                             return boost::intrusive_ptr(new components::operators::index_scan(context.resource,
                                                                                               context.log.clone(),
-                                                                                              coll_name,
+                                                                                              table_oid,
                                                                                               key,
                                                                                               value,
                                                                                               ctype,
@@ -113,7 +115,7 @@ namespace services::planner::impl {
 
                     return boost::intrusive_ptr(new components::operators::full_scan(context.resource,
                                                                                      context.log.clone(),
-                                                                                     coll_name,
+                                                                                     table_oid,
                                                                                      comp_expr,
                                                                                      limit,
                                                                                      projected_cols));
@@ -127,7 +129,7 @@ namespace services::planner::impl {
                     match_operator->set_children(
                         boost::intrusive_ptr(new components::operators::full_scan(context.resource,
                                                                                   context.log.clone(),
-                                                                                  coll_name,
+                                                                                  table_oid,
                                                                                   nullptr,
                                                                                   limit,
                                                                                   projected_cols)));
@@ -151,19 +153,38 @@ namespace services::planner::impl {
                                                           components::logical_plan::limit_t limit,
                                                           const std::vector<size_t>& projected_cols) {
         if (node->expressions().empty()) {
-            if (context.has_collection(node->collection_full_name())) {
+            // Build projected_cols (storage chunk indices). For relkind='g' read
+            // live columns by their chunk_position (resolved at resolve-table time).
+            // For relkind='r' use caller's projected_cols (column_pruning output).
+            std::vector<size_t> effective_cols;
+            if (const auto* md = context.table_metadata_for(node->table_oid())) {
+                if (md->relkind == components::catalog::relkind::computed) {
+                    effective_cols.reserve(md->columns.size());
+                    for (const auto& col : md->columns) {
+                        if (col.chunk_position >= 0) {
+                            effective_cols.push_back(static_cast<size_t>(col.chunk_position));
+                        }
+                    }
+                } else {
+                    effective_cols = projected_cols;
+                }
+            }
+            if (context.has_table_oid(node->table_oid())) {
                 return boost::intrusive_ptr(new components::operators::transfer_scan(context.resource,
-                                                                                     node->collection_full_name(),
+                                                                                     node->table_oid(),
                                                                                      limit,
-                                                                                     projected_cols));
+                                                                                     std::move(effective_cols)));
             } else {
-                return boost::intrusive_ptr(
-                    new components::operators::transfer_scan(nullptr, node->collection_full_name(), limit));
+                return boost::intrusive_ptr(new components::operators::transfer_scan(nullptr,
+                                                                                     node->table_oid(),
+                                                                                     limit,
+                                                                                     std::move(effective_cols)));
             }
         } else {
+            const auto* match_node = static_cast<const components::logical_plan::node_match_t*>(node.get());
             return create_plan_match_(context,
-                                      node->collection_full_name(),
-                                      node->expressions()[0],
+                                      match_node->table_oid(),
+                                      match_node->expressions()[0],
                                       limit,
                                       projected_cols);
         }
@@ -176,7 +197,7 @@ namespace services::planner::impl {
             return nullptr;
         }
         auto expr = reinterpret_cast<const components::expressions::compare_expression_ptr*>(&node->expressions()[0]);
-        if (context.has_collection(node->collection_full_name())) {
+        if (context.has_table_oid(node->table_oid())) {
             return boost::intrusive_ptr(
                 new components::operators::operator_match_t(context.resource, context.log.clone(), *expr, limit));
         } else {

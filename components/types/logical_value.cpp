@@ -1,6 +1,5 @@
 #include "logical_value.hpp"
 #include "operations_helper.hpp"
-#include <components/serialization/deserializer.hpp>
 #include <core/date/date_cast.hpp>
 
 #include <boost/container_hash/hash.hpp>
@@ -9,49 +8,12 @@
 #include <limits>
 #include <stdexcept>
 
-namespace std {
-    template<>
-    struct make_signed<components::types::uint128_t> {
-        typedef components::types::int128_t type;
-    };
-    template<>
-    struct make_signed<components::types::int128_t> {
-        typedef components::types::int128_t type;
-    };
-    template<>
-    struct make_signed<float> {
-        typedef float type;
-    };
-    template<>
-    struct make_signed<double> {
-        typedef double type;
-    };
-    template<>
-    struct make_unsigned<components::types::uint128_t> {
-        typedef components::types::uint128_t type;
-    };
-    template<>
-    struct make_unsigned<components::types::int128_t> {
-        typedef components::types::uint128_t type;
-    };
-    template<>
-    struct make_unsigned<float> {
-        typedef float type;
-    };
-    template<>
-    struct make_unsigned<double> {
-        typedef double type;
-    };
-
-    template<>
-    struct is_signed<components::types::int128_t> : true_type {};
-
-    template<>
-    struct is_unsigned<components::types::uint128_t> : true_type {};
-
-} // namespace std
-
 namespace components::types {
+
+    namespace {
+        template<typename T>
+        inline constexpr bool ext_is_signed_v = std::is_signed_v<T> || std::is_same_v<T, int128_t>;
+    }
 
     logical_value_t::~logical_value_t() { destroy_heap(); }
 
@@ -336,7 +298,7 @@ namespace components::types {
                     return logical_value_t{r, LeftValueType{1}};
                 }
             } else if constexpr (std::is_same_v<LeftValueType, std::string_view>) {
-                if constexpr (std::is_signed_v<RightValueType>) {
+                if constexpr (ext_is_signed_v<RightValueType>) {
                     return logical_value_t{
                         r,
                         std::to_string(static_cast<int64_t>(value.template value<RightValueType>()))};
@@ -580,7 +542,7 @@ namespace components::types {
                     break;
             }
         }
-        //assert(false && "cast to value is not implemented");
+        assert(false && "cast to value is not implemented");
         return logical_value_t{resource_, complex_logical_type{logical_type::NA}};
     }
 
@@ -762,7 +724,8 @@ namespace components::types {
     logical_value_t logical_value_t::create_struct(std::pmr::memory_resource* r,
                                                    std::string name,
                                                    const std::vector<logical_value_t>& fields) {
-        std::vector<complex_logical_type> child_types;
+        std::pmr::vector<complex_logical_type> child_types(r);
+        child_types.reserve(fields.size());
         for (auto& child : fields) {
             child_types.push_back(child.type());
         }
@@ -910,7 +873,7 @@ namespace components::types {
     }
 
     logical_value_t logical_value_t::create_union(std::pmr::memory_resource* r,
-                                                  std::vector<complex_logical_type> types,
+                                                  std::pmr::vector<complex_logical_type> types,
                                                   uint8_t tag,
                                                   logical_value_t value) {
         assert(!types.empty());
@@ -940,7 +903,7 @@ namespace components::types {
         assert(values[1].type().type() == logical_type::LIST);
         assert(values[2].type().type() == logical_type::LIST);
         assert(values[3].type().type() == logical_type::BLOB);
-        return create_struct(r, complex_logical_type::create_variant(), std::move(values));
+        return create_struct(r, complex_logical_type::create_variant(r), std::move(values));
     }
 
     /*
@@ -1808,213 +1771,6 @@ namespace components::types {
             default:
                 throw std::runtime_error("logical_value_t::bit_shift_r unable to process given types");
         }
-    }
-
-    void logical_value_t::serialize(serializer::msgpack_serializer_t* serializer) const {
-        serializer->start_array(2);
-        type_.serialize(serializer);
-        switch (type_.to_physical_type()) {
-            case physical_type::BOOL:
-                serializer->append(value<bool>());
-                break;
-            case physical_type::INT8:
-                serializer->append(static_cast<int64_t>(value<int8_t>()));
-                break;
-            case physical_type::INT16:
-                serializer->append(static_cast<int64_t>(value<int16_t>()));
-                break;
-            case physical_type::INT32:
-                serializer->append(static_cast<int64_t>(value<int32_t>()));
-                break;
-            case physical_type::INT64:
-                serializer->append(value<int64_t>());
-                break;
-            case physical_type::INT128:
-                serializer->append(value<int128_t>());
-                break;
-            case physical_type::FLOAT:
-                serializer->append(value<float>());
-                break;
-            case physical_type::DOUBLE:
-                serializer->append(value<double>());
-                break;
-            case physical_type::UINT8:
-                serializer->append(static_cast<uint64_t>(value<uint8_t>()));
-                break;
-            case physical_type::UINT16:
-                serializer->append(static_cast<uint64_t>(value<uint16_t>()));
-                break;
-            case physical_type::UINT32:
-                serializer->append(static_cast<uint64_t>(value<uint32_t>()));
-                break;
-            case physical_type::UINT64:
-                serializer->append(value<uint64_t>());
-                break;
-            case physical_type::UINT128:
-                serializer->append(value<uint128_t>());
-                break;
-            case physical_type::STRING:
-                serializer->append(*str_ptr());
-                break;
-            case physical_type::LIST:
-            case physical_type::ARRAY:
-            case physical_type::STRUCT: {
-                const auto& nested_values = *vec_ptr();
-                serializer->start_array(nested_values.size());
-                for (const auto& val : nested_values) {
-                    val.serialize(serializer);
-                }
-                serializer->end_array();
-                break;
-            }
-            default:
-                serializer->append_null();
-                serializer->end_array();
-        }
-    }
-
-    logical_value_t logical_value_t::deserialize(std::pmr::memory_resource* r,
-                                                 serializer::msgpack_deserializer_t* deserializer) {
-        logical_value_t result(r, complex_logical_type{logical_type::NA});
-        deserializer->advance_array(0);
-        auto type = complex_logical_type::deserialize(r, deserializer);
-        deserializer->pop_array();
-        switch (type.type()) {
-            case logical_type::BOOLEAN:
-                result = logical_value_t(r, deserializer->deserialize_bool(1));
-                break;
-            case logical_type::TINYINT:
-                result = logical_value_t(r, static_cast<int8_t>(deserializer->deserialize_int64(1)));
-                break;
-            case logical_type::SMALLINT:
-                result = logical_value_t(r, static_cast<int16_t>(deserializer->deserialize_int64(1)));
-                break;
-            case logical_type::INTEGER:
-                result = logical_value_t(r, static_cast<int32_t>(deserializer->deserialize_int64(1)));
-                break;
-            case logical_type::BIGINT:
-                result = logical_value_t(r, deserializer->deserialize_int64(1));
-                break;
-            case logical_type::HUGEINT:
-                result = logical_value_t(r, deserializer->deserialize_int128(1));
-                break;
-            case logical_type::FLOAT:
-                result = logical_value_t(r, static_cast<float>(deserializer->deserialize_double(1)));
-                break;
-            case logical_type::DOUBLE:
-                result = logical_value_t(r, deserializer->deserialize_double(1));
-                break;
-            case logical_type::UTINYINT:
-                result = logical_value_t(r, static_cast<uint8_t>(deserializer->deserialize_uint64(1)));
-                break;
-            case logical_type::USMALLINT:
-                result = logical_value_t(r, static_cast<uint16_t>(deserializer->deserialize_uint64(1)));
-                break;
-            case logical_type::UINTEGER:
-                result = logical_value_t(r, static_cast<uint32_t>(deserializer->deserialize_uint64(1)));
-                break;
-            case logical_type::UBIGINT:
-                result = logical_value_t(r, deserializer->deserialize_uint64(1));
-                break;
-            case logical_type::UHUGEINT:
-                result = logical_value_t(r, deserializer->deserialize_uint128(1));
-                break;
-            case logical_type::DATE:
-                result = logical_value_t(r, deserializer->deserialize_date(1));
-                break;
-            case logical_type::TIME:
-                result = logical_value_t(r, deserializer->deserialize_time(1));
-                break;
-            case logical_type::TIME_TZ:
-                result = logical_value_t(r, deserializer->deserialize_time_tz(1));
-                break;
-            case logical_type::TIMESTAMP:
-                result = logical_value_t(r, deserializer->deserialize_timestamp(1));
-                break;
-            case logical_type::TIMESTAMP_TZ:
-                result = logical_value_t(r, deserializer->deserialize_timestamp_tz(1));
-                break;
-            case logical_type::INTERVAL:
-                result = logical_value_t(r, deserializer->deserialize_interval(1));
-                break;
-            case logical_type::DECIMAL: {
-                if (type.to_physical_type() == physical_type::INT128) {
-                    result = create_decimal(r, type, deserializer->deserialize_int128(1));
-                } else {
-                    result = create_decimal(r, type, deserializer->deserialize_int64(1));
-                }
-                break;
-            }
-            case logical_type::STRING_LITERAL:
-                result = logical_value_t(r, deserializer->deserialize_string(1));
-                break;
-            case logical_type::POINTER:
-                assert(false && "not safe to deserialize a pointer");
-                break;
-            case logical_type::LIST: {
-                std::vector<logical_value_t> nested_values;
-                deserializer->advance_array(1);
-                nested_values.reserve(deserializer->current_array_size());
-                for (size_t i = 0; i < nested_values.capacity(); i++) {
-                    deserializer->advance_array(i);
-                    nested_values.emplace_back(deserialize(r, deserializer));
-                    deserializer->pop_array();
-                }
-                deserializer->pop_array();
-                result = create_list(r, type, std::move(nested_values));
-                break;
-            }
-            case logical_type::ARRAY: {
-                std::vector<logical_value_t> nested_values;
-                deserializer->advance_array(1);
-                nested_values.reserve(deserializer->current_array_size());
-                for (size_t i = 0; i < nested_values.capacity(); i++) {
-                    deserializer->advance_array(i);
-                    nested_values.emplace_back(deserialize(r, deserializer));
-                    deserializer->pop_array();
-                }
-                deserializer->pop_array();
-                result = create_struct(r, type, std::move(nested_values));
-                break;
-            }
-            case logical_type::MAP: {
-                std::vector<logical_value_t> nested_values;
-                deserializer->advance_array(1);
-                nested_values.reserve(deserializer->current_array_size());
-                for (size_t i = 0; i < nested_values.capacity(); i++) {
-                    deserializer->advance_array(i);
-                    nested_values.emplace_back(deserialize(r, deserializer));
-                    deserializer->pop_array();
-                }
-                deserializer->pop_array();
-                result = create_map(r, type, std::move(nested_values));
-                break;
-            }
-            case logical_type::STRUCT: {
-                std::vector<logical_value_t> nested_values;
-                deserializer->advance_array(1);
-                nested_values.reserve(deserializer->current_array_size());
-                for (size_t i = 0; i < nested_values.capacity(); i++) {
-                    deserializer->advance_array(i);
-                    nested_values.emplace_back(deserialize(r, deserializer));
-                    deserializer->pop_array();
-                }
-                deserializer->pop_array();
-                result = create_struct(r, type, std::move(nested_values));
-                break;
-            }
-            case logical_type::NA:
-                // Null value — already initialized as NA
-                break;
-            default:
-                assert(false);
-                return logical_value_t{r, complex_logical_type{logical_type::NA}};
-        }
-        if (type.has_alias()) {
-            result.set_alias(type.alias());
-        }
-
-        return result;
     }
 
     bool serialize_type_matches(const complex_logical_type& expected_type, const complex_logical_type& actual_type) {

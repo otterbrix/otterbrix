@@ -1,6 +1,7 @@
 #include "test_config.hpp"
 
 #include <catch2/catch.hpp>
+#include <components/catalog/catalog_oids.hpp>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -736,8 +737,34 @@ TEST_CASE("integration::cpp::production::corrupted_otbx_recovery") {
     }
 
     INFO("corrupt the .otbx file") {
-        // Find and corrupt the table.otbx file
-        auto otbx_path = config.disk.path / "testdatabase" / "main" / "testcollection" / "table.otbx";
+        // On-disk layout is oid-keyed: ${path}/${db_oid}/${tbl_oid}/table.otbx.
+        // The test creates exactly one user table (TestDatabase.TestCollection); find
+        // its .otbx by walking for the first DB dir whose numeric name is >=
+        // FIRST_USER_OID and contains a table dir with table.otbx.
+        std::filesystem::path otbx_path;
+        for (const auto& db_dir : std::filesystem::directory_iterator(config.disk.path)) {
+            if (!db_dir.is_directory())
+                continue;
+            std::uint64_t db_oid = 0;
+            try {
+                db_oid = std::stoull(db_dir.path().filename().string());
+            } catch (...) {
+                continue;
+            }
+            if (db_oid < components::catalog::FIRST_USER_OID)
+                continue;
+            for (const auto& tbl_dir : std::filesystem::directory_iterator(db_dir.path())) {
+                if (!tbl_dir.is_directory())
+                    continue;
+                auto candidate = tbl_dir.path() / "table.otbx";
+                if (std::filesystem::exists(candidate)) {
+                    otbx_path = candidate;
+                    break;
+                }
+            }
+            if (!otbx_path.empty())
+                break;
+        }
         REQUIRE(std::filesystem::exists(otbx_path));
 
         auto file_size = std::filesystem::file_size(otbx_path);
@@ -830,13 +857,18 @@ TEST_CASE("integration::cpp::production::wal_segment_rotation") {
 
     INFO("check WAL segment files exist") {
         // With 4KB segments and 500 rows of data, there should be multiple WAL files
+        // New WAL puts files in per-database subdirectories
         int wal_file_count = 0;
         if (std::filesystem::exists(config.wal.path)) {
-            for (const auto& entry : std::filesystem::directory_iterator(config.wal.path)) {
-                if (entry.is_regular_file()) {
-                    auto name = entry.path().filename().string();
-                    if (name.find(".wal_") == 0) {
-                        ++wal_file_count;
+            for (const auto& database_entry : std::filesystem::directory_iterator(config.wal.path)) {
+                if (database_entry.is_directory()) {
+                    for (const auto& segment_entry : std::filesystem::directory_iterator(database_entry.path())) {
+                        if (segment_entry.is_regular_file()) {
+                            auto filename = segment_entry.path().filename().string();
+                            if (filename.find("wal_") == 0) {
+                                ++wal_file_count;
+                            }
+                        }
                     }
                 }
             }

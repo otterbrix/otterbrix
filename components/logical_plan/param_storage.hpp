@@ -60,9 +60,6 @@ namespace components::logical_plan {
             values_.parameters.insert_or_assign(id, std::move(value));
         }
 
-        void serialize(serializer::msgpack_serializer_t* serializer) const;
-        static boost::intrusive_ptr<parameter_node_t> deserialize(serializer::msgpack_deserializer_t* deserilizer);
-
     private:
         uint16_t counter_{0};
         storage_parameters values_;

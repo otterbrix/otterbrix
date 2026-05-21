@@ -1,8 +1,8 @@
 #pragma once
 
-#include "dto.hpp"
+#include "base.hpp"
 
-#include <components/base/collection_full_name.hpp>
+#include <components/catalog/catalog_oids.hpp>
 #include <components/vector/data_chunk.hpp>
 
 namespace services::wal {
@@ -24,7 +24,7 @@ namespace services::wal {
         wal_record_type record_type{wal_record_type::COMMIT};
 
         // Physical WAL fields
-        collection_full_name_t collection_name;
+        components::catalog::oid_t table_oid{components::catalog::INVALID_OID};
         std::unique_ptr<components::vector::data_chunk_t> physical_data;
         std::pmr::vector<int64_t> physical_row_ids{std::pmr::get_default_resource()};
         uint64_t physical_row_start{0};

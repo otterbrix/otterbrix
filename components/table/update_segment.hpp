@@ -33,6 +33,9 @@ namespace components::table {
         class block_handle_t;
     } // namespace storage
 
+    // Forward decl so header-template impl below can dispatch on set_membership_filter_t.
+    class set_membership_filter_t;
+
     inline bool supports_regular_update(const types::complex_logical_type& type) {
         switch (type.type()) {
             case types::logical_type::LIST:
@@ -280,11 +283,11 @@ namespace components::table {
                                                T (*extractor)(const V* data, uint64_t index));
 
         template<typename T>
-        static void templated_fetch_commited_range(update_info_t& info,
-                                                   uint64_t start,
-                                                   uint64_t end,
-                                                   uint64_t result_offset,
-                                                   vector::vector_t& result);
+        static void templated_fetch_committed_range(update_info_t& info,
+                                                    uint64_t start,
+                                                    uint64_t end,
+                                                    uint64_t result_offset,
+                                                    vector::vector_t& result);
 
         static void
         fetch_row_validity(update_info_t& info, uint64_t row_index, vector::vector_t& result, uint64_t result_index);
@@ -631,46 +634,46 @@ namespace components::table {
                 break;
             case types::physical_type::BOOL:
             case types::physical_type::INT8:
-                templated_fetch_commited_range<int8_t>(std::forward<Args>(args)...);
+                templated_fetch_committed_range<int8_t>(std::forward<Args>(args)...);
                 break;
             case types::physical_type::INT16:
-                templated_fetch_commited_range<int16_t>(std::forward<Args>(args)...);
+                templated_fetch_committed_range<int16_t>(std::forward<Args>(args)...);
                 break;
             case types::physical_type::INT32:
-                templated_fetch_commited_range<int32_t>(std::forward<Args>(args)...);
+                templated_fetch_committed_range<int32_t>(std::forward<Args>(args)...);
                 break;
             case types::physical_type::INT64:
-                templated_fetch_commited_range<int64_t>(std::forward<Args>(args)...);
+                templated_fetch_committed_range<int64_t>(std::forward<Args>(args)...);
                 break;
             case types::physical_type::UINT8:
-                templated_fetch_commited_range<uint8_t>(std::forward<Args>(args)...);
+                templated_fetch_committed_range<uint8_t>(std::forward<Args>(args)...);
                 break;
             case types::physical_type::UINT16:
-                templated_fetch_commited_range<uint16_t>(std::forward<Args>(args)...);
+                templated_fetch_committed_range<uint16_t>(std::forward<Args>(args)...);
                 break;
             case types::physical_type::UINT32:
-                templated_fetch_commited_range<uint32_t>(std::forward<Args>(args)...);
+                templated_fetch_committed_range<uint32_t>(std::forward<Args>(args)...);
                 break;
             case types::physical_type::UINT64:
-                templated_fetch_commited_range<uint64_t>(std::forward<Args>(args)...);
+                templated_fetch_committed_range<uint64_t>(std::forward<Args>(args)...);
                 break;
             case types::physical_type::INT128:
-                templated_fetch_commited_range<types::int128_t>(std::forward<Args>(args)...);
+                templated_fetch_committed_range<types::int128_t>(std::forward<Args>(args)...);
                 break;
             case types::physical_type::UINT128:
-                templated_fetch_commited_range<types::uint128_t>(std::forward<Args>(args)...);
+                templated_fetch_committed_range<types::uint128_t>(std::forward<Args>(args)...);
                 break;
             case types::physical_type::FLOAT:
-                templated_fetch_commited_range<float>(std::forward<Args>(args)...);
+                templated_fetch_committed_range<float>(std::forward<Args>(args)...);
                 break;
             case types::physical_type::DOUBLE:
-                templated_fetch_commited_range<double>(std::forward<Args>(args)...);
+                templated_fetch_committed_range<double>(std::forward<Args>(args)...);
                 break;
             //case types::physical_type::INTERVAL:
-            //	templated_fetch_commited_range<interval_t>(std::forward<Args>(args)...);
+            //	templated_fetch_committed_range<interval_t>(std::forward<Args>(args)...);
             //	break;
             case types::physical_type::STRING:
-                templated_fetch_commited_range<std::string_view>(std::forward<Args>(args)...);
+                templated_fetch_committed_range<std::string_view>(std::forward<Args>(args)...);
                 break;
             default:
                 throw std::runtime_error("unhandled physical types");
@@ -880,11 +883,11 @@ namespace components::table {
     }
 
     template<typename T>
-    void update_segment_t::templated_fetch_commited_range(update_info_t& info,
-                                                          uint64_t start,
-                                                          uint64_t end,
-                                                          uint64_t result_offset,
-                                                          vector::vector_t& result) {
+    void update_segment_t::templated_fetch_committed_range(update_info_t& info,
+                                                           uint64_t start,
+                                                           uint64_t end,
+                                                           uint64_t result_offset,
+                                                           vector::vector_t& result) {
         auto result_data = result.data<T>();
         merge_update_info_range<T>(info, start, end, result_offset, result_data);
     }
@@ -913,8 +916,7 @@ namespace components::table {
             auto tuples = current->tuples();
             auto it = std::lower_bound(tuples, tuples + current->N, row_index);
             if (it != tuples + current->N && *it == row_index) {
-                const auto& const_filter = filter->cast<constant_filter_t>();
-                result = const_filter.compare(info_data[it - tuples]);
+                result = table_filter_dispatch(filter, info_data[it - tuples]);
             }
         });
         return result;

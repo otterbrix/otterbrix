@@ -206,8 +206,16 @@ namespace components::sql::transform {
             }
         }
         if (!node.selectStmt) {
+            auto qn = rangevar_to_qualified_name(node.relation);
+            auto res = logical_plan::make_node_insert(resource_);
+            res->append_child(transform_select(*pg_ptr_cast<SelectStmt>(node.selectStmt), params));
+            res->key_translation() = key_translation;
+            return maybe_wrap_with_catalog_resolve_table(resource_,
+                                                         qn.dbname,
+                                                         qn.relname,
+                                                         std::move(res),
+                                                         constraint_resolve_kind::outgoing);
             return logical_plan::make_node_insert(resource_,
-                                                  rangevar_to_collection(node.relation),
                                                   std::move(vector::data_chunk_t{resource_, {}, 0}),
                                                   std::move(key_translation));
         }
@@ -311,23 +319,34 @@ namespace components::sql::transform {
                 row_index++;
             }
 
+            auto qn = rangevar_to_qualified_name(node.relation);
+            // Identity travels via the catalog-resolve wrap; the insert node
+            // itself carries only payload + table_oid() (stamped at enrich
+            // time from the sibling resolve_table).
+            logical_plan::node_ptr ins;
             if (has_params) {
                 parameter_insert_rows_ = std::move(chunk);
-                return logical_plan::make_node_insert(resource_,
-                                                      rangevar_to_collection(node.relation),
-                                                      vector::data_chunk_t(resource_, {}, 0),
-                                                      std::move(key_translation));
+                ins = logical_plan::make_node_insert(resource_,
+                                                     vector::data_chunk_t(resource_, {}, 0),
+                                                     std::move(key_translation));
             } else {
-                return logical_plan::make_node_insert(resource_,
-                                                      rangevar_to_collection(node.relation),
-                                                      std::move(chunk),
-                                                      std::move(key_translation));
+                ins = logical_plan::make_node_insert(resource_, std::move(chunk), std::move(key_translation));
             }
+            return maybe_wrap_with_catalog_resolve_table(resource_,
+                                                         qn.dbname,
+                                                         qn.relname,
+                                                         std::move(ins),
+                                                         constraint_resolve_kind::outgoing);
         } else {
-            auto res = logical_plan::make_node_insert(resource_, rangevar_to_collection(node.relation));
+            auto qn = rangevar_to_qualified_name(node.relation);
+            auto res = logical_plan::make_node_insert(resource_);
             res->append_child(transform_select(*pg_ptr_cast<SelectStmt>(node.selectStmt), params));
             res->key_translation() = key_translation;
-            return res;
+            return maybe_wrap_with_catalog_resolve_table(resource_,
+                                                         qn.dbname,
+                                                         qn.relname,
+                                                         std::move(res),
+                                                         constraint_resolve_kind::outgoing);
         }
     }
 } // namespace components::sql::transform

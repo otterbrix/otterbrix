@@ -310,23 +310,26 @@ namespace components::operators {
             // Phase 3: Aggregate per group + build result chunk
             auto result = calc_aggregate_values(pipeline_context, in_chunks);
 
-            // Phase 4: Post-aggregate arithmetic (columnar)
+            // Post-aggregate arithmetic (columnar)
             size_t size_before_post = result.data.size();
             calc_post_aggregates(pipeline_context, result);
 
-            // Phase 5: Remove internal aggregate columns by position
+            // Remove internal aggregate columns by position
             if (internal_aggregate_count_ > 0) {
                 auto it_end = result.data.begin() + static_cast<std::ptrdiff_t>(size_before_post);
                 auto it_begin = it_end - static_cast<std::ptrdiff_t>(internal_aggregate_count_);
                 result.data.erase(it_begin, it_end);
             }
 
-            // Phase 6: HAVING filter (columnar)
+            // HAVING filter (columnar)
             if (having_) {
                 filter_having(pipeline_context, result);
             }
 
-            // Phase 7: Output
+            // Output. SELECT-order column reordering (formerly inline here via
+            // select_order_) is now handled by the downstream operator_select_t
+            // (PR #479 Projection lineage). Group emits columns in its internal
+            // order; the explicit SELECT operator picks/reorders them by name.
             output_ = operators::make_operator_data(in->resource(), std::move(result));
             output_ = operators::split_large_output(in->resource(), std::move(output_));
 
@@ -366,7 +369,8 @@ namespace components::operators {
                 agg_results.push_back(std::move(results));
             }
             group_keys_.push_back({});
-            auto result = build_result_chunk(1, 0, agg_results);
+            chunks_vector_t empty_in_chunks(resource_);
+            auto result = build_result_chunk(1, 0, agg_results, empty_in_chunks);
             output_ = operators::make_operator_data(resource_, std::move(result));
         } else if (!computed_columns_.empty()) {
             // Constants-only query (no FROM clause): evaluate arithmetic on a virtual single row
@@ -398,7 +402,7 @@ namespace components::operators {
         bool use_fast_path = true;
         std::pmr::vector<size_t> key_col_indices(resource_);
         for (const auto& key : keys_) {
-            if (key.type != group_key_t::kind::column || key.full_path.size() > 1) {
+            if (key.type != group_key_t::kind::column || key.full_path.size() != 1) {
                 use_fast_path = false;
                 break;
             }
@@ -617,7 +621,7 @@ namespace components::operators {
                 agg_results.push_back(std::move(results));
             }
 
-            return build_result_chunk(num_groups, key_count, agg_results);
+            return build_result_chunk(num_groups, key_count, agg_results, in_chunks);
         }
 
         // Fallback: gather per-group subchunk from multi-chunk source.
@@ -723,18 +727,35 @@ namespace components::operators {
             agg_results.push_back(std::move(results));
         }
 
-        return build_result_chunk(num_groups, key_count, agg_results);
+        return build_result_chunk(num_groups, key_count, agg_results, in_chunks);
     }
 
     vector::data_chunk_t
     operator_group_t::build_result_chunk(size_t num_groups,
                                          size_t key_count,
-                                         std::pmr::vector<std::pmr::vector<types::logical_value_t>>& agg_results) {
-        // Build result types: key types + aggregate types
+                                         std::pmr::vector<std::pmr::vector<types::logical_value_t>>& agg_results,
+                                         const chunks_vector_t& in_chunks) {
+        // Build result types: key types + aggregate types.
+        // Source key types from the incoming chunk's column schema (stable across
+        // NULL handling), not from group_keys_[0][k] — a NULL value in the first
+        // group would otherwise set out_types[k] = logical_type::NA, and any later
+        // group with a typed key would trip vector_t::set_value's cast_as path
+        // (NA has no cast handler → assert in logical_value.cpp).
         std::pmr::vector<types::complex_logical_type> out_types(resource_);
         if (num_groups > 0) {
             for (size_t k = 0; k < key_count; k++) {
-                out_types.push_back(group_keys_[0][k].type());
+                const auto& key = keys_[k];
+                bool got = false;
+                if (key.type == group_key_t::kind::column && key.full_path.size() == 1 && !in_chunks.empty()) {
+                    const auto col_idx = key.full_path.front();
+                    if (col_idx < in_chunks.front().column_count()) {
+                        out_types.push_back(in_chunks.front().data[col_idx].type());
+                        got = true;
+                    }
+                }
+                if (!got) {
+                    out_types.push_back(group_keys_[0][k].type());
+                }
             }
         }
         for (size_t a = 0; a < values_.size(); a++) {

@@ -168,7 +168,7 @@ namespace core {
             : value_(other.value_)
             , error_(other.error_) {}
         result_wrapper_t(const result_wrapper_t& other) requires(!trivial_store && std::is_copy_constructible_v<T>)
-            : value_(std::make_unique<T>(*other.value_))
+            : value_(other.value_ ? std::make_unique<T>(*other.value_) : std::unique_ptr<T>{})
             , error_(other.error_) {}
 
         result_wrapper_t(result_wrapper_t&& other) noexcept
@@ -186,7 +186,7 @@ namespace core {
         }
         result_wrapper_t& operator=(const result_wrapper_t& other) requires(!trivial_store &&
                                                                             std::is_copy_constructible_v<T>) {
-            value_ = std::make_unique<T>(*other.value_);
+            value_ = other.value_ ? std::make_unique<T>(*other.value_) : std::unique_ptr<T>{};
             error_ = other.error_;
 #if defined(DEV_MODE)
             error_checked_ = false;
@@ -206,7 +206,7 @@ namespace core {
         result_wrapper_t(const result_wrapper_t& other) requires(trivial_store&& std::is_copy_constructible_v<T>) =
             default;
         result_wrapper_t(const result_wrapper_t& other) requires(!trivial_store && std::is_copy_constructible_v<T>)
-            : value_(std::make_unique<T>(other.value()))
+            : value_(other.value_ ? std::make_unique<T>(*other.value_) : std::unique_ptr<T>{})
             , error_(other.error_) {}
 
         result_wrapper_t(result_wrapper_t&&) noexcept = default;
@@ -215,7 +215,7 @@ namespace core {
         operator=(const result_wrapper_t& other) requires(trivial_store&& std::is_copy_constructible_v<T>) = default;
         result_wrapper_t& operator=(const result_wrapper_t& other) requires(!trivial_store &&
                                                                             std::is_copy_constructible_v<T>) {
-            value_ = std::make_unique<T>(other.value_);
+            value_ = other.value_ ? std::make_unique<T>(*other.value_) : std::unique_ptr<T>{};
             error_ = other.error_;
             return *this;
         }

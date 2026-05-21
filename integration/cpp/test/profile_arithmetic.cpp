@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <components/logical_plan/node_insert.hpp>
+#include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
 #include <iostream>
 
@@ -41,8 +42,11 @@ int main() {
     constexpr int kRows = 1000;
     {
         auto chunk = gen_data_chunk(kRows, dispatcher->resource());
-        auto ins =
-            logical_plan::make_node_insert(dispatcher->resource(), {database_name, collection_name}, std::move(chunk));
+        auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+            dispatcher->resource(),
+            database_name,
+            collection_name,
+            logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_plan(s, ins);
         if (!cur->is_success()) {

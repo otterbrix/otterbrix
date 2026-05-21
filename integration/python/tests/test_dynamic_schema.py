@@ -74,15 +74,13 @@ def test_dynamic_schema_basic_flow(docs_table):
     c.close()
 
 
-def test_dynamic_schema_default_for_absent(docs_table):
-    """A row missing a field surfaces as the column's type default.
+def test_dynamic_schema_null_for_absent(docs_table):
+    """A row missing a field surfaces as NULL.
 
-    PostgreSQL semantics (formalised in the C++ test_collection::insert
-    suite): an INSERT that omits a column gets the column's DEFAULT,
-    not NULL. For relkind='g' (dynamic schema), column 'b' inferred
-    from the second row's type (text) has the empty string '' as its
-    default. The earlier row, which never wrote 'b', surfaces with
-    that default on SELECT.
+    Matches PostgreSQL (absent nullable column without explicit DEFAULT
+    is NULL) and the C++ counterpart test_collection::insert::columns_simple,
+    which asserts NULL for an absent column on a static table whose
+    definition carries no default.
     """
     table = docs_table
 
@@ -107,7 +105,7 @@ def test_dynamic_schema_default_for_absent(docs_table):
 
     c.next()
     assert c['a'] == 1
-    assert c['b'] == ''
+    assert c['b'] is None
 
     c.next()
     assert c['a'] == 2

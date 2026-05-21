@@ -60,6 +60,8 @@
 #include <components/physical_plan_generator/create_plan.hpp>
 #include <components/planner/optimizer.hpp>
 #include <components/planner/planner.hpp>
+#include <components/sql/parser/parser.h>
+#include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 
 #include "enrich_logical_plan.hpp"
@@ -210,6 +212,133 @@ namespace services::dispatcher {
                 }
             }
             return {std::move(db), std::move(rel)};
+        }
+
+        // === Phase 1.5: SELECT-time view expansion ===
+        //
+        // After Pass 1 stamps resolved_metadata.view_sql on catalog_resolve_table_t
+        // nodes whose relkind=='v', this helper walks the plan and replaces view
+        // references with sub-plans derived from the view body SQL.
+        //
+        // First-iteration scope: only top-level `SELECT * FROM v` style plans
+        // where the outer plan is the transformer's standard wrap
+        //   sequence_t(catalog_resolve_namespace, catalog_resolve_table(v), aggregate(v))
+        // and the aggregate is a trivial passthrough. Complex outer queries
+        // (extra WHERE/JOIN/projection on top of v) return an error suggesting
+        // followups #1 — they require column-projection composition, which is
+        // out of scope for this PR.
+
+        struct view_expansion_result_t {
+            bool had_expansion{false};
+            components::logical_plan::node_ptr expanded_plan;
+            components::logical_plan::parameter_node_ptr expanded_params;
+            components::cursor::cursor_t_ptr error;
+        };
+
+        // Find the FIRST catalog_resolve_table_t with relkind='v' (and non-empty
+        // view_sql) in `root`'s direct children. Returns nullptr if none.
+        components::logical_plan::node_catalog_resolve_table_t*
+        find_first_view_resolve(components::logical_plan::node_t* root) {
+            using namespace components::logical_plan;
+            if (!root || root->type() != node_type::sequence_t) {
+                return nullptr;
+            }
+            for (auto& c : root->children()) {
+                if (!c || c->type() != node_type::catalog_resolve_table_t) {
+                    continue;
+                }
+                auto* rt = static_cast<node_catalog_resolve_table_t*>(c.get());
+                const auto& md = rt->resolved_metadata();
+                if (md && md->relkind == catalog::relkind::view && !md->view_sql.empty()) {
+                    return rt;
+                }
+            }
+            return nullptr;
+        }
+
+        // Parse view body SQL and transform it into a fresh logical plan.
+        // The transformer is instantiated per-call (its mutable state lives on
+        // the instance — re-entrant when allocated fresh per call).
+        view_expansion_result_t
+        expand_view_body(std::pmr::memory_resource* resource, const std::string& view_sql) {
+            view_expansion_result_t out;
+            std::pmr::monotonic_buffer_resource parser_arena(resource);
+            void* parse_cell = nullptr;
+            try {
+                auto* parsed = raw_parser(&parser_arena, view_sql.c_str());
+                if (!parsed) {
+                    out.error = make_cursor(
+                        resource,
+                        core::error_t(core::error_code_t::sql_parse_error,
+                                      std::pmr::string{"view body re-parse returned null", resource}));
+                    return out;
+                }
+                parse_cell = linitial(parsed);
+            } catch (const std::exception& ex) {
+                out.error = make_cursor(
+                    resource,
+                    core::error_t(core::error_code_t::sql_parse_error,
+                                  std::pmr::string{ex.what(), resource}));
+                return out;
+            }
+            if (!parse_cell) {
+                out.error = make_cursor(
+                    resource,
+                    core::error_t(core::error_code_t::sql_parse_error,
+                                  std::pmr::string{"empty view body parse", resource}));
+                return out;
+            }
+            components::sql::transform::transformer local_transformer(resource, view_sql.c_str());
+            auto tr = local_transformer
+                          .transform(components::sql::transform::pg_cell_to_node_cast(parse_cell))
+                          .finalize();
+            if (tr.has_error()) {
+                out.error = make_cursor(resource, tr.error());
+                return out;
+            }
+            // The transformer returns a fresh plan, typically
+            // sequence_t(catalog_resolve_namespace, catalog_resolve_table(t),
+            //            aggregate(t, ...)). The dispatcher will run Pass 1
+            //            on this sub_plan's resolves before validate_schema.
+            out.had_expansion = true;
+            out.expanded_plan = std::move(tr.value().node);
+            out.expanded_params = std::move(tr.value().params);
+            return out;
+        }
+
+        // Collect catalog_resolve_*_t nodes whose oid hasn't been stamped yet
+        // (i.e. need a fresh Pass 1 round). Operates on direct children of
+        // sequence_t roots; sub-plan splicing places them at the front so a
+        // shallow scan suffices.
+        std::vector<components::logical_plan::node_ptr>
+        extract_unresolved_resolves(components::logical_plan::node_t* root) {
+            using namespace components::logical_plan;
+            std::vector<node_ptr> out;
+            if (!root || root->type() != node_type::sequence_t) {
+                return out;
+            }
+            for (auto& c : root->children()) {
+                if (!c) continue;
+                const auto t = c->type();
+                const bool is_resolve =
+                    t == node_type::catalog_resolve_namespace_t || t == node_type::catalog_resolve_table_t ||
+                    t == node_type::catalog_resolve_type_t || t == node_type::catalog_resolve_function_t ||
+                    t == node_type::catalog_resolve_constraint_t;
+                if (!is_resolve) continue;
+                if (t == node_type::catalog_resolve_table_t) {
+                    auto* rt = static_cast<node_catalog_resolve_table_t*>(c.get());
+                    if (rt->resolved_metadata().has_value()) {
+                        continue; // already resolved (outer plan's resolve)
+                    }
+                } else if (t == node_type::catalog_resolve_namespace_t) {
+                    auto* rn = static_cast<node_catalog_resolve_namespace_t*>(c.get());
+                    if (rn->namespace_oid() != catalog::INVALID_OID) {
+                        continue; // already resolved
+                    }
+                }
+                out.push_back(c);
+            }
+            return out;
         }
     } // namespace
 
@@ -588,6 +717,63 @@ namespace services::dispatcher {
         // is threaded explicitly into every helper (no thread_local).
         impl::plan_resolve_index_t dispatcher_idx;
         impl::gather_plan_resolve_index(logic_plan.get(), dispatcher_idx);
+
+        // === Phase 1.5: SELECT-time view expansion ===
+        // After Pass 1 stamps resolved_metadata.view_sql on catalog_resolve_table_t
+        // nodes whose relkind=='v', re-parse + re-transform the view body and
+        // splice the resulting sub-plan in place. First-iteration scope: only
+        // top-level passthrough plans (`SELECT * FROM v`) — we replace the
+        // entire logic_plan with the sub-plan. More elaborate compositions
+        // (extra filters, projections, joins on top of v) are followups #1.
+        if (auto* view_node = find_first_view_resolve(logic_plan.get())) {
+            auto exp = expand_view_body(resource(), view_node->resolved_metadata()->view_sql);
+            if (exp.error) {
+                trace(log_, "manager_dispatcher_t::execute_plan: view expansion failed");
+                co_return std::move(exp.error);
+            }
+            if (exp.had_expansion && exp.expanded_plan) {
+                // Full plan replacement — outer is treated as trivial passthrough
+                // for first iteration. Future: splice sub-plan as child of outer
+                // consumer to preserve outer projections/filters (followups #1).
+                logic_plan = std::move(exp.expanded_plan);
+
+                // Merge sub-plan's parameter bindings into the outer params
+                // node so downstream operators see constants used in the view
+                // body (e.g. `col_b > 10` parameter). First-iteration assumes
+                // no parameter_id collision with outer (outer is a trivial
+                // passthrough SELECT * with no own constants).
+                if (exp.expanded_params) {
+                    for (const auto& [pid, val] : exp.expanded_params->parameters().parameters) {
+                        params->add_parameter(pid, val);
+                    }
+                }
+
+                // === Phase 1.6: Pass 1 on sub-plan's fresh resolves ===
+                auto fresh = extract_unresolved_resolves(logic_plan.get());
+                if (!fresh.empty()) {
+                    auto pass2_root = boost::intrusive_ptr<components::logical_plan::node_t>(
+                        new components::logical_plan::node_sequence_t(resource()));
+                    for (auto& n : fresh) {
+                        pass2_root->append_child(n);
+                    }
+                    auto pass2_params = make_parameter_node(resource());
+                    auto pass2_result =
+                        co_await execute_plan_impl(session, pass2_root, pass2_params->take_parameters(), ctx.txn);
+                    if (pass2_result.cursor->is_error()) {
+                        trace(log_,
+                              "manager_dispatcher_t::execute_plan: view sub-plan Pass 1 "
+                              "resolve failed: {}",
+                              pass2_result.cursor->get_error().what);
+                        co_return std::move(pass2_result.cursor);
+                    }
+                }
+
+                // === Phase 1.7: rebuild idx for re-validate ===
+                stamp_oids_from_resolves(logic_plan.get());
+                dispatcher_idx = impl::plan_resolve_index_t{};
+                impl::gather_plan_resolve_index(logic_plan.get(), dispatcher_idx);
+            }
+        }
         // Build table_id from the plan's role-named accessors. Each derived
         // node owns a (db, rel)-shaped pair; nodes that don't (create_type_t,
         // drop_type_t, wrappers) yield empty identifiers — same outcome as
@@ -683,9 +869,15 @@ namespace services::dispatcher {
         switch (original_type) {
             case node_type::create_database_t:
                 if (!check_namespace_exists(resource(), &dispatcher_idx, id).contains_error()) {
-                    error = make_cursor(resource(),
-                                        core::error_t{core::error_code_t::database_already_exists,
-                                                      std::pmr::string{"database already exists", resource()}});
+                    // PostgreSQL IF NOT EXISTS: DB already present -> success no-op (not an error).
+                    auto* d = static_cast<const node_create_database_t*>(effective_root_node(logic_plan.get()));
+                    if (d && d->if_not_exists()) {
+                        error = make_cursor(resource());
+                    } else {
+                        error = make_cursor(resource(),
+                                            core::error_t{core::error_code_t::database_already_exists,
+                                                          std::pmr::string{"database already exists", resource()}});
+                    }
                 }
                 break;
             case node_type::drop_database_t:
@@ -697,9 +889,15 @@ namespace services::dispatcher {
                 // Target namespace + UDT existence both resolved via
                 // plan-tree idx (no async preloads).
                 if (!check_collection_exists(resource(), &dispatcher_idx, id).contains_error()) {
-                    error = make_cursor(resource(),
-                                        core::error_t{core::error_code_t::table_already_exists,
-                                                      std::pmr::string{"collection already exists", resource()}});
+                    // PostgreSQL IF NOT EXISTS: table already present -> success no-op (not an error).
+                    auto* cc = static_cast<const node_create_collection_t*>(effective_root_node(logic_plan.get()));
+                    if (cc && cc->if_not_exists()) {
+                        error = make_cursor(resource());
+                    } else {
+                        error = make_cursor(resource(),
+                                            core::error_t{core::error_code_t::table_already_exists,
+                                                          std::pmr::string{"collection already exists", resource()}});
+                    }
                 } else {
                     // UDT existence + resolution reads from plan-tree
                     // idx (transform_create_table emits resolve_type

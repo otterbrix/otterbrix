@@ -8,6 +8,7 @@ set(${PROJECT_NAME}_SOURCES
         kernel_utils.cpp
 
         kernels/aggregate.cpp
+        kernels/string_functions.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}

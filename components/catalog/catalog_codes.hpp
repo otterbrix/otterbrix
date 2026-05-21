@@ -8,14 +8,15 @@ namespace components::catalog {
 
     // pg_class.relkind
     namespace relkind {
-        inline constexpr char regular = 'r';        // ordinary table
-        inline constexpr char index = 'i';          // index
-        inline constexpr char sequence = 'S';       // sequence
-        inline constexpr char view = 'v';           // view
-        inline constexpr char composite_type = 'c'; // composite type
-        inline constexpr char computed = 'g';       // computed/virtual table (otterbrix extension)
-        inline constexpr char macro = 'm';          // pg_rewrite-backed macro
-    }                                               // namespace relkind
+        inline constexpr char regular = 'r';           // ordinary table
+        inline constexpr char index = 'i';             // index
+        inline constexpr char sequence = 'S';          // sequence
+        inline constexpr char view = 'v';              // view
+        inline constexpr char materialized_view = 'm'; // materialized view (PostgreSQL-canonical)
+        inline constexpr char composite_type = 'c';    // composite type
+        inline constexpr char computed = 'g';          // computed/virtual table (otterbrix extension)
+        inline constexpr char macro = 'F';             // pg_rewrite-backed macro (function-like)
+    }                                                  // namespace relkind
 
     // pg_constraint.contype
     namespace contype {

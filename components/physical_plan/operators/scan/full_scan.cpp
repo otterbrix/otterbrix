@@ -158,6 +158,27 @@ namespace components::operators {
             }
         }
 
+        // Maintain the operator_data_t invariant: at least one (possibly empty)
+        // chunk. storage_scan_batched can return an empty vector at SSB-scale when
+        // the disk service get_storage(table_oid) hits an oid-resolution race with
+        // CSV ingest commit. Without this guard, operator_join.cpp:125 asserts.
+        // Schema is taken from the projected scan signature so OUTER joins can
+        // still emit NULL-padded rows from the non-empty side.
+        if (batches.empty()) {
+            std::pmr::vector<types::complex_logical_type> projected_types(resource_);
+            if (projected_cols_.empty()) {
+                projected_types = types;
+            } else {
+                projected_types.reserve(projected_cols_.size());
+                for (auto idx : projected_cols_) {
+                    if (idx < types.size()) {
+                        projected_types.push_back(types[idx]);
+                    }
+                }
+            }
+            batches.emplace_back(resource_, projected_types, 0);
+        }
+
         output_ = make_operator_data(resource_, std::move(batches));
         mark_executed();
         co_return;

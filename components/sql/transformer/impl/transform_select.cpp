@@ -176,6 +176,48 @@ namespace components::sql::transform {
         name_collection_t names;
 
         if (node.fromClause && !node.fromClause->lst.empty()) {
+            // SQL-89 comma-join: `FROM a, b [, c ...] WHERE a.x = b.y` arrives as
+            // a fromClause->lst with multiple top-level entries. libpg_query does
+            // NOT synthesize a FromExpr / JoinExpr in that case — each table is a
+            // bare T_RangeVar (or T_RangeFunction / T_RangeSubselect) sibling.
+            //
+            // The downstream pipeline only knows how to consume a single join
+            // root, so we synthesize a left-deep JoinExpr tree here with
+            // jointype=JOIN_INNER and quals=NULL on every link. jointype_to_ql
+            // promotes (JOIN_INNER, quals=NULL) -> join_type::cross, which
+            // produces the cross-product. Inner-join semantics are recovered by
+            // the user's WHERE clause, which the existing transform path lowers
+            // into a sibling match_t on the aggregate root; that match_t
+            // evaluates against the post-join merged chunk (operator_match feeds
+            // the same chunk in as both left and right), so column refs resolve
+            // through the join's merged schema regardless of side_t.
+            //
+            // The synthesized tree mutates `node.fromClause->lst.front()` so the
+            // existing T_JoinExpr branch below picks it up unchanged.
+            if (node.fromClause->lst.size() > 1) {
+                auto* resource = resource_; // makeNode macro reads `resource_` / `resource`
+                auto it = node.fromClause->lst.begin();
+                Node* acc = pg_ptr_cast<Node>(it->data);
+                ++it;
+                for (; it != node.fromClause->lst.end(); ++it) {
+                    auto* rhs = pg_ptr_cast<Node>(it->data);
+                    JoinExpr* synth = makeNode(resource, JoinExpr);
+                    synth->jointype = JOIN_INNER;
+                    synth->isNatural = false;
+                    synth->larg = acc;
+                    synth->rarg = rhs;
+                    synth->usingClause = nullptr;
+                    synth->quals = nullptr; // cross — WHERE supplies the predicate
+                    synth->alias = nullptr;
+                    synth->rtindex = 0;
+                    acc = reinterpret_cast<Node*>(synth);
+                }
+                // Replace the original multi-entry fromClause with a single
+                // top-level JoinExpr so the dispatch below sees T_JoinExpr.
+                node.fromClause->lst.clear();
+                node.fromClause->lst.push_back({acc});
+            }
+
             // has from
             auto from_first = node.fromClause->lst.front().data;
             if (nodeTag(from_first) == T_RangeVar) {

@@ -345,12 +345,12 @@ TEST_CASE("services::disk::persistence::test_pg_class_lists_all_objects") {
             char relkind;
         };
         const std::vector<expected_t> objects{
-            {"regular_t", reg_oid, 'r'},
-            {"compute_t", comp_oid, 'g'},
-            {"seq_t", seq_oid, 'S'},
-            {"view_t", view_oid, 'v'},
-            {"macro_t", macro_oid, 'm'},
-            {"regular_t_idx", idx_oid, 'i'},
+            {"regular_t", reg_oid, components::catalog::relkind::regular},
+            {"compute_t", comp_oid, components::catalog::relkind::computed},
+            {"seq_t", seq_oid, components::catalog::relkind::sequence},
+            {"view_t", view_oid, components::catalog::relkind::view},
+            {"macro_t", macro_oid, components::catalog::relkind::macro},
+            {"regular_t_idx", idx_oid, components::catalog::relkind::index},
         };
         for (const auto& exp : objects) {
             auto r = fd2.invoke(&manager_disk_t::resolve_table, fd2.ctx(), ns_oid, exp.name, std::uint64_t{0});

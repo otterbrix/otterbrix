@@ -249,8 +249,13 @@ void benchmark_runner_t::run(const benchmark_configuration_t& config) {
                 std::cout << "Loading data for group: " << b->group() << " (via " << b->name() << ")\n";
             }
             try {
+                state.failed = false;
                 b->load(state);
-                std::cout << "Loaded group: " << b->group() << "\n";
+                if (state.failed) {
+                    std::cerr << "Error loading group " << b->group() << " (see stderr above)\n";
+                } else {
+                    std::cout << "Loaded group: " << b->group() << "\n";
+                }
             } catch (const std::exception& e) {
                 std::cerr << "Error loading group " << b->group() << ": " << e.what() << "\n";
             }
@@ -306,8 +311,16 @@ benchmark_result_t benchmark_runner_t::run_single(benchmark_t& bench, const benc
         state.dispatcher = instance.dispatcher();
         state.session = session_id_t();
 
+        auto bail_on_fail = [&]() {
+            result.verified = false;
+            if (result.error.empty()) {
+                result.error = "see stderr";
+            }
+        };
+
         if (!config.skip_load) {
             bench.load(state);
+            if (state.failed) { bail_on_fail(); return result; }
         }
 
         // Warmup
@@ -315,12 +328,14 @@ benchmark_result_t benchmark_runner_t::run_single(benchmark_t& bench, const benc
             std::cout << "  Warmup run...\n";
         }
         bench.run(state);
+        if (state.failed) { bail_on_fail(); return result; }
 
         // Timed runs
         for (uint64_t i = 0; i < nruns; ++i) {
             auto start = std::chrono::high_resolution_clock::now();
             bench.run(state);
             auto end = std::chrono::high_resolution_clock::now();
+            if (state.failed) { bail_on_fail(); return result; }
 
             auto duration = std::chrono::duration<double, std::milli>(end - start);
             result.timings_ms.push_back(duration.count());

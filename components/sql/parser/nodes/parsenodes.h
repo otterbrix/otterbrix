@@ -2894,8 +2894,9 @@ typedef struct LoadStmt {
 */
 typedef struct CreatedbStmt {
     NodeTag type;
-    char* dbname;  /* name of database to create */
-    List* options; /* List of DefElem nodes */
+    char* dbname;       /* name of database to create */
+    List* options;      /* List of DefElem nodes */
+    bool if_not_exists; /* PostgreSQL: CREATE DATABASE IF NOT EXISTS — no-op if DB already exists */
 } CreatedbStmt;
 
 /* ----------------------

@@ -318,3 +318,62 @@ TEST_CASE("components::sql::macro") {
         REQUIRE(node->type() == node_type::sequence_t);
     }
 }
+
+#include <components/logical_plan/node_create_database.hpp>
+
+// PostgreSQL CREATE DATABASE / CREATE TABLE IF NOT EXISTS — parser & transformer
+// propagate the if_not_exists flag through to the logical plan nodes. Dispatcher
+// short-circuits on existing target without erroring (covered in integration tests).
+TEST_CASE("components::sql::if_not_exists") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    SECTION("CREATE DATABASE without IF NOT EXISTS") {
+        // Transformer wraps create_database in sequence_t(resolve_namespace, create_database).
+        // dbname lives in the resolve_namespace sibling; flag is on the create_database node.
+        auto stmt = raw_parser(&arena_resource, "CREATE DATABASE mydb")->lst.front().data;
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
+        auto node = ddl_consumer(result.node);
+        auto& d = reinterpret_cast<node_create_database_ptr&>(node);
+        REQUIRE_FALSE(d->if_not_exists());
+    }
+
+    SECTION("CREATE DATABASE IF NOT EXISTS sets flag") {
+        auto stmt = raw_parser(&arena_resource, "CREATE DATABASE IF NOT EXISTS mydb")->lst.front().data;
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
+        auto node = ddl_consumer(result.node);
+        auto& d = reinterpret_cast<node_create_database_ptr&>(node);
+        REQUIRE(d->if_not_exists());
+    }
+
+    SECTION("CREATE TABLE IF NOT EXISTS sets flag on collection node") {
+        auto stmt =
+            raw_parser(&arena_resource, "CREATE TABLE IF NOT EXISTS db.tbl (id INTEGER)")->lst.front().data;
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
+        auto node = ddl_consumer(result.node);
+        auto& cc = reinterpret_cast<node_create_collection_ptr&>(node);
+        REQUIRE(cc->relname() == "tbl");
+        REQUIRE(cc->if_not_exists());
+    }
+
+    SECTION("CREATE TABLE without IF NOT EXISTS leaves flag false") {
+        auto stmt = raw_parser(&arena_resource, "CREATE TABLE db.tbl (id INTEGER)")->lst.front().data;
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
+        auto node = ddl_consumer(result.node);
+        auto& cc = reinterpret_cast<node_create_collection_ptr&>(node);
+        REQUIRE_FALSE(cc->if_not_exists());
+    }
+}

@@ -401,9 +401,9 @@ namespace components::catalog {
             result.push_back(make_write(pg_depend_full, std::move(chunk)));
         }
 
-        // pg_rewrite row (ev_type='m')
+        // pg_rewrite row (ev_type='F' — matches macro relkind)
         if (const auto* def = find_system_table("pg_rewrite")) {
-            const std::string ev_type_str(1, 'm');
+            const std::string ev_type_str(1, relkind::macro);
             auto chunk =
                 make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                     set_oid(c, 0, 0, rule_oid);

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <functional>
+#include <set>
+#include <string>
 #include <unordered_map>
 #include <variant>
 
@@ -15,7 +17,7 @@
 #include <core/executor.hpp>
 #include <mutex>
 
-#include <components/catalog/catalog.hpp>
+#include <components/catalog/catalog_oids.hpp>
 #include <components/compute/function.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/log/log.hpp>
@@ -25,7 +27,6 @@
 #include <services/collection/context_storage.hpp>
 #include <services/collection/executor.hpp>
 #include <services/disk/disk_contract.hpp>
-#include <services/disk/result.hpp>
 #include <services/wal/base.hpp>
 #include <services/wal/record.hpp>
 #include <services/wal/wal_contract.hpp>
@@ -33,14 +34,11 @@
 namespace services::dispatcher {
 
     class manager_dispatcher_t final : public actor_zeta::actor::actor_mixin<manager_dispatcher_t> {
-        using database_storage_t = std::pmr::set<database_name_t>;
-        using collection_storage_t = std::pmr::set<collection_full_name_t>;
+        using collection_storage_t = std::pmr::set<qualified_name_t>;
 
     public:
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
-
-        using recomputed_types = components::operators::operator_write_data_t::updated_types_map_t;
 
         using sync_pack = std::tuple<actor_zeta::address_t, actor_zeta::address_t, actor_zeta::address_t>;
 
@@ -64,57 +62,50 @@ namespace services::dispatcher {
 
         void sync(sync_pack pack);
 
-        void init_from_state(std::pmr::set<database_name_t> databases,
-                             std::pmr::set<collection_full_name_t> collections);
-
-        components::catalog::catalog& mutable_catalog() { return catalog_; }
-
         unique_future<components::cursor::cursor_t_ptr>
         execute_plan(components::session::session_id_t session,
                      components::logical_plan::node_ptr plan,
                      components::logical_plan::parameter_node_ptr params);
-        unique_future<size_t>
-        size(components::session::session_id_t session, std::string database_name, std::string collection);
         unique_future<components::cursor::cursor_t_ptr>
         get_schema(components::session::session_id_t session,
                    std::pmr::vector<std::pair<database_name_t, collection_name_t>> ids);
-        unique_future<std::unique_ptr<core::error_t>> register_udf(components::session::session_id_t session,
-                                                                   components::compute::function_ptr function);
-        unique_future<std::unique_ptr<core::error_t>>
-        unregister_udf(components::session::session_id_t session,
-                       std::string function_name,
-                       std::pmr::vector<components::types::complex_logical_type> inputs);
-        unique_future<void> close_cursor(components::session::session_id_t session);
+        unique_future<bool> register_udf(components::session::session_id_t session,
+                                         components::compute::function_ptr function);
+        unique_future<bool> unregister_udf(components::session::session_id_t session,
+                                           std::string function_name,
+                                           std::pmr::vector<components::types::complex_logical_type> inputs);
 
         // Transaction lifecycle (actor-callable by executor)
         unique_future<components::table::transaction_data> begin_transaction(components::session::session_id_t session);
         unique_future<uint64_t> commit_transaction(components::session::session_id_t session);
         unique_future<void> abort_transaction(components::session::session_id_t session);
-        unique_future<uint64_t> lowest_active_start_time(components::session::session_id_t session);
 
         using dispatch_traits = actor_zeta::dispatch_traits<&manager_dispatcher_t::execute_plan,
-                                                            &manager_dispatcher_t::size,
                                                             &manager_dispatcher_t::get_schema,
                                                             &manager_dispatcher_t::register_udf,
                                                             &manager_dispatcher_t::unregister_udf,
-                                                            &manager_dispatcher_t::close_cursor,
                                                             &manager_dispatcher_t::begin_transaction,
                                                             &manager_dispatcher_t::commit_transaction,
-                                                            &manager_dispatcher_t::abort_transaction,
-                                                            &manager_dispatcher_t::lowest_active_start_time>;
-
-        const components::catalog::catalog& current_catalog() const { return catalog_; }
+                                                            &manager_dispatcher_t::abort_transaction>;
 
     private:
+        // Pipeline-routed OID allocation. Builds a node_allocate_oids_t leaf,
+        // drives operator_allocate_oids_t via the standard executor loop, and
+        // returns the stamped batch.
+        unique_future<std::vector<components::catalog::oid_t>>
+        allocate_oids_via_pipeline(components::session::session_id_t session, std::size_t count);
+
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
         log_t log_;
         run_fn_t run_fn_; // Yield function for cooperative scheduling
-        components::catalog::catalog catalog_;
 
         static constexpr std::size_t executor_pool_size_ = 4;
 
-        database_storage_t databases_;
+        // Fast-path membership cache for collections. Read by physical_plan_generator
+        // in 8 sites (join, match, aggregate, sort, group) to drive optimizer
+        // decisions. Removing would require touching all 8 + replacing with
+        // on-demand pg_class scans. Cache rebuild on init_from_state is cheap.
         collection_storage_t collections_;
         std::pmr::vector<services::collection::executor::executor_ptr> executors_;
         std::pmr::vector<actor_zeta::address_t> executor_addresses_;
@@ -125,36 +116,15 @@ namespace services::dispatcher {
 
         std::mutex mutex_;
 
-        std::unordered_map<components::session::session_id_t, std::unique_ptr<components::cursor::cursor_t>> cursor_;
-
         components::table::transaction_manager_t txn_manager_;
-        recomputed_types update_result_;
 
         components::logical_plan::node_ptr create_logic_plan(components::logical_plan::node_ptr plan);
-        void update_catalog(components::logical_plan::node_ptr node);
-
-        services::collection::executor::execute_result_t
-        create_database_(components::logical_plan::node_ptr logical_plan);
-        services::collection::executor::execute_result_t
-        drop_database_(components::logical_plan::node_ptr logical_plan);
-        services::collection::executor::execute_result_t
-        create_collection_(components::logical_plan::node_ptr logical_plan);
-        services::collection::executor::execute_result_t
-        drop_collection_(components::logical_plan::node_ptr logical_plan);
 
         unique_future<services::collection::executor::execute_result_t>
         execute_plan_impl(components::session::session_id_t session,
                           components::logical_plan::node_ptr logical_plan,
                           components::logical_plan::storage_parameters parameters,
                           components::table::transaction_data txn);
-
-        std::pmr::vector<unique_future<void>> pending_void_;
-        std::pmr::vector<unique_future<components::cursor::cursor_t_ptr>> pending_cursor_;
-        std::pmr::vector<unique_future<size_t>> pending_size_;
-        std::pmr::vector<unique_future<services::collection::executor::execute_result_t>> pending_execute_;
-        std::pmr::vector<unique_future<services::collection::executor::function_result_t>> pending_signatures_;
-
-        void poll_pending();
 
         actor_zeta::behavior_t current_behavior_;
     };

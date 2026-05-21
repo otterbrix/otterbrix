@@ -18,7 +18,6 @@ namespace {
     }
 } // namespace
 
-
 TEST_CASE("services::index::bitcask_index_disk::int64_basic") {
     auto resource = std::pmr::synchronized_pool_resource();
 

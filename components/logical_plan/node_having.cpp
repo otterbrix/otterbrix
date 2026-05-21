@@ -4,8 +4,10 @@
 
 namespace components::logical_plan {
 
-    node_having_t::node_having_t(std::pmr::memory_resource* resource, const collection_full_name_t& collection)
-        : node_t(resource, node_type::having_t, collection) {}
+    node_having_t::node_having_t(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname)
+        : node_t(resource, node_type::having_t)
+        , dbname_(std::move(static_cast<std::string&>(dbname)))
+        , relname_(std::move(static_cast<std::string&>(relname))) {}
 
     hash_t node_having_t::hash_impl() const { return 0; }
 
@@ -26,9 +28,10 @@ namespace components::logical_plan {
     }
 
     node_having_ptr make_node_having(std::pmr::memory_resource* resource,
-                                     const collection_full_name_t& collection,
+                                     core::dbname_t dbname,
+                                     core::relname_t relname,
                                      const expressions::expression_ptr& expr) {
-        node_having_ptr node = new node_having_t{resource, collection};
+        node_having_ptr node = new node_having_t{resource, std::move(dbname), std::move(relname)};
         if (expr) {
             node->append_expression(expr);
         }

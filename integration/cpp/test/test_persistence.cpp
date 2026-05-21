@@ -1157,3 +1157,173 @@ TEST_CASE("integration::cpp::test_persistence::disk_dml_full_cycle") {
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 90;", 1);
     }
 }
+
+TEST_CASE("integration::cpp::test_persistence::disk_drop_table_survives_restart") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_drop_table");
+    test_clear_directory(config);
+
+    INFO("phase 1: create DISK table, insert, checkpoint, DROP TABLE, checkpoint") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->create_database(session, database_name);
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
+                                               "WITH (storage = 'disk');");
+            REQUIRE(cur->is_success());
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            std::stringstream query;
+            query << "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
+            for (int i = 0; i < 20; ++i) {
+                query << "('row_" << i << "', " << i << ")" << (i == 19 ? ";" : ", ");
+            }
+            auto cur = dispatcher->execute_sql(session, query.str());
+            REQUIRE(cur->is_success());
+        }
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 20);
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+            REQUIRE(cur->is_success());
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "DROP TABLE TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("phase 2: restart — table must be gone, re-create must succeed") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_error());
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE TABLE TestDatabase.TestCollection (val bigint) "
+                                               "WITH (storage = 'disk');");
+            REQUIRE(cur->is_success());
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.TestCollection (val) VALUES (42);");
+            REQUIRE(cur->is_success());
+        }
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 1);
+    }
+}
+
+TEST_CASE("integration::cpp::test_persistence::disk_add_column_survives_restart") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_add_column");
+    test_clear_directory(config);
+
+    INFO("phase 1: create DISK table, insert, checkpoint, ADD COLUMN, insert, checkpoint") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->create_database(session, database_name);
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
+                                               "WITH (storage = 'disk');");
+            REQUIRE(cur->is_success());
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            std::stringstream query;
+            query << "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
+            for (int i = 0; i < 10; ++i) {
+                query << "('row_" << i << "', " << i << ")" << (i == 9 ? ";" : ", ");
+            }
+            auto cur = dispatcher->execute_sql(session, query.str());
+            REQUIRE(cur->is_success());
+        }
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 10);
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+            REQUIRE(cur->is_success());
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur =
+                dispatcher->execute_sql(session, "ALTER TABLE TestDatabase.TestCollection ADD COLUMN score double;");
+            REQUIRE(cur->is_success());
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.TestCollection "
+                                               "(name, count, score) VALUES ('new_row', 99, 1.5);");
+            REQUIRE(cur->is_success());
+        }
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 11);
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("phase 2: restart — schema change and new rows must survive") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 11);
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE count = 99;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.TestCollection "
+                                               "(name, count, score) VALUES ('post_restart', 100, 2.0);");
+            REQUIRE(cur->is_success());
+        }
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 12);
+    }
+}

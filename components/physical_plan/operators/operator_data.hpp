@@ -3,8 +3,8 @@
 #include <boost/intrusive_ptr.hpp>
 #include <boost/smart_ptr/intrusive_ref_counter.hpp>
 #include <memory_resource>
-#include <vector>
 #include <vector/data_chunk.hpp>
+#include <vector>
 
 namespace components::operators {
 

@@ -4,9 +4,9 @@
 
 namespace components::operators {
 
-    primary_key_scan::primary_key_scan(std::pmr::memory_resource* resource, collection_full_name_t name)
+    primary_key_scan::primary_key_scan(std::pmr::memory_resource* resource, components::catalog::oid_t table_oid)
         : read_only_operator_t(resource, log_t{}, operator_type::primary_key_scan)
-        , name_(std::move(name))
+        , table_oid_(table_oid)
         , rows_(resource, types::logical_type::BIGINT) {}
 
     void primary_key_scan::append(size_t id) {
@@ -14,7 +14,7 @@ namespace components::operators {
     }
 
     void primary_key_scan::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
-        if (name_.empty() || size_ == 0)
+        if (table_oid_ == components::catalog::INVALID_OID || size_ == 0)
             return;
         async_wait();
     }
@@ -30,7 +30,7 @@ namespace components::operators {
             auto [_f, ff] = actor_zeta::send(ctx->disk_address,
                                              &services::disk::manager_disk_t::storage_fetch,
                                              ctx->session,
-                                             name_,
+                                             table_oid_,
                                              std::move(row_ids_copy),
                                              size_);
             auto data = co_await std::move(ff);
@@ -41,7 +41,7 @@ namespace components::operators {
                 auto [_t, tf] = actor_zeta::send(ctx->disk_address,
                                                  &services::disk::manager_disk_t::storage_types,
                                                  ctx->session,
-                                                 name_);
+                                                 table_oid_);
                 auto types = co_await std::move(tf);
                 output_ = make_operator_data(resource_, types);
             }
@@ -49,7 +49,7 @@ namespace components::operators {
             auto [_t, tf] = actor_zeta::send(ctx->disk_address,
                                              &services::disk::manager_disk_t::storage_types,
                                              ctx->session,
-                                             name_);
+                                             table_oid_);
             auto types = co_await std::move(tf);
             output_ = make_operator_data(resource_, types);
         }

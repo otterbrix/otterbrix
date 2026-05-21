@@ -22,7 +22,7 @@ TEST_CASE("components::vector::vector") {
     constexpr size_t max_list_size = 128;
     auto list_length = [&](size_t i) { return i - (i / max_list_size) * max_list_size; };
 
-    std::vector<components::types::complex_logical_type> fields;
+    std::pmr::vector<components::types::complex_logical_type> fields(&resource);
     fields.emplace_back(components::types::logical_type::BOOLEAN, "flag");
     fields.emplace_back(components::types::logical_type::INTEGER, "number");
     fields.emplace_back(components::types::logical_type::STRING_LITERAL, "name");
@@ -265,7 +265,7 @@ TEST_CASE("components::vector::vector") {
         }
     }
     INFO("union") {
-        std::vector<components::types::complex_logical_type> union_fields;
+        std::pmr::vector<components::types::complex_logical_type> union_fields(&resource);
         union_fields.emplace_back(components::types::logical_type::BOOLEAN, "bool");
         union_fields.emplace_back(components::types::logical_type::INTEGER, "int");
         union_fields.emplace_back(components::types::logical_type::STRING_LITERAL, "string");

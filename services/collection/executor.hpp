@@ -1,12 +1,14 @@
 #pragma once
 
 #include <components/base/collection_full_name.hpp>
-#include <components/catalog/table_metadata.hpp>
+#include <components/catalog/catalog_oids.hpp>
 #include <components/compute/function.hpp>
+#include <components/context/pg_catalog_swap.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <set>
 
 #include <actor-zeta/actor/actor_mixin.hpp>
 #include <actor-zeta/actor/dispatch.hpp>
@@ -17,6 +19,7 @@
 #include <core/btree/btree.hpp>
 #include <services/collection/context_storage.hpp>
 #include <stack>
+#include <string>
 
 namespace components::table {
     class transaction_manager_t;
@@ -26,7 +29,11 @@ namespace services::collection::executor {
 
     struct execute_result_t {
         components::cursor::cursor_t_ptr cursor;
-        components::operators::operator_write_data_t::updated_types_map_t updates;
+        components::operators::operator_write_data_t::updated_types_map_t updates{};
+        // pg_catalog ranges/tables collected during this execute_plan call.
+        // Dispatcher merges these into transaction_t when txn_id != 0.
+        std::vector<components::pg_catalog_append_range_t> pg_catalog_appends{};
+        std::set<components::catalog::oid_t> pg_catalog_delete_tables{};
     };
 
     using function_result_t = core::result_wrapper_t<components::compute::function_uid>;
@@ -44,20 +51,24 @@ namespace services::collection::executor {
     };
     using plan_storage_t = core::pmr::btree::btree_t<components::session::session_id_t, plan_t>;
 
-    // Internal result with MVCC tracking (not exposed to dispatcher)
+    // Internal result with MVCC tracking (not exposed to dispatcher).
+    // DML operators self-contain WAL/storage/index I/O and record swap-info on
+    // pipeline::context_t::dml_*. execute_sub_plan_ drains those onto the
+    // dml_* fields below so execute_plan can drive storage_commit_append /
+    // storage_commit_delete uniformly.
     struct sub_plan_result_t {
         components::cursor::cursor_t_ptr cursor;
         components::operators::operator_write_data_t::updated_types_map_t updates;
-        int64_t append_row_start{0};
-        uint64_t append_row_count{0};
-        size_t delete_count{0};
-        uint64_t delete_txn_id{0};
+        int64_t dml_append_row_start{0};
+        uint64_t dml_append_row_count{0};
+        uint64_t dml_delete_txn_id{0};
+        components::catalog::oid_t dml_table_oid{components::catalog::INVALID_OID};
 
-        // Physical WAL data (captured in intercept_dml_io_ for physical WAL writes)
-        std::unique_ptr<components::vector::data_chunk_t> wal_insert_data;
-        std::pmr::vector<int64_t> wal_row_ids{std::pmr::get_default_resource()};
-        std::unique_ptr<components::vector::data_chunk_t> wal_update_data;
-        collection_full_name_t wal_collection;
+        // pg_catalog swap-info drained from each pipeline::context_t inside
+        // execute_sub_plan_. execute_plan moves these into the outer
+        // execute_result_t so the dispatcher can push them onto transaction_t.
+        std::vector<components::pg_catalog_append_range_t> pg_catalog_appends;
+        std::set<components::catalog::oid_t> pg_catalog_delete_tables;
     };
 
     class executor_t final : public actor_zeta::basic_actor<executor_t> {
@@ -97,9 +108,6 @@ namespace services::collection::executor {
                                                            plan_t plan_data,
                                                            components::table::transaction_data txn);
 
-        unique_future<sub_plan_result_t> intercept_dml_io_(components::operators::operator_t::ptr waiting_op,
-                                                           components::pipeline::context_t* ctx);
-
     private:
         actor_zeta::address_t parent_address_ = actor_zeta::address_t::empty_address();
         actor_zeta::address_t wal_address_ = actor_zeta::address_t::empty_address();
@@ -109,8 +117,8 @@ namespace services::collection::executor {
         log_t log_;
         components::compute::function_registry_t function_registry_;
 
+        // Keeps fire-and-forget WAL flush futures alive until they resolve.
         std::pmr::vector<unique_future<void>> pending_void_;
-        std::pmr::vector<unique_future<execute_result_t>> pending_execute_;
 
         void poll_pending();
     };

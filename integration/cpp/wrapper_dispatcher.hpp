@@ -80,14 +80,16 @@ namespace otterbrix {
                          components::logical_plan::parameter_node_ptr params,
                          const std::pmr::vector<components::expressions::update_expr_ptr>& updates,
                          bool upsert) -> components::cursor::cursor_t_ptr;
-        auto size(const session_id_t& session, const database_name_t& database, const collection_name_t& collection)
-            -> size_t;
-        auto register_udf(const session_id_t& session, components::compute::function_ptr function) -> core::error_t;
+        auto register_udf(const session_id_t& session, components::compute::function_ptr function) -> bool;
         auto unregister_udf(const session_id_t& session,
                             const std::string& function_name,
-                            const std::pmr::vector<components::types::complex_logical_type>& inputs) -> core::error_t;
+                            const std::pmr::vector<components::types::complex_logical_type>& inputs) -> bool;
         auto create_index(const session_id_t& session, components::logical_plan::node_create_index_ptr node)
             -> components::cursor::cursor_t_ptr;
+        auto create_index(const session_id_t& session,
+                          const std::string& dbname,
+                          const std::string& relname,
+                          components::logical_plan::node_create_index_ptr node) -> components::cursor::cursor_t_ptr;
         auto drop_index(const session_id_t& session, components::logical_plan::node_drop_index_ptr node)
             -> components::cursor::cursor_t_ptr;
         auto execute_plan(const session_id_t& session,

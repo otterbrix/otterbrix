@@ -178,7 +178,7 @@ TEST_CASE("single_file_block_manager: free list survives checkpoint/load") {
     test_env_t env;
     uint64_t free_blocks_after_serialize = 0;
 
-    // Phase 1: allocate 5 blocks, free 3 of them, serialize + persist
+    // Step 1: allocate 5 blocks, free 3 of them, serialize + persist
     // Note: serialize_free_list() itself allocates metadata block(s) from the free list
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
@@ -212,7 +212,7 @@ TEST_CASE("single_file_block_manager: free list survives checkpoint/load") {
         bm.write_header(header);
     }
 
-    // Phase 2: reopen and verify free list persisted
+    // Step 2: reopen and verify free list persisted
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
         bm.load_existing_database();
@@ -234,7 +234,7 @@ TEST_CASE("single_file_block_manager: empty free list persistence") {
 
     test_env_t env;
 
-    // Phase 1: allocate 3 blocks, free none, persist
+    // Step 1: allocate 3 blocks, free none, persist
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
         bm.create_new_database();
@@ -257,7 +257,7 @@ TEST_CASE("single_file_block_manager: empty free list persistence") {
         bm.write_header(header);
     }
 
-    // Phase 2: reopen and verify empty free list
+    // Step 2: reopen and verify empty free list
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
         bm.load_existing_database();

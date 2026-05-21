@@ -72,6 +72,12 @@ namespace components::vector {
 
         void reset();
 
+        // Drop unprojected placeholder columns in-place (data() == nullptr &&
+        // auxiliary() == nullptr) so user-visible iteration sees only real
+        // data. Used at the cursor boundary where placeholder stability for
+        // downstream operators is no longer needed.
+        void drop_unprojected_placeholders();
+
         void hash(vector_t& result);
         void hash(std::vector<uint64_t>& column_ids, vector_t& result);
         void resize(uint64_t new_size);
@@ -81,9 +87,6 @@ namespace components::vector {
         std::pmr::vector<size_t> sub_column_indices(const std::pmr::vector<std::pmr::string>& path) const;
 
         std::pmr::memory_resource* resource() const;
-
-        void serialize(serializer::msgpack_serializer_t* serializer) const;
-        static data_chunk_t deserialize(serializer::msgpack_deserializer_t* deserializer);
 
     private:
         std::pmr::memory_resource* resource_;

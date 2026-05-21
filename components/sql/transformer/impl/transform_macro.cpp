@@ -6,18 +6,15 @@ namespace components::sql::transform {
 
     logical_plan::node_ptr transformer::transform_create_function(CreateFunctionStmt& node) {
         // Extract function name from qualified name list
-        std::string func_name;
-        collection_full_name_t name;
+        qualified_name qn;
         if (node.funcname) {
             auto& lst = node.funcname->lst;
             if (lst.size() == 1) {
-                func_name = strVal(lst.front().data);
-                name = collection_full_name_t{database_name_t(), func_name};
+                qn.relname = strVal(lst.front().data);
             } else if (lst.size() == 2) {
                 auto it = lst.begin();
-                auto db = strVal(it++->data);
-                func_name = strVal(it->data);
-                name = collection_full_name_t{db, func_name};
+                qn.dbname = strVal(it++->data);
+                qn.relname = strVal(it->data);
             }
         }
 
@@ -51,7 +48,12 @@ namespace components::sql::transform {
             }
         }
 
-        return logical_plan::make_node_create_macro(resource_, name, std::move(params), std::move(body_sql));
+        const std::string db_for_resolve = qn.dbname;
+        auto m = logical_plan::make_node_create_macro(resource_,
+                                                      core::macroname_t{std::move(qn.relname)},
+                                                      std::move(params),
+                                                      core::body_sql_t{std::move(body_sql)});
+        return maybe_wrap_with_catalog_resolve_namespace(resource_, db_for_resolve, std::move(m));
     }
 
 } // namespace components::sql::transform

@@ -90,14 +90,20 @@ namespace components::vector::arrow {
     };
 
     std::unique_ptr<arrow_type> type_from_format(std::string& format);
-    std::unique_ptr<arrow_type> type_from_format(ArrowSchema& schema, std::string& format);
-    std::unique_ptr<arrow_type> type_from_schema(ArrowSchema& schema);
-    std::unique_ptr<arrow_type> create_list_type(ArrowSchema& child, arrow_variable_size_type size_type, bool view);
-    std::unique_ptr<arrow_type> arrow_logical_type(ArrowSchema& schema);
+    std::unique_ptr<arrow_type>
+    type_from_format(std::pmr::memory_resource* resource, ArrowSchema& schema, std::string& format);
+    std::unique_ptr<arrow_type> type_from_schema(std::pmr::memory_resource* resource, ArrowSchema& schema);
+    std::unique_ptr<arrow_type> create_list_type(std::pmr::memory_resource* resource,
+                                                 ArrowSchema& child,
+                                                 arrow_variable_size_type size_type,
+                                                 bool view);
+    std::unique_ptr<arrow_type> arrow_logical_type(std::pmr::memory_resource* resource, ArrowSchema& schema);
 
     using arrow_column_map_t = std::unordered_map<size_t, std::shared_ptr<arrow_type>>;
 
     struct arrow_table_schema_t {
+        explicit arrow_table_schema_t(std::pmr::memory_resource* resource)
+            : types_(resource) {}
         void add_column(size_t index, std::shared_ptr<arrow_type> type, const std::string& name);
         const arrow_column_map_t& get_columns() const;
         std::pmr::vector<types::complex_logical_type>& get_types();

@@ -1,5 +1,5 @@
-#include <catch2/catch.hpp>
 #include <algorithm>
+#include <catch2/catch.hpp>
 
 #include "components/index/hash_single_field_index.hpp"
 #include "components/index/index_engine.hpp"

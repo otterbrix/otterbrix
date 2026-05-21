@@ -5,7 +5,6 @@
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 
-
 using namespace components::expressions;
 
 namespace components::sql::transform {
@@ -221,6 +220,7 @@ namespace components::sql::transform {
                 return nullptr;
         }
     }
+
     std::string transformer::get_str_value(Node* node) {
         switch (nodeTag(node)) {
             case T_TypeCast: {
@@ -339,7 +339,6 @@ namespace components::sql::transform {
                     } else {
                         error_ =
                             core::error_t(core::error_code_t::sql_parse_error,
-
                                           std::pmr::string{"LIKE: left side must be a column reference", resource_});
                         return nullptr;
                     }
@@ -370,7 +369,6 @@ namespace components::sql::transform {
                 auto comp_type = get_compare_type(op_str);
                 if (comp_type == compare_type::invalid) {
                     error_ = core::error_t(core::error_code_t::sql_parse_error,
-
                                            std::pmr::string{"invalid compare operand", resource_});
                     return nullptr;
                 }
@@ -395,8 +393,7 @@ namespace components::sql::transform {
                                     error_ = target_type_res.error();
                                     return nullptr;
                                 }
-                                auto col_ref =
-                                    columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
+                                auto col_ref = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
                                 col_ref.deduce_side(names);
                                 col_ref.field.set_cast_type(target_type_res.value());
                                 return col_ref.field;
@@ -420,7 +417,6 @@ namespace components::sql::transform {
                             }
                             error_ = core::error_t(
                                 core::error_code_t::sql_parse_error,
-
                                 std::pmr::string{"unrecognized expression in transform_a_expr", resource_});
                             return nullptr;
                         }
@@ -460,7 +456,6 @@ namespace components::sql::transform {
                         }
                         default:
                             error_ = core::error_t(core::error_code_t::sql_parse_error,
-
                                                    std::pmr::string{"Unsupported expression", resource_});
                             return nullptr;
                     }
@@ -473,7 +468,6 @@ namespace components::sql::transform {
             case AEXPR_NOT: {
                 if (nodeTag(node->rexpr) != T_A_Expr && nodeTag(node->rexpr) != T_A_Indirection) {
                     error_ = core::error_t(core::error_code_t::sql_parse_error,
-
                                            std::pmr::string{"Unsupported expr type in transform_a_expr", resource_});
                     return nullptr;
                 }
@@ -487,7 +481,6 @@ namespace components::sql::transform {
                 } else {
                     error_ = core::error_t(
                         core::error_code_t::sql_parse_error,
-
                         std::pmr::string{"Unsupported expression: unknown expr type in transform_a_expr", resource_});
                     return nullptr;
                 }
@@ -510,7 +503,6 @@ namespace components::sql::transform {
                 if (nodeTag(node->lexpr) != T_ColumnRef && nodeTag(node->lexpr) != T_A_Indirection) {
                     error_ = core::error_t(
                         core::error_code_t::sql_parse_error,
-
                         std::pmr::string{"IN expression: left side must be a column reference", resource_});
                     return nullptr;
                 }
@@ -536,7 +528,6 @@ namespace components::sql::transform {
             default:
                 error_ = core::error_t(
                     core::error_code_t::sql_parse_error,
-
                     std::pmr::string{"Unsupported node type: " + expr_kind_to_string(node->kind), resource_});
                 return nullptr;
         }
@@ -546,16 +537,28 @@ namespace components::sql::transform {
                                                       const name_collection_t& names,
                                                       logical_plan::parameter_node_t* params) {
         std::string funcname = strVal(node->funcname->lst.front().data);
-        std::pmr::vector<param_storage> args{resource_};
+        std::pmr::vector<param_storage> args;
         args.reserve(node->args->lst.size());
+        // create_value_getter rejects keys whose side is still undefined at runtime.
+        // For unqualified column refs inside a function call in a non-JOIN query
+        // (no right table set), default the side to left so the predicate can read
+        // the value. Joins keep the original ambiguity-aware behaviour.
+        const bool no_right_side = names.right_name.empty() && names.right_alias.empty();
+        auto pin_side_to_left_if_unset = [no_right_side](expressions::key_t& field) {
+            if (no_right_side && field.side() == expressions::side_t::undefined) {
+                field.set_side(expressions::side_t::left);
+            }
+        };
         for (const auto& arg : node->args->lst) {
             if (nodeTag(arg.data) == T_ColumnRef) {
                 auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg.data), names);
                 key.deduce_side(names);
+                pin_side_to_left_if_unset(key.field);
                 args.emplace_back(std::move(key.field));
             } else if (nodeTag(arg.data) == T_A_Indirection) {
                 auto key = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(arg.data), names);
                 key.deduce_side(names);
+                pin_side_to_left_if_unset(key.field);
                 args.emplace_back(std::move(key.field));
             } else if (nodeTag(arg.data) == T_FuncCall) {
                 args.emplace_back(transform_a_expr_func(pg_ptr_cast<FuncCall>(arg.data), names, params));
@@ -585,7 +588,6 @@ namespace components::sql::transform {
         } else {
             error_ =
                 core::error_t(core::error_code_t::sql_parse_error,
-
                               std::pmr::string{"Unsupported node type: " + node_tag_to_string(node->type), resource_});
             return nullptr;
         }
@@ -603,7 +605,7 @@ namespace components::sql::transform {
                                                            const name_collection_t& names,
                                                            logical_plan::parameter_node_t* params) {
         std::string funcname = strVal(node.funcname->lst.front().data);
-        std::pmr::vector<param_storage> args{resource_};
+        std::pmr::vector<param_storage> args;
         args.reserve(node.args->lst.size());
         for (const auto& arg : node.args->lst) {
             if (nodeTag(arg.data) == T_ColumnRef) {
@@ -651,7 +653,6 @@ namespace components::sql::transform {
                     expr->append_param(condition);
                 } else {
                     error_ = core::error_t(core::error_code_t::sql_parse_error,
-
                                            std::pmr::string{"Unsupported WHEN condition type", resource_});
                     return nullptr;
                 }
@@ -718,12 +719,6 @@ namespace components::sql::transform {
                     auto sub_op = std::string_view(strVal(sub->name->lst.front().data));
                     if (is_arithmetic_operator(sub_op)) {
                         auto stype = get_arithmetic_scalar_type(sub_op);
-                        if (stype == scalar_type::invalid) {
-                            error_ = core::error_t(core::error_code_t::sql_parse_error,
-
-                                                   std::pmr::string{"invalid arithmetics operand", resource_});
-                            return nullptr;
-                        }
                         auto expr = make_scalar_expression(resource_, stype);
                         if (sub->lexpr) {
                             expr->append_param(resolve_having_operand(sub->lexpr, names, params, group));
@@ -755,7 +750,6 @@ namespace components::sql::transform {
                     auto comp_type = get_compare_type(op_str);
                     if (comp_type == compare_type::invalid) {
                         error_ = core::error_t(core::error_code_t::sql_parse_error,
-
                                                std::pmr::string{"invalid comparison operand", resource_});
                         return nullptr;
                     }
@@ -773,7 +767,6 @@ namespace components::sql::transform {
             }
         }
         error_ = core::error_t(core::error_code_t::sql_parse_error,
-
                                std::pmr::string{"Unsupported expression in HAVING clause", resource_});
         return nullptr;
     }
@@ -783,7 +776,6 @@ namespace components::sql::transform {
                                                     logical_plan::parameter_node_t* params) {
         if (nodeTag(node->arg) != T_ColumnRef && nodeTag(node->arg) != T_A_Indirection) {
             error_ = core::error_t(core::error_code_t::sql_parse_error,
-
                                    std::pmr::string{"IS NULL: argument must be a column reference", resource_});
             return nullptr;
         }

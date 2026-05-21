@@ -178,8 +178,8 @@ namespace components::table {
     bool collection_scan_state::scan(vector::data_chunk_t& result) {
         while (row_group) {
             row_group->scan(*this, result);
-            const bool rg_exhausted = static_cast<int64_t>(vector_index * vector::DEFAULT_VECTOR_CAPACITY) >=
-                                      max_row_group_row;
+            const bool rg_exhausted =
+                static_cast<int64_t>(vector_index * vector::DEFAULT_VECTOR_CAPACITY) >= max_row_group_row;
             if (!rg_exhausted) {
                 continue;
             }
@@ -210,9 +210,8 @@ namespace components::table {
                                              std::pmr::memory_resource* resource) {
         while (row_group) {
             vector::data_chunk_t batch =
-                projected_cols
-                    ? vector::data_chunk_t(resource, types, *projected_cols, vector::DEFAULT_VECTOR_CAPACITY)
-                    : vector::data_chunk_t(resource, types, vector::DEFAULT_VECTOR_CAPACITY);
+                projected_cols ? vector::data_chunk_t(resource, types, *projected_cols, vector::DEFAULT_VECTOR_CAPACITY)
+                               : vector::data_chunk_t(resource, types, vector::DEFAULT_VECTOR_CAPACITY);
             for (auto& cs : column_scans) {
                 cs.result_offset = 0;
             }
@@ -220,8 +219,8 @@ namespace components::table {
             if (batch.size() > 0) {
                 batches.push_back(std::move(batch));
             }
-            const bool rg_exhausted = static_cast<int64_t>(vector_index * vector::DEFAULT_VECTOR_CAPACITY) >=
-                                      max_row_group_row;
+            const bool rg_exhausted =
+                static_cast<int64_t>(vector_index * vector::DEFAULT_VECTOR_CAPACITY) >= max_row_group_row;
             if (!rg_exhausted) {
                 continue;
             }

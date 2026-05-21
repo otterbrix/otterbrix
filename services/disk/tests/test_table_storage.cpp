@@ -1,5 +1,4 @@
 #include <catch2/catch.hpp>
-#include <services/disk/disk.hpp>
 #include <services/disk/manager_disk.hpp>
 
 #include <components/table/column_definition.hpp>
@@ -154,37 +153,6 @@ TEST_CASE("services::disk::table_storage::mode_query") {
     }
 }
 
-TEST_CASE("services::disk::wal_id_round_trip") {
-    cleanup_test_dir();
-    std::filesystem::create_directories(test_dir());
-    std::pmr::synchronized_pool_resource resource;
-
-    // Write WAL ID = 42 and verify persistence
-    {
-        disk_t disk(test_dir(), &resource);
-        disk.fix_wal_id(42);
-        REQUIRE(disk.wal_id() == 42);
-    }
-
-    // Reopen and verify persisted value
-    {
-        disk_t disk(test_dir(), &resource);
-        REQUIRE(disk.wal_id() == 42);
-    }
-
-    // Overwrite with 999999 and verify persistence
-    {
-        disk_t disk(test_dir(), &resource);
-        disk.fix_wal_id(999999);
-    }
-    {
-        disk_t disk(test_dir(), &resource);
-        REQUIRE(disk.wal_id() == 999999);
-    }
-
-    cleanup_test_dir();
-}
-
 TEST_CASE("services::disk::table_storage::checkpoint_preserves_multi_column") {
     cleanup_test_dir();
     std::filesystem::create_directories(test_dir());
@@ -248,53 +216,84 @@ TEST_CASE("services::disk::table_storage::checkpoint_preserves_multi_column") {
     cleanup_test_dir();
 }
 
-TEST_CASE("services::disk::catalog_schema_update_via_disk") {
+// Physical column compaction primitive. table_storage_t::drop_column removes
+// the named column from the IN_MEMORY data_table_t via the rebuild
+// constructor (data_table_t(parent, removed_column) backed by
+// collection_t::remove_column per row_group segment). DISK-mode is out of scope.
+TEST_CASE("services::disk::table_storage::drop_column_in_memory") {
+    std::pmr::synchronized_pool_resource resource;
+
+    std::vector<column_definition_t> columns;
+    columns.emplace_back("a", logical_type::BIGINT);
+    columns.emplace_back("b", logical_type::BIGINT);
+    columns.emplace_back("c", logical_type::BIGINT);
+    table_storage_t ts(&resource, std::move(columns));
+    REQUIRE(ts.mode() == storage_mode_t::IN_MEMORY);
+    REQUIRE(ts.table().column_count() == 3);
+
+    // Append 32 rows: a=i, b=i*10, c=i*100.
+    constexpr uint64_t NUM_ROWS = 32;
+    {
+        auto types = ts.table().copy_types();
+        data_chunk_t chunk(&resource, types, NUM_ROWS);
+        chunk.set_cardinality(NUM_ROWS);
+        for (uint64_t i = 0; i < NUM_ROWS; ++i) {
+            chunk.set_value(0, i, logical_value_t{&resource, static_cast<int64_t>(i)});
+            chunk.set_value(1, i, logical_value_t{&resource, static_cast<int64_t>(i * 10)});
+            chunk.set_value(2, i, logical_value_t{&resource, static_cast<int64_t>(i * 100)});
+        }
+        table_append_state state(&resource);
+        ts.table().append_lock(state);
+        ts.table().initialize_append(state);
+        ts.table().append(chunk, state);
+        ts.table().finalize_append(state, transaction_data{0, 0});
+    }
+    REQUIRE(ts.table().calculate_size() == NUM_ROWS);
+
+    // Drop the middle column "b". Rebuild constructor must produce {a, c} with
+    // physical data preserved for the remaining columns.
+    REQUIRE(ts.drop_column("b"));
+    REQUIRE(ts.table().column_count() == 2);
+    REQUIRE(ts.table().columns()[0].name() == "a");
+    REQUIRE(ts.table().columns()[1].name() == "c");
+    REQUIRE(ts.table().calculate_size() == NUM_ROWS);
+
+    // Scan and verify that a/c data is intact.
+    {
+        auto types = ts.table().copy_types();
+        data_chunk_t result(&resource, types, DEFAULT_VECTOR_CAPACITY);
+        table_scan_state scan_state(&resource);
+        auto column_indices = make_column_indices(ts.table().column_count());
+        ts.table().initialize_scan(scan_state, column_indices);
+        ts.table().scan(result, scan_state);
+        REQUIRE(result.size() == NUM_ROWS);
+        for (uint64_t i = 0; i < result.size(); ++i) {
+            REQUIRE(result.data[0].value(i).value<int64_t>() == static_cast<int64_t>(i));
+            REQUIRE(result.data[1].value(i).value<int64_t>() == static_cast<int64_t>(i * 100));
+        }
+    }
+
+    // Dropping a non-existent column is a no-op (false).
+    REQUIRE(!ts.drop_column("missing"));
+    REQUIRE(ts.table().column_count() == 2);
+}
+
+TEST_CASE("services::disk::table_storage::drop_column_disk_is_noop") {
     cleanup_test_dir();
     std::filesystem::create_directories(test_dir());
     std::pmr::synchronized_pool_resource resource;
 
-    {
-        disk_t disk(test_dir(), &resource);
+    auto otbx_path = std::filesystem::path(test_dir()) / "test_drop_disk.otbx";
+    std::vector<column_definition_t> columns;
+    columns.emplace_back("a", logical_type::BIGINT);
+    columns.emplace_back("b", logical_type::BIGINT);
+    table_storage_t ts(&resource, std::move(columns), otbx_path);
+    REQUIRE(ts.mode() == storage_mode_t::DISK);
+    REQUIRE(ts.table().column_count() == 2);
 
-        // Create database and disk table with columns
-        disk.append_database("test_db");
-        std::vector<catalog_column_entry_t> columns;
-        columns.push_back({"id", complex_logical_type(logical_type::BIGINT)});
-        columns.push_back({"name", complex_logical_type(logical_type::STRING_LITERAL)});
-        disk.append_collection("test_db", "test_table", table_storage_mode_t::DISK, columns);
-
-        // Verify table entry
-        auto entries = disk.table_entries("test_db");
-        REQUIRE(entries.size() == 1);
-        REQUIRE(entries[0].name == "test_table");
-        REQUIRE(entries[0].storage_mode == table_storage_mode_t::DISK);
-        REQUIRE(entries[0].columns.size() == 2);
-        REQUIRE(entries[0].columns[0].name == "id");
-        REQUIRE(entries[0].columns[1].name == "name");
-
-        // Update schema via catalog
-        std::vector<catalog_column_entry_t> new_columns;
-        new_columns.push_back({"id", complex_logical_type(logical_type::BIGINT)});
-        new_columns.push_back({"name", complex_logical_type(logical_type::STRING_LITERAL)});
-        new_columns.push_back({"score", complex_logical_type(logical_type::DOUBLE)});
-        disk.catalog().update_table_columns("test_db", "test_table", new_columns);
-
-        // Verify updated schema
-        auto updated_entries = disk.table_entries("test_db");
-        REQUIRE(updated_entries.size() == 1);
-        REQUIRE(updated_entries[0].columns.size() == 3);
-        REQUIRE(updated_entries[0].columns[2].name == "score");
-        REQUIRE(updated_entries[0].columns[2].full_type.type() == logical_type::DOUBLE);
-    }
-
-    // Verify persistence
-    {
-        disk_t disk(test_dir(), &resource);
-        auto entries = disk.table_entries("test_db");
-        REQUIRE(entries.size() == 1);
-        REQUIRE(entries[0].columns.size() == 3);
-        REQUIRE(entries[0].columns[2].name == "score");
-    }
+    // DISK-mode: drop_column returns false (out of scope).
+    REQUIRE(!ts.drop_column("b"));
+    REQUIRE(ts.table().column_count() == 2);
 
     cleanup_test_dir();
 }

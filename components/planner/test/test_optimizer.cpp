@@ -18,13 +18,11 @@ using key = components::expressions::key_t;
 constexpr auto database_name = "database";
 constexpr auto collection_name = "collection";
 
-static collection_full_name_t coll_name() { return {database_name, collection_name}; }
-
 // ================================================================
 // Helper: build a match node with a single expression
 // ================================================================
 static node_ptr make_match_with_expr(std::pmr::memory_resource* r, const expression_ptr& expr) {
-    return make_node_match(r, coll_name(), expr);
+    return make_node_match(r, core::dbname_t{database_name}, core::relname_t{collection_name}, expr);
 }
 
 // ================================================================
@@ -46,7 +44,7 @@ TEST_CASE("optimizer::scalar_fold_add") {
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
 
-    auto result = components::planner::optimize(&resource, node, nullptr, params.get());
+    auto result = components::planner::optimize(&resource, node, params.get());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
@@ -73,7 +71,7 @@ TEST_CASE("optimizer::scalar_fold_subtract") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, nullptr, params.get());
+    components::planner::optimize(&resource, node, params.get());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
@@ -99,7 +97,7 @@ TEST_CASE("optimizer::scalar_fold_multiply") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, nullptr, params.get());
+    components::planner::optimize(&resource, node, params.get());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
@@ -125,7 +123,7 @@ TEST_CASE("optimizer::scalar_fold_divide") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, nullptr, params.get());
+    components::planner::optimize(&resource, node, params.get());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
@@ -151,7 +149,7 @@ TEST_CASE("optimizer::scalar_fold_mod") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, nullptr, params.get());
+    components::planner::optimize(&resource, node, params.get());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
@@ -170,7 +168,7 @@ TEST_CASE("optimizer::compare_fold_eq_true") {
 
     auto comp = make_compare_expression(&resource, compare_type::eq, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, nullptr, params.get());
+    components::planner::optimize(&resource, node, params.get());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -187,7 +185,7 @@ TEST_CASE("optimizer::compare_fold_eq_false") {
 
     auto comp = make_compare_expression(&resource, compare_type::eq, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, nullptr, params.get());
+    components::planner::optimize(&resource, node, params.get());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_false);
@@ -204,7 +202,7 @@ TEST_CASE("optimizer::compare_fold_gt_true") {
 
     auto comp = make_compare_expression(&resource, compare_type::gt, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, nullptr, params.get());
+    components::planner::optimize(&resource, node, params.get());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -221,7 +219,7 @@ TEST_CASE("optimizer::compare_fold_lt_false") {
 
     auto comp = make_compare_expression(&resource, compare_type::lt, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, nullptr, params.get());
+    components::planner::optimize(&resource, node, params.get());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_false);
@@ -238,7 +236,7 @@ TEST_CASE("optimizer::compare_fold_ne_true") {
 
     auto comp = make_compare_expression(&resource, compare_type::ne, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, nullptr, params.get());
+    components::planner::optimize(&resource, node, params.get());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -255,7 +253,7 @@ TEST_CASE("optimizer::compare_fold_ne_false") {
 
     auto comp = make_compare_expression(&resource, compare_type::ne, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, nullptr, params.get());
+    components::planner::optimize(&resource, node, params.get());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_false);
@@ -272,7 +270,7 @@ TEST_CASE("optimizer::compare_fold_gte_true_equal") {
 
     auto comp = make_compare_expression(&resource, compare_type::gte, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, nullptr, params.get());
+    components::planner::optimize(&resource, node, params.get());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -289,7 +287,7 @@ TEST_CASE("optimizer::compare_fold_gte_true_greater") {
 
     auto comp = make_compare_expression(&resource, compare_type::gte, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, nullptr, params.get());
+    components::planner::optimize(&resource, node, params.get());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -306,7 +304,7 @@ TEST_CASE("optimizer::compare_fold_gte_false") {
 
     auto comp = make_compare_expression(&resource, compare_type::gte, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, nullptr, params.get());
+    components::planner::optimize(&resource, node, params.get());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_false);
@@ -323,7 +321,7 @@ TEST_CASE("optimizer::compare_fold_lte_true_equal") {
 
     auto comp = make_compare_expression(&resource, compare_type::lte, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, nullptr, params.get());
+    components::planner::optimize(&resource, node, params.get());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -340,7 +338,7 @@ TEST_CASE("optimizer::compare_fold_lte_true_less") {
 
     auto comp = make_compare_expression(&resource, compare_type::lte, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, nullptr, params.get());
+    components::planner::optimize(&resource, node, params.get());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -357,7 +355,7 @@ TEST_CASE("optimizer::compare_fold_lte_false") {
 
     auto comp = make_compare_expression(&resource, compare_type::lte, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, nullptr, params.get());
+    components::planner::optimize(&resource, node, params.get());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_false);
@@ -374,7 +372,7 @@ TEST_CASE("optimizer::compare_fold_lt_true") {
 
     auto comp = make_compare_expression(&resource, compare_type::lt, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, nullptr, params.get());
+    components::planner::optimize(&resource, node, params.get());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -390,7 +388,7 @@ TEST_CASE("optimizer::no_fold_key_param") {
 
     auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field", side_t::left), id0);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, nullptr, params.get());
+    components::planner::optimize(&resource, node, params.get());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::eq);
@@ -416,7 +414,7 @@ TEST_CASE("optimizer::no_fold_null_param") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, nullptr, params.get());
+    components::planner::optimize(&resource, node, params.get());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 2);
@@ -437,9 +435,10 @@ TEST_CASE("optimizer::no_fold_group_node") {
 
     std::vector<expression_ptr> expressions;
     expressions.emplace_back(std::move(scalar));
-    auto group_node = make_node_group(&resource, coll_name(), expressions);
+    auto group_node =
+        make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, expressions);
 
-    components::planner::optimize(&resource, group_node, nullptr, params.get());
+    components::planner::optimize(&resource, group_node, params.get());
 
     // Group expressions should NOT be folded
     auto* s = static_cast<scalar_expression_t*>(group_node->expressions()[0].get());
@@ -464,7 +463,7 @@ TEST_CASE("optimizer::nested_scalar_in_compare") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, nullptr, params.get());
+    components::planner::optimize(&resource, node, params.get());
 
     // Scalar should fold to 1 param = 5
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
@@ -495,7 +494,7 @@ TEST_CASE("optimizer::div_by_zero_skip") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, nullptr, params.get());
+    components::planner::optimize(&resource, node, params.get());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     // Division by zero may fold (returns 0 in otterbrix) or may throw — either is acceptable.
@@ -522,7 +521,7 @@ TEST_CASE("optimizer::union_and_fold") {
     union_and->append_child(child2);
 
     auto node = make_match_with_expr(&resource, union_and);
-    components::planner::optimize(&resource, node, nullptr, params.get());
+    components::planner::optimize(&resource, node, params.get());
 
     auto* c1 = static_cast<compare_expression_t*>(child1.get());
     REQUIRE(c1->type() == compare_type::all_true);
@@ -550,7 +549,7 @@ TEST_CASE("optimizer::union_or_fold") {
     union_or->append_child(child2);
 
     auto node = make_match_with_expr(&resource, union_or);
-    components::planner::optimize(&resource, node, nullptr, params.get());
+    components::planner::optimize(&resource, node, params.get());
 
     auto* c1 = static_cast<compare_expression_t*>(child1.get());
     REQUIRE(c1->type() == compare_type::all_false);
@@ -582,7 +581,7 @@ TEST_CASE("optimizer::deep_nested_scalar") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(outer));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, nullptr, params.get());
+    components::planner::optimize(&resource, node, params.get());
 
     // Inner folds: 2+3=5, outer folds: 5*4=20
     auto* s = static_cast<scalar_expression_t*>(outer.get());
@@ -619,7 +618,7 @@ TEST_CASE("optimizer::triple_nested_scalar") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(add_outer));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, nullptr, params.get());
+    components::planner::optimize(&resource, node, params.get());
 
     auto* s = static_cast<scalar_expression_t*>(add_outer.get());
     REQUIRE(s->params().size() == 1);
@@ -645,7 +644,7 @@ TEST_CASE("optimizer::scalar_fold_double") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, nullptr, params.get());
+    components::planner::optimize(&resource, node, params.get());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
@@ -671,7 +670,7 @@ TEST_CASE("optimizer::scalar_fold_mixed_types") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, nullptr, params.get());
+    components::planner::optimize(&resource, node, params.get());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
@@ -690,7 +689,7 @@ TEST_CASE("optimizer::compare_fold_double") {
 
     auto comp = make_compare_expression(&resource, compare_type::gt, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, nullptr, params.get());
+    components::planner::optimize(&resource, node, params.get());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -707,11 +706,12 @@ TEST_CASE("optimizer::aggregate_match_folds_group_not") {
     auto id2 = params->add_parameter(int64_t(2));
     auto id3 = params->add_parameter(int64_t(3));
 
-    auto aggregate = make_node_aggregate(&resource, coll_name());
+    auto aggregate = make_node_aggregate(&resource, core::dbname_t{database_name}, core::relname_t{collection_name});
 
     // Child 0: match(eq, #0=5, #1=5)
     auto comp = make_compare_expression(&resource, compare_type::eq, id0, id1);
-    aggregate->append_child(make_node_match(&resource, coll_name(), comp));
+    aggregate->append_child(
+        make_node_match(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, comp));
 
     // Child 1: group with scalar(add, #2=2, #3=3)
     auto scalar = make_scalar_expression(&resource, scalar_type::add, key(&resource, "result"));
@@ -719,9 +719,10 @@ TEST_CASE("optimizer::aggregate_match_folds_group_not") {
     scalar->append_param(id3);
     std::vector<expression_ptr> group_exprs;
     group_exprs.emplace_back(std::move(scalar));
-    aggregate->append_child(make_node_group(&resource, coll_name(), group_exprs));
+    aggregate->append_child(
+        make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, group_exprs));
 
-    components::planner::optimize(&resource, aggregate, nullptr, params.get());
+    components::planner::optimize(&resource, aggregate, params.get());
 
     // Match should fold to all_true
     auto* c = static_cast<compare_expression_t*>(comp.get());
@@ -743,15 +744,17 @@ TEST_CASE("optimizer::multiple_match_nodes") {
     auto id2 = params->add_parameter(int64_t(3));
     auto id3 = params->add_parameter(int64_t(10));
 
-    auto aggregate = make_node_aggregate(&resource, coll_name());
+    auto aggregate = make_node_aggregate(&resource, core::dbname_t{database_name}, core::relname_t{collection_name});
 
     auto comp1 = make_compare_expression(&resource, compare_type::gt, id0, id1);
-    aggregate->append_child(make_node_match(&resource, coll_name(), comp1));
+    aggregate->append_child(
+        make_node_match(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, comp1));
 
     auto comp2 = make_compare_expression(&resource, compare_type::lt, id2, id3);
-    aggregate->append_child(make_node_match(&resource, coll_name(), comp2));
+    aggregate->append_child(
+        make_node_match(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, comp2));
 
-    components::planner::optimize(&resource, aggregate, nullptr, params.get());
+    components::planner::optimize(&resource, aggregate, params.get());
 
     auto* c1 = static_cast<compare_expression_t*>(comp1.get());
     REQUIRE(c1->type() == compare_type::all_true);

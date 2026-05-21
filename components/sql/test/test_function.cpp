@@ -10,14 +10,21 @@ using namespace components::sql::transform;
 using v = components::types::logical_value_t;
 using vec = std::vector<v>;
 
+// Transformer now wraps SELECT in sequence_t(resolve_*..., aggregate); descend
+// to the aggregate consumer when inspecting its rendered form.
 #define TEST_SIMPLE_FUNCTION(QUERY, RESULT, PARAMS)                                                                    \
     {                                                                                                                  \
         SECTION(QUERY) {                                                                                               \
             auto select = linitial(raw_parser(&arena_resource, QUERY));                                                \
-            auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize();                              \
-            REQUIRE(!result.has_error());                                                                              \
-            auto node = result.value().node;                                                                           \
-            auto agg = result.value().params;                                                                          \
+            auto result = ([](auto _w) {                                                                               \
+                REQUIRE_FALSE(_w.has_error());                                                                         \
+                return _w.value();                                                                                     \
+            }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));                                        \
+            auto node = result.node;                                                                                   \
+            if (node->type() == components::logical_plan::node_type::sequence_t) {                                     \
+                node = node->children().back();                                                                        \
+            }                                                                                                          \
+            auto agg = result.params;                                                                                  \
             REQUIRE(node->to_string() == RESULT);                                                                      \
             REQUIRE(agg->parameters().parameters.size() == PARAMS.size());                                             \
             for (auto i = 0ul; i < PARAMS.size(); ++i) {                                                               \

@@ -1,7 +1,11 @@
 #pragma once
 
+#include <components/catalog/catalog_oids.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/predicates/predicate.hpp>
+#include <components/physical_plan/operators/resolved_table_metadata.hpp>
+
+#include <optional>
 
 namespace components::operators {
 
@@ -9,16 +13,28 @@ namespace components::operators {
     public:
         explicit operator_delete(std::pmr::memory_resource* resource,
                                  log_t log,
-                                 collection_full_name_t name,
+                                 components::catalog::oid_t table_oid,
                                  expressions::expression_ptr expr = nullptr);
 
-        const collection_full_name_t& collection_name() const noexcept { return name_; }
+        components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
+
+        // Self-contained DML side-effects. Performs storage_delete_rows +
+        // WAL physical_delete + index::delete_rows, populates ctx->dml_*
+        // swap-info, then mark_executed.
+        actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
+
+        // Accept pre-resolved table metadata from an upstream resolver
+        // sibling. See operator_insert::accept_resolved_metadata.
+        void accept_resolved_metadata(resolved_table_metadata_t metadata) override;
+        bool wants_resolved_metadata() const noexcept override { return true; }
+        bool has_resolved_metadata() const noexcept { return resolved_metadata_.has_value(); }
 
     private:
         void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
-        collection_full_name_t name_;
+        components::catalog::oid_t table_oid_;
         expressions::expression_ptr expression_;
+        std::optional<resolved_table_metadata_t> resolved_metadata_;
     };
 
 } // namespace components::operators

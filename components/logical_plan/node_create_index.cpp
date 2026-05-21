@@ -1,36 +1,22 @@
 #include "node_create_index.hpp"
 
-#include <components/serialization/deserializer.hpp>
-
-#include <components/serialization/serializer.hpp>
-
 #include <sstream>
 
 namespace components::logical_plan {
 
     node_create_index_t::node_create_index_t(std::pmr::memory_resource* resource,
-                                             const collection_full_name_t& collection,
-                                             const std::string& name,
+                                             core::indexname_t indexname,
                                              index_type type)
-        : node_t(resource, node_type::create_index_t, collection)
-        , name_(name)
+        : node_t(resource, node_type::create_index_t)
+        , indexname_(std::move(static_cast<std::string&>(indexname)))
+        , keys_(resource)
         , index_type_(type) {}
 
-    const std::string& node_create_index_t::name() const noexcept { return name_; }
+    const std::string& node_create_index_t::name() const noexcept { return indexname_; }
 
     index_type node_create_index_t::type() const noexcept { return index_type_; }
 
     keys_base_storage_t& node_create_index_t::keys() noexcept { return keys_; }
-
-    node_create_index_ptr node_create_index_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
-        auto type = deserializer->deserialize_enum<index_type>(1);
-        auto collection = deserializer->deserialize_collection(2);
-        auto name = deserializer->deserialize_string(3);
-        auto keys = deserializer->deserialize_keys(4);
-        auto res = make_node_create_index(deserializer->resource(), collection, name, type);
-        res->keys() = keys;
-        return res;
-    }
 
     hash_t node_create_index_t::hash_impl() const { return 0; }
 
@@ -54,7 +40,7 @@ namespace components::logical_plan {
 
     std::string node_create_index_t::to_string_impl() const {
         std::stringstream stream;
-        stream << "$create_index: " << database_name() << "." << collection_name() << " name:" << name() << "[ ";
+        stream << "$create_index: name:" << indexname_ << "[ ";
         for (const auto& key : keys_) {
             stream << key.as_string() << ' ';
         }
@@ -62,21 +48,9 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    void node_create_index_t::serialize_impl(serializer::msgpack_serializer_t* serializer) const {
-        serializer->start_array(5);
-        serializer->append_enum(serializer::serialization_type::logical_node_create_index);
-        serializer->append_enum(index_type_);
-        serializer->append(collection_);
-        serializer->append(name_);
-        serializer->append(keys_);
-        serializer->end_array();
-    }
-
-    node_create_index_ptr make_node_create_index(std::pmr::memory_resource* resource,
-                                                 const collection_full_name_t& collection,
-                                                 const std::string& name,
-                                                 index_type type) {
-        return {new node_create_index_t{resource, collection, name, type}};
+    node_create_index_ptr
+    make_node_create_index(std::pmr::memory_resource* resource, core::indexname_t indexname, index_type type) {
+        return {new node_create_index_t{resource, std::move(indexname), type}};
     }
 
 } // namespace components::logical_plan

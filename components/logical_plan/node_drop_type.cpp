@@ -4,22 +4,19 @@
 
 namespace components::logical_plan {
 
-    node_drop_type_t::node_drop_type_t(std::pmr::memory_resource* resource, std::string&& name)
-        : node_t(resource, node_type::drop_type_t, {})
-        , name_(std::move(name)) {}
+    node_drop_type_t::node_drop_type_t(std::pmr::memory_resource* resource)
+        : node_t(resource, node_type::drop_type_t) {}
 
-    const std::string& node_drop_type_t::name() const noexcept { return name_; }
-
-    hash_t node_drop_type_t::hash_impl() const { return 0; }
+    hash_t node_drop_type_t::hash_impl() const { return static_cast<hash_t>(type_oid_); }
 
     std::string node_drop_type_t::to_string_impl() const {
         std::stringstream stream;
-        stream << "$drop_type: name: " << name_;
+        stream << "$drop_type: <oid:" << static_cast<std::uint64_t>(type_oid_) << ">";
         return stream.str();
     }
 
-    node_drop_type_ptr make_node_drop_type(std::pmr::memory_resource* resource, std::string&& name) {
-        return {new node_drop_type_t{resource, std::move(name)}};
+    node_drop_type_ptr make_node_drop_type(std::pmr::memory_resource* resource) {
+        return {new node_drop_type_t{resource}};
     }
 
 } // namespace components::logical_plan

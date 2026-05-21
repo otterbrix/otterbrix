@@ -43,14 +43,14 @@ TEST_CASE("components::table::data_table") {
         return std::string{"long_string_with_index_" + number};
     };
 
-    std::vector<complex_logical_type> fields;
+    std::pmr::vector<complex_logical_type> fields(&resource);
     fields.emplace_back(logical_type::BOOLEAN, "flag");
     fields.emplace_back(logical_type::INTEGER, "number");
     fields.emplace_back(logical_type::STRING_LITERAL, "name");
     fields.emplace_back(complex_logical_type::create_list(logical_type::USMALLINT, "array"));
     complex_logical_type struct_type = complex_logical_type::create_struct("struct", fields, "test_struct");
 
-    std::vector<complex_logical_type> union_fields;
+    std::pmr::vector<complex_logical_type> union_fields(&resource);
     union_fields.emplace_back(logical_type::BOOLEAN, "bool");
     union_fields.emplace_back(logical_type::INTEGER, "int");
     union_fields.emplace_back(logical_type::STRING_LITERAL, "string");

@@ -74,7 +74,7 @@ namespace components::types {
                                            const complex_logical_type& type,
                                            const std::vector<logical_value_t>& values);
         static logical_value_t create_union(std::pmr::memory_resource* r,
-                                            std::vector<complex_logical_type> types,
+                                            std::pmr::vector<complex_logical_type> types,
                                             uint8_t tag,
                                             logical_value_t value);
         static logical_value_t create_variant(std::pmr::memory_resource* r, std::vector<logical_value_t> values);
@@ -95,10 +95,6 @@ namespace components::types {
         static logical_value_t bit_not(const logical_value_t& value);
         static logical_value_t bit_shift_l(const logical_value_t& value1, const logical_value_t& value2);
         static logical_value_t bit_shift_r(const logical_value_t& value1, const logical_value_t& value2);
-
-        void serialize(serializer::msgpack_serializer_t* serializer) const;
-        static logical_value_t deserialize(std::pmr::memory_resource* r,
-                                           serializer::msgpack_deserializer_t* deserializer);
 
     private:
         complex_logical_type type_;
@@ -390,10 +386,6 @@ namespace components::types {
         const std::string& type_name() const { return type_name_; }
         const std::vector<logical_value_t>& entries() const noexcept { return entries_; }
 
-        void serialize(serializer::msgpack_serializer_t* serializer) const override;
-        static std::unique_ptr<logical_type_extension> deserialize(std::pmr::memory_resource* resource,
-                                                                   serializer::msgpack_deserializer_t* deserializer);
-
     private:
         std::string type_name_;
         std::vector<logical_value_t> entries_; // integer literal for value and alias for entry name
@@ -405,10 +397,6 @@ namespace components::types {
 
         const std::string& catalog() const noexcept { return catalog_; }
         const std::vector<logical_value_t>& user_type_modifiers() const noexcept { return user_type_modifiers_; }
-
-        void serialize(serializer::msgpack_serializer_t* serializer) const override;
-        static std::unique_ptr<logical_type_extension> deserialize(std::pmr::memory_resource* resource,
-                                                                   serializer::msgpack_deserializer_t* deserializer);
 
     private:
         std::string catalog_;

@@ -214,6 +214,13 @@ namespace components::catalog {
             return c;
         }
 
+        std::vector<column_definition_t> pg_settings_columns() {
+            std::vector<column_definition_t> c;
+            c.emplace_back("name", str_col(), /*not_null*/ true);    // setting name (e.g. "TimeZone")
+            c.emplace_back("setting", str_col(), /*not_null*/ true); // setting value
+            return c;
+        }
+
         std::vector<column_definition_t> pg_computed_column_columns() {
             std::vector<column_definition_t> c;
             c.emplace_back("relid",
@@ -241,9 +248,9 @@ namespace components::catalog {
         // relation, type, function) is conceptually scoped to a database. The default "main"
         // database row is seeded with well_known_oid::main_database in
         // manager_disk_t::bootstrap_system_tables_sync.
-        static const std::array<system_table_def_t, 12> tables = []() {
+        static const std::array<system_table_def_t, 13> tables = []() {
             const oid_t pg_catalog = well_known_oid::pg_catalog_namespace;
-            return std::array<system_table_def_t, 12>{{
+            return std::array<system_table_def_t, 13>{{
                 {"pg_database", well_known_oid::pg_database_table, pg_catalog, relkind::regular, pg_database_columns()},
                 {"pg_namespace",
                  well_known_oid::pg_namespace_table,
@@ -272,6 +279,7 @@ namespace components::catalog {
                  pg_computed_column_columns()},
                 {"pg_sequence", well_known_oid::pg_sequence_table, pg_catalog, relkind::regular, pg_sequence_columns()},
                 {"pg_rewrite", well_known_oid::pg_rewrite_table, pg_catalog, relkind::regular, pg_rewrite_columns()},
+                {"pg_settings", well_known_oid::pg_settings_table, pg_catalog, relkind::regular, pg_settings_columns()},
             }};
         }();
         return tables;

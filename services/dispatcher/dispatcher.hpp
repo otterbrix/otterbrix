@@ -34,6 +34,10 @@
 #include <services/wal/record.hpp>
 #include <services/wal/wal_contract.hpp>
 
+namespace services::disk {
+    class manager_disk_t;
+} // namespace services::disk
+
 namespace services::dispatcher {
 
     class manager_dispatcher_t final : public actor_zeta::actor::actor_mixin<manager_dispatcher_t> {
@@ -91,6 +95,10 @@ namespace services::dispatcher {
                                                             &manager_dispatcher_t::commit_transaction,
                                                             &manager_dispatcher_t::abort_transaction>;
 
+        // Called once at startup (before schedulers start) to recover persisted
+        // instance settings (timezone, etc.) from disk's pg_settings table.
+        void recover_from_catalog(services::disk::manager_disk_t* disk);
+
     private:
         // Pipeline-routed OID allocation. Builds a node_allocate_oids_t leaf,
         // drives operator_allocate_oids_t via the standard executor loop, and
@@ -120,11 +128,10 @@ namespace services::dispatcher {
         std::mutex mutex_;
 
         components::table::transaction_manager_t txn_manager_;
-        std::unordered_map<components::session::session_id_t, components::catalog::session_catalog_t> session_catalogs_;
+        components::catalog::session_catalog_t default_tz_cat_;
 
-        core::date::timezone_offset_t session_tz(components::session::session_id_t session) const {
-            auto it = session_catalogs_.find(session);
-            return it != session_catalogs_.end() ? it->second.timezone_offset : core::date::timezone_offset_t{};
+        core::date::timezone_offset_t session_tz(components::session::session_id_t /*session*/) const {
+            return default_tz_cat_.timezone_offset;
         }
 
         components::logical_plan::node_ptr create_logic_plan(components::logical_plan::node_ptr plan);

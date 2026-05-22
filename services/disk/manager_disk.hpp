@@ -17,6 +17,7 @@
 #include <components/catalog/dependency_walker.hpp>
 #include <components/catalog/results/ddl_result.hpp>
 #include <components/catalog/results/resolve_result.hpp>
+#include <components/catalog/session_catalog.hpp>
 #include <components/configuration/configuration.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/context/pg_catalog_swap.hpp>
@@ -202,6 +203,15 @@ namespace services::disk {
         // OID across all system tables, then seeds oid_gen_ to max+1 so future allocate()
         // never collides with on-disk OIDs.
         void restore_oid_generator_sync();
+
+        // Read the value of a named setting from pg_settings. Returns the most recently
+        // appended value for the given name, or empty string if not found.
+        // Synchronous — called at startup before actor schedulers start.
+        std::string read_setting_sync(std::string_view name);
+
+        // Timezone offset recovered from pg_settings during bootstrap.
+        // Available after bootstrap_system_tables_sync() completes.
+        core::date::timezone_offset_t session_tz() const noexcept { return stored_catalog_.timezone_offset; }
 
         // Public accessor — ddl_* methods take their OIDs from this generator.
         components::catalog::oid_generator& oid_gen() noexcept { return oid_gen_; }
@@ -475,6 +485,7 @@ namespace services::disk {
         configuration::config_disk config_;
         std::vector<agent_disk_ptr> agents_;
         components::catalog::oid_generator oid_gen_;
+        components::catalog::session_catalog_t stored_catalog_;
 
         // Storage entries per collection
         struct collection_storage_entry_t {

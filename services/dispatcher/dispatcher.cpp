@@ -65,6 +65,7 @@
 #include "enrich_logical_plan.hpp"
 
 #include <services/collection/context_storage.hpp>
+#include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 #include <services/wal/wal_sync_mode.hpp>
@@ -312,6 +313,17 @@ namespace services::dispatcher {
             executors_.push_back(std::move(exec));
         }
         trace(log_, "manager_dispatcher_t: spawned {} executors with WAL/Disk/Index addresses", executor_pool_size_);
+    }
+
+    void manager_dispatcher_t::recover_from_catalog(disk::manager_disk_t* disk) {
+        if (!disk) {
+            return;
+        }
+        auto tz_name = disk->read_setting_sync("TimeZone");
+        if (!tz_name.empty()) {
+            std::pmr::synchronized_pool_resource temp;
+            default_tz_cat_.set_timezone(&temp, tz_name);
+        }
     }
 
     manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr>
@@ -847,7 +859,30 @@ namespace services::dispatcher {
             }
             case node_type::set_timezone_t: {
                 const auto& tz_node = reinterpret_cast<node_set_timezone_ptr&>(logic_plan);
-                auto tz_err = session_catalogs_[session].set_timezone(resource(), tz_node->timezone_name());
+                auto tz_err = default_tz_cat_.set_timezone(resource(), tz_node->timezone_name());
+                if (!tz_err.contains_error() && disk_address_ != actor_zeta::address_t::empty_address()) {
+                    const auto* settings_def = components::catalog::find_system_table("pg_settings");
+                    if (settings_def) {
+                        std::pmr::vector<components::types::complex_logical_type> types(resource());
+                        for (const auto& col : settings_def->columns) {
+                            types.push_back(col.type());
+                        }
+                        components::vector::data_chunk_t row(resource(), types, 1);
+                        row.set_cardinality(1);
+                        row.set_value(0, 0, components::types::logical_value_t(resource(), std::string{"TimeZone"}));
+                        row.set_value(
+                            1,
+                            0,
+                            components::types::logical_value_t(resource(), std::string{tz_node->timezone_name()}));
+                        components::execution_context_t exec_ctx{session, {0, 0}, session_tz(session)};
+                        auto [_u, uf] = actor_zeta::send(disk_address_,
+                                                         &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                         exec_ctx,
+                                                         components::catalog::well_known_oid::pg_settings_table,
+                                                         std::move(row));
+                        co_await std::move(uf);
+                    }
+                }
                 co_return make_cursor(resource(), std::move(tz_err));
             }
             case node_type::checkpoint_t:

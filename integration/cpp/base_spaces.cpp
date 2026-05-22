@@ -208,8 +208,7 @@ namespace otterbrix {
                                                                                    std::move(cols));
                                     }
                                 }
-                                // TODO: load timezone?
-                                disk_ptr->direct_append_sync(table_oid, *r->physical_data, {});
+                                disk_ptr->direct_append_sync(table_oid, *r->physical_data, disk_ptr->session_tz());
                             }
                             break;
                         case services::wal::wal_record_type::PHYSICAL_DELETE: {
@@ -279,6 +278,9 @@ namespace otterbrix {
         if (disk_ptr) {
             disk_ptr->restore_oid_generator_sync();
         }
+
+        // Recover persisted instance settings (timezone, etc.) into the dispatcher.
+        manager_dispatcher_->recover_from_catalog(disk_ptr);
 
         scheduler_dispatcher_->start();
         scheduler_->start();

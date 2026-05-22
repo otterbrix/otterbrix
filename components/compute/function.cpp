@@ -160,7 +160,6 @@ namespace components::compute {
             if (func_.doc().options_required && !options && !func_.default_options()) {
                 return core::error_t(
                     core::error_code_t::kernel_error,
-
                     std::pmr::string{"Function " + func_.name() + " cannot be executed without options",
                                      kernel_ctx_.value().exec_context().resource()});
             }

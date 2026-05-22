@@ -1401,7 +1401,7 @@ namespace services::dispatcher {
                                     auto& sub_expr = std::get<expression_ptr>(param);
                                     if (sub_expr->group() == expression_group::scalar) {
                                         auto* sub_scalar = reinterpret_cast<scalar_expression_t*>(sub_expr.get());
-                                        core::error_t resolve_error{resource, core::error_code_t::none};
+                                        core::error_t resolve_error = core::error_t::no_error();
                                         std::function<complex_logical_type(param_storage&)> resolve_arith_type;
                                         resolve_arith_type = [&](param_storage& p) -> complex_logical_type {
                                             if (std::holds_alternative<components::expressions::key_t>(p)) {

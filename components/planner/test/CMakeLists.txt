@@ -15,6 +15,8 @@ target_link_libraries(
         otterbrix::planner
         otterbrix::vector
         otterbrix::physical_plan_generator
+        otterbrix::physical_plan
+        otterbrix::services
 
         absl::int128
         actor-zeta::actor-zeta

@@ -1,5 +1,6 @@
 #include "test_config.hpp"
 #include <catch2/catch.hpp>
+#include <chrono>
 #include <variant>
 
 using namespace components;
@@ -325,5 +326,108 @@ TEST_CASE("integration::cpp::test_join") {
             // c.key_1 = {50,52,...,100}, x.k = {50,54,60,200} = {50,54,60} → 3 rows.
             REQUIRE(cur->size() == 3);
         }
+    }
+}
+
+TEST_CASE("integration::cpp::test_index_join") {
+    INFO("hash index path: join remains correct");
+    {
+        auto config = test_create_config("/tmp/test_join/index_join_hash");
+        test_clear_directory(config);
+        config.disk.on = false;
+        config.wal.on = false;
+        test_spaces space(config);
+        auto dispatcher = space.dispatcher();
+        auto session = otterbrix::session_id_t();
+        dispatcher->execute_sql(session, "CREATE DATABASE bench;");
+        dispatcher->execute_sql(session, "CREATE TABLE bench.l();");
+        dispatcher->execute_sql(session, "CREATE TABLE bench.r();");
+        dispatcher->execute_sql(session,
+                                "INSERT INTO bench.l (_id, k, payload_l) VALUES "
+                                "('000000000000000000000001', 1, 'l1'),"
+                                "('000000000000000000000002', 2, 'l2'),"
+                                "('000000000000000000000003', 3, 'l3'),"
+                                "('000000000000000000000004', 4, 'l4');");
+        dispatcher->execute_sql(session,
+                                "INSERT INTO bench.r (_id, k, payload_r) VALUES "
+                                "('000000000000000000010001', 1, 'r1a'),"
+                                "('000000000000000000010002', 1, 'r1b'),"
+                                "('000000000000000000010003', 2, 'r2'),"
+                                "('000000000000000000010004', 5, 'r5');");
+        dispatcher->execute_sql(session, "CREATE INDEX idx_r_k_hash ON bench.r USING hash (k);");
+        auto cur = dispatcher->execute_sql(
+            session,
+            "SELECT l.k, r.payload_r FROM bench.l l INNER JOIN bench.r r ON l.k = r.k ORDER BY l.k ASC, r.payload_r ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 1);
+        REQUIRE(cur->chunk_data().value(1, 0).value<std::string_view>() == "r1a");
+        REQUIRE(cur->chunk_data().value(0, 1).value<int64_t>() == 1);
+        REQUIRE(cur->chunk_data().value(1, 1).value<std::string_view>() == "r1b");
+        REQUIRE(cur->chunk_data().value(0, 2).value<int64_t>() == 2);
+        REQUIRE(cur->chunk_data().value(1, 2).value<std::string_view>() == "r2");
+    }
+
+    INFO("single index: planner should fallback, result still correct");
+    {
+        auto config = test_create_config("/tmp/test_join/index_join_single");
+        test_clear_directory(config);
+        config.disk.on = false;
+        config.wal.on = false;
+        test_spaces space(config);
+        auto dispatcher = space.dispatcher();
+        auto session = otterbrix::session_id_t();
+        dispatcher->execute_sql(session, "CREATE DATABASE bench;");
+        dispatcher->execute_sql(session, "CREATE TABLE bench.l();");
+        dispatcher->execute_sql(session, "CREATE TABLE bench.r();");
+        dispatcher->execute_sql(session,
+                                "INSERT INTO bench.l (_id, k, payload_l) VALUES "
+                                "('000000000000000000000001', 1, 'l1'),"
+                                "('000000000000000000000002', 2, 'l2'),"
+                                "('000000000000000000000003', 3, 'l3'),"
+                                "('000000000000000000000004', 4, 'l4');");
+        dispatcher->execute_sql(session,
+                                "INSERT INTO bench.r (_id, k, payload_r) VALUES "
+                                "('000000000000000000010001', 1, 'r1a'),"
+                                "('000000000000000000010002', 1, 'r1b'),"
+                                "('000000000000000000010003', 2, 'r2'),"
+                                "('000000000000000000010004', 5, 'r5');");
+        dispatcher->execute_sql(session, "CREATE INDEX idx_r_k_single ON bench.r (k);");
+        auto cur = dispatcher->execute_sql(
+            session,
+            "SELECT l.k, r.payload_r FROM bench.l l INNER JOIN bench.r r ON l.k = r.k ORDER BY l.k ASC, r.payload_r ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+
+    INFO("no index: planner should fallback, result still correct");
+    {
+        auto config = test_create_config("/tmp/test_join/index_join_none");
+        test_clear_directory(config);
+        config.disk.on = false;
+        config.wal.on = false;
+        test_spaces space(config);
+        auto dispatcher = space.dispatcher();
+        auto session = otterbrix::session_id_t();
+        dispatcher->execute_sql(session, "CREATE DATABASE bench;");
+        dispatcher->execute_sql(session, "CREATE TABLE bench.l();");
+        dispatcher->execute_sql(session, "CREATE TABLE bench.r();");
+        dispatcher->execute_sql(session,
+                                "INSERT INTO bench.l (_id, k, payload_l) VALUES "
+                                "('000000000000000000000001', 1, 'l1'),"
+                                "('000000000000000000000002', 2, 'l2'),"
+                                "('000000000000000000000003', 3, 'l3'),"
+                                "('000000000000000000000004', 4, 'l4');");
+        dispatcher->execute_sql(session,
+                                "INSERT INTO bench.r (_id, k, payload_r) VALUES "
+                                "('000000000000000000010001', 1, 'r1a'),"
+                                "('000000000000000000010002', 1, 'r1b'),"
+                                "('000000000000000000010003', 2, 'r2'),"
+                                "('000000000000000000010004', 5, 'r5');");
+        auto cur = dispatcher->execute_sql(
+            session,
+            "SELECT l.k, r.payload_r FROM bench.l l INNER JOIN bench.r r ON l.k = r.k ORDER BY l.k ASC, r.payload_r ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
     }
 }

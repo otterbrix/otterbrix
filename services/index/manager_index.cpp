@@ -619,6 +619,17 @@ namespace services::index {
         co_return it->second->all_indexed_keys();
     }
 
+    manager_index_t::unique_future<std::pmr::vector<components::index::keys_base_storage_t>>
+    manager_index_t::get_indexed_keys_by_type(session_id_t /*session*/,
+                                              components::catalog::oid_t table_oid,
+                                              components::logical_plan::index_type type) {
+        auto it = engines_.find(table_oid);
+        if (it == engines_.end()) {
+            co_return std::pmr::vector<components::index::keys_base_storage_t>(resource_);
+        }
+        co_return it->second->all_indexed_keys(type);
+    }
+
     manager_index_t::unique_future<void> manager_index_t::flush_all_indexes(session_id_t session) {
         trace(log_, "manager_index_t::flush_all_indexes, session: {}", session.data());
         // Await all pending agent operations to ensure no in-flight writes

@@ -195,6 +195,16 @@ namespace components::index {
         return result;
     }
 
+    auto index_engine_t::all_indexed_keys(logical_plan::index_type type) const -> std::pmr::vector<keys_base_storage_t> {
+        std::pmr::vector<keys_base_storage_t> result(resource_);
+        for (const auto& [keys, idx] : mapper_) {
+            if (idx && idx->type() == type) {
+                result.push_back(keys);
+            }
+        }
+        return result;
+    }
+
     auto index_engine_t::indexes() -> std::vector<std::string> {
         std::vector<std::string> res;
         res.reserve(storage_.size());

@@ -34,6 +34,7 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_select.cpp
         operators/operator_sort.cpp
         operators/operator_join.cpp
+        operators/operator_index_join.cpp
 
         operators/operator_check_constraint.cpp
         operators/operator_fk_check.cpp
@@ -100,4 +101,3 @@ target_link_libraries(otterbrix_${PROJECT_NAME} PRIVATE FastFloat::fast_float)
 
 target_include_directories(otterbrix_${PROJECT_NAME} PUBLIC
 )
-

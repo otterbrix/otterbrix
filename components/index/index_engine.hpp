@@ -45,6 +45,7 @@ namespace components::index {
 
         auto indexes() -> std::vector<std::string>;
         auto all_indexed_keys() const -> std::pmr::vector<keys_base_storage_t>;
+        auto all_indexed_keys(logical_plan::index_type type) const -> std::pmr::vector<keys_base_storage_t>;
 
         // Call fn(disk_agent_address, key_value) for each disk-backed index matching chunk columns
         void for_each_disk_op(const vector::data_chunk_t& chunk,

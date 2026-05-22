@@ -2,10 +2,50 @@
 
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_join.hpp>
+#include <components/physical_plan/operators/operator_index_join.hpp>
 #include <components/physical_plan/operators/operator_join.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
+#include <optional>
 
 namespace services::planner::impl {
+    namespace {
+        bool is_simple_inner_eq_join(const components::expressions::expression_ptr& expr) {
+            using namespace components::expressions;
+            if (!expr || expr->group() != expression_group::compare) {
+                return false;
+            }
+            auto comp = reinterpret_cast<const compare_expression_ptr&>(expr);
+            if (comp->type() != compare_type::eq || !comp->children().empty()) {
+                return false;
+            }
+            return std::holds_alternative<components::expressions::key_t>(comp->left()) &&
+                   std::holds_alternative<components::expressions::key_t>(comp->right());
+        }
+
+        std::optional<components::expressions::key_t>
+        extract_probe_key_for_right_side(const components::expressions::expression_ptr& expr) {
+            using namespace components::expressions;
+            if (!is_simple_inner_eq_join(expr)) {
+                return std::nullopt;
+            }
+            auto comp = reinterpret_cast<const compare_expression_ptr&>(expr);
+            const auto& lhs = std::get<components::expressions::key_t>(comp->left());
+            const auto& rhs = std::get<components::expressions::key_t>(comp->right());
+            if (lhs.side() == side_t::right) {
+                return lhs;
+            }
+            if (rhs.side() == side_t::right) {
+                return rhs;
+            }
+            return std::nullopt;
+        }
+
+        bool has_hashed_index_on_key(const context_storage_t& context,
+                                     const components::expressions::expression_ptr& expr) {
+            auto probe_key = extract_probe_key_for_right_side(expr);
+            return probe_key.has_value() && context.has_hashed_index_on(*probe_key);
+        }
+    } // namespace
 
     components::operators::operator_ptr
     create_plan_join(const context_storage_t& context,
@@ -19,14 +59,25 @@ namespace services::planner::impl {
         auto left_oid = node->children().front()->table_oid();
         auto right_oid = node->children().back()->table_oid();
         bool known = context.has_table_oid(left_oid) || context.has_table_oid(right_oid);
-        auto join = known ? boost::intrusive_ptr(new components::operators::operator_join_t(context.resource,
-                                                                                            context.log.clone(),
-                                                                                            join_node->type(),
-                                                                                            node->expressions()[0]))
-                          : boost::intrusive_ptr(new components::operators::operator_join_t(nullptr,
-                                                                                            log_t{},
-                                                                                            join_node->type(),
-                                                                                            node->expressions()[0]));
+        const bool index_join_candidate =
+            join_node->type() == components::logical_plan::join_type::inner &&
+            !node->expressions().empty() &&
+            is_simple_inner_eq_join(node->expressions()[0]) &&
+            has_hashed_index_on_key(context, node->expressions()[0]) &&
+            right_oid != components::catalog::INVALID_OID;
+        auto* op_resource = known ? context.resource : nullptr;
+        auto op_log = known ? context.log.clone() : log_t{};
+        components::operators::operator_ptr join =
+            index_join_candidate
+                ? components::operators::operator_ptr(new components::operators::operator_index_join_t(op_resource,
+                                                                                                        std::move(op_log),
+                                                                                                        join_node->type(),
+                                                                                                        node->expressions()[0],
+                                                                                                        right_oid))
+                : components::operators::operator_ptr(new components::operators::operator_join_t(op_resource,
+                                                                                                  std::move(op_log),
+                                                                                                  join_node->type(),
+                                                                                                  node->expressions()[0]));
         using join_type = components::logical_plan::join_type;
         auto limit_left = components::logical_plan::limit_t::unlimit();
         auto limit_right = components::logical_plan::limit_t::unlimit();

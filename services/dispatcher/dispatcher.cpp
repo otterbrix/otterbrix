@@ -1636,6 +1636,12 @@ namespace services::dispatcher {
                 auto [_ik, ikf] =
                     actor_zeta::send(index_address_, &index::manager_index_t::get_indexed_keys, session, tbl_oid);
                 collections_context_storage.indexed_keys = co_await std::move(ikf);
+                auto [_hk, hkf] = actor_zeta::send(index_address_,
+                                                   &index::manager_index_t::get_indexed_keys_by_type,
+                                                   session,
+                                                   tbl_oid,
+                                                   components::logical_plan::index_type::hashed);
+                collections_context_storage.hashed_indexed_keys = co_await std::move(hkf);
             }
         }
         collections_context_storage.parameters = &parameters;

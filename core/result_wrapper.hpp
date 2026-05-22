@@ -4,6 +4,7 @@
 #include <memory_resource>
 #include <optional>
 #include <source_location>
+#include <string>
 
 namespace core {
 

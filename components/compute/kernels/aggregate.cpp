@@ -22,6 +22,8 @@ namespace {
         auto operator()(const vector_t& v, size_t count) const {
             auto raw_sum = T();
             for (size_t i = 0; i < count; i++) {
+                if (v.is_null(i))
+                    continue;
                 raw_sum += v.data<T>()[i];
             }
             return logical_value_t{v.resource(), raw_sum};
@@ -30,6 +32,8 @@ namespace {
         auto operator()(const vector_t& v, size_t count) const {
             auto raw_sum = T();
             for (size_t i = 0; i < count; i++) {
+                if (v.is_null(i))
+                    continue;
                 raw_sum += T(v.data<U>()[i]);
             }
             return logical_value_t{v.resource(), raw_sum};
@@ -52,11 +56,33 @@ namespace {
     struct min_operator_t<void> {
         template<typename T>
         auto operator()(const vector_t& v, size_t count) const {
-            return logical_value_t{v.resource(), *std::min_element(v.data<T>(), v.data<T>() + count)};
+            auto* data = v.data<T>();
+            T best = T();
+            bool has_any = false;
+            for (size_t i = 0; i < count; i++) {
+                if (v.is_null(i))
+                    continue;
+                if (!has_any || data[i] < best) {
+                    best = data[i];
+                    has_any = true;
+                }
+            }
+            return logical_value_t{v.resource(), best};
         }
         template<typename T, typename U>
         auto operator()(const vector_t& v, size_t count) const {
-            return logical_value_t{v.resource(), T(*std::min_element(v.data<U>(), v.data<U>() + count))};
+            auto* data = v.data<U>();
+            U best = U();
+            bool has_any = false;
+            for (size_t i = 0; i < count; i++) {
+                if (v.is_null(i))
+                    continue;
+                if (!has_any || data[i] < best) {
+                    best = data[i];
+                    has_any = true;
+                }
+            }
+            return logical_value_t{v.resource(), T(best)};
         }
         template<typename T>
         auto operator()(const logical_value_t& v1, const logical_value_t& v2) const {
@@ -78,11 +104,33 @@ namespace {
     struct max_operator_t<void> {
         template<typename T>
         auto operator()(const vector_t& v, size_t count) const {
-            return logical_value_t{v.resource(), *std::max_element(v.data<T>(), v.data<T>() + count)};
+            auto* data = v.data<T>();
+            T best = T();
+            bool has_any = false;
+            for (size_t i = 0; i < count; i++) {
+                if (v.is_null(i))
+                    continue;
+                if (!has_any || best < data[i]) {
+                    best = data[i];
+                    has_any = true;
+                }
+            }
+            return logical_value_t{v.resource(), best};
         }
         template<typename T, typename U>
         auto operator()(const vector_t& v, size_t count) const {
-            return logical_value_t{v.resource(), T(*std::max_element(v.data<U>(), v.data<U>() + count))};
+            auto* data = v.data<U>();
+            U best = U();
+            bool has_any = false;
+            for (size_t i = 0; i < count; i++) {
+                if (v.is_null(i))
+                    continue;
+                if (!has_any || best < data[i]) {
+                    best = data[i];
+                    has_any = true;
+                }
+            }
+            return logical_value_t{v.resource(), T(best)};
         }
         template<typename T>
         auto operator()(const logical_value_t& v1, const logical_value_t& v2) const {
@@ -450,13 +498,21 @@ namespace {
 
     static core::error_t avg_consume(kernel_context& ctx, const data_chunk_t& in) {
         auto* acc = static_cast<avg_kernel_state*>(ctx.state());
-        acc->count = in.size();
+        size_t valid = 0;
+        for (size_t i = 0; i < in.size(); i++) {
+            valid += !in.data[0].is_null(i);
+        }
+        acc->count = valid;
         acc->value = sum(in.data[0], in.size());
         return core::error_t::no_error();
     }
 
     static core::error_t avg_merge(aggregate_kernel_context& ctx, kernel_state&& from, kernel_state&) {
         auto& s = static_cast<avg_kernel_state&>(from);
+        if (s.count == 0) {
+            ctx.batch_results.emplace_back(std::pmr::null_memory_resource(), logical_type::NA);
+            return core::error_t::no_error();
+        }
         ctx.batch_results.push_back(operator_switch<divide_operator_t>(s.value, s.count));
         return core::error_t::no_error();
     }

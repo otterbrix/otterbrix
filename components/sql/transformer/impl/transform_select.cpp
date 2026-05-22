@@ -64,11 +64,14 @@ namespace components::sql::transform {
                 auto table_r = pg_ptr_cast<RangeVar>(join->rarg);
                 sub_query_names.right_name = rangevar_to_qualified_name(table_r);
                 sub_query_names.right_alias = construct_alias(table_r->alias);
-                node_join->append_child(
-                    logical_plan::make_node_aggregate(resource,
-                                                      core::uid_t{sub_query_names.right_name.uuid},
-                                                      core::dbname_t{sub_query_names.right_name.dbname},
-                                                      core::relname_t{sub_query_names.right_name.relname}));
+                auto agg_r = logical_plan::make_node_aggregate(resource,
+                                                               core::uid_t{sub_query_names.right_name.uuid},
+                                                               core::dbname_t{sub_query_names.right_name.dbname},
+                                                               core::relname_t{sub_query_names.right_name.relname});
+                if (!sub_query_names.right_alias.empty()) {
+                    agg_r->set_result_alias(sub_query_names.right_alias);
+                }
+                node_join->append_child(std::move(agg_r));
             } else if (nodeTag(join->rarg) == T_RangeFunction) {
                 auto func = pg_ptr_cast<RangeFunction>(join->rarg);
                 node_join->append_child(transform_function(*func, sub_query_names, params));
@@ -88,18 +91,26 @@ namespace components::sql::transform {
                 return;
             }
             node_join = logical_plan::make_node_join(resource, core::dbname_t{}, core::relname_t{}, j_type);
-            node_join->append_child(logical_plan::make_node_aggregate(resource,
-                                                                      core::uid_t{names.left_name.uuid},
-                                                                      core::dbname_t{names.left_name.dbname},
-                                                                      core::relname_t{names.left_name.relname}));
+            auto agg_l = logical_plan::make_node_aggregate(resource,
+                                                           core::uid_t{names.left_name.uuid},
+                                                           core::dbname_t{names.left_name.dbname},
+                                                           core::relname_t{names.left_name.relname});
+            if (!names.left_alias.empty()) {
+                agg_l->set_result_alias(names.left_alias);
+            }
+            node_join->append_child(std::move(agg_l));
             if (nodeTag(join->rarg) == T_RangeVar) {
                 auto table_r = pg_ptr_cast<RangeVar>(join->rarg);
                 names.right_name = rangevar_to_qualified_name(table_r);
                 names.right_alias = construct_alias(table_r->alias);
-                node_join->append_child(logical_plan::make_node_aggregate(resource,
-                                                                          core::uid_t{names.right_name.uuid},
-                                                                          core::dbname_t{names.right_name.dbname},
-                                                                          core::relname_t{names.right_name.relname}));
+                auto agg_r = logical_plan::make_node_aggregate(resource,
+                                                               core::uid_t{names.right_name.uuid},
+                                                               core::dbname_t{names.right_name.dbname},
+                                                               core::relname_t{names.right_name.relname});
+                if (!names.right_alias.empty()) {
+                    agg_r->set_result_alias(names.right_alias);
+                }
+                node_join->append_child(std::move(agg_r));
             } else if (nodeTag(join->rarg) == T_RangeFunction) {
                 auto func = pg_ptr_cast<RangeFunction>(join->rarg);
                 node_join->append_child(transform_function(*func, names, params));
@@ -118,10 +129,14 @@ namespace components::sql::transform {
                 auto table_r = pg_ptr_cast<RangeVar>(join->rarg);
                 names.right_name = rangevar_to_qualified_name(table_r);
                 names.right_alias = construct_alias(table_r->alias);
-                node_join->append_child(logical_plan::make_node_aggregate(resource,
-                                                                          core::uid_t{names.right_name.uuid},
-                                                                          core::dbname_t{names.right_name.dbname},
-                                                                          core::relname_t{names.right_name.relname}));
+                auto agg_r = logical_plan::make_node_aggregate(resource,
+                                                               core::uid_t{names.right_name.uuid},
+                                                               core::dbname_t{names.right_name.dbname},
+                                                               core::relname_t{names.right_name.relname});
+                if (!names.right_alias.empty()) {
+                    agg_r->set_result_alias(names.right_alias);
+                }
+                node_join->append_child(std::move(agg_r));
             } else if (nodeTag(join->rarg) == T_RangeFunction) {
                 auto func = pg_ptr_cast<RangeFunction>(join->rarg);
                 node_join->append_child(transform_function(*func, names, params));
@@ -229,6 +244,9 @@ namespace components::sql::transform {
                                                         core::uid_t{names.left_name.uuid},
                                                         core::dbname_t{names.left_name.dbname},
                                                         core::relname_t{names.left_name.relname});
+                if (!names.left_alias.empty()) {
+                    agg->set_result_alias(names.left_alias);
+                }
             } else if (nodeTag(from_first) == T_JoinExpr) {
                 // from table_1 join table_2 on cond
                 agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
@@ -379,21 +397,25 @@ namespace components::sql::transform {
                         has_non_star = true;
                         {
                             auto col = columnref_to_field(resource_, col_ref, names);
-                            // Table-qualified wildcard (table.*) where the prefix is a recognized
-                            // table alias → star_expand. Struct field wildcards (struct_col.*)
-                            // have an unrecognized prefix (col.table is empty) → get_field.
                             if (nodeTag(col_ref->fields->lst.back().data) == T_A_Star && !col.table.empty()) {
-                                select_node->append_expression(make_scalar_expression(resource_,
-                                                                                      scalar_type::star_expand,
-                                                                                      expressions::key_t{resource_}));
+                                // Carry the table qualifier so validator can expand t.x.* by result_alias.
+                                std::pmr::vector<std::pmr::string> star_path{resource_};
+                                star_path.emplace_back(std::pmr::string{col.table, resource_});
+                                star_path.emplace_back(std::pmr::string{"*", resource_});
+                                select_node->append_expression(
+                                    make_scalar_expression(resource_,
+                                                           scalar_type::star_expand,
+                                                           expressions::key_t{std::move(star_path)}));
                                 break;
                             }
                             if (res->name) {
-                                select_node->append_expression(
-                                    make_scalar_expression(resource_,
-                                                           scalar_type::get_field,
-                                                           expressions::key_t{resource_, res->name},
-                                                           col.field));
+                                // Carry side forward so validate_key doesn't fall back to LEFT on same_schema JOIN.
+                                expressions::key_t out_key{resource_, res->name};
+                                out_key.set_side(col.field.side());
+                                select_node->append_expression(make_scalar_expression(resource_,
+                                                                                      scalar_type::get_field,
+                                                                                      std::move(out_key),
+                                                                                      col.field));
                             } else {
                                 select_node->append_expression(
                                     make_scalar_expression(resource_, scalar_type::get_field, col.field));
@@ -487,9 +509,17 @@ namespace components::sql::transform {
                                         resource_});
                                 return nullptr;
                             } else if (nodeTag(indirection->arg) == T_ColumnRef) {
-                                path.emplace_back(
-                                    pmrStrVal(pg_ptr_cast<ColumnRef>(indirection->arg)->fields->lst.back().data,
-                                              resource_));
+                                auto* cref = pg_ptr_cast<ColumnRef>(indirection->arg);
+                                // (table_alias.struct_col).* needs schema-aware struct expansion;
+                                // not supported — surface explicitly instead of silent miswiring.
+                                if (cref->fields->lst.size() > 1 && !path.empty() && path.front() == "*") {
+                                    error_ = core::error_t(core::error_code_t::unimplemented_yet,
+                                                           std::pmr::string{
+                                                               "struct field wildcard (alias.struct).* not supported",
+                                                               resource_});
+                                    return nullptr;
+                                }
+                                path.emplace_back(pmrStrVal(cref->fields->lst.back().data, resource_));
                                 break;
                             } else {
                                 error_ = core::error_t(
@@ -551,11 +581,13 @@ namespace components::sql::transform {
                 }
             }
 
-            // If select_node holds exactly one star_expand (pure SELECT *), treat as passthrough.
+            // If select_node holds exactly one bare star_expand (pure SELECT *), treat as passthrough.
+            // Qualified star (SELECT t.x.*) carries an alias key and must reach the validator's
+            // pre-expand loop to be filtered by result_alias.
             auto& sel_exprs = select_node->expressions();
             if (sel_exprs.size() == 1 && sel_exprs[0]->group() == expression_group::scalar) {
                 auto* s = static_cast<const scalar_expression_t*>(sel_exprs[0].get());
-                if (s->type() == scalar_type::star_expand) {
+                if (s->type() == scalar_type::star_expand && s->key().storage().empty()) {
                     sel_exprs.clear();
                     has_non_star = false;
                 }

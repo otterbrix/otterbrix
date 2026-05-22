@@ -119,23 +119,29 @@ namespace services::dispatcher {
             size_t key_order;
         };
 
-        // If type does exist in both, merged will have only first instance
+        // JOIN merge: keep both same-named columns when they come from different
+        // tables; only drop entries that are truly identical (same alias AND same result_alias).
         named_schema merge_schemas(std::pmr::memory_resource* resource, named_schema lhs, named_schema rhs) {
-            // We do not check table alias here, because we only care about fields
             named_schema merged(resource);
             for (auto&& type : lhs) {
                 auto it = std::find_if(merged.begin(), merged.end(), [&type](const auto& t) {
-                    return t.type.alias() == type.type.alias();
+                    return t.type.alias() == type.type.alias() && t.result_alias == type.result_alias;
                 });
                 if (it == merged.end()) {
+                    if (type.side == side_t::undefined) {
+                        type.side = side_t::left;
+                    }
                     merged.emplace_back(std::move(type));
                 }
             }
             for (auto&& type : rhs) {
                 auto it = std::find_if(merged.begin(), merged.end(), [&type](const auto& t) {
-                    return t.type.alias() == type.type.alias();
+                    return t.type.alias() == type.type.alias() && t.result_alias == type.result_alias;
                 });
                 if (it == merged.end()) {
+                    if (type.side == side_t::undefined) {
+                        type.side = side_t::right;
+                    }
                     merged.emplace_back(std::move(type));
                 }
             }
@@ -168,6 +174,22 @@ namespace services::dispatcher {
                     matches.emplace_back(type_match_t{column_path{{i}, resource}, &schema[i].type, 2});
                 } else if (core::pmr::operator==(schema[i].type.alias(), truncated_key.storage().at(0))) {
                     matches.emplace_back(type_match_t{column_path{{i}, resource}, &schema[i].type, 1});
+                }
+            }
+
+            // Side-aware disambiguation: only when there's ambiguity to resolve.
+            // Drop schema candidates whose stamped side disagrees only when >1 match
+            // (otherwise we'd drop legitimate single matches in chained-JOIN where
+            // inner-merge sides don't align with outer-merge name_collection sides).
+            if (matches.size() > 1 && key.side() != side_t::undefined) {
+                for (auto it = matches.begin(); it != matches.end();) {
+                    size_t schema_idx = it->path.empty() ? 0 : it->path[0];
+                    if (schema_idx < schema.size() && schema[schema_idx].side != side_t::undefined &&
+                        schema[schema_idx].side != key.side()) {
+                        it = matches.erase(it);
+                    } else {
+                        ++it;
+                    }
                 }
             }
 
@@ -1066,17 +1088,17 @@ namespace services::dispatcher {
                            !static_cast<const std::string&>(agg_node->dbname()).empty()) {
                     const auto& agg_dbname_s = static_cast<const std::string&>(agg_node->dbname());
                     const auto& agg_relname_s = static_cast<const std::string&>(agg_node->relname());
+                    const auto& visible_alias =
+                        node->result_alias().empty() ? agg_relname_s : node->result_alias();
                     // there will be a scan
                     const auto* tbl = impl::tbl_md_for(idx, agg_dbname_s, agg_relname_s);
                     if (tbl && tbl->relkind != 'g') {
                         for (const auto& column : tbl->columns) {
-                            table_schema.emplace_back(type_from_t{agg_relname_s, column.type});
+                            table_schema.emplace_back(type_from_t{visible_alias, column.type});
                         }
                     } else if (tbl && tbl->relkind == 'g') {
                         for (const auto& column : tbl->columns) {
-                            table_schema.emplace_back(
-                                type_from_t{node->result_alias().empty() ? agg_relname_s : node->result_alias(),
-                                            column.type});
+                            table_schema.emplace_back(type_from_t{visible_alias, column.type});
                         }
                     } else {
                         // Distinguish missing database from missing collection
@@ -1131,6 +1153,42 @@ namespace services::dispatcher {
                                     continue;
                                 }
                                 auto* scalar_expr = reinterpret_cast<scalar_expression_t*>(exprs[expr_index].get());
+                                // t.x.* — expand by result_alias against merged JOIN schema.
+                                if (scalar_expr->type() == scalar_type::star_expand &&
+                                    !scalar_expr->key().storage().empty() &&
+                                    scalar_expr->key().storage().front() != "*") {
+                                    const auto& alias = scalar_expr->key().storage().front();
+                                    std::pmr::vector<size_t> matched(resource);
+                                    for (size_t i = 0; i < incoming_schema.size(); i++) {
+                                        if (core::pmr::operator==(incoming_schema[i].result_alias, alias)) {
+                                            matched.push_back(i);
+                                        }
+                                    }
+                                    if (matched.empty()) {
+                                        return core::error_t(
+                                            core::error_code_t::schema_error,
+                                            std::pmr::string{(std::string{"alias '"} + alias.c_str() +
+                                                              "' has no columns in scope")
+                                                                 .c_str(),
+                                                             resource});
+                                    }
+                                    exprs.erase(exprs.begin() + static_cast<ptrdiff_t>(expr_index));
+                                    for (size_t j = 0; j < matched.size(); j++) {
+                                        size_t schema_idx = matched[j];
+                                        components::expressions::key_t new_key(resource);
+                                        if (incoming_schema[schema_idx].type.has_alias()) {
+                                            new_key.storage().push_back(std::pmr::string(
+                                                incoming_schema[schema_idx].type.alias(), resource));
+                                        }
+                                        new_key.set_path(column_path{{schema_idx}, resource});
+                                        exprs.insert(exprs.begin() + static_cast<ptrdiff_t>(expr_index + j),
+                                                     make_scalar_expression(resource,
+                                                                            scalar_type::get_field,
+                                                                            new_key));
+                                    }
+                                    expr_index += matched.size();
+                                    continue;
+                                }
                                 if (scalar_expr->type() != scalar_type::get_field) {
                                     expr_index++;
                                     continue;
@@ -1196,11 +1254,12 @@ namespace services::dispatcher {
                             }
                         }
                     } else {
-                        // "SELECT *" or "SELECT t.*" — reject when a logical column
-                        // exists in multiple physical types: cannot be disambiguated without a cast.
-                        std::unordered_set<std::string> seen;
+                        // Reject only truly-identical columns (same alias from same table).
+                        // Duplicate names across JOIN'd tables are legitimate (PostgreSQL semantics).
+                        std::set<std::pair<std::string, std::string>> seen_pairs;
                         for (const auto& col : incoming_schema) {
-                            if (!seen.insert(col.type.alias()).second) {
+                            auto pair = std::make_pair(col.result_alias, std::string(col.type.alias()));
+                            if (!seen_pairs.insert(pair).second) {
                                 return core::error_t(
                                     core::error_code_t::schema_error,
                                     std::pmr::string{"column '" + col.type.alias() +

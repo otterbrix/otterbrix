@@ -318,6 +318,8 @@ namespace components::operators {
                 if (!matched && has_default) {
                     auto val = resolve_row_value(resource, operands.back(), chunk, params, i);
                     output.set_value(i, val);
+                } else if (!matched) {
+                    output.set_null(i, true);
                 }
             }
             return output;

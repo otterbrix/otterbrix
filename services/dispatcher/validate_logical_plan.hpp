@@ -4,6 +4,7 @@
 #include <components/catalog/dependency_walker.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/expressions/compare_expression.hpp>
+#include <components/expressions/forward.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/types/types.hpp>
@@ -26,6 +27,7 @@ namespace services::dispatcher {
     struct type_from_t {
         std::string result_alias;
         components::types::complex_logical_type type;
+        components::expressions::side_t side = components::expressions::side_t::undefined;
     };
     struct type_path_t {
         column_path path;

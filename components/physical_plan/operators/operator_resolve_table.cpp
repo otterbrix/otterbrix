@@ -264,11 +264,16 @@ namespace components::operators {
 
             struct cc_candidate_t {
                 catalog::oid_t attoid;
+                std::string attname;
                 catalog::oid_t atttypid;
                 std::string atttypspec;
                 std::int64_t attversion;
                 std::int64_t attrefcount;
             };
+            // Key by (attname, atttypid, atttypspec) — NOT attname alone — so a
+            // computing table exposes SEVERAL columns sharing a name but with
+            // different types (multi-type fields). Per variant keep the
+            // max(attversion) row; tombstones (refcount<=0) are dropped below.
             std::unordered_map<std::string, cc_candidate_t> latest_any;
 
             for (const auto& row : cc_rows) {
@@ -276,8 +281,8 @@ namespace components::operators {
                     continue;
                 if (row[2].is_null() || row[5].is_null())
                     continue;
-                std::string attname{row[2].value<std::string_view>()};
                 cc_candidate_t cand;
+                cand.attname.assign(row[2].value<std::string_view>());
                 cand.attoid = row[1].is_null() ? catalog::INVALID_OID
                                                : static_cast<catalog::oid_t>(row[1].value<std::uint32_t>());
                 cand.atttypid = row[3].is_null() ? catalog::INVALID_OID
@@ -288,18 +293,20 @@ namespace components::operators {
                 cand.attversion = row[5].value<std::int64_t>();
                 cand.attrefcount = row[6].is_null() ? 0 : row[6].value<std::int64_t>();
 
-                auto it = latest_any.find(attname);
+                std::string key = cand.attname + '\x1f' +
+                                  std::to_string(static_cast<unsigned>(cand.atttypid)) + '\x1f' + cand.atttypspec;
+                auto it = latest_any.find(key);
                 if (it == latest_any.end() || it->second.attversion < cand.attversion) {
-                    latest_any[attname] = std::move(cand);
+                    latest_any[std::move(key)] = std::move(cand);
                 }
             }
-            // Filter: only entries whose chosen (max-version) row is live.
-            for (auto& [name, cand] : latest_any) {
+            // Filter: only variants whose chosen (max-version) row is live.
+            for (auto& [key, cand] : latest_any) {
                 if (cand.attrefcount <= 0)
                     continue;
                 out_row_t r;
                 r.attoid = cand.attoid;
-                r.attname = name;
+                r.attname = std::move(cand.attname);
                 r.atttypid = cand.atttypid;
                 r.atttypspec = std::move(cand.atttypspec);
                 rows.push_back(std::move(r));
@@ -319,12 +326,33 @@ namespace components::operators {
                                                ctx->session,
                                                table_oid_);
             auto storage_types = co_await std::move(stf);
+            // Map each resolved variant to its physical storage column by
+            // (name, type): with multi-type fields several storage columns share
+            // a name, so the type disambiguates. `claimed` prevents two variants
+            // from binding to the same physical column. Falls back to the first
+            // unclaimed same-name column when types don't compare exactly.
+            std::vector<bool> claimed(storage_types.size(), false);
             for (auto& r : rows) {
+                const types::complex_logical_type rtype =
+                    r.atttypspec.empty() ? types::complex_logical_type(catalog::oid_to_builtin_type(r.atttypid))
+                                         : catalog::decode_type_spec(resource_, r.atttypspec);
+                std::int32_t name_only = -1;
                 for (std::size_t i = 0; i < storage_types.size(); ++i) {
-                    if (storage_types[i].has_alias() && storage_types[i].alias() == r.attname) {
+                    if (claimed[i] || !storage_types[i].has_alias() || storage_types[i].alias() != r.attname) {
+                        continue;
+                    }
+                    if (name_only < 0) {
+                        name_only = static_cast<std::int32_t>(i);
+                    }
+                    if (storage_types[i].type() == rtype.type()) {
                         r.chunk_position = static_cast<std::int32_t>(i);
+                        claimed[i] = true;
                         break;
                     }
+                }
+                if (r.chunk_position < 0 && name_only >= 0) {
+                    r.chunk_position = name_only;
+                    claimed[static_cast<std::size_t>(name_only)] = true;
                 }
             }
         } else if (relkind_ == catalog::relkind::view) {

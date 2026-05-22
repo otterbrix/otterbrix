@@ -207,6 +207,24 @@ namespace components::sql::transform {
         return expressions::scalar_type::invalid;
     }
 
+    // --- JSONB operators -------------------------------------------------
+    // Path-navigation jsonb operators. On a computing table (relkind='g')
+    // nested fields are flattened into a single column whose name is the
+    // path joined by '/', so navigation reduces to building that joined key.
+    //   ->  /  #>   return jsonb  -> a (sub)table (relation position only)
+    //   ->> / #>>   return text   -> a typed scalar value (SELECT/WHERE)
+    // '#>'/'#>>' take a whole path on the right ('{a,b}' or dotted 'a.b').
+    inline bool is_jsonb_nav_operator(std::string_view op) {
+        return op == "->" || op == "->>" || op == "#>" || op == "#>>";
+    }
+
+    // True for the scalar (text-returning) variants usable in SELECT/WHERE.
+    inline bool jsonb_nav_returns_scalar(std::string_view op) { return op == "->>" || op == "#>>"; }
+
+    // True for operators whose right operand is a whole path ('{a,b}' / 'a.b'),
+    // not a single key — '#>', '#>>' (navigation) and '#-' (delete by path).
+    inline bool jsonb_op_takes_path(std::string_view op) { return op == "#>" || op == "#>>" || op == "#-"; }
+
     std::string node_tag_to_string(NodeTag type);
     std::string expr_kind_to_string(A_Expr_Kind type);
     std::string like_to_regex(const std::string& pattern);

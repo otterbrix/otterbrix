@@ -411,10 +411,6 @@ TEST_CASE("components::compute::errors") {
 // SUBSTRING / LENGTH / REGEXP_REPLACE — string row-kernel execution tests
 // ---------------------------------------------------------------------------
 
-namespace components::compute {
-    void register_string_functions(function_registry_t& r);
-}
-
 namespace {
     struct string_registry_fixture {
         std::pmr::synchronized_pool_resource resource;

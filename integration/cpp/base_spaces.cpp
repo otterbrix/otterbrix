@@ -79,8 +79,7 @@ namespace otterbrix {
         trace(log_, "spaces::manager_disk start");
         auto manager_disk_address = actor_zeta::address_t::empty_address();
         services::disk::manager_disk_t* disk_ptr = nullptr;
-        services::disk::manager_disk_empty_t* disk_empty_ptr = nullptr;
-        if (config.disk.on) {
+        {
             auto manager = actor_zeta::spawn<services::disk::manager_disk_t>(&resource,
                                                                              scheduler_.get(),
                                                                              scheduler_disk_.get(),
@@ -209,7 +208,8 @@ namespace otterbrix {
                                                                                    std::move(cols));
                                     }
                                 }
-                                disk_ptr->direct_append_sync(table_oid, *r->physical_data);
+                                // TODO: load timezone?
+                                disk_ptr->direct_append_sync(table_oid, *r->physical_data, {});
                             }
                             break;
                         case services::wal::wal_record_type::PHYSICAL_DELETE: {

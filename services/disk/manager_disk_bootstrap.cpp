@@ -83,10 +83,12 @@ namespace services::disk {
                 {wk::float64_type, "double precision"},
                 {wk::numeric_type, "decimal"},
                 // Timestamp variants
-                {wk::timestamp_type, "timestamp_sec"},
-                {wk::timestamp_type, "timestamp_ms"},
-                {wk::timestamp_type, "timestamp_us"},
-                {wk::timestamp_type, "timestamp_ns"},
+                {wk::timestamp_type, "timestamp"},
+                {wk::timestamp_tz_type, "timestamp with time zone"},
+                {wk::date_type, "date"},
+                {wk::time_type, "time"},
+                {wk::time_tz_type, "time with time zone"},
+                {wk::interval_type, "interval"},
             };
         }
 
@@ -200,7 +202,8 @@ namespace services::disk {
                     chunk.set_value(0, 0, lv_oid(res, db.oid));
                     chunk.set_value(1, 0, lv_str(res, std::string(db.name)));
                 });
-                direct_append_sync(pg_database_oid, row);
+                // TODO: load timezone
+                direct_append_sync(pg_database_oid, row, {});
             }
         }
 
@@ -211,7 +214,8 @@ namespace services::disk {
                         chunk.set_value(0, 0, lv_oid(res, nrow.oid));
                         chunk.set_value(1, 0, lv_str(res, std::string(nrow.name)));
                     });
-                    direct_append_sync(pg_namespace_oid_tbl, row);
+                    // TODO: load timezone
+                    direct_append_sync(pg_namespace_oid_tbl, row, {});
                 }
             }
         }
@@ -224,7 +228,8 @@ namespace services::disk {
                         chunk.set_value(1, 0, lv_str(res, std::string(trow.name)));
                         chunk.set_value(2, 0, lv_oid(res, pg_catalog_ns_oid));
                     });
-                    direct_append_sync(pg_type_oid, row);
+                    // TODO: load timezone
+                    direct_append_sync(pg_type_oid, row, {});
                 }
             }
         }
@@ -237,7 +242,8 @@ namespace services::disk {
                         chunk.set_value(1, 0, lv_str(res, std::string(frow.name)));
                         chunk.set_value(2, 0, lv_oid(res, pg_catalog_ns_oid));
                     });
-                    direct_append_sync(pg_proc_oid, row);
+                    // TODO: load timezone
+                    direct_append_sync(pg_proc_oid, row, {});
                 }
             }
         }

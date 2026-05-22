@@ -257,7 +257,7 @@ namespace components::operators {
             co_return;
         }
         auto& out_chunk = output_->data_chunk();
-        components::execution_context_t exec_ctx{ctx->session, ctx->txn, table_oid_};
+        components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz, table_oid_};
 
         // If a resolver sibling supplied catalog metadata, compute a
         // chunk_position -> table_position translation. See

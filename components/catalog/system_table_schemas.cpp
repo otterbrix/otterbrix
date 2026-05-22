@@ -329,11 +329,18 @@ namespace components::catalog {
                 return "float8"; // pg: float8
             case LT::STRING_LITERAL:
                 return "text"; // pg: text
-            case LT::TIMESTAMP_SEC:
-            case LT::TIMESTAMP_MS:
-            case LT::TIMESTAMP_US:
-            case LT::TIMESTAMP_NS:
+            case LT::TIMESTAMP:
                 return "timestamp";
+            case LT::TIMESTAMP_TZ:
+                return "timestamp with time zone";
+            case LT::DATE:
+                return "date";
+            case LT::TIME:
+                return "time";
+            case LT::TIME_TZ:
+                return "time with time zone";
+            case LT::INTERVAL:
+                return "interval";
             case LT::BLOB:
                 return "bytea"; // pg: bytea
             case LT::UUID:
@@ -371,7 +378,17 @@ namespace components::catalog {
         if (n == "text")
             return LT::STRING_LITERAL;
         if (n == "timestamp")
-            return LT::TIMESTAMP_MS;
+            return LT::TIMESTAMP;
+        if (n == "timestamp with time zone")
+            return LT::TIMESTAMP_TZ;
+        if (n == "date")
+            return LT::DATE;
+        if (n == "time")
+            return LT::TIME;
+        if (n == "time with time zone")
+            return LT::TIME_TZ;
+        if (n == "interval")
+            return LT::INTERVAL;
         if (n == "bytea")
             return LT::BLOB;
         if (n == "uuid")
@@ -612,10 +629,12 @@ namespace components::catalog {
             case LT::FLOAT:
             case LT::DOUBLE:
             case LT::STRING_LITERAL:
-            case LT::TIMESTAMP_SEC:
-            case LT::TIMESTAMP_MS:
-            case LT::TIMESTAMP_US:
-            case LT::TIMESTAMP_NS:
+            case LT::TIMESTAMP:
+            case LT::TIMESTAMP_TZ:
+            case LT::DATE:
+            case LT::TIME:
+            case LT::TIME_TZ:
+            case LT::INTERVAL:
             case LT::BLOB:
             case LT::UUID:
                 return "";
@@ -789,7 +808,17 @@ namespace components::catalog {
             case ns::string_type:
                 return LT::STRING_LITERAL;
             case ns::timestamp_type:
-                return LT::TIMESTAMP_NS;
+                return LT::TIMESTAMP;
+            case ns::timestamp_tz_type:
+                return LT::TIMESTAMP_TZ;
+            case ns::date_type:
+                return LT::DATE;
+            case ns::time_type:
+                return LT::TIME;
+            case ns::time_tz_type:
+                return LT::TIME_TZ;
+            case ns::interval_type:
+                return LT::INTERVAL;
             default:
                 return LT::UNKNOWN;
         }
@@ -815,11 +844,18 @@ namespace components::catalog {
                 return ns::float64_type;
             case LT::STRING_LITERAL:
                 return ns::string_type;
-            case LT::TIMESTAMP_NS:
-            case LT::TIMESTAMP_US:
-            case LT::TIMESTAMP_MS:
-            case LT::TIMESTAMP_SEC:
+            case LT::TIMESTAMP:
                 return ns::timestamp_type;
+            case LT::TIMESTAMP_TZ:
+                return ns::timestamp_tz_type;
+            case LT::DATE:
+                return ns::date_type;
+            case LT::TIME:
+                return ns::time_type;
+            case LT::TIME_TZ:
+                return ns::time_tz_type;
+            case LT::INTERVAL:
+                return ns::interval_type;
             default:
                 return INVALID_OID;
         }

@@ -67,10 +67,10 @@ namespace services::dispatcher {
     // table_oid / namespace_oid without async catalog probes. When null,
     // enrich gathers a local index from `root` itself (recursive calls then
     // thread the gathered pointer through children).
-    actor_zeta::unique_future<void> enrich_plan(components::logical_plan::node_ptr root,
+    actor_zeta::unique_future<void> enrich_plan(std::pmr::memory_resource* resource,
+                                                components::logical_plan::node_ptr root,
                                                 actor_zeta::address_t disk_address,
                                                 components::execution_context_t ctx,
-                                                std::pmr::memory_resource* resource,
                                                 const enrich_resolve_idx_t* idx = nullptr);
 
     // Propagate OIDs from sibling catalog_resolve_* nodes onto their consumer

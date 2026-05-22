@@ -284,7 +284,7 @@ TEST_CASE("components::vector::data_chunk_to_arrow::datetime") {
     ArrowArray arrow_array;
     to_arrow_schema(&schema, types);
     to_arrow_array(chunk, &arrow_array);
-    auto res = data_chunk_from_arrow(&resource, &arrow_array, schema_from_arrow(&schema));
+    auto res = data_chunk_from_arrow(&resource, &arrow_array, schema_from_arrow(&resource, &schema));
 
     REQUIRE(chunk.column_count() == res.column_count());
     REQUIRE(chunk.size() == res.size());

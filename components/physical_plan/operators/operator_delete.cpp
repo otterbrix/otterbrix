@@ -120,7 +120,7 @@ namespace components::operators {
 
         auto& ids = modified_->ids();
         const size_t modified_size = modified_->size();
-        components::execution_context_t exec_ctx{ctx->session, ctx->txn, table_oid_};
+        components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz, table_oid_};
 
         // When a resolver sibling supplied catalog metadata, build a
         // translation against the scan-output chunk to surface any

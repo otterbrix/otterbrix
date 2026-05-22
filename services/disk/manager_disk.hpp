@@ -291,11 +291,12 @@ namespace services::disk {
         // tables maintained via operator_computed_field_register_t.
 
         // Synchronous direct replay methods for physical WAL (before schedulers start).
-        uint64_t direct_append_sync(components::catalog::oid_t table_oid, components::vector::data_chunk_t& data,
-                                core::date::timezone_offset_t session_tz);
         uint64_t direct_append_sync(components::catalog::oid_t table_oid,
-        components::vector::data_chunk_t& data,
-    core::date::timezone_offset_t session_tz,
+                                    components::vector::data_chunk_t& data,
+                                    core::date::timezone_offset_t session_tz);
+        uint64_t direct_append_sync(components::catalog::oid_t table_oid,
+                                    components::vector::data_chunk_t& data,
+                                    core::date::timezone_offset_t session_tz,
                                     const components::table::transaction_data& txn);
         void direct_delete_sync(components::catalog::oid_t table_oid,
                                 const std::pmr::vector<int64_t>& row_ids,
@@ -374,8 +375,7 @@ namespace services::disk {
         unique_future<std::pair<uint64_t, uint64_t>>
         storage_append(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
-                       std::unique_ptr<components::vector::data_chunk_t> data,
-                       core::date::timezone_offset_t session_tz);
+                       std::unique_ptr<components::vector::data_chunk_t> data);
 
         unique_future<std::pair<int64_t, uint64_t>>
         storage_update(execution_context_t ctx,

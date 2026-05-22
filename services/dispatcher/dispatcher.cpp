@@ -45,9 +45,9 @@
 #include <components/logical_plan/node_primitive_write.hpp>
 #include <components/logical_plan/node_register_udf.hpp>
 #include <components/logical_plan/node_sequence.hpp>
+#include <components/logical_plan/node_set_timezone.hpp>
 #include <components/logical_plan/node_unregister_udf.hpp>
 #include <components/logical_plan/node_update.hpp>
-#include <components/logical_plan/node_set_timezone.hpp>
 #include <components/physical_plan/operators/operator_abort_transaction.hpp>
 #include <components/physical_plan/operators/operator_commit_transaction.hpp>
 #include <components/physical_plan/operators/operator_get_schema.hpp>
@@ -569,7 +569,7 @@ namespace services::dispatcher {
                 // Propagate the established txn into ctx so validate /
                 // enrich reads (which still take `ctx`) see the same MVCC
                 // snapshot the resolves saw.
-                ctx = components::execution_context_t{session, pass1_txn, ctx.table_oid};
+                ctx = components::execution_context_t{session, pass1_txn, ctx.session_tz, ctx.table_oid};
                 // Note: resolves stay in plan tree so validate/enrich's
                 // gather walks find them. create_plan_sequence skips
                 // catalog_resolve_*_t children when building the executor's
@@ -847,8 +847,8 @@ namespace services::dispatcher {
             }
             case node_type::set_timezone_t: {
                 const auto& tz_node = reinterpret_cast<node_set_timezone_ptr&>(logic_plan);
-                error = catalog_.set_timezone(tz_node->timezone_name());
-                co_return make_cursor(resource(), std::move(error));
+                auto tz_err = session_catalogs_[session].set_timezone(resource(), tz_node->timezone_name());
+                co_return make_cursor(resource(), std::move(tz_err));
             }
             case node_type::checkpoint_t:
             case node_type::vacuum_t:
@@ -914,7 +914,7 @@ namespace services::dispatcher {
                 break;
             }
             default: {
-                auto vt_err = validate_types(resource(), &dispatcher_idx, logic_plan.get());
+                auto vt_err = validate_types(resource(), &dispatcher_idx, logic_plan.get(), session_tz(session));
                 if (vt_err.contains_error()) {
                     error = make_cursor(resource(), vt_err);
                 } else {
@@ -935,7 +935,7 @@ namespace services::dispatcher {
         // Enrich DML node fields with catalog metadata (NOT NULL, DEFAULT, CHECK exprs).
         // enrich reads exclusively from the plan-tree idx.
         {
-            auto ef = enrich_plan(logic_plan, disk_address_, ctx, resource());
+            auto ef = enrich_plan(resource(), logic_plan, disk_address_, ctx);
             co_await std::move(ef);
         }
         // Logical plan rewrite: insert constraint wrapper nodes driven by enriched fields.
@@ -1130,8 +1130,8 @@ namespace services::dispatcher {
             // components/table/transaction_manager.cpp:12), so the unchanged
             // call below reuses this same txn.
             auto enrich_txn = txn_manager_.begin_transaction(session).data();
-            components::execution_context_t enriched_ctx{session, enrich_txn, ctx.table_oid};
-            auto ef2 = enrich_plan(logic_plan, disk_address_, enriched_ctx, resource());
+            components::execution_context_t enriched_ctx{session, enrich_txn, ctx.session_tz, ctx.table_oid};
+            auto ef2 = enrich_plan(resource(), logic_plan, disk_address_, enriched_ctx);
             co_await std::move(ef2);
         }
 
@@ -1273,7 +1273,7 @@ namespace services::dispatcher {
                     ddl_commit_node->set_txn_id(txn_data.transaction_id);
                     ddl_commit_node->set_database_oid(db_oid);
 
-                    services::context_storage_t cstor{resource(), log_.clone()};
+                    services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
                     components::compute::function_registry_t fn_registry{resource()};
                     auto commit_op = services::planner::create_plan(cstor,
                                                                     fn_registry,
@@ -1397,7 +1397,7 @@ namespace services::dispatcher {
         std::shared_ptr<components::compute::function> shared_fn(function.release());
         auto plan = boost::intrusive_ptr(new components::logical_plan::node_register_udf_t(resource(), shared_fn));
 
-        services::context_storage_t cstor{resource(), log_.clone()};
+        services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
         // Build the executor fan-out callable. The dispatcher captures
         // executor_addresses_, scheduler_, and executors_ so the operator can
         // drive per-executor register_udf without needing direct scheduler
@@ -1470,7 +1470,7 @@ namespace services::dispatcher {
                                                                 core::function_name_t{std::move(function_name)},
                                                                 std::move(inputs)));
 
-        services::context_storage_t cstor{resource(), log_.clone()};
+        services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
         components::compute::function_registry_t fn_registry{resource()};
         auto op = services::planner::create_plan(cstor,
                                                  fn_registry,
@@ -1546,7 +1546,7 @@ namespace services::dispatcher {
         auto plan =
             boost::intrusive_ptr(new components::logical_plan::node_get_schema_t(resource(), std::move(id_pairs)));
 
-        services::context_storage_t cstor{resource(), log_.clone()};
+        services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
         components::compute::function_registry_t fn_registry{resource()};
         auto op = services::planner::create_plan(cstor,
                                                  fn_registry,
@@ -1615,7 +1615,7 @@ namespace services::dispatcher {
         // and forward the set to the executor. Wrapper / parser-window / DDL
         // nodes contribute INVALID_OID and are filtered.
         auto dependency_oids = logical_plan->table_oid_dependencies();
-        context_storage_t collections_context_storage(resource(), log_.clone());
+        context_storage_t collections_context_storage(resource(), log_.clone(), session_tz(session));
         for (auto oid : dependency_oids) {
             collections_context_storage.known_oids.insert(oid);
         }
@@ -1690,7 +1690,7 @@ namespace services::dispatcher {
         // the commit_transaction RPC pattern below.
         auto node = components::logical_plan::make_node_allocate_oids(resource(), count);
 
-        services::context_storage_t cstor{resource(), log_.clone()};
+        services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
         components::compute::function_registry_t fn_registry{resource()};
         auto op = services::planner::create_plan(cstor,
                                                  fn_registry,
@@ -1738,7 +1738,7 @@ namespace services::dispatcher {
         // pipeline::context_t we build here.
         auto plan = boost::intrusive_ptr(new components::logical_plan::node_commit_transaction_t(resource()));
 
-        services::context_storage_t cstor{resource(), log_.clone()};
+        services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
         components::compute::function_registry_t fn_registry{resource()};
         auto op = services::planner::create_plan(cstor,
                                                  fn_registry,
@@ -1791,7 +1791,7 @@ namespace services::dispatcher {
         // Operator-pipeline replacement (mirrors commit above).
         auto plan = boost::intrusive_ptr(new components::logical_plan::node_abort_transaction_t(resource()));
 
-        services::context_storage_t cstor{resource(), log_.clone()};
+        services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
         components::compute::function_registry_t fn_registry{resource()};
         auto op = services::planner::create_plan(cstor,
                                                  fn_registry,

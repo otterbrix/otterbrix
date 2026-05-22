@@ -146,8 +146,7 @@ namespace services::disk {
         actor_zeta::unique_future<std::pair<uint64_t, uint64_t>>
         storage_append(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
-                       std::unique_ptr<components::vector::data_chunk_t> data,
-                       core::date::timezone_offset_t session_tz);
+                       std::unique_ptr<components::vector::data_chunk_t> data);
 
         actor_zeta::unique_future<std::pair<int64_t, uint64_t>>
         storage_update(execution_context_t ctx,

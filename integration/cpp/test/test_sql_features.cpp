@@ -3,11 +3,11 @@
 
 #include <catch2/catch.hpp>
 #include <chrono>
+#include <core/date/date_parse.hpp>
+#include <core/date/timezones.hpp>
 #include <random>
 #include <set>
 #include <string>
-#include <core/date/date_parse.hpp>
-#include <core/date/timezones.hpp>
 
 static const database_name_t database_name = "testdatabase";
 static const collection_name_t collection_name = "testcollection";

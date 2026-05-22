@@ -4,6 +4,7 @@
 #include "btree_index_disk.hpp"
 
 #include <actor-zeta/spawn.hpp>
+#include <components/index/hash_single_field_index.hpp>
 #include <components/index/index_engine.hpp>
 #include <components/index/single_field_index.hpp>
 #include <core/b_plus_tree/b_plus_tree.hpp>
@@ -428,7 +429,7 @@ namespace services::index {
 
         auto& engine = it->second;
         for (uint64_t i = 0; i < count; i++) {
-            engine->insert_row(*data, i, static_cast<int64_t>(start_row_id + i), txn_id);
+            engine->insert_row(*data, i, static_cast<int64_t>(start_row_id + i), txn_id, ctx.session_tz);
         }
         // No disk mirroring — uncommitted entries don't go to disk
 
@@ -450,7 +451,7 @@ namespace services::index {
 
         auto& engine = it->second;
         for (size_t i = 0; i < row_ids.size(); i++) {
-            engine->mark_delete_row(*data, i, row_ids[i], txn_id);
+            engine->mark_delete_row(*data, i, row_ids[i], txn_id, ctx.session_tz);
         }
         // No disk mirroring — uncommitted deletes don't go to disk
 
@@ -476,12 +477,12 @@ namespace services::index {
 
         // Mark old entries as deleted
         for (size_t i = 0; i < row_ids.size(); i++) {
-            engine->mark_delete_row(*old_data, i, row_ids[i], txn_id);
+            engine->mark_delete_row(*old_data, i, row_ids[i], txn_id, ctx.session_tz);
         }
 
         // Insert new entries
         for (size_t i = 0; i < row_ids.size(); i++) {
-            engine->insert_row(*new_data, i, new_start_row_id + static_cast<int64_t>(i), txn_id);
+            engine->insert_row(*new_data, i, new_start_row_id + static_cast<int64_t>(i), txn_id, ctx.session_tz);
         }
 
         co_return;

@@ -97,7 +97,7 @@ TEST_CASE("components::sql::update_where") {
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET count = 10 WHERE id = 1;",
                            R"_($update: <oid:0> {$upsert: 0, $match: {"id": {$eq: #1}}, $limit: -1})_",
-                           vec({v(&resource, 10l), v(&resource, 1ul)}),
+                           vec({v(&resource, 10l), v(&resource, 1l)}),
                            f);
     }
 

@@ -5,7 +5,7 @@
 namespace components::logical_plan {
 
     node_set_timezone_t::node_set_timezone_t(std::pmr::memory_resource* resource, std::string timezone_name)
-        : node_t(resource, node_type::set_timezone_t, collection_full_name_t{})
+        : node_t(resource, node_type::set_timezone_t)
         , timezone_name_(std::move(timezone_name)) {}
 
     const std::string& node_set_timezone_t::timezone_name() const noexcept { return timezone_name_; }

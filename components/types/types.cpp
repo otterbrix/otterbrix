@@ -396,13 +396,14 @@ namespace components::types {
     std::pmr::vector<complex_logical_type>& complex_logical_type::child_types() {
         if (type_ == logical_type::TIME_TZ) {
             static std::pmr::vector<complex_logical_type> timetz_fields = {complex_logical_type{logical_type::BIGINT},
-                                                                      complex_logical_type{logical_type::INTEGER}};
+                                                                           complex_logical_type{logical_type::INTEGER}};
             return timetz_fields;
         }
         if (type_ == logical_type::INTERVAL) {
-            static std::pmr::vector<complex_logical_type> interval_fields = {complex_logical_type{logical_type::BIGINT},
-                                                                        complex_logical_type{logical_type::INTEGER},
-                                                                        complex_logical_type{logical_type::INTEGER}};
+            static std::pmr::vector<complex_logical_type> interval_fields = {
+                complex_logical_type{logical_type::BIGINT},
+                complex_logical_type{logical_type::INTEGER},
+                complex_logical_type{logical_type::INTEGER}};
             return interval_fields;
         }
         assert(extension_);
@@ -649,6 +650,12 @@ namespace components::types {
     bool struct_logical_type_extension::operator==(const struct_logical_type_extension& rhs) const {
         return fields_ == rhs.fields_;
     }
+
+    decimal_logical_type_extension::decimal_logical_type_extension(uint8_t width, uint8_t scale)
+        : logical_type_extension(extension_type::DECIMAL)
+        , stored_as_(decimal_storage_type(width))
+        , width_(width)
+        , scale_(scale) {}
 
     bool decimal_logical_type_extension::operator==(const decimal_logical_type_extension& rhs) const {
         return stored_as_ == rhs.stored_as_ && width_ == rhs.width_ && scale_ == rhs.scale_;

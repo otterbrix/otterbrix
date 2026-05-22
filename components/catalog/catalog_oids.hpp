@@ -51,15 +51,18 @@ namespace components::catalog {
         inline constexpr oid_t float64_type = 26;
         inline constexpr oid_t string_type = 27;
         inline constexpr oid_t timestamp_type = 28;
-        inline constexpr oid_t date_type = 29;
-        inline constexpr oid_t time_type = 30;
-        inline constexpr oid_t blob_type = 31;
-        inline constexpr oid_t numeric_type = 32;
-        inline constexpr oid_t uuid_type = 33;
+        inline constexpr oid_t timestamp_tz_type = 29;
+        inline constexpr oid_t date_type = 30;
+        inline constexpr oid_t time_type = 31;
+        inline constexpr oid_t time_tz_type = 32;
+        inline constexpr oid_t interval_type = 33;
+        inline constexpr oid_t blob_type = 34;
+        inline constexpr oid_t numeric_type = 35;
+        inline constexpr oid_t uuid_type = 36;
 
         // System tables added beyond the initial 10.
-        inline constexpr oid_t pg_sequence_table = 34;
-        inline constexpr oid_t pg_rewrite_table = 35;
+        inline constexpr oid_t pg_sequence_table = 37;
+        inline constexpr oid_t pg_rewrite_table = 38;
 
         // Built-in functions (pg_proc.oid) — subset.
         inline constexpr oid_t fn_count = 101;

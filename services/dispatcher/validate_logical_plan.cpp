@@ -1,7 +1,7 @@
 #include "validate_logical_plan.hpp"
 
-#include <cstdio>
 #include <core/date/date_parse.hpp>
+#include <cstdio>
 
 #include "expressions/function_expression.hpp"
 #include "expressions/update_expression.hpp"
@@ -73,6 +73,23 @@ namespace services::dispatcher {
     using namespace components::catalog;
 
     namespace impl {
+
+        components::vector::arithmetic_op scalar_to_arith_op(components::expressions::scalar_type t) {
+            switch (t) {
+                case components::expressions::scalar_type::add:
+                    return components::vector::arithmetic_op::add;
+                case components::expressions::scalar_type::subtract:
+                    return components::vector::arithmetic_op::subtract;
+                case components::expressions::scalar_type::multiply:
+                    return components::vector::arithmetic_op::multiply;
+                case components::expressions::scalar_type::divide:
+                    return components::vector::arithmetic_op::divide;
+                case components::expressions::scalar_type::mod:
+                    return components::vector::arithmetic_op::mod;
+                default:
+                    return components::vector::arithmetic_op::add;
+            }
+        }
         // plan_resolve_index_t + helpers live in
         // services/dispatcher/plan_resolve_index.hpp so
         // enrich_logical_plan.cpp can use the same probe-then-fallback
@@ -343,12 +360,13 @@ namespace services::dispatcher {
             }
         }
 
-        [[nodiscard]] core::result_wrapper_t<named_schema> validate_schema(std::pmr::memory_resource* resource,
-                                                                           function_expression_t* expr,
-                                                                           const storage_parameters& parameters,
-                                                                           const named_schema& schema_left,
-                                                                           const named_schema& schema_right,
-                                                                           bool same_schema,
+        [[nodiscard]] core::result_wrapper_t<named_schema>
+        validate_schema(std::pmr::memory_resource* resource,
+                        function_expression_t* expr,
+                        const storage_parameters& parameters,
+                        const named_schema& schema_left,
+                        const named_schema& schema_right,
+                        bool same_schema,
                         components::compute::function_types_mask allowed_function_types) {
             named_schema result(resource);
             std::pmr::vector<complex_logical_type> function_input_types(resource);
@@ -375,8 +393,13 @@ namespace services::dispatcher {
                     }
                     auto& sub_expr = reinterpret_cast<components::expressions::function_expression_ptr&>(
                         std::get<components::expressions::expression_ptr>(field));
-                    auto sub_expr_res =
-                        validate_schema(resource, sub_expr.get(), parameters, schema_left, schema_right, same_schema, allowed_function_types);
+                    auto sub_expr_res = validate_schema(resource,
+                                                        sub_expr.get(),
+                                                        parameters,
+                                                        schema_left,
+                                                        schema_right,
+                                                        same_schema,
+                                                        allowed_function_types);
                     if (sub_expr_res.has_error()) {
                         return sub_expr_res;
                     } else {
@@ -393,8 +416,7 @@ namespace services::dispatcher {
             if (!fn_lk.name_exists) {
                 return core::error_t(
                     core::error_code_t::unrecognized_function,
-                    std::pmr::string{"function: \'" + expr->name() + "(...)\' was not found by the name",
-                                     resource});
+                    std::pmr::string{"function: \'" + expr->name() + "(...)\' was not found by the name", resource});
             } else if (fn_lk.match_found) {
                 std::pmr::vector<complex_logical_type> function_output_types(resource);
                 function_output_types.reserve(fn_lk.signature.output_types.size());
@@ -783,8 +805,7 @@ namespace services::dispatcher {
                     }
                     return result;
                 } else {
-                    return core::error_t(core::error_code_t::table_not_exists,
-                                         std::pmr::string{"", resource});
+                    return core::error_t(core::error_code_t::table_not_exists, std::pmr::string{"", resource});
                 }
             } else {
                 assert(node->expressions().size() == 1);
@@ -902,9 +923,8 @@ namespace services::dispatcher {
                 }
             }
         }
-        return core::error_t(
-            core::error_code_t::schema_error,
-            std::pmr::string{"type: \'" + alias + "\' is not registered in catalog", resource});
+        return core::error_t(core::error_code_t::schema_error,
+                             std::pmr::string{"type: \'" + alias + "\' is not registered in catalog", resource});
     }
 
     // walk_user_type_refs lives in components/types/user_type_walk.hpp.
@@ -926,8 +946,10 @@ namespace services::dispatcher {
         }
     } // namespace
 
-    core::error_t
-    validate_types(std::pmr::memory_resource* resource, const impl::plan_resolve_index_t* idx, node_t* logical_plan) {
+    core::error_t validate_types(std::pmr::memory_resource* resource,
+                                 const impl::plan_resolve_index_t* idx,
+                                 node_t* logical_plan,
+                                 core::date::timezone_offset_t session_tz) {
         impl::plan_resolve_index_t local_idx;
         if (idx == nullptr) {
             impl::gather_plan_resolve_index(logical_plan, local_idx);
@@ -938,7 +960,7 @@ namespace services::dispatcher {
 
         std::pmr::vector<complex_logical_type> encountered_types{resource};
         std::set<std::string> table_dbnames;
-        core::error_t error = core::error_t::no_error();
+        core::error_t result = core::error_t::no_error();
 
         auto check_node = [&](node_t* node) {
             // Drop-nodes skip existence + type collection here.
@@ -959,8 +981,8 @@ namespace services::dispatcher {
             if (auto oid = node->table_oid(); oid != components::catalog::INVALID_OID) {
                 const auto* tbl = impl::tbl_md_for_oid(idx, oid);
                 if (!tbl) {
-                    error = core::error_t(core::error_code_t::table_not_exists,
-                                          std::pmr::string{"collection does not exist", resource});
+                    result = core::error_t(core::error_code_t::table_not_exists,
+                                           std::pmr::string{"collection does not exist", resource});
                     return false;
                 }
                 if (tbl->relkind != 'g') {
@@ -1034,7 +1056,7 @@ namespace services::dispatcher {
                                         break;
                                 }
                                 if (!parsed_val) {
-                                    error = core::error_t(
+                                    result = core::error_t(
                                         core::error_code_t::schema_error,
                                         std::pmr::string{"couldn't convert string to date/time type: \'" + it->alias() +
                                                              "\', value: \'" + std::string(str) + "\'",
@@ -1049,7 +1071,7 @@ namespace services::dispatcher {
                                     column.type().type() == logical_type::STRING_LITERAL)) {
                             components::vector::vector_t new_column(resource, *it, data_node->data_chunk().capacity());
                             for (size_t i = 0; i < data_node->data_chunk().size(); i++) {
-                                auto val = column.value(i).cast_as(*it, catalog.timezone_offset());
+                                auto val = column.value(i).cast_as(*it, session_tz);
                                 if (val.type().type() == logical_type::NA) {
                                     result =
                                         core::error_t(core::error_code_t::schema_error,
@@ -1061,18 +1083,18 @@ namespace services::dispatcher {
                                 new_column.set_value(i, val);
                             }
                             column = std::move(new_column);
-                        } else if (catalog.type_exists(it->type_name())) {
+                        } else if (!check_type_exists(resource, idx, it->type_name(), std::span<const std::string>())
+                                        .contains_error()) {
                             // if this is a registered type, then conversion is required
                             if (it->type() == logical_type::STRUCT) {
                                 components::vector::vector_t new_column(resource,
                                                                         *it,
                                                                         data_node->data_chunk().capacity());
                                 for (size_t i = 0; i < data_node->data_chunk().size(); i++) {
-                                    auto val = column.value(i).cast_as(*it, catalog.timezone_offset());
+                                    auto val = column.value(i).cast_as(*it, session_tz);
                                     if (val.type().type() == logical_type::NA) {
                                         result =
                                             core::error_t(core::error_code_t::schema_error,
-
                                                           std::pmr::string{"couldn't convert parsed ROW to type: \'" +
                                                                                it->alias() + "\'",
                                                                            resource});
@@ -1091,7 +1113,6 @@ namespace services::dispatcher {
                                     auto enum_val = logical_value_t::create_enum(resource, *it, val);
                                     if (enum_val.type().type() == logical_type::NA) {
                                         result = core::error_t(core::error_code_t::schema_error,
-
                                                                std::pmr::string{"enum: \'" + it->alias() +
                                                                                     "\' does not contain value: \'" +
                                                                                     std::string(val) + "\'",
@@ -1123,7 +1144,7 @@ namespace services::dispatcher {
                 }
                 look_up.pop();
             } else {
-                return error;
+                return result;
             }
         }
 
@@ -1414,7 +1435,7 @@ namespace services::dispatcher {
                                         return complex_logical_type(
                                             arithmetic_result_type(lt.type(),
                                                                    rt.type(),
-                                                                   scalar_to_arith_op(sub_s->type())));
+                                                                   impl::scalar_to_arith_op(sub_s->type())));
                                     }
                                 }
                                 assert(false);
@@ -1432,7 +1453,9 @@ namespace services::dispatcher {
                                           ? resolve_type(scalar_expr->params()[1], resolve_type)
                                           : lt;
                             result_type = complex_logical_type(
-                                arithmetic_result_type(lt.type(), rt.type(), scalar_to_arith_op(scalar_expr->type())));
+                                arithmetic_result_type(lt.type(),
+                                                       rt.type(),
+                                                       impl::scalar_to_arith_op(scalar_expr->type())));
                         }
                         if (!scalar_expr->key().is_null()) {
                             result_type.set_alias(scalar_expr->key().as_string());
@@ -1590,7 +1613,7 @@ namespace services::dispatcher {
                                             function_input_types.emplace_back(
                                                 arithmetic_result_type(lt.type(),
                                                                        rt.type(),
-                                                                       scalar_to_arith_op(sub_scalar->type())));
+                                                                       impl::scalar_to_arith_op(sub_scalar->type())));
                                         } else {
                                             return core::error_t(
                                                 core::error_code_t::invalid_parameter,
@@ -1607,7 +1630,7 @@ namespace services::dispatcher {
                             if (!agg_lk.name_exists) {
                                 return core::error_t(core::error_code_t::unrecognized_function,
                                                      std::pmr::string{"function: \'" + agg_expr->function_name() +
-                                                                       "(...)\' was not found by the name",
+                                                                          "(...)\' was not found by the name",
                                                                       resource});
                             } else if (agg_lk.match_found) {
                                 std::pmr::vector<complex_logical_type> function_output_types(resource);
@@ -1834,8 +1857,7 @@ namespace services::dispatcher {
                 auto* insert_node = reinterpret_cast<node_insert_t*>(node);
                 const auto* tbl_ins = impl::tbl_md_for_oid(idx, insert_node->table_oid());
                 if (!tbl_ins) {
-                    return core::error_t(core::error_code_t::table_not_exists,
-                                         std::pmr::string{"", resource});
+                    return core::error_t(core::error_code_t::table_not_exists, std::pmr::string{"", resource});
                 }
 
                 auto incoming_schema = validate_schema(resource, idx, node->children().front().get(), parameters);
@@ -1889,9 +1911,11 @@ namespace services::dispatcher {
                     // literal sources still SIGSEGV; lifting requires deeper
                     // storage layer work.
                     if (is_computed && !is_simple_chunk()) {
-                        return core::error_t(core::error_code_t::schema_error,
-                                             std::pmr::string{"insert_node: complex types (ARRAY/STRUCT/UNION/LIST/MAP) "
-                                             "are not yet supported on relkind='g' (dynamic-schema) tables", resource});
+                        return core::error_t(
+                            core::error_code_t::schema_error,
+                            std::pmr::string{"insert_node: complex types (ARRAY/STRUCT/UNION/LIST/MAP) "
+                                             "are not yet supported on relkind='g' (dynamic-schema) tables",
+                                             resource});
                     }
                     if (table_schema.empty()) {
                         // Schemaless table (no columns defined) or computing table with no
@@ -1937,7 +1961,8 @@ namespace services::dispatcher {
                                     !incoming_schema.value()[i].type.is_convertable_to(corresponding_table_type)) {
                                     return core::error_t(core::error_code_t::schema_error,
                                                          std::pmr::string{"insert_node: can not convert data column[" +
-                                                                           std::to_string(i) + "] type to table type",
+                                                                              std::to_string(i) +
+                                                                              "] type to table type",
                                                                           resource});
                                 }
                             }
@@ -2122,8 +2147,7 @@ namespace services::dispatcher {
                 auto* idx_node = static_cast<node_create_index_t*>(node);
                 const auto* tbl_idx = impl::tbl_md_for_oid(idx, idx_node->table_oid());
                 if (!tbl_idx) {
-                    return core::error_t(core::error_code_t::table_not_exists,
-                                         std::pmr::string{"", resource});
+                    return core::error_t(core::error_code_t::table_not_exists, std::pmr::string{"", resource});
                 }
 
                 named_schema table_schema{resource};
@@ -2231,7 +2255,7 @@ namespace services::dispatcher {
                 return make_cursor(
                     resource,
                     core::error_t(core::error_code_t::other_error,
-                                  std::pmr::string{("type recursion detected: '" + name + "'").c_str(), resource});
+                                  std::pmr::string{("type recursion detected: '" + name + "'").c_str(), resource}));
             }
             visited.insert(name);
 

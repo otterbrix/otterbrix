@@ -14,15 +14,18 @@
 #include <actor-zeta/detail/future.hpp>
 #include <actor-zeta/detail/queue/enqueue_result.hpp>
 
+#include <core/date/date_types.hpp>
 #include <core/executor.hpp>
 #include <mutex>
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/session_catalog.hpp>
 #include <components/compute/function.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/log/log.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/physical_plan/operators/operator_write_data.hpp>
+#include <components/session/session.hpp>
 #include <components/table/transaction_manager.hpp>
 #include <services/collection/context_storage.hpp>
 #include <services/collection/executor.hpp>
@@ -117,6 +120,12 @@ namespace services::dispatcher {
         std::mutex mutex_;
 
         components::table::transaction_manager_t txn_manager_;
+        std::unordered_map<components::session::session_id_t, components::catalog::session_catalog_t> session_catalogs_;
+
+        core::date::timezone_offset_t session_tz(components::session::session_id_t session) const {
+            auto it = session_catalogs_.find(session);
+            return it != session_catalogs_.end() ? it->second.timezone_offset : core::date::timezone_offset_t{};
+        }
 
         components::logical_plan::node_ptr create_logic_plan(components::logical_plan::node_ptr plan);
 

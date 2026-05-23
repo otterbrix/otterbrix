@@ -1018,6 +1018,39 @@ TEST_CASE("optimizer::has_index_on_empty") {
 }
 
 // ================================================================
+// T31. has_index_on(type): positive for matching type
+// ================================================================
+TEST_CASE("optimizer::has_index_on_type_positive") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    services::context_storage_t ctx(&resource, log_t{});
+
+    auto oid = components::catalog::oid_t{1};
+    components::logical_plan::keys_base_storage_t hashed_keys(&resource);
+    hashed_keys.push_back(key(&resource, "age"));
+    ctx.index_entries_by_oid[oid].push_back(
+        services::context_storage_t::index_entry_t{components::logical_plan::index_type::hashed, std::move(hashed_keys)});
+
+    REQUIRE(ctx.has_index_on(oid, key(&resource, "age"), components::logical_plan::index_type::hashed) == true);
+}
+
+// ================================================================
+// T32. has_index_on(type): negative for non-matching type
+// ================================================================
+TEST_CASE("optimizer::has_index_on_type_negative") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    services::context_storage_t ctx(&resource, log_t{});
+
+    auto oid = components::catalog::oid_t{1};
+    components::logical_plan::keys_base_storage_t single_keys(&resource);
+    single_keys.push_back(key(&resource, "age"));
+    ctx.index_entries_by_oid[oid].push_back(
+        services::context_storage_t::index_entry_t{components::logical_plan::index_type::single, std::move(single_keys)});
+
+    REQUIRE(ctx.has_index_on(oid, key(&resource, "age"), components::logical_plan::index_type::hashed) == false);
+    REQUIRE(ctx.has_index_on(oid, key(&resource, "age")) == true);
+}
+
+// ================================================================
 // Diagnostic: parameter copy chain
 // ================================================================
 TEST_CASE("optimizer::param_copy_survives") {

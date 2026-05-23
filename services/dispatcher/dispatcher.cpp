@@ -1658,25 +1658,11 @@ namespace services::dispatcher {
                 auto [_ik, ikf] =
                     actor_zeta::send(index_address_, &index::manager_index_t::get_indexed_keys, session, tbl_oid);
                 auto keys = co_await std::move(ikf);
-                auto [it_keys, _new_keys] = collections_context_storage.indexed_keys_by_oid.try_emplace(tbl_oid);
-                auto& dst_keys = it_keys->second;
+                auto [it_entries, _new_entries] = collections_context_storage.index_entries_by_oid.try_emplace(tbl_oid);
+                auto& dst_entries = it_entries->second;
                 for (auto& k : keys) {
-                    dst_keys.emplace_back(std::move(k));
-                }
-                if (dst_keys.empty()) {
-                    continue;
-                }
-                auto [_hk, hkf] = actor_zeta::send(index_address_,
-                                                   &index::manager_index_t::get_indexed_keys_by_type,
-                                                   session,
-                                                   tbl_oid,
-                                                   components::logical_plan::index_type::hashed);
-                auto hkeys = co_await std::move(hkf);
-                auto [it_hkeys, _new_hkeys] =
-                    collections_context_storage.hashed_indexed_keys_by_oid.try_emplace(tbl_oid);
-                auto& dst_hkeys = it_hkeys->second;
-                for (auto& k : hkeys) {
-                    dst_hkeys.emplace_back(std::move(k));
+                    dst_entries.emplace_back(services::context_storage_t::index_entry_t{
+                        components::logical_plan::index_type::single, std::move(k)});
                 }
             }
         }

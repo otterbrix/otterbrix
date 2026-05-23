@@ -276,7 +276,8 @@ TEST_CASE("planner::create_plan_join_uses_index_join_for_inner_eq_with_hashed_in
 
     components::index::keys_base_storage_t hashed_keys(&resource);
     hashed_keys.emplace_back(key(&resource, "rk", side_t::right));
-    ctx.hashed_indexed_keys_by_oid[right_oid].emplace_back(hashed_keys);
+    ctx.index_entries_by_oid[right_oid].emplace_back(
+        services::context_storage_t::index_entry_t{components::logical_plan::index_type::hashed, hashed_keys});
 
     auto left = make_node_match(&resource, core::dbname_t{"db"}, core::relname_t{"l"}, nullptr);
     auto right = make_node_match(&resource, core::dbname_t{"db"}, core::relname_t{"r"}, nullptr);
@@ -308,7 +309,8 @@ TEST_CASE("planner::create_plan_join_uses_index_join_for_inner_eq_with_single_in
 
     components::index::keys_base_storage_t single_keys(&resource);
     single_keys.emplace_back(key(&resource, "rk", side_t::right));
-    ctx.indexed_keys_by_oid[right_oid].emplace_back(single_keys);
+    ctx.index_entries_by_oid[right_oid].emplace_back(
+        services::context_storage_t::index_entry_t{components::logical_plan::index_type::single, single_keys});
 
     auto left = make_node_match(&resource, core::dbname_t{"db"}, core::relname_t{"l"}, nullptr);
     auto right = make_node_match(&resource, core::dbname_t{"db"}, core::relname_t{"r"}, nullptr);
@@ -340,7 +342,8 @@ TEST_CASE("planner::create_plan_join_uses_index_join_for_inner_eq_with_left_side
 
     components::index::keys_base_storage_t left_keys(&resource);
     left_keys.emplace_back(key(&resource, "lk", side_t::left));
-    ctx.hashed_indexed_keys_by_oid[left_oid].emplace_back(left_keys);
+    ctx.index_entries_by_oid[left_oid].emplace_back(
+        services::context_storage_t::index_entry_t{components::logical_plan::index_type::hashed, left_keys});
 
     auto left = make_node_match(&resource, core::dbname_t{"db"}, core::relname_t{"l"}, nullptr);
     auto right = make_node_match(&resource, core::dbname_t{"db"}, core::relname_t{"r"}, nullptr);
@@ -401,7 +404,8 @@ TEST_CASE("planner::create_plan_join_falls_back_for_non_inner") {
 
     components::index::keys_base_storage_t hashed_keys(&resource);
     hashed_keys.emplace_back(key(&resource, "rk", side_t::right));
-    ctx.hashed_indexed_keys_by_oid[right_oid].emplace_back(hashed_keys);
+    ctx.index_entries_by_oid[right_oid].emplace_back(
+        services::context_storage_t::index_entry_t{components::logical_plan::index_type::hashed, hashed_keys});
 
     auto left = make_node_match(&resource, core::dbname_t{"db"}, core::relname_t{"l"}, nullptr);
     auto right = make_node_match(&resource, core::dbname_t{"db"}, core::relname_t{"r"}, nullptr);
@@ -964,7 +968,8 @@ TEST_CASE("optimizer::has_index_on_positive") {
     components::logical_plan::keys_base_storage_t keys(&resource);
     keys.push_back(key(&resource, "age"));
     auto oid = components::catalog::oid_t{1};
-    ctx.indexed_keys_by_oid[oid].push_back(std::move(keys));
+    ctx.index_entries_by_oid[oid].push_back(
+        services::context_storage_t::index_entry_t{components::logical_plan::index_type::single, std::move(keys)});
 
     REQUIRE(ctx.has_index_on(oid, key(&resource, "age")) == true);
 }
@@ -979,7 +984,8 @@ TEST_CASE("optimizer::has_index_on_negative") {
     components::logical_plan::keys_base_storage_t keys(&resource);
     keys.push_back(key(&resource, "age"));
     auto oid = components::catalog::oid_t{1};
-    ctx.indexed_keys_by_oid[oid].push_back(std::move(keys));
+    ctx.index_entries_by_oid[oid].push_back(
+        services::context_storage_t::index_entry_t{components::logical_plan::index_type::single, std::move(keys)});
 
     REQUIRE(ctx.has_index_on(oid, key(&resource, "name")) == false);
 }
@@ -995,7 +1001,8 @@ TEST_CASE("optimizer::has_index_on_multi_field_skip") {
     keys.push_back(key(&resource, "a"));
     keys.push_back(key(&resource, "b"));
     auto oid = components::catalog::oid_t{1};
-    ctx.indexed_keys_by_oid[oid].push_back(std::move(keys));
+    ctx.index_entries_by_oid[oid].push_back(
+        services::context_storage_t::index_entry_t{components::logical_plan::index_type::single, std::move(keys)});
 
     REQUIRE(ctx.has_index_on(oid, key(&resource, "a")) == false);
 }

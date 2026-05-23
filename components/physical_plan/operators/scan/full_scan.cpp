@@ -25,7 +25,7 @@ namespace components::operators {
                                             types,
                                             parameters);
                     if (child_result.has_error()) {
-                        return core::error_t{child_result.error()};
+                        return child_result;
                     }
                     if (child_result.value()) {
                         filter->child_filters.emplace_back(std::move(child_result.value()));
@@ -47,7 +47,7 @@ namespace components::operators {
                                             types,
                                             parameters);
                     if (child_result.has_error()) {
-                        return core::error_t{child_result.error()};
+                        return child_result;
                     }
                     if (child_result.value()) {
                         filter->child_filters.emplace_back(std::move(child_result.value()));
@@ -70,7 +70,7 @@ namespace components::operators {
                                             types,
                                             parameters);
                     if (child_result.has_error()) {
-                        return core::error_t{child_result.error()};
+                        return child_result;
                     }
                     if (child_result.value()) {
                         filter->child_filters.emplace_back(std::move(child_result.value()));

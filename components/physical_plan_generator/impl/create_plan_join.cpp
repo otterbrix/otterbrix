@@ -40,16 +40,13 @@ namespace services::planner::impl {
             return std::nullopt;
         }
 
-        bool has_index_on_key_preferring_hashed(const context_storage_t& context,
+        bool has_index_on_key(const context_storage_t& context,
                                                 components::catalog::oid_t table_oid,
                                                 const components::expressions::expression_ptr& expr,
                                                 components::expressions::side_t side) {
             auto probe_key = extract_probe_key_for_side(expr, side);
             if (!probe_key.has_value()) {
                 return false;
-            }
-            if (context.has_index_on(table_oid, *probe_key, components::logical_plan::index_type::hashed)) {
-                return true;
             }
             return context.has_index_on(table_oid, *probe_key);
         }
@@ -71,13 +68,13 @@ namespace services::planner::impl {
             join_node->type() == components::logical_plan::join_type::inner &&
             !node->expressions().empty() &&
             is_simple_inner_eq_join(node->expressions()[0]) &&
-            has_index_on_key_preferring_hashed(context, right_oid, node->expressions()[0], components::expressions::side_t::right) &&
+            has_index_on_key(context, right_oid, node->expressions()[0], components::expressions::side_t::right) &&
             right_oid != components::catalog::INVALID_OID;
         const bool left_candidate =
             join_node->type() == components::logical_plan::join_type::inner &&
             !node->expressions().empty() &&
             is_simple_inner_eq_join(node->expressions()[0]) &&
-            has_index_on_key_preferring_hashed(context, left_oid, node->expressions()[0], components::expressions::side_t::left) &&
+            has_index_on_key(context, left_oid, node->expressions()[0], components::expressions::side_t::left) &&
             left_oid != components::catalog::INVALID_OID;
         const bool index_join_candidate = right_candidate || left_candidate;
         const auto probe_oid = right_candidate ? right_oid : left_oid;

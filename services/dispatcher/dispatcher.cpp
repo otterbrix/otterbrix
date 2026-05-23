@@ -71,6 +71,7 @@
 
 #include <boost/polymorphic_pointer_cast.hpp>
 
+#include <map>
 #include <set>
 #include <span>
 #include <string_view>
@@ -1655,14 +1656,16 @@ namespace services::dispatcher {
                 if (tbl_oid == components::catalog::INVALID_OID) {
                     continue;
                 }
-                auto [_ik, ikf] =
-                    actor_zeta::send(index_address_, &index::manager_index_t::get_indexed_keys, session, tbl_oid);
-                auto keys = co_await std::move(ikf);
+                auto [_ik, ikf] = actor_zeta::send(index_address_,
+                                                   &index::manager_index_t::get_indexed_keys_with_types,
+                                                   session,
+                                                   tbl_oid);
+                auto typed_keys = co_await std::move(ikf);
                 auto [it_entries, _new_entries] = collections_context_storage.index_entries_by_oid.try_emplace(tbl_oid);
                 auto& dst_entries = it_entries->second;
-                for (auto& k : keys) {
-                    dst_entries.emplace_back(services::context_storage_t::index_entry_t{
-                        components::logical_plan::index_type::single, std::move(k)});
+
+                for (auto& entry : typed_keys) {
+                    dst_entries.emplace_back(services::context_storage_t::index_entry_t{entry.type, std::move(entry.keys)});
                 }
             }
         }

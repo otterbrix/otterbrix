@@ -184,6 +184,10 @@ namespace services::index {
                 co_await actor_zeta::dispatch(this, &manager_index_t::get_indexed_keys_by_type, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::get_indexed_keys_with_types>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::get_indexed_keys_with_types, msg);
+                break;
+            }
             default:
                 break;
         }
@@ -667,6 +671,30 @@ namespace services::index {
             co_return std::pmr::vector<components::index::keys_base_storage_t>(resource_);
         }
         co_return it->second->all_indexed_keys(type);
+    }
+
+    manager_index_t::unique_future<std::pmr::vector<indexed_keys_typed_t>>
+    manager_index_t::get_indexed_keys_with_types(session_id_t /*session*/, components::catalog::oid_t table_oid) {
+        std::pmr::vector<indexed_keys_typed_t> result(resource_);
+        auto it = engines_.find(table_oid);
+        if (it == engines_.end()) {
+            co_return result;
+        }
+
+        auto& engine = it->second;
+        for (const auto& idx_name : engine->indexes()) {
+            auto* idx = components::index::search_index(engine, idx_name);
+            if (!idx) {
+                continue;
+            }
+            auto [begin, end] = idx->keys();
+            components::index::keys_base_storage_t keys(resource_);
+            for (auto key_it = begin; key_it != end; ++key_it) {
+                keys.emplace_back(*key_it);
+            }
+            result.emplace_back(indexed_keys_typed_t{idx->type(), std::move(keys)});
+        }
+        co_return result;
     }
 
     manager_index_t::unique_future<void> manager_index_t::flush_all_indexes(session_id_t session) {

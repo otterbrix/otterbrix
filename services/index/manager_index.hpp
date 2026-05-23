@@ -118,6 +118,8 @@ namespace services::index {
         get_indexed_keys_by_type(session_id_t session,
                                  components::catalog::oid_t table_oid,
                                  components::logical_plan::index_type type);
+        unique_future<std::pmr::vector<indexed_keys_typed_t>>
+        get_indexed_keys_with_types(session_id_t session, components::catalog::oid_t table_oid);
 
         using dispatch_traits = actor_zeta::implements<index_contract,
                                                        &manager_index_t::register_collection,
@@ -137,7 +139,8 @@ namespace services::index {
                                                        &manager_index_t::has_index,
                                                        &manager_index_t::flush_all_indexes,
                                                        &manager_index_t::get_indexed_keys,
-                                                       &manager_index_t::get_indexed_keys_by_type>;
+                                                       &manager_index_t::get_indexed_keys_by_type,
+                                                       &manager_index_t::get_indexed_keys_with_types>;
 
     private:
         std::pmr::memory_resource* resource_;

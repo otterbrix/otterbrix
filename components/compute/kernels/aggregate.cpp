@@ -21,20 +21,30 @@ namespace {
         template<typename T>
         auto operator()(const vector_t& v, size_t count) const {
             auto raw_sum = T();
+            bool has_any = false;
             for (size_t i = 0; i < count; i++) {
                 if (v.is_null(i))
                     continue;
                 raw_sum += v.data<T>()[i];
+                has_any = true;
+            }
+            if (!has_any) {
+                return logical_value_t(std::pmr::null_memory_resource(), logical_type::NA);
             }
             return logical_value_t{v.resource(), raw_sum};
         }
         template<typename T, typename U>
         auto operator()(const vector_t& v, size_t count) const {
             auto raw_sum = T();
+            bool has_any = false;
             for (size_t i = 0; i < count; i++) {
                 if (v.is_null(i))
                     continue;
                 raw_sum += T(v.data<U>()[i]);
+                has_any = true;
+            }
+            if (!has_any) {
+                return logical_value_t(std::pmr::null_memory_resource(), logical_type::NA);
             }
             return logical_value_t{v.resource(), raw_sum};
         }
@@ -67,6 +77,9 @@ namespace {
                     has_any = true;
                 }
             }
+            if (!has_any) {
+                return logical_value_t(std::pmr::null_memory_resource(), logical_type::NA);
+            }
             return logical_value_t{v.resource(), best};
         }
         template<typename T, typename U>
@@ -82,10 +95,16 @@ namespace {
                     has_any = true;
                 }
             }
+            if (!has_any) {
+                return logical_value_t(std::pmr::null_memory_resource(), logical_type::NA);
+            }
             return logical_value_t{v.resource(), T(best)};
         }
         template<typename T>
         auto operator()(const logical_value_t& v1, const logical_value_t& v2) const {
+            if (v1.type().type() == logical_type::NA) {
+                return v2;
+            }
             if (v2.type().type() == logical_type::NA) {
                 return v1;
             }
@@ -93,6 +112,9 @@ namespace {
         }
         template<typename T, typename U>
         auto operator()(const logical_value_t& v1, const logical_value_t& v2) const {
+            if (v1.type().type() == logical_type::NA) {
+                return v2;
+            }
             if (v2.type().type() == logical_type::NA) {
                 return v1;
             }
@@ -115,6 +137,9 @@ namespace {
                     has_any = true;
                 }
             }
+            if (!has_any) {
+                return logical_value_t(std::pmr::null_memory_resource(), logical_type::NA);
+            }
             return logical_value_t{v.resource(), best};
         }
         template<typename T, typename U>
@@ -130,10 +155,16 @@ namespace {
                     has_any = true;
                 }
             }
+            if (!has_any) {
+                return logical_value_t(std::pmr::null_memory_resource(), logical_type::NA);
+            }
             return logical_value_t{v.resource(), T(best)};
         }
         template<typename T>
         auto operator()(const logical_value_t& v1, const logical_value_t& v2) const {
+            if (v1.type().type() == logical_type::NA) {
+                return v2;
+            }
             if (v2.type().type() == logical_type::NA) {
                 return v1;
             }
@@ -141,6 +172,9 @@ namespace {
         }
         template<typename T, typename U>
         auto operator()(const logical_value_t& v1, const logical_value_t& v2) const {
+            if (v1.type().type() == logical_type::NA) {
+                return v2;
+            }
             if (v2.type().type() == logical_type::NA) {
                 return v1;
             }

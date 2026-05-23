@@ -174,8 +174,7 @@ namespace components::operators {
         auto filter_result = transform_predicate(resource_, expression_, types, &ctx->parameters);
         if (filter_result.has_error()) {
             set_error(filter_result.error());
-            output_ = make_operator_data(resource_, std::pmr::vector<types::complex_logical_type>{resource_});
-            mark_executed();
+            mark_failed();
             co_return;
         }
         auto filter = std::move(filter_result.value());

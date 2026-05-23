@@ -191,6 +191,7 @@ namespace components::operators {
                     break;
                 }
                 case select_column_t::kind::star_expand: {
+                    // Expand all columns from input chunk.
                     for (size_t ci = 0; ci < input.column_count(); ++ci) {
                         out_vecs.push_back(input.data[ci]);
                     }

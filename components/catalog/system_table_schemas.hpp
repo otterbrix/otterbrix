@@ -112,8 +112,8 @@ namespace components::catalog {
 
     // Encode the per-arg `input_type` tagged matcher to a flat text format suitable
     // for pg_proc.proargmatchers. Format per arg: "e:N" exact, "n" numeric, "i" integer,
-    // "f" floating, "a:N1,N2,..." any_of, "t" always_true, where N is numeric value of
-    // types::logical_type. Multiple args are pipe-separated. Empty input vector → "".
+    // "f" floating, "s" string, "a:N1,N2,..." any_of, "t" always_true, where N is numeric
+    // value of types::logical_type. Multiple args are pipe-separated. Empty input vector → "".
     std::string encode_proargmatchers(const std::vector<components::compute::input_type>& matchers);
 
     // Encode output_type list to a flat text format. Per output: "f:N" fixed type

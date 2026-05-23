@@ -48,7 +48,7 @@ namespace services::planner::impl {
             if (!probe_key.has_value()) {
                 return false;
             }
-            if (context.has_hashed_index_on(table_oid, *probe_key)) {
+            if (context.has_index_on(table_oid, *probe_key, components::logical_plan::index_type::hashed)) {
                 return true;
             }
             return context.has_index_on(table_oid, *probe_key);

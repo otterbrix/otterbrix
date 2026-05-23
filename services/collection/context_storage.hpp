@@ -7,7 +7,6 @@
 #include <components/logical_plan/node_catalog_resolve_table.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/logical_plan/param_storage.hpp>
-#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -50,23 +49,28 @@ namespace services {
         }
 
         bool has_index_on(components::catalog::oid_t oid, const components::expressions::key_t& key) const {
-            return has_index_on_by_type(oid, key, std::nullopt);
-        }
-
-        bool has_hashed_index_on(components::catalog::oid_t oid, const components::expressions::key_t& key) const {
-            return has_index_on_by_type(oid, key, components::logical_plan::index_type::hashed);
-        }
-
-    private:
-        bool has_index_on_by_type(components::catalog::oid_t oid,
-                                  const components::expressions::key_t& key,
-                                  std::optional<components::logical_plan::index_type> type) const {
             auto it = index_entries_by_oid.find(oid);
             if (it == index_entries_by_oid.end()) {
                 return false;
             }
             for (const auto& entry : it->second) {
-                if (type.has_value() && entry.type != *type) {
+                const auto& keys = entry.keys;
+                if (keys.size() == 1 && keys[0].as_string() == key.as_string()) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        bool has_index_on(components::catalog::oid_t oid,
+                          const components::expressions::key_t& key,
+                          components::logical_plan::index_type type) const {
+            auto it = index_entries_by_oid.find(oid);
+            if (it == index_entries_by_oid.end()) {
+                return false;
+            }
+            for (const auto& entry : it->second) {
+                if (entry.type != type) {
                     continue;
                 }
                 const auto& keys = entry.keys;

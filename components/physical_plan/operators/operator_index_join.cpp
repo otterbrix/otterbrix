@@ -1,7 +1,6 @@
 #include "operator_index_join.hpp"
 #include "join/join_builder.hpp"
 
-#include <algorithm>
 #include <optional>
 #include <unordered_map>
 #include <services/index/manager_index.hpp>
@@ -25,11 +24,6 @@ namespace components::operators {
             std::size_t right_idx;
             expressions::key_t left_key;
             expressions::key_t right_key;
-        };
-
-        struct row_ref_t {
-            std::size_t chunk_idx;
-            uint64_t row_idx;
         };
 
         std::optional<equi_join_key_info_t>
@@ -84,6 +78,79 @@ namespace components::operators {
         , probe_table_oid_(probe_table_oid)
         , probe_side_(probe_side) {}
 
+    void operator_index_join_t::add_row_ref(std::pmr::unordered_map<int64_t, std::pmr::vector<row_ref_t>>& refs_by_id,
+                                            int64_t row_id,
+                                            row_ref_t ref,
+                                            std::pmr::memory_resource* resource) {
+        auto it = refs_by_id.find(row_id);
+        if (it == refs_by_id.end()) {
+            std::pmr::vector<row_ref_t> refs(resource);
+            refs.emplace_back(ref);
+            refs_by_id.emplace(row_id, std::move(refs));
+        } else {
+            it->second.emplace_back(ref);
+        }
+    }
+
+    actor_zeta::unique_future<std::pmr::vector<int64_t>>
+    operator_index_join_t::search_ids(pipeline::context_t* ctx,
+                                      const expressions::key_t& probe_key,
+                                      const types::logical_value_t& value) {
+        components::index::keys_base_storage_t search_keys(resource_);
+        search_keys.emplace_back(probe_key);
+        auto [_hs, hsf] = actor_zeta::send(ctx->index_address,
+                                           &services::index::manager_index_t::search_by_type,
+                                           ctx->session,
+                                           probe_table_oid_,
+                                           components::index::keys_base_storage_t{search_keys},
+                                           types::logical_value_t{resource_, value},
+                                           expressions::compare_type::eq,
+                                           ctx->txn.start_time,
+                                           ctx->txn.transaction_id,
+                                           components::logical_plan::index_type::hashed);
+        auto ids = co_await std::move(hsf);
+        if (ids.empty()) {
+            auto [_s, sf] = actor_zeta::send(ctx->index_address,
+                                             &services::index::manager_index_t::search,
+                                             ctx->session,
+                                             probe_table_oid_,
+                                             std::move(search_keys),
+                                             types::logical_value_t{resource_, value},
+                                             expressions::compare_type::eq,
+                                             ctx->txn.start_time,
+                                             ctx->txn.transaction_id);
+            ids = co_await std::move(sf);
+        }
+        co_return ids;
+    }
+
+    void operator_index_join_t::emit_match(join::join_builder_t& builder,
+                                           const chunks_vector_t& left_chunks,
+                                           const chunks_vector_t& right_chunks,
+                                           bool probe_right,
+                                           const vector::data_chunk_t& source_chunk,
+                                           uint64_t source_row,
+                                           const row_ref_t& ref) {
+        if (probe_right) {
+            const auto& R = right_chunks[ref.chunk_idx];
+            builder.emit_matched(source_chunk, source_row, R, ref.row_idx);
+        } else {
+            const auto& L = left_chunks[ref.chunk_idx];
+            builder.emit_matched(L, ref.row_idx, source_chunk, source_row);
+        }
+    }
+
+    std::optional<std::size_t>
+    operator_index_join_t::find_type_alias_index(const std::pmr::vector<types::complex_logical_type>& types,
+                                                 const std::string& alias) {
+        for (std::size_t i = 0; i < types.size(); ++i) {
+            if (types[i].alias() == alias) {
+                return i;
+            }
+        }
+        return std::nullopt;
+    }
+
     void operator_index_join_t::on_execute_impl(pipeline::context_t* context) {
         if (!left_ || !right_) {
             return;
@@ -124,10 +191,9 @@ namespace components::operators {
         }
         for (size_t i = 0; i < right_col_count; ++i) {
             const auto& alias = right_types[i].alias();
-            auto dup =
-                std::find_if(res_types.begin(), res_types.end(), [&](const auto& t) { return t.alias() == alias; });
-            if (dup != res_types.end()) {
-                indices_right_.emplace_back(static_cast<size_t>(std::distance(res_types.begin(), dup)));
+            auto dup_idx = find_type_alias_index(res_types, alias);
+            if (dup_idx.has_value()) {
+                indices_right_.emplace_back(*dup_idx);
             } else {
                 indices_right_.emplace_back(res_types.size());
                 res_types.push_back(right_types[i]);
@@ -145,133 +211,36 @@ namespace components::operators {
 
         chunks_vector_t out_chunks(left_out->resource());
         join::join_builder_t builder(left_out->resource(), res_types, indices_left_, indices_right_, out_chunks);
+
         // Build row_id -> row_ref map for the table selected as probe side.
         std::pmr::unordered_map<int64_t, std::pmr::vector<row_ref_t>> probe_rows_by_id(resource_);
-        if (probe_side_ == probe_side_t::right) {
-            for (std::size_t rci = 0; rci < right_chunks.size(); ++rci) {
-                const auto& R = right_chunks[rci];
-                for (uint64_t rj = 0; rj < R.size(); ++rj) {
-                    const auto row_id = R.row_ids.data<int64_t>()[rj];
-                    auto it = probe_rows_by_id.find(row_id);
-                    if (it == probe_rows_by_id.end()) {
-                        std::pmr::vector<row_ref_t> refs(resource_);
-                        refs.emplace_back(row_ref_t{rci, rj});
-                        probe_rows_by_id.emplace(row_id, std::move(refs));
-                    } else {
-                        it->second.emplace_back(row_ref_t{rci, rj});
-                    }
-                }
-            }
-        } else {
-            for (std::size_t lci = 0; lci < left_chunks.size(); ++lci) {
-                const auto& L = left_chunks[lci];
-                for (uint64_t li = 0; li < L.size(); ++li) {
-                    const auto row_id = L.row_ids.data<int64_t>()[li];
-                    auto it = probe_rows_by_id.find(row_id);
-                    if (it == probe_rows_by_id.end()) {
-                        std::pmr::vector<row_ref_t> refs(resource_);
-                        refs.emplace_back(row_ref_t{lci, li});
-                        probe_rows_by_id.emplace(row_id, std::move(refs));
-                    } else {
-                        it->second.emplace_back(row_ref_t{lci, li});
-                    }
-                }
+        const bool probe_right = probe_side_ == probe_side_t::right;
+        const auto& probe_chunks = probe_right ? right_chunks : left_chunks;
+        for (std::size_t ci = 0; ci < probe_chunks.size(); ++ci) {
+            const auto& chunk = probe_chunks[ci];
+            for (uint64_t row = 0; row < chunk.size(); ++row) {
+                add_row_ref(probe_rows_by_id, chunk.row_ids.data<int64_t>()[row], row_ref_t{ci, row}, resource_);
             }
         }
 
-        if (probe_side_ == probe_side_t::right) {
-            for (const auto& L : left_chunks) {
-                for (uint64_t li = 0; li < L.size(); ++li) {
-                    auto left_key_val = L.data[key_info->left_idx].value(li);
-                    if (left_key_val.is_null()) {
-                        continue;
-                    }
+        const auto& source_chunks = probe_right ? left_chunks : right_chunks;
+        const auto source_key_idx = probe_right ? key_info->left_idx : key_info->right_idx;
+        const auto& probe_key = probe_right ? key_info->right_key : key_info->left_key;
 
-                    components::index::keys_base_storage_t search_keys(resource_);
-                    search_keys.emplace_back(key_info->right_key);
-                    auto [_hs, hsf] = actor_zeta::send(ctx->index_address,
-                                                       &services::index::manager_index_t::search_by_type,
-                                                       ctx->session,
-                                                       probe_table_oid_,
-                                                       components::index::keys_base_storage_t{search_keys},
-                                                       types::logical_value_t{resource_, left_key_val},
-                                                       expressions::compare_type::eq,
-                                                       ctx->txn.start_time,
-                                                       ctx->txn.transaction_id,
-                                                       components::logical_plan::index_type::hashed);
-                    auto ids = co_await std::move(hsf);
-                    if (ids.empty()) {
-                        auto [_s, sf] = actor_zeta::send(ctx->index_address,
-                                                         &services::index::manager_index_t::search,
-                                                         ctx->session,
-                                                         probe_table_oid_,
-                                                         std::move(search_keys),
-                                                         types::logical_value_t{resource_, left_key_val},
-                                                         expressions::compare_type::eq,
-                                                         ctx->txn.start_time,
-                                                         ctx->txn.transaction_id);
-                        ids = co_await std::move(sf);
-                    }
-                    if (ids.empty()) {
-                        continue;
-                    }
-                    for (auto id : ids) {
-                        auto it = probe_rows_by_id.find(id);
-                        if (it == probe_rows_by_id.end()) {
-                            continue;
-                        }
-                        for (const auto& ref : it->second) {
-                            const auto& R = right_chunks[ref.chunk_idx];
-                            builder.emit_matched(L, li, R, ref.row_idx);
-                        }
-                    }
+        for (const auto& source_chunk : source_chunks) {
+            for (uint64_t source_row = 0; source_row < source_chunk.size(); ++source_row) {
+                auto key_val = source_chunk.data[source_key_idx].value(source_row);
+                if (key_val.is_null()) {
+                    continue;
                 }
-            }
-        } else {
-            for (const auto& R : right_chunks) {
-                for (uint64_t rj = 0; rj < R.size(); ++rj) {
-                    auto right_key_val = R.data[key_info->right_idx].value(rj);
-                    if (right_key_val.is_null()) {
+                auto ids = co_await search_ids(ctx, probe_key, key_val);
+                for (auto id : ids) {
+                    auto it = probe_rows_by_id.find(id);
+                    if (it == probe_rows_by_id.end()) {
                         continue;
                     }
-
-                    components::index::keys_base_storage_t search_keys(resource_);
-                    search_keys.emplace_back(key_info->left_key);
-                    auto [_hs, hsf] = actor_zeta::send(ctx->index_address,
-                                                       &services::index::manager_index_t::search_by_type,
-                                                       ctx->session,
-                                                       probe_table_oid_,
-                                                       components::index::keys_base_storage_t{search_keys},
-                                                       types::logical_value_t{resource_, right_key_val},
-                                                       expressions::compare_type::eq,
-                                                       ctx->txn.start_time,
-                                                       ctx->txn.transaction_id,
-                                                       components::logical_plan::index_type::hashed);
-                    auto ids = co_await std::move(hsf);
-                    if (ids.empty()) {
-                        auto [_s, sf] = actor_zeta::send(ctx->index_address,
-                                                         &services::index::manager_index_t::search,
-                                                         ctx->session,
-                                                         probe_table_oid_,
-                                                         std::move(search_keys),
-                                                         types::logical_value_t{resource_, right_key_val},
-                                                         expressions::compare_type::eq,
-                                                         ctx->txn.start_time,
-                                                         ctx->txn.transaction_id);
-                        ids = co_await std::move(sf);
-                    }
-                    if (ids.empty()) {
-                        continue;
-                    }
-                    for (auto id : ids) {
-                        auto it = probe_rows_by_id.find(id);
-                        if (it == probe_rows_by_id.end()) {
-                            continue;
-                        }
-                        for (const auto& ref : it->second) {
-                            const auto& L = left_chunks[ref.chunk_idx];
-                            builder.emit_matched(L, ref.row_idx, R, rj);
-                        }
+                    for (const auto& ref : it->second) {
+                        emit_match(builder, left_chunks, right_chunks, probe_right, source_chunk, source_row, ref);
                     }
                 }
             }

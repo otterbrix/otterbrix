@@ -26,6 +26,7 @@ namespace components::index {
         explicit index_engine_t(std::pmr::memory_resource* resource);
         auto matching(id_index id) -> index_t::pointer;
         auto matching(const keys_base_storage_t& query) -> index_t::pointer;
+        auto matching(const keys_base_storage_t& query, logical_plan::index_type type) -> index_t::pointer;
         auto matching(const actor_zeta::address_t& address) -> index_t::pointer;
         auto matching(const std::string& name) -> index_t::pointer;
         auto has_index(const std::string& name)

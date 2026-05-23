@@ -121,6 +121,15 @@ namespace components::index {
         return nullptr;
     }
 
+    auto index_engine_t::matching(const keys_base_storage_t& query, logical_plan::index_type type) -> index_t::pointer {
+        for (const auto& idx : storage_) {
+            if (idx && idx->type() == type && idx->keys_ == query) {
+                return idx.get();
+            }
+        }
+        return nullptr;
+    }
+
     auto index_engine_t::matching(const actor_zeta::address_t& address) -> index_t::pointer {
         auto it = index_to_address_.find(address);
         if (it != index_to_address_.end()) {

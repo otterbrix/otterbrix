@@ -4,7 +4,9 @@
 #include <components/vector/vector_operations.hpp>
 
 namespace components::operators::join {
-
+    // Streams join output into a std::vector<data_chunk_t> where every chunk is
+    // ≤ DEFAULT_VECTOR_CAPACITY (1024) rows. Emits rows one at a time via
+    // vector_ops::copy and flushes on each full chunk.
     class join_builder_t {
     public:
         join_builder_t(std::pmr::memory_resource* resource,
@@ -36,6 +38,7 @@ namespace components::operators::join {
             ++filled_;
         }
 
+        // L row with NULLs on all right-side output columns.
         void emit_left_only(const vector::data_chunk_t& L, uint64_t li) {
             ensure_space();
             copy_left_row(L, li);
@@ -45,6 +48,7 @@ namespace components::operators::join {
             ++filled_;
         }
 
+            // R row with NULLs on all left-side output columns.
         void emit_right_only(const vector::data_chunk_t& R, uint64_t rj) {
             ensure_space();
             copy_right_row(R, rj);
@@ -54,8 +58,11 @@ namespace components::operators::join {
             ++filled_;
         }
 
-    private:
-        static bool is_placeholder(const vector::vector_t& v) noexcept {
+        private:
+
+        // Placeholder columns (produced by projected scans) have no buffer and no auxiliary.
+        // They must be skipped when copying — vector_ops::copy would dereference a null data_.
+        bool is_placeholder(const vector::vector_t& v) noexcept {
             return v.data() == nullptr && v.auxiliary() == nullptr;
         }
 

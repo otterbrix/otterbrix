@@ -34,6 +34,29 @@ namespace {
         return cur->size();
     }
 
+    std::uint64_t exec_count(otterbrix::wrapper_dispatcher_t* dispatcher,
+                             const otterbrix::session_id_t& session,
+                             const std::string& sql) {
+        auto cur = dispatcher->execute_sql(session, sql);
+        ensure_ok(cur, sql);
+        if (cur->size() != 1) {
+            throw std::runtime_error("unexpected cursor size for count query: " + std::to_string(cur->size()));
+        }
+        const auto v = cur->chunk_data().value(0, 0);
+        const auto t = v.type().type();
+        if (t == components::types::logical_type::UBIGINT) {
+            return v.value<std::uint64_t>();
+        }
+        if (t == components::types::logical_type::BIGINT) {
+            const auto x = v.value<std::int64_t>();
+            if (x < 0) {
+                throw std::runtime_error("negative COUNT(*) result");
+            }
+            return static_cast<std::uint64_t>(x);
+        }
+        throw std::runtime_error("unexpected COUNT(*) type");
+    }
+
     void create_schema(otterbrix::wrapper_dispatcher_t* dispatcher, const otterbrix::session_id_t& session) {
         exec_size(dispatcher, session, "CREATE DATABASE bench;");
         exec_size(dispatcher, session, "CREATE TABLE bench.l();");
@@ -147,9 +170,10 @@ namespace {
 
         std::cout << "warmup\n";
         const std::string join_sql = "SELECT COUNT(*) FROM bench.l l INNER JOIN bench.r r ON l.k = r.k;";
-        auto warmup_rows = exec_size(dispatcher, session, join_sql);
-        if (warmup_rows != 1) {
-            throw std::runtime_error("unexpected join cursor size in warmup");
+        const auto expected_count = static_cast<std::uint64_t>(rows_left);
+        auto warmup_count = exec_count(dispatcher, session, join_sql);
+        if (warmup_count != expected_count) {
+            throw std::runtime_error("unexpected join COUNT(*) in warmup");
         }
 
         std::cout << "exec\n";
@@ -157,10 +181,10 @@ namespace {
         ms.reserve(static_cast<std::size_t>(repeats));
         for (int i = 0; i < repeats; ++i) {
             auto t0 = std::chrono::steady_clock::now();
-            auto rows = exec_size(dispatcher, session, join_sql);
+            auto count = exec_count(dispatcher, session, join_sql);
             auto t1 = std::chrono::steady_clock::now();
-            if (rows != 1) {
-                throw std::runtime_error("unexpected join cursor size in measured run");
+            if (count != expected_count) {
+                throw std::runtime_error("unexpected join COUNT(*) in measured run");
             }
             auto dur = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
             ms.push_back(static_cast<double>(dur) / 1000.0);
@@ -172,7 +196,7 @@ namespace {
         out.max_ms = ms.back();
         out.median_ms = ms[ms.size() / 2];
         out.avg_ms = std::accumulate(ms.begin(), ms.end(), 0.0) / static_cast<double>(ms.size());
-        out.result_rows = warmup_rows;
+        out.result_rows = static_cast<std::size_t>(warmup_count);
         return out;
     }
 } // namespace

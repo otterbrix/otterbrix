@@ -177,16 +177,29 @@ namespace components::operators {
 
                 components::index::keys_base_storage_t search_keys(resource_);
                 search_keys.emplace_back(key_info->right_key);
-                auto [_s, sf] = actor_zeta::send(ctx->index_address,
-                                                 &services::index::manager_index_t::search,
-                                                 ctx->session,
-                                                 probe_table_oid_,
-                                                 std::move(search_keys),
-                                                 types::logical_value_t{resource_, left_key_val},
-                                                 expressions::compare_type::eq,
-                                                 ctx->txn.start_time,
-                                                 ctx->txn.transaction_id);
-                auto ids = co_await std::move(sf);
+                auto [_hs, hsf] = actor_zeta::send(ctx->index_address,
+                                                   &services::index::manager_index_t::search_by_type,
+                                                   ctx->session,
+                                                   probe_table_oid_,
+                                                   components::index::keys_base_storage_t{search_keys},
+                                                   types::logical_value_t{resource_, left_key_val},
+                                                   expressions::compare_type::eq,
+                                                   ctx->txn.start_time,
+                                                   ctx->txn.transaction_id,
+                                                   components::logical_plan::index_type::hashed);
+                auto ids = co_await std::move(hsf);
+                if (ids.empty()) {
+                    auto [_s, sf] = actor_zeta::send(ctx->index_address,
+                                                     &services::index::manager_index_t::search,
+                                                     ctx->session,
+                                                     probe_table_oid_,
+                                                     std::move(search_keys),
+                                                     types::logical_value_t{resource_, left_key_val},
+                                                     expressions::compare_type::eq,
+                                                     ctx->txn.start_time,
+                                                     ctx->txn.transaction_id);
+                    ids = co_await std::move(sf);
+                }
                 if (ids.empty()) {
                     continue;
                 }

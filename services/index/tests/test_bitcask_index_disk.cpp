@@ -8,6 +8,7 @@
 #include <random>
 #include <thread>
 #include <unordered_set>
+#include <charconv>
 
 using components::types::logical_value_t;
 using services::index::bitcask_index_disk_t;

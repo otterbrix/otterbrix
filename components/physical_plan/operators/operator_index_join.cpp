@@ -31,16 +31,6 @@ namespace components::operators {
             uint64_t row_idx;
         };
 
-        struct value_hash_t {
-            std::size_t operator()(const types::logical_value_t& v) const noexcept { return v.hash(); }
-        };
-
-        struct value_equal_t {
-            bool operator()(const types::logical_value_t& a, const types::logical_value_t& b) const noexcept {
-                return a == b;
-            }
-        };
-
         std::optional<equi_join_key_info_t>
         try_extract_inner_equi_keys(const expressions::expression_ptr& expression,
                                     const std::pmr::vector<types::complex_logical_type>& left_types,
@@ -146,22 +136,18 @@ namespace components::operators {
 
         chunks_vector_t out_chunks(left_out->resource());
         join::join_builder_t builder(left_out->resource(), res_types, indices_left_, indices_right_, out_chunks);
-        // Build value->rows map from right pipeline output (for projected/typed output),
-        // while probe itself is performed via existing index_service index.
-        std::pmr::unordered_map<types::logical_value_t, std::pmr::vector<row_ref_t>, value_hash_t, value_equal_t>
-            right_map(resource_);
+        // Build row_id -> row_ref map from right pipeline output.
+        // Index service returns physical row_ids, so join output is driven by those ids.
+        std::pmr::unordered_map<int64_t, std::pmr::vector<row_ref_t>> right_rows_by_id(resource_);
         for (std::size_t rci = 0; rci < right_chunks.size(); ++rci) {
             const auto& R = right_chunks[rci];
             for (uint64_t rj = 0; rj < R.size(); ++rj) {
-                auto key_val = R.data[key_info->right_idx].value(rj);
-                if (key_val.is_null()) {
-                    continue;
-                }
-                auto it = right_map.find(key_val);
-                if (it == right_map.end()) {
+                const auto row_id = R.row_ids.data<int64_t>()[rj];
+                auto it = right_rows_by_id.find(row_id);
+                if (it == right_rows_by_id.end()) {
                     std::pmr::vector<row_ref_t> refs(resource_);
                     refs.emplace_back(row_ref_t{rci, rj});
-                    right_map.emplace(std::move(key_val), std::move(refs));
+                    right_rows_by_id.emplace(row_id, std::move(refs));
                 } else {
                     it->second.emplace_back(row_ref_t{rci, rj});
                 }
@@ -203,14 +189,15 @@ namespace components::operators {
                 if (ids.empty()) {
                     continue;
                 }
-
-                auto it = right_map.find(left_key_val);
-                if (it == right_map.end()) {
-                    continue;
-                }
-                for (const auto& ref : it->second) {
-                    const auto& R = right_chunks[ref.chunk_idx];
-                    builder.emit_matched(L, li, R, ref.row_idx);
+                for (auto id : ids) {
+                    auto it = right_rows_by_id.find(id);
+                    if (it == right_rows_by_id.end()) {
+                        continue;
+                    }
+                    for (const auto& ref : it->second) {
+                        const auto& R = right_chunks[ref.chunk_idx];
+                        builder.emit_matched(L, li, R, ref.row_idx);
+                    }
                 }
             }
         }

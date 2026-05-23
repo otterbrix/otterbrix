@@ -46,8 +46,6 @@ namespace components::operators {
             const auto& lhs_key = std::get<expressions::key_t>(comp->left());
             const auto& rhs_key = std::get<expressions::key_t>(comp->right());
             auto lhs_left = find_key_in_types(left_types, lhs_key);
-            auto lhs_right = find_key_in_types(right_types, lhs_key);
-            auto rhs_left = find_key_in_types(left_types, rhs_key);
             auto rhs_right = find_key_in_types(right_types, rhs_key);
 
             if (lhs_left.has_value() && rhs_right.has_value()) {
@@ -55,12 +53,6 @@ namespace components::operators {
                                             *rhs_right,
                                             expressions::key_t(resource, lhs_key.as_string()),
                                             expressions::key_t(resource, rhs_key.as_string())};
-            }
-            if (rhs_left.has_value() && lhs_right.has_value()) {
-                return equi_join_key_info_t{*rhs_left,
-                                            *lhs_right,
-                                            expressions::key_t(resource, rhs_key.as_string()),
-                                            expressions::key_t(resource, lhs_key.as_string())};
             }
             return std::nullopt;
         }

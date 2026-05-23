@@ -73,14 +73,14 @@ namespace services::index {
                                                         components::expressions::compare_type compare,
                                                         uint64_t start_time,
                                                         uint64_t txn_id);
-        unique_future<std::pmr::vector<int64_t>> search_by_type(session_id_t session,
-                                                                components::catalog::oid_t table_oid,
-                                                                components::index::keys_base_storage_t keys,
-                                                                components::types::logical_value_t value,
-                                                                components::expressions::compare_type compare,
-                                                                uint64_t start_time,
-                                                                uint64_t txn_id,
-                                                                components::logical_plan::index_type type);
+        unique_future<std::pmr::vector<int64_t>> search_with_preferred_type(session_id_t session,
+                                                                             components::catalog::oid_t table_oid,
+                                                                             components::index::keys_base_storage_t keys,
+                                                                             components::types::logical_value_t value,
+                                                                             components::expressions::compare_type compare,
+                                                                             uint64_t start_time,
+                                                                             uint64_t txn_id,
+                                                                             components::logical_plan::index_type preferred_type);
 
         unique_future<bool>
         has_index(session_id_t session, components::catalog::oid_t table_oid, index_name_t index_name);
@@ -107,7 +107,7 @@ namespace services::index {
                                                             &index_contract::create_index,
                                                             &index_contract::drop_index,
                                                             &index_contract::search,
-                                                            &index_contract::search_by_type,
+                                                            &index_contract::search_with_preferred_type,
                                                             &index_contract::has_index,
                                                             &index_contract::flush_all_indexes,
                                                             &index_contract::get_indexed_keys,

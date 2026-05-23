@@ -97,14 +97,15 @@ namespace services::index {
                                                         components::expressions::compare_type compare,
                                                         uint64_t start_time,
                                                         uint64_t txn_id);
-        unique_future<std::pmr::vector<int64_t>> search_by_type(session_id_t session,
-                                                                components::catalog::oid_t table_oid,
-                                                                components::index::keys_base_storage_t keys,
-                                                                components::types::logical_value_t value,
-                                                                components::expressions::compare_type compare,
-                                                                uint64_t start_time,
-                                                                uint64_t txn_id,
-                                                                components::logical_plan::index_type type);
+        unique_future<std::pmr::vector<int64_t>> search_with_preferred_type(
+            session_id_t session,
+            components::catalog::oid_t table_oid,
+            components::index::keys_base_storage_t keys,
+            components::types::logical_value_t value,
+            components::expressions::compare_type compare,
+            uint64_t start_time,
+            uint64_t txn_id,
+            components::logical_plan::index_type preferred_type);
 
         unique_future<bool>
         has_index(session_id_t session, components::catalog::oid_t table_oid, index_name_t index_name);
@@ -132,7 +133,7 @@ namespace services::index {
                                                        &manager_index_t::create_index,
                                                        &manager_index_t::drop_index,
                                                        &manager_index_t::search,
-                                                       &manager_index_t::search_by_type,
+                                                       &manager_index_t::search_with_preferred_type,
                                                        &manager_index_t::has_index,
                                                        &manager_index_t::flush_all_indexes,
                                                        &manager_index_t::get_indexed_keys,

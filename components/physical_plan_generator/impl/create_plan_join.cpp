@@ -23,7 +23,7 @@ namespace services::planner::impl {
         }
 
         std::optional<components::expressions::key_t>
-        extract_probe_key_for_right_side(const components::expressions::expression_ptr& expr) {
+        extract_probe_key_for_side(const components::expressions::expression_ptr& expr, components::expressions::side_t side) {
             using namespace components::expressions;
             if (!is_simple_inner_eq_join(expr)) {
                 return std::nullopt;
@@ -31,26 +31,27 @@ namespace services::planner::impl {
             auto comp = static_cast<const compare_expression_t*>(expr.get());
             const auto& lhs = std::get<components::expressions::key_t>(comp->left());
             const auto& rhs = std::get<components::expressions::key_t>(comp->right());
-            if (lhs.side() == side_t::right) {
+            if (lhs.side() == side) {
                 return lhs;
             }
-            if (rhs.side() == side_t::right) {
+            if (rhs.side() == side) {
                 return rhs;
             }
             return std::nullopt;
         }
 
         bool has_index_on_key_preferring_hashed(const context_storage_t& context,
-                                                components::catalog::oid_t right_oid,
-                                                const components::expressions::expression_ptr& expr) {
-            auto probe_key = extract_probe_key_for_right_side(expr);
+                                                components::catalog::oid_t table_oid,
+                                                const components::expressions::expression_ptr& expr,
+                                                components::expressions::side_t side) {
+            auto probe_key = extract_probe_key_for_side(expr, side);
             if (!probe_key.has_value()) {
                 return false;
             }
-            if (context.has_hashed_index_on(right_oid, *probe_key)) {
+            if (context.has_hashed_index_on(table_oid, *probe_key)) {
                 return true;
             }
-            return context.has_index_on(right_oid, *probe_key);
+            return context.has_index_on(table_oid, *probe_key);
         }
     } // namespace
 
@@ -66,12 +67,22 @@ namespace services::planner::impl {
         auto left_oid = node->children().front()->table_oid();
         auto right_oid = node->children().back()->table_oid();
         bool known = context.has_table_oid(left_oid) || context.has_table_oid(right_oid);
-        const bool index_join_candidate =
+        const bool right_candidate =
             join_node->type() == components::logical_plan::join_type::inner &&
             !node->expressions().empty() &&
             is_simple_inner_eq_join(node->expressions()[0]) &&
-            has_index_on_key_preferring_hashed(context, right_oid, node->expressions()[0]) &&
+            has_index_on_key_preferring_hashed(context, right_oid, node->expressions()[0], components::expressions::side_t::right) &&
             right_oid != components::catalog::INVALID_OID;
+        const bool left_candidate =
+            join_node->type() == components::logical_plan::join_type::inner &&
+            !node->expressions().empty() &&
+            is_simple_inner_eq_join(node->expressions()[0]) &&
+            has_index_on_key_preferring_hashed(context, left_oid, node->expressions()[0], components::expressions::side_t::left) &&
+            left_oid != components::catalog::INVALID_OID;
+        const bool index_join_candidate = right_candidate || left_candidate;
+        const auto probe_oid = right_candidate ? right_oid : left_oid;
+        const auto probe_side = right_candidate ? components::operators::operator_index_join_t::probe_side_t::right
+                                                : components::operators::operator_index_join_t::probe_side_t::left;
         auto* op_resource = known ? context.resource : nullptr;
         auto op_log = known ? context.log.clone() : log_t{};
         components::operators::operator_ptr join =
@@ -80,7 +91,8 @@ namespace services::planner::impl {
                                                                                                         std::move(op_log),
                                                                                                         join_node->type(),
                                                                                                         node->expressions()[0],
-                                                                                                        right_oid))
+                                                                                                        probe_oid,
+                                                                                                        probe_side))
                 : components::operators::operator_ptr(new components::operators::operator_join_t(op_resource,
                                                                                                   std::move(op_log),
                                                                                                   join_node->type(),

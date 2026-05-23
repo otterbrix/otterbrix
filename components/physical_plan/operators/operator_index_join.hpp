@@ -13,12 +13,18 @@ namespace components::operators {
     class operator_index_join_t final : public read_only_operator_t {
     public:
         using type = logical_plan::join_type;
+        enum class probe_side_t : uint8_t
+        {
+            right = 0,
+            left = 1
+        };
 
         operator_index_join_t(std::pmr::memory_resource* resource,
                               log_t log,
                               type join_type,
                               const expressions::expression_ptr& expression,
-                              components::catalog::oid_t probe_table_oid);
+                              components::catalog::oid_t probe_table_oid,
+                              probe_side_t probe_side = probe_side_t::right);
 
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
@@ -26,6 +32,7 @@ namespace components::operators {
         type join_type_;
         expressions::expression_ptr expression_;
         components::catalog::oid_t probe_table_oid_;
+        probe_side_t probe_side_;
         std::vector<size_t> indices_left_;
         std::vector<size_t> indices_right_;
 
@@ -33,4 +40,3 @@ namespace components::operators {
     };
 
 } // namespace components::operators
-

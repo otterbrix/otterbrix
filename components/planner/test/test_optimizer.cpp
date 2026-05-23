@@ -329,6 +329,38 @@ TEST_CASE("planner::create_plan_join_uses_index_join_for_inner_eq_with_single_in
     REQUIRE(dynamic_cast<components::operators::operator_index_join_t*>(plan.get()) != nullptr);
 }
 
+TEST_CASE("planner::create_plan_join_uses_index_join_for_inner_eq_with_left_side_index") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    services::context_storage_t ctx(&resource, log_t{});
+
+    auto left_oid = components::catalog::oid_t{311};
+    auto right_oid = components::catalog::oid_t{312};
+    ctx.known_oids.insert(left_oid);
+    ctx.known_oids.insert(right_oid);
+
+    components::index::keys_base_storage_t left_keys(&resource);
+    left_keys.emplace_back(key(&resource, "lk", side_t::left));
+    ctx.hashed_indexed_keys_by_oid[left_oid].emplace_back(left_keys);
+
+    auto left = make_node_match(&resource, core::dbname_t{"db"}, core::relname_t{"l"}, nullptr);
+    auto right = make_node_match(&resource, core::dbname_t{"db"}, core::relname_t{"r"}, nullptr);
+    left->set_table_oid(left_oid);
+    right->set_table_oid(right_oid);
+
+    auto join = make_node_join(&resource, core::dbname_t{"db"}, core::relname_t{"j"}, join_type::inner);
+    join->append_child(left);
+    join->append_child(right);
+    join->append_expression(
+        make_compare_expression(&resource, compare_type::eq, key(&resource, "lk", side_t::left), key(&resource, "rk", side_t::right)));
+
+    auto plan = services::planner::create_plan(ctx,
+                                               *components::compute::function_registry_t::get_default(),
+                                               join,
+                                               limit_t::unlimit(),
+                                               nullptr);
+    REQUIRE(dynamic_cast<components::operators::operator_index_join_t*>(plan.get()) != nullptr);
+}
+
 TEST_CASE("planner::create_plan_join_falls_back_without_any_index") {
     auto resource = std::pmr::synchronized_pool_resource();
     services::context_storage_t ctx(&resource, log_t{});

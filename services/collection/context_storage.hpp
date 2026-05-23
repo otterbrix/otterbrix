@@ -18,8 +18,10 @@ namespace services {
         // via the resolved table_oid stamped on the logical_plan node.
         // Wrapper / parser-window paths fall back to the empty set.
         std::unordered_set<components::catalog::oid_t> known_oids;
-        std::pmr::vector<components::index::keys_base_storage_t> indexed_keys;
-        std::pmr::vector<components::index::keys_base_storage_t> hashed_indexed_keys;
+        std::unordered_map<components::catalog::oid_t, std::vector<components::index::keys_base_storage_t>>
+            indexed_keys_by_oid;
+        std::unordered_map<components::catalog::oid_t, std::vector<components::index::keys_base_storage_t>>
+            hashed_indexed_keys_by_oid;
         const components::logical_plan::storage_parameters* parameters = nullptr;
         // oid -> resolved_table_metadata_t* stamped by Pass 1's
         // operator_resolve_table_t. Plan generators (transfer_scan in
@@ -31,8 +33,8 @@ namespace services {
         context_storage_t(std::pmr::memory_resource* resource, log_t log)
             : resource(resource)
             , log(std::move(log))
-            , indexed_keys(resource)
-            , hashed_indexed_keys(resource) {}
+            , indexed_keys_by_oid()
+            , hashed_indexed_keys_by_oid() {}
 
         bool has_table_oid(components::catalog::oid_t oid) const noexcept {
             return oid != components::catalog::INVALID_OID && known_oids.count(oid) > 0;
@@ -44,8 +46,12 @@ namespace services {
             return it != table_metadata.end() ? it->second : nullptr;
         }
 
-        bool has_index_on(const components::expressions::key_t& key) const {
-            for (const auto& keys : indexed_keys) {
+        bool has_index_on(components::catalog::oid_t oid, const components::expressions::key_t& key) const {
+            auto it = indexed_keys_by_oid.find(oid);
+            if (it == indexed_keys_by_oid.end()) {
+                return false;
+            }
+            for (const auto& keys : it->second) {
                 if (keys.size() == 1 && keys[0].as_string() == key.as_string()) {
                     return true;
                 }
@@ -53,8 +59,12 @@ namespace services {
             return false;
         }
 
-        bool has_hashed_index_on(const components::expressions::key_t& key) const {
-            for (const auto& keys : hashed_indexed_keys) {
+        bool has_hashed_index_on(components::catalog::oid_t oid, const components::expressions::key_t& key) const {
+            auto it = hashed_indexed_keys_by_oid.find(oid);
+            if (it == hashed_indexed_keys_by_oid.end()) {
+                return false;
+            }
+            for (const auto& keys : it->second) {
                 if (keys.size() == 1 && keys[0].as_string() == key.as_string()) {
                     return true;
                 }

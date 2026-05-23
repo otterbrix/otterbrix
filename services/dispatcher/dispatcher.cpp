@@ -1628,20 +1628,56 @@ namespace services::dispatcher {
             }
         }
 
-        // Populate index metadata for optimizer-driven index selection.
-        // Keyed on table_oid (stamped by enrich_logical_plan).
-        if (index_address_ != actor_zeta::address_t::empty_address()) {
-            const auto tbl_oid = logical_plan->table_oid();
-            if (tbl_oid != components::catalog::INVALID_OID) {
+        auto needs_index_metadata = [](const node_ptr& root) {
+            std::function<bool(const node_ptr&)> walk = [&](const node_ptr& n) -> bool {
+                if (!n) {
+                    return false;
+                }
+                if (n->type() == components::logical_plan::node_type::match_t ||
+                    n->type() == components::logical_plan::node_type::join_t) {
+                    return true;
+                }
+                for (const auto& ch : n->children()) {
+                    if (walk(ch)) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+            return walk(root);
+        };
+
+        // Populate index metadata only for plans that can use index/index_join.
+        // For wrapper/root nodes (e.g. JOIN/SEQUENCE) root table_oid can be
+        // INVALID, so collect index keys from all resolved table dependencies.
+        if (index_address_ != actor_zeta::address_t::empty_address() && needs_index_metadata(logical_plan)) {
+            for (auto tbl_oid : dependency_oids) {
+                if (tbl_oid == components::catalog::INVALID_OID) {
+                    continue;
+                }
                 auto [_ik, ikf] =
                     actor_zeta::send(index_address_, &index::manager_index_t::get_indexed_keys, session, tbl_oid);
-                collections_context_storage.indexed_keys = co_await std::move(ikf);
+                auto keys = co_await std::move(ikf);
+                auto [it_keys, _new_keys] = collections_context_storage.indexed_keys_by_oid.try_emplace(tbl_oid);
+                auto& dst_keys = it_keys->second;
+                for (auto& k : keys) {
+                    dst_keys.emplace_back(std::move(k));
+                }
+                if (dst_keys.empty()) {
+                    continue;
+                }
                 auto [_hk, hkf] = actor_zeta::send(index_address_,
                                                    &index::manager_index_t::get_indexed_keys_by_type,
                                                    session,
                                                    tbl_oid,
                                                    components::logical_plan::index_type::hashed);
-                collections_context_storage.hashed_indexed_keys = co_await std::move(hkf);
+                auto hkeys = co_await std::move(hkf);
+                auto [it_hkeys, _new_hkeys] =
+                    collections_context_storage.hashed_indexed_keys_by_oid.try_emplace(tbl_oid);
+                auto& dst_hkeys = it_hkeys->second;
+                for (auto& k : hkeys) {
+                    dst_hkeys.emplace_back(std::move(k));
+                }
             }
         }
         collections_context_storage.parameters = &parameters;

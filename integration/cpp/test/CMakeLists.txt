@@ -82,3 +82,26 @@ target_link_libraries(profile_arithmetic PRIVATE
         ZLIB::ZLIB
         BZip2::BZip2
 )
+
+# Profiling binary for index-join vs regular join
+add_executable(profile_index_join profile_index_join.cpp)
+target_link_libraries(profile_index_join PRIVATE
+        cpp_otterbrix
+        otterbrix::test_generaty
+        otterbrix::log
+        otterbrix::cursor
+        otterbrix::session
+        otterbrix::services
+        otterbrix::locks
+        spdlog::spdlog
+        msgpackc-cxx
+        Catch2::Catch2
+        absl::crc32c
+        absl::int128
+        benchmark::benchmark
+        actor-zeta::actor-zeta
+        Boost::boost
+        fmt::fmt
+        ZLIB::ZLIB
+        BZip2::BZip2
+)

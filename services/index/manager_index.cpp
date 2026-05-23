@@ -5,6 +5,7 @@
 
 #include <actor-zeta/spawn.hpp>
 #include <components/index/index_engine.hpp>
+#include <components/index/hash_single_field_index.hpp>
 #include <components/index/single_field_index.hpp>
 #include <core/b_plus_tree/b_plus_tree.hpp>
 #include <core/b_plus_tree/msgpack_reader/msgpack_reader.hpp>
@@ -175,6 +176,10 @@ namespace services::index {
                 co_await actor_zeta::dispatch(this, &manager_index_t::get_indexed_keys, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::get_indexed_keys_by_type>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::get_indexed_keys_by_type, msg);
+                break;
+            }
             default:
                 break;
         }
@@ -271,6 +276,11 @@ namespace services::index {
             case components::logical_plan::index_type::single: {
                 id_index =
                     components::index::make_index<components::index::single_field_index_t>(engine, index_name, keys);
+                break;
+            }
+            case components::logical_plan::index_type::hashed: {
+                id_index =
+                    components::index::make_index<components::index::hash_single_field_index_t>(engine, index_name, keys);
                 break;
             }
             default:

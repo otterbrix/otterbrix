@@ -41,9 +41,10 @@ namespace services::planner::impl {
         }
 
         bool has_hashed_index_on_key(const context_storage_t& context,
+                                     components::catalog::oid_t right_oid,
                                      const components::expressions::expression_ptr& expr) {
             auto probe_key = extract_probe_key_for_right_side(expr);
-            return probe_key.has_value() && context.has_hashed_index_on(*probe_key);
+            return probe_key.has_value() && context.has_hashed_index_on(right_oid, *probe_key);
         }
     } // namespace
 
@@ -63,7 +64,7 @@ namespace services::planner::impl {
             join_node->type() == components::logical_plan::join_type::inner &&
             !node->expressions().empty() &&
             is_simple_inner_eq_join(node->expressions()[0]) &&
-            has_hashed_index_on_key(context, node->expressions()[0]) &&
+            has_hashed_index_on_key(context, right_oid, node->expressions()[0]) &&
             right_oid != components::catalog::INVALID_OID;
         auto* op_resource = known ? context.resource : nullptr;
         auto op_log = known ? context.log.clone() : log_t{};

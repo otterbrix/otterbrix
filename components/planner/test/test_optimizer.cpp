@@ -276,7 +276,7 @@ TEST_CASE("planner::create_plan_join_uses_index_join_for_inner_eq_with_hashed_in
 
     components::index::keys_base_storage_t hashed_keys(&resource);
     hashed_keys.emplace_back(key(&resource, "rk", side_t::right));
-    ctx.hashed_indexed_keys.emplace_back(hashed_keys);
+    ctx.hashed_indexed_keys_by_oid[right_oid].emplace_back(hashed_keys);
 
     auto left = make_node_match(&resource, core::dbname_t{"db"}, core::relname_t{"l"}, nullptr);
     auto right = make_node_match(&resource, core::dbname_t{"db"}, core::relname_t{"r"}, nullptr);
@@ -337,7 +337,7 @@ TEST_CASE("planner::create_plan_join_falls_back_for_non_inner") {
 
     components::index::keys_base_storage_t hashed_keys(&resource);
     hashed_keys.emplace_back(key(&resource, "rk", side_t::right));
-    ctx.hashed_indexed_keys.emplace_back(hashed_keys);
+    ctx.hashed_indexed_keys_by_oid[right_oid].emplace_back(hashed_keys);
 
     auto left = make_node_match(&resource, core::dbname_t{"db"}, core::relname_t{"l"}, nullptr);
     auto right = make_node_match(&resource, core::dbname_t{"db"}, core::relname_t{"r"}, nullptr);
@@ -899,9 +899,10 @@ TEST_CASE("optimizer::has_index_on_positive") {
 
     components::logical_plan::keys_base_storage_t keys(&resource);
     keys.push_back(key(&resource, "age"));
-    ctx.indexed_keys.push_back(std::move(keys));
+    auto oid = components::catalog::oid_t{1};
+    ctx.indexed_keys_by_oid[oid].push_back(std::move(keys));
 
-    REQUIRE(ctx.has_index_on(key(&resource, "age")) == true);
+    REQUIRE(ctx.has_index_on(oid, key(&resource, "age")) == true);
 }
 
 // ================================================================
@@ -913,9 +914,10 @@ TEST_CASE("optimizer::has_index_on_negative") {
 
     components::logical_plan::keys_base_storage_t keys(&resource);
     keys.push_back(key(&resource, "age"));
-    ctx.indexed_keys.push_back(std::move(keys));
+    auto oid = components::catalog::oid_t{1};
+    ctx.indexed_keys_by_oid[oid].push_back(std::move(keys));
 
-    REQUIRE(ctx.has_index_on(key(&resource, "name")) == false);
+    REQUIRE(ctx.has_index_on(oid, key(&resource, "name")) == false);
 }
 
 // ================================================================
@@ -928,9 +930,10 @@ TEST_CASE("optimizer::has_index_on_multi_field_skip") {
     components::logical_plan::keys_base_storage_t keys(&resource);
     keys.push_back(key(&resource, "a"));
     keys.push_back(key(&resource, "b"));
-    ctx.indexed_keys.push_back(std::move(keys));
+    auto oid = components::catalog::oid_t{1};
+    ctx.indexed_keys_by_oid[oid].push_back(std::move(keys));
 
-    REQUIRE(ctx.has_index_on(key(&resource, "a")) == false);
+    REQUIRE(ctx.has_index_on(oid, key(&resource, "a")) == false);
 }
 
 // ================================================================
@@ -940,7 +943,7 @@ TEST_CASE("optimizer::has_index_on_empty") {
     auto resource = std::pmr::synchronized_pool_resource();
     services::context_storage_t ctx(&resource, log_t{});
 
-    REQUIRE(ctx.has_index_on(key(&resource, "any")) == false);
+    REQUIRE(ctx.has_index_on(components::catalog::oid_t{1}, key(&resource, "any")) == false);
 }
 
 // ================================================================

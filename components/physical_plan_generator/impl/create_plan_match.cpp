@@ -20,7 +20,10 @@ namespace services::planner::impl {
 
         // Check if this compare expression can use an index scan
         [[maybe_unused]] bool
-        can_use_index(const context_storage_t& context, const expr::compare_expression_t& comp, bool& key_on_left) {
+        can_use_index(const context_storage_t& context,
+                      components::catalog::oid_t table_oid,
+                      const expr::compare_expression_t& comp,
+                      bool& key_on_left) {
             // Skip union conditions
             if (expr::is_union_compare_condition(comp.type())) {
                 return false;
@@ -45,7 +48,7 @@ namespace services::planner::impl {
             if (std::holds_alternative<expr::key_t>(comp.left()) &&
                 std::holds_alternative<core::parameter_id_t>(comp.right())) {
                 const auto& key = std::get<expr::key_t>(comp.left());
-                if (context.has_index_on(key)) {
+                if (context.has_index_on(table_oid, key)) {
                     key_on_left = true;
                     return true;
                 }
@@ -54,7 +57,7 @@ namespace services::planner::impl {
             if (std::holds_alternative<core::parameter_id_t>(comp.left()) &&
                 std::holds_alternative<expr::key_t>(comp.right())) {
                 const auto& key = std::get<expr::key_t>(comp.right());
-                if (context.has_index_on(key)) {
+                if (context.has_index_on(table_oid, key)) {
                     key_on_left = false;
                     return true;
                 }
@@ -93,7 +96,7 @@ namespace services::planner::impl {
                     // Index selection: detect if an index is available for this predicate.
                     if (!comp_expr->is_union()) {
                         bool key_on_left = true;
-                        if (can_use_index(context, *comp_expr, key_on_left)) {
+                        if (can_use_index(context, table_oid, *comp_expr, key_on_left)) {
                             auto& key = key_on_left ? std::get<expr::key_t>(comp_expr->left())
                                                     : std::get<expr::key_t>(comp_expr->right());
                             auto param_id = key_on_left ? std::get<core::parameter_id_t>(comp_expr->right())

@@ -49,7 +49,7 @@ namespace components::operators {
             if (!expression || expression->group() != expressions::expression_group::compare) {
                 return std::nullopt;
             }
-            auto comp = reinterpret_cast<const expressions::compare_expression_ptr&>(expression);
+            auto comp = static_cast<const expressions::compare_expression_t*>(expression.get());
             if (comp->type() != expressions::compare_type::eq || !comp->children().empty()) {
                 return std::nullopt;
             }

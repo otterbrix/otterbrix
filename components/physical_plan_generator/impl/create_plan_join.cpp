@@ -14,7 +14,7 @@ namespace services::planner::impl {
             if (!expr || expr->group() != expression_group::compare) {
                 return false;
             }
-            auto comp = reinterpret_cast<const compare_expression_ptr&>(expr);
+            auto comp = static_cast<const compare_expression_t*>(expr.get());
             if (comp->type() != compare_type::eq || !comp->children().empty()) {
                 return false;
             }
@@ -28,7 +28,7 @@ namespace services::planner::impl {
             if (!is_simple_inner_eq_join(expr)) {
                 return std::nullopt;
             }
-            auto comp = reinterpret_cast<const compare_expression_ptr&>(expr);
+            auto comp = static_cast<const compare_expression_t*>(expr.get());
             const auto& lhs = std::get<components::expressions::key_t>(comp->left());
             const auto& rhs = std::get<components::expressions::key_t>(comp->right());
             if (lhs.side() == side_t::right) {

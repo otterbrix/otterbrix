@@ -127,6 +127,12 @@ namespace {
         exec_size(dispatcher, session, "CREATE INDEX " + index_name + " ON bench.r USING hash (k);");
     }
 
+    void create_single_index_on_right(otterbrix::wrapper_dispatcher_t* dispatcher,
+                                      const otterbrix::session_id_t& session,
+                                      const std::string& index_name) {
+        exec_size(dispatcher, session, "CREATE INDEX " + index_name + " ON bench.r (k);");
+    }
+
     void bootstrap_right_schema(otterbrix::wrapper_dispatcher_t* dispatcher, const otterbrix::session_id_t& session) {
         exec_size(dispatcher,
                   session,
@@ -141,7 +147,9 @@ namespace {
         std::size_t result_rows{};
     };
 
-    stats_t run_case(const std::string& name, bool create_hash_index, int rows_left, int fanout_right, int repeats) {
+    enum class index_kind_t { hash, single };
+
+    stats_t run_case(const std::string& name, index_kind_t index_kind, int rows_left, int fanout_right, int repeats) {
         const std::filesystem::path base_path = std::filesystem::path("/tmp/test_join") / ("profile_index_join_" + name);
         auto config = test_create_config(base_path);
         config.main_path = base_path;
@@ -161,10 +169,12 @@ namespace {
         create_schema(dispatcher, session);
         std::cout << "bootstrap_right_schema\n";
         bootstrap_right_schema(dispatcher, session);
-        if (create_hash_index) {
+        if (index_kind == index_kind_t::hash) {
             std::cout << "create_hash_index_on_right\n";
-
             create_hash_index_on_right(dispatcher, session, "idx_r_k_hash_" + name);
+        } else {
+            std::cout << "create_single_index_on_right\n";
+            create_single_index_on_right(dispatcher, session, "idx_r_k_single_" + name);
         }
         load_data(dispatcher, session, rows_left, fanout_right);
 
@@ -222,10 +232,9 @@ int main(int argc, char** argv) {
 
     std::cout << "hash_stats\n";
 
-    const auto hash_stats = run_case("hash", true, rows_left, fanout_right, repeats);
-    std::cout << "no_idx_stats\n";
-
-    const auto no_idx_stats = run_case("no_index", false, rows_left, fanout_right, repeats);
+    const auto hash_stats = run_case("hash", index_kind_t::hash, rows_left, fanout_right, repeats);
+    std::cout << "single_idx_stats\n";
+    const auto single_idx_stats = run_case("single", index_kind_t::single, rows_left, fanout_right, repeats);
 
     auto print_stats = [](const char* label, const stats_t& s) {
         std::cout << std::left << std::setw(14) << label << " rows=" << s.result_rows << " min=" << std::fixed
@@ -234,9 +243,9 @@ int main(int argc, char** argv) {
     };
 
     print_stats("hash_index", hash_stats);
-    print_stats("no_index", no_idx_stats);
+    print_stats("single_index", single_idx_stats);
 
-    const auto ratio = no_idx_stats.median_ms / std::max(1.0, hash_stats.median_ms);
-    std::cout << "\nmedian(no_index)/median(hash_index) = " << std::fixed << std::setprecision(2) << ratio << "x\n";
+    const auto ratio = single_idx_stats.median_ms / std::max(1.0, hash_stats.median_ms);
+    std::cout << "\nmedian(single_index)/median(hash_index) = " << std::fixed << std::setprecision(2) << ratio << "x\n";
     return 0;
 }

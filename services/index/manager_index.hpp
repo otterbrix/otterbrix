@@ -177,6 +177,17 @@ namespace services::index {
         std::pmr::vector<unique_future<void>> pending_void_;
         void poll_pending();
 
+        using disk_kv_t = std::pair<components::types::logical_value_t, size_t>;
+        using disk_batch_t = std::pmr::vector<disk_kv_t>;
+        using pending_agent_map_t = std::pmr::unordered_map<uintptr_t, disk_batch_t>;
+        using pending_txn_map_t = std::pmr::unordered_map<uint64_t, pending_agent_map_t>;
+        using addr_map_t = std::pmr::unordered_map<uintptr_t, actor_zeta::address_t>;
+
+        // Pending disk ops for hashed indexes (to avoid RAM hash index state).
+        pending_txn_map_t pending_disk_inserts_;
+        pending_txn_map_t pending_disk_deletes_;
+        addr_map_t pending_disk_addrs_;
+
         actor_zeta::behavior_t current_behavior_;
     };
 

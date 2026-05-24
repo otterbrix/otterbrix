@@ -1,6 +1,7 @@
 #pragma once
 
 #include "bitcask_task_executor.hpp"
+#include "disk_hash_table.hpp"
 #include "index_disk.hpp"
 
 #include <components/types/logical_value.hpp>
@@ -11,7 +12,6 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
-#include <map>
 #include <memory>
 #include <memory_resource>
 #include <shared_mutex>
@@ -55,12 +55,6 @@ namespace services::index {
             tombstone = 2
         };
 
-        struct keydir_entry_t {
-            uint64_t segment_id{0};
-            uint64_t value_offset{0};
-            uint64_t timestamp{0};
-        };
-
         struct segment_info_t {
             uint64_t id{0};
             std::filesystem::path path;
@@ -68,7 +62,6 @@ namespace services::index {
         };
 
         using row_ids_t = std::pmr::vector<size_t>;
-        using ordered_index_t = std::map<value_t, row_ids_t, std::less<>>;
 
         void initialize_storage();
         void load_from_disk();
@@ -78,22 +71,22 @@ namespace services::index {
         void rotate_active_segment_if_needed();
         uint64_t allocate_next_segment_id();
         void merge_immutable_segments();
-        row_ids_t clone_rows(const row_ids_t& rows) const;
+        static uint32_t segment_id_from_path(const std::filesystem::path& path);
         row_ids_t current_rows(const value_t& key) const;
+        bool read_rows_at(uint32_t segment_id, uint64_t value_offset, row_ids_t& rows, value_t* out_key = nullptr) const;
+        std::string key_bytes_for_hash(const value_t& key) const;
         void append_snapshot(const value_t& key, const row_ids_t& rows);
         void append_tombstone(const value_t& key);
-        void upsert_state(const value_t& key, const row_ids_t& rows, const keydir_entry_t& entry);
-        void erase_state(const value_t& key);
         void flush_if_needed();
         void force_flush_unlocked();
 
         std::filesystem::path path_;
+        std::filesystem::path hash_index_file_path_;
         std::filesystem::path active_data_file_path_;
         std::pmr::memory_resource* resource_;
-        core::filesystem::local_file_system_t fs_;
+        mutable core::filesystem::local_file_system_t fs_;
         std::unique_ptr<core::filesystem::file_handle_t> file_;
-        ordered_index_t index_;
-        std::map<value_t, keydir_entry_t, std::less<>> keydir_;
+        std::unique_ptr<disk_hash_table_t> hash_index_;
         uint64_t next_timestamp_{0};
         std::atomic<uint64_t> next_segment_id_{1};
         uint64_t active_segment_id_{0};

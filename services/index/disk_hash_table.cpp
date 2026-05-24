@@ -1,5 +1,6 @@
 #include "disk_hash_table.hpp"
 
+#include <fstream>
 #include <cstring>
 #include <mutex>
 #include <stdexcept>
@@ -31,6 +32,7 @@ namespace services::index {
         }
         header_.bucket_count_value = bucket_count;
         open_or_create();
+        initialize_pending_files_if_needed();
     }
 
     disk_hash_table_t::~disk_hash_table_t() {
@@ -120,11 +122,74 @@ namespace services::index {
         return false;
     }
 
+    void disk_hash_table_t::for_each(const std::function<void(const value_ref_t&)>& cb) const {
+        std::shared_lock lock(mutex_);
+        std::vector<uint8_t> page(page_size);
+        for (uint32_t bucket = 0; bucket < header_.bucket_count_value; ++bucket) {
+            uint64_t page_id = bucket_primary_page_id(bucket);
+            while (page_id != 0) {
+                read_page(page_id, page);
+                const auto cnt = page_count(page);
+                for (uint16_t i = 0; i < cnt; ++i) {
+                    const auto slot = read_slot(page, i);
+                    if (slot.flags != slot_flag_used || slot.length == 0) {
+                        continue;
+                    }
+                    const auto entry = decode_entry(page, slot);
+                    cb(value_ref_t{entry.value,
+                                   entry.log_file_id,
+                                   entry.log_offset,
+                                   (entry.entry_flags & entry_flag_truncated) != 0});
+                }
+                page_id = page_overflow(page);
+            }
+        }
+    }
+
     void disk_hash_table_t::sync() {
         std::shared_lock lock(mutex_);
         if (file_) {
             file_->sync();
         }
+    }
+
+    void disk_hash_table_t::append_pending_insert(uint64_t txn_id, std::string_view key, int64_t row_id) {
+        append_pending_record('I', txn_id, key, row_id);
+    }
+
+    void disk_hash_table_t::append_pending_delete(uint64_t txn_id, std::string_view key, int64_t row_id) {
+        append_pending_record('D', txn_id, key, row_id);
+    }
+
+    void disk_hash_table_t::finalize_txn(uint64_t txn_id, bool apply_inserts, bool apply_deletes) {
+        auto records = read_pending_records();
+        std::vector<pending_record_t> remaining;
+        remaining.reserve(records.size());
+        for (const auto& rec : records) {
+            if (rec.txn_id != txn_id) {
+                remaining.push_back(rec);
+                continue;
+            }
+            if (rec.op == 'I' && apply_inserts) {
+                put(rec.key, rec.row_id, 0, 0);
+            } else if (rec.op == 'D' && apply_deletes) {
+                erase(rec.key);
+            }
+        }
+        write_pending_records(remaining);
+        write_checkpoint(txn_id);
+        sync();
+    }
+
+    uint64_t disk_hash_table_t::checkpoint_txn_id() const {
+        initialize_pending_files_if_needed();
+        std::ifstream in(checkpoint_file_path());
+        uint64_t id = 0;
+        if (!in.good()) {
+            return 0;
+        }
+        in >> id;
+        return in.fail() ? 0 : id;
     }
 
     void disk_hash_table_t::open_or_create() {
@@ -315,15 +380,15 @@ namespace services::index {
     }
 
     disk_hash_table_t::decoded_entry_t disk_hash_table_t::decode_entry(const std::vector<uint8_t>& page, const slot_t& slot) const {
-        if (slot.offset + slot.length > page_size || slot.length < (2 + 2 + 1 + 8 + 4 + 8)) {
+        if (slot.offset + slot.length > page_size || slot.length < (2 + 4 + 1 + 8 + 4 + 8)) {
             throw std::runtime_error("disk_hash_table: invalid entry slot");
         }
         const auto* p = page.data() + slot.offset;
         decoded_entry_t e{};
         e.stored_key_len = read_u16(p);
-        e.full_key_len = read_u16(p + 2);
-        e.entry_flags = *(p + 4);
-        const uint16_t header_len = 5;
+        e.full_key_len = read_u32(p + 2);
+        e.entry_flags = *(p + 6);
+        const uint16_t header_len = 7;
         const uint16_t min_tail = 8 + 4 + 8;
         if (header_len + e.stored_key_len + min_tail > slot.length) {
             throw std::runtime_error("disk_hash_table: invalid entry length");
@@ -450,16 +515,16 @@ namespace services::index {
         const bool truncated = key.size() > inline_key_limit;
         const uint16_t stored_len =
             static_cast<uint16_t>(truncated ? std::min<size_t>(truncated_prefix_len, key.size()) : key.size());
-        const uint16_t full_len = static_cast<uint16_t>(std::min<size_t>(key.size(), UINT16_MAX));
-        const size_t total = 2 + 2 + 1 + stored_len + 8 + 4 + 8;
+        const uint32_t full_len = static_cast<uint32_t>(std::min<size_t>(key.size(), UINT32_MAX));
+        const size_t total = 2 + 4 + 1 + stored_len + 8 + 4 + 8;
         std::vector<uint8_t> payload(total);
         write_u16(payload.data(), stored_len);
-        write_u16(payload.data() + 2, full_len);
-        payload[4] = truncated ? entry_flag_truncated : 0;
+        write_u32(payload.data() + 2, full_len);
+        payload[6] = truncated ? entry_flag_truncated : 0;
         if (stored_len > 0) {
-            std::memcpy(payload.data() + 5, key.data(), stored_len);
+            std::memcpy(payload.data() + 7, key.data(), stored_len);
         }
-        auto* tail = payload.data() + 5 + stored_len;
+        auto* tail = payload.data() + 7 + stored_len;
         write_i64(tail, value);
         write_u32(tail + 8, log_file_id);
         write_u64(tail + 12, log_offset);
@@ -487,6 +552,104 @@ namespace services::index {
         if (!file_->write(hdr.data(), page_size, 0)) {
             throw std::runtime_error("disk_hash_table: failed to write header page");
         }
+    }
+
+    std::filesystem::path disk_hash_table_t::pending_log_path() const {
+        return file_path_.parent_path() / "pending.log";
+    }
+
+    std::filesystem::path disk_hash_table_t::checkpoint_file_path() const {
+        return file_path_.parent_path() / "pending.checkpoint";
+    }
+
+    void disk_hash_table_t::initialize_pending_files_if_needed() const {
+        const auto pending = pending_log_path();
+        const auto checkpoint = checkpoint_file_path();
+        if (!std::filesystem::exists(pending)) {
+            std::ofstream create(pending, std::ios::binary);
+        }
+        if (!std::filesystem::exists(checkpoint)) {
+            std::ofstream out(checkpoint, std::ios::trunc);
+            out << 0;
+        }
+    }
+
+    void disk_hash_table_t::append_pending_record(char op, uint64_t txn_id, std::string_view key, int64_t row_id) {
+        initialize_pending_files_if_needed();
+        std::ofstream out(pending_log_path(), std::ios::binary | std::ios::app);
+        if (!out.good()) {
+            throw std::runtime_error("disk_hash_table: cannot append pending log");
+        }
+        const uint32_t key_len = static_cast<uint32_t>(key.size());
+        out.write(&op, sizeof(op));
+        out.write(reinterpret_cast<const char*>(&txn_id), sizeof(txn_id));
+        out.write(reinterpret_cast<const char*>(&row_id), sizeof(row_id));
+        out.write(reinterpret_cast<const char*>(&key_len), sizeof(key_len));
+        if (key_len != 0) {
+            out.write(key.data(), key_len);
+        }
+    }
+
+    std::vector<disk_hash_table_t::pending_record_t> disk_hash_table_t::read_pending_records() const {
+        initialize_pending_files_if_needed();
+        std::vector<pending_record_t> records;
+        std::ifstream in(pending_log_path(), std::ios::binary);
+        if (!in.good()) {
+            return records;
+        }
+        while (true) {
+            pending_record_t rec{};
+            uint32_t key_len = 0;
+            in.read(&rec.op, sizeof(rec.op));
+            if (!in.good()) {
+                break;
+            }
+            in.read(reinterpret_cast<char*>(&rec.txn_id), sizeof(rec.txn_id));
+            in.read(reinterpret_cast<char*>(&rec.row_id), sizeof(rec.row_id));
+            in.read(reinterpret_cast<char*>(&key_len), sizeof(key_len));
+            if (!in.good()) {
+                break;
+            }
+            rec.key.resize(key_len);
+            if (key_len != 0) {
+                in.read(rec.key.data(), key_len);
+                if (!in.good()) {
+                    break;
+                }
+            }
+            records.emplace_back(std::move(rec));
+        }
+        return records;
+    }
+
+    void disk_hash_table_t::write_pending_records(const std::vector<pending_record_t>& records) {
+        initialize_pending_files_if_needed();
+        const auto tmp_path = pending_log_path().string() + ".tmp";
+        std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
+        if (!out.good()) {
+            throw std::runtime_error("disk_hash_table: cannot rewrite pending log");
+        }
+        for (const auto& rec : records) {
+            const uint32_t key_len = static_cast<uint32_t>(rec.key.size());
+            out.write(&rec.op, sizeof(rec.op));
+            out.write(reinterpret_cast<const char*>(&rec.txn_id), sizeof(rec.txn_id));
+            out.write(reinterpret_cast<const char*>(&rec.row_id), sizeof(rec.row_id));
+            out.write(reinterpret_cast<const char*>(&key_len), sizeof(key_len));
+            if (key_len != 0) {
+                out.write(rec.key.data(), key_len);
+            }
+        }
+        out.close();
+        std::filesystem::rename(tmp_path, pending_log_path());
+    }
+
+    void disk_hash_table_t::write_checkpoint(uint64_t finalized_txn_id) {
+        initialize_pending_files_if_needed();
+        std::ofstream out(checkpoint_file_path(), std::ios::trunc);
+        if (!out.good()) {
+            throw std::runtime_error("disk_hash_table: cannot write checkpoint");
+        }
+        out << finalized_txn_id;
     }
 
 } // namespace services::index

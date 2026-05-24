@@ -1,6 +1,7 @@
 #include "bitcask_index_disk.hpp"
 
 #include "absl/crc/crc32c.h"
+
 #include <algorithm>
 #include <charconv>
 #include <cstring>
@@ -15,8 +16,6 @@
 
 namespace services::index {
 
-    using core::filesystem::create_directory;
-    using core::filesystem::directory_exists;
     using core::filesystem::file_flags;
     using core::filesystem::file_lock_type;
     using core::filesystem::move_files;
@@ -28,7 +27,8 @@ namespace services::index {
         constexpr const char* segment_prefix = "bitcask.";
         constexpr const char* segment_suffix = ".data";
         constexpr const char* current_segment_file = "CURRENT";
-        constexpr unsigned SEGMENT_ID_WIDTH = 6;
+        constexpr const char* hash_index_file = "hash_index.bin";
+        constexpr unsigned segment_id_width = 6;
 
         struct record_header_t {
             uint32_t crc;
@@ -189,7 +189,7 @@ namespace services::index {
 
         std::filesystem::path segment_file_path(const std::filesystem::path& directory, uint64_t segment_id) {
             std::ostringstream oss;
-            oss << segment_prefix << std::setw(SEGMENT_ID_WIDTH) << std::setfill('0') << segment_id << segment_suffix;
+            oss << segment_prefix << std::setw(segment_id_width) << std::setfill('0') << segment_id << segment_suffix;
             return directory / oss.str();
         }
 
@@ -206,15 +206,14 @@ namespace services::index {
             const std::string_view filename_sv{filename};
             constexpr std::string_view prefix = segment_prefix;
             constexpr std::string_view suffix = segment_suffix;
-
-            if (!filename_sv.starts_with(prefix) || !filename_sv.ends_with(suffix))
+            if (!filename_sv.starts_with(prefix) || !filename_sv.ends_with(suffix)) {
                 return false;
-
+            }
             const std::string_view digits =
                 filename_sv.substr(prefix.size(), filename_sv.size() - prefix.size() - suffix.size());
-            if (digits.empty())
+            if (digits.empty()) {
                 return false;
-
+            }
             const auto [ptr, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), segment_id);
             return ec == std::errc() && ptr == digits.data() + digits.size();
         }
@@ -273,18 +272,13 @@ namespace services::index {
                                                uint64_t segment_record_limit)
         : index_disk_t(flush_threshold)
         , path_(path)
-        , active_data_file_path_()
+        , hash_index_file_path_(path_ / hash_index_file)
         , resource_(resource)
         , fs_(core::filesystem::local_file_system_t())
-        , file_(nullptr)
-        , index_()
-        , keydir_()
-        , next_timestamp_(0)
-        , active_segment_id_(0)
-        , active_segment_records_(0)
         , segment_record_limit_(segment_record_limit)
         , task_executor_(std::make_unique<bitcask_task_executor_t>()) {
         initialize_storage();
+        hash_index_ = std::make_unique<disk_hash_table_t>(hash_index_file_path_);
         load_from_disk();
         open_active_segment();
     }
@@ -299,27 +293,38 @@ namespace services::index {
         }
     }
 
+    std::string bitcask_index_disk_t::key_bytes_for_hash(const value_t& key) const {
+        auto payload = serialize_payload(resource_, key, row_ids_t(resource_));
+        return std::string(payload.data(), payload.data() + payload.size());
+    }
+
+    uint32_t bitcask_index_disk_t::segment_id_from_path(const std::filesystem::path& path) {
+        uint64_t id = 0;
+        if (!parse_segment_id(path, id)) {
+            throw std::runtime_error("invalid bitcask segment path");
+        }
+        return static_cast<uint32_t>(id);
+    }
+
     void bitcask_index_disk_t::load_from_disk() {
         auto segments = collect_segments();
         if (segments.empty()) {
             active_segment_id_ = 1;
             next_segment_id_.store(2);
-            active_segment_records_ = 0;
             active_data_file_path_ = segment_file_path(path_, active_segment_id_);
             return;
         }
 
         for (auto& segment : segments) {
-            auto segment_file = open_file(fs_, segment.path, file_flags::READ, file_lock_type::NO_LOCK);
-            if (!segment_file) {
+            auto f = open_file(fs_, segment.path, file_flags::READ, file_lock_type::NO_LOCK);
+            if (!f) {
                 throw std::runtime_error("failed to open bitcask data file: " + segment.path.string());
             }
-
-            const auto file_size = segment_file->file_size();
+            const auto file_size = f->file_size();
             uint64_t offset = 0;
             while (offset + sizeof(record_header_t) <= file_size) {
                 record_header_t header{};
-                if (!segment_file->read(&header, sizeof(header), offset)) {
+                if (!f->read(&header, sizeof(header), offset)) {
                     break;
                 }
 
@@ -331,35 +336,33 @@ namespace services::index {
                 std::pmr::string payload(resource_);
                 payload.resize(static_cast<size_t>(header.payload_size));
                 if (header.payload_size != 0 &&
-                    !segment_file->read(payload.data(), static_cast<uint64_t>(header.payload_size), payload_offset)) {
+                    !f->read(payload.data(), static_cast<uint64_t>(header.payload_size), payload_offset)) {
                     break;
                 }
-
-                {
-                    absl::crc32c_t calc_crc =
-                        absl::ComputeCrc32c(absl::string_view(reinterpret_cast<const char*>(&header.kind),
-                                                              sizeof(header) - sizeof(header.crc)));
-                    if (!payload.empty()) {
-                        calc_crc = absl::ExtendCrc32c(calc_crc, absl::string_view(payload.data(), payload.size()));
-                    }
-                    if (static_cast<uint32_t>(calc_crc) != header.crc) {
-                        throw std::runtime_error("CRC mismatch in segment " + std::to_string(segment.id) +
-                                                 " at offset " + std::to_string(offset));
-                    }
+                absl::crc32c_t calc =
+                    absl::ComputeCrc32c(absl::string_view(reinterpret_cast<const char*>(&header.kind),
+                                                          sizeof(header) - sizeof(header.crc)));
+                if (!payload.empty()) {
+                    calc = absl::ExtendCrc32c(calc, absl::string_view(payload.data(), payload.size()));
+                }
+                if (static_cast<uint32_t>(calc) != header.crc) {
+                    throw std::runtime_error("CRC mismatch in segment " + std::to_string(segment.id));
                 }
                 value_t key(resource_, nullptr);
                 row_ids_t rows(resource_);
                 deserialize_payload(resource_, payload, key, rows);
-
-                next_timestamp_ = std::max(next_timestamp_, header.timestamp);
+                const auto key_bytes = key_bytes_for_hash(key);
                 if (static_cast<record_kind_t>(header.kind) == record_kind_t::tombstone) {
-                    erase_state(key);
+                    hash_index_->erase(key_bytes);
                 } else if (static_cast<record_kind_t>(header.kind) == record_kind_t::value) {
-                    upsert_state(key, rows, keydir_entry_t{segment.id, payload_offset, header.timestamp});
+                    hash_index_->put(key_bytes,
+                                     rows.empty() ? -1 : static_cast<int64_t>(rows.back()),
+                                     static_cast<uint32_t>(segment.id),
+                                     payload_offset);
                 } else {
                     break;
                 }
-
+                next_timestamp_ = std::max(next_timestamp_, header.timestamp);
                 ++segment.record_count;
                 offset = payload_offset + header.payload_size;
             }
@@ -433,172 +436,75 @@ namespace services::index {
         }
     }
 
-    void bitcask_index_disk_t::merge_immutable_segments() {
-        std::unique_lock lock(mutex_);
-        uint64_t last_active_segment_id = active_segment_id_;
-        std::map<value_t, keydir_entry_t, std::less<>> last_keydir = keydir_;
-        lock.unlock();
-
-        auto segments = collect_segments();
-        std::vector<segment_info_t> immutable_segments;
-        immutable_segments.reserve(segments.size());
-        for (const auto& segment : segments) {
-            if (segment.id < last_active_segment_id) {
-                immutable_segments.push_back(segment);
-            }
+    bool bitcask_index_disk_t::read_rows_at(uint32_t segment_id,
+                                            uint64_t value_offset,
+                                            row_ids_t& rows,
+                                            value_t* out_key) const {
+        auto f = open_file(fs_, segment_file_path(path_, segment_id), file_flags::READ, file_lock_type::NO_LOCK);
+        if (!f) {
+            return false;
         }
-        if (immutable_segments.empty()) {
-            return;
+        record_header_t header{};
+        std::pmr::string payload(resource_);
+        if (value_offset < sizeof(record_header_t)) {
+            return false;
         }
-
-        const auto merged_segment_id = allocate_next_segment_id();
-        const auto merged_path = segment_file_path(path_, merged_segment_id);
-        const auto temp_path = merge_temp_file_path(path_, merged_segment_id);
-        remove_file(fs_, temp_path);
-
-        auto merged_file = open_file(fs_,
-                                     temp_path,
-                                     file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
-                                     file_lock_type::NO_LOCK);
-        if (!merged_file) {
-            throw std::runtime_error("failed to create merged bitcask data file: " + temp_path.string());
+        const auto header_offset = value_offset - sizeof(record_header_t);
+        if (!f->read(&header, sizeof(header), header_offset)) {
+            return false;
         }
-
-        std::map<uint64_t, std::unique_ptr<core::filesystem::file_handle_t>> segment_files;
-        for (const auto& segment : immutable_segments) {
-            auto segment_file = open_file(fs_, segment.path, file_flags::READ, file_lock_type::NO_LOCK);
-            if (!segment_file) {
-                throw std::runtime_error("failed to open immutable bitcask data file: " + segment.path.string());
-            }
-            segment_files.emplace(segment.id, std::move(segment_file));
+        payload.resize(static_cast<size_t>(header.payload_size));
+        if (header.payload_size != 0 && !f->read(payload.data(), header.payload_size, value_offset)) {
+            return false;
         }
-
-        std::vector<std::pair<value_t, keydir_entry_t>> live_entries;
-
-        live_entries.reserve(last_keydir.size());
-        for (const auto& [key, entry] : last_keydir) {
-            if (entry.segment_id >= last_active_segment_id) {
-                continue;
-            }
-            if (!segment_files.contains(entry.segment_id)) {
-                continue;
-            }
-            live_entries.emplace_back(value_t(resource_, key), entry);
+        absl::crc32c_t calc =
+            absl::ComputeCrc32c(absl::string_view(reinterpret_cast<const char*>(&header.kind),
+                                                  sizeof(header) - sizeof(header.crc)));
+        if (!payload.empty()) {
+            calc = absl::ExtendCrc32c(calc, absl::string_view(payload.data(), payload.size()));
         }
-
-        std::map<value_t, keydir_entry_t, std::less<>> updated_entries;
-        for (const auto& [key, entry] : live_entries) {
-            auto segment_it = segment_files.find(entry.segment_id);
-            if (segment_it == segment_files.end()) {
-                continue;
-            }
-
-            if (entry.value_offset < sizeof(record_header_t)) {
-                throw std::runtime_error("invalid payload offset in keydir during merge");
-            }
-            const uint64_t header_offset = entry.value_offset - sizeof(record_header_t);
-            record_header_t source_header{};
-            if (!segment_it->second->read(&source_header, sizeof(source_header), header_offset)) {
-                throw std::runtime_error("failed to read immutable bitcask record header during merge");
-            }
-
-            std::pmr::string payload(resource_);
-            payload.resize(static_cast<size_t>(source_header.payload_size));
-            if (source_header.payload_size != 0 &&
-                !segment_it->second->read(payload.data(), source_header.payload_size, entry.value_offset)) {
-                throw std::runtime_error("failed to read immutable bitcask payload during merge");
-            }
-
-            const auto offset = merged_file->seek_position();
-            write_record(*merged_file, static_cast<uint8_t>(record_kind_t::value), entry.timestamp, payload);
-
-            updated_entries.emplace(
-                value_t(resource_, key),
-                keydir_entry_t{merged_segment_id, offset + sizeof(record_header_t), entry.timestamp});
+        if (static_cast<uint32_t>(calc) != header.crc) {
+            return false;
         }
-
-        merged_file->sync();
-        merged_file.reset();
-
-        lock.lock();
-        if (!move_files(fs_, temp_path, merged_path)) {
-            throw std::runtime_error("failed to publish merged bitcask data file: " + merged_path.string());
+        value_t key(resource_, nullptr);
+        deserialize_payload(resource_, payload, key, rows);
+        if (out_key) {
+            *out_key = value_t(resource_, key);
         }
-        for (const auto& segment : immutable_segments) {
-            remove_file(fs_, segment.path);
-        }
-
-        for (auto& [key, entry] : updated_entries) {
-            auto keydir_it = keydir_.find(key);
-            if (keydir_it != keydir_.end() && keydir_it->second.segment_id < last_active_segment_id) {
-                keydir_it->second = entry;
-            }
-        }
-    }
-
-    bitcask_index_disk_t::row_ids_t bitcask_index_disk_t::clone_rows(const row_ids_t& rows) const {
-        row_ids_t clone(resource_);
-        clone.reserve(rows.size());
-        clone.insert(clone.end(), rows.begin(), rows.end());
-        return clone;
+        return static_cast<record_kind_t>(header.kind) == record_kind_t::value;
     }
 
     bitcask_index_disk_t::row_ids_t bitcask_index_disk_t::current_rows(const value_t& key) const {
-        const auto it = index_.find(key);
-        if (it == index_.end()) {
+        const auto key_bytes = key_bytes_for_hash(key);
+        auto ref = hash_index_->get(key_bytes);
+        if (!ref.has_value()) {
             return row_ids_t(resource_);
         }
-        return clone_rows(it->second);
+        row_ids_t rows(resource_);
+        if (!read_rows_at(ref->log_file_id, ref->log_offset, rows, nullptr)) {
+            return row_ids_t(resource_);
+        }
+        return rows;
     }
 
     void bitcask_index_disk_t::append_snapshot(const value_t& key, const row_ids_t& rows) {
-        if (!file_) {
-            return;
-        }
-
         rotate_active_segment_if_needed();
         auto payload = serialize_payload(resource_, key, rows);
         const auto offset = file_->seek_position();
-
         write_record(*file_, static_cast<uint8_t>(record_kind_t::value), ++next_timestamp_, payload);
-
-        upsert_state(key, rows, keydir_entry_t{active_segment_id_, offset + sizeof(record_header_t), next_timestamp_});
+        hash_index_->put(key_bytes_for_hash(key),
+                         rows.empty() ? -1 : static_cast<int64_t>(rows.back()),
+                         static_cast<uint32_t>(active_segment_id_),
+                         offset + sizeof(record_header_t));
         ++active_segment_records_;
     }
 
     void bitcask_index_disk_t::append_tombstone(const value_t& key) {
-        if (!file_) {
-            return;
-        }
-
         rotate_active_segment_if_needed();
         auto payload = serialize_payload(resource_, key, row_ids_t(resource_));
-
         write_record(*file_, static_cast<uint8_t>(record_kind_t::tombstone), ++next_timestamp_, payload);
-
-        erase_state(key);
+        hash_index_->erase(key_bytes_for_hash(key));
         ++active_segment_records_;
-    }
-
-    void bitcask_index_disk_t::upsert_state(const value_t& key, const row_ids_t& rows, const keydir_entry_t& entry) {
-        auto index_it = index_.find(key);
-        if (index_it == index_.end()) {
-            index_it = index_.emplace(value_t(resource_, key), clone_rows(rows)).first;
-        } else {
-            index_it->second = clone_rows(rows);
-        }
-
-        auto keydir_it = keydir_.find(index_it->first);
-        if (keydir_it == keydir_.end()) {
-            keydir_.emplace(value_t(resource_, key), entry);
-        } else {
-            keydir_it->second = entry;
-        }
-    }
-
-    void bitcask_index_disk_t::erase_state(const value_t& key) {
-        index_.erase(key);
-        keydir_.erase(key);
     }
 
     void bitcask_index_disk_t::insert(const value_t& key, size_t value) {
@@ -607,7 +513,6 @@ namespace services::index {
         if (std::find(rows.begin(), rows.end(), value) != rows.end()) {
             return;
         }
-
         rows.emplace_back(value);
         append_snapshot(key, rows);
         mark_operation_dirty();
@@ -616,10 +521,9 @@ namespace services::index {
 
     void bitcask_index_disk_t::remove(value_t key) {
         std::unique_lock lock(mutex_);
-        if (index_.find(key) == index_.end()) {
+        if (!hash_index_->get(key_bytes_for_hash(key)).has_value()) {
             return;
         }
-
         append_tombstone(key);
         mark_operation_dirty();
         flush_if_needed();
@@ -631,7 +535,6 @@ namespace services::index {
         if (rows.empty()) {
             return;
         }
-
         const auto original_size = rows.size();
         rows.erase(std::remove(rows.begin(), rows.end(), row_id), rows.end());
         if (rows.size() == original_size) {
@@ -661,66 +564,141 @@ namespace services::index {
     void bitcask_index_disk_t::force_flush_unlocked() {
         if (is_dirty() && file_) {
             file_->sync();
+            hash_index_->sync();
             reset_flush_state();
         }
     }
 
     void bitcask_index_disk_t::load_entries(entries_t& entries) const {
         std::shared_lock lock(mutex_);
-        size_t total = entries.size();
-        for (const auto& [_, rows] : index_) {
-            total += rows.size();
-        }
-        entries.reserve(total);
-        for (const auto& [key, rows] : index_) {
-            for (auto row_id : rows) {
-                entries.emplace_back(value_t(resource_, key), row_id);
+        hash_index_->for_each([&](const disk_hash_table_t::value_ref_t& ref) {
+            row_ids_t rows(resource_);
+            value_t key(resource_, nullptr);
+            if (!read_rows_at(ref.log_file_id, ref.log_offset, rows, &key)) {
+                return;
             }
-        }
+            for (auto row : rows) {
+                entries.emplace_back(value_t(resource_, key), row);
+            }
+        });
     }
 
     void bitcask_index_disk_t::find(const value_t& value, result& res) const {
         std::shared_lock lock(mutex_);
-        const auto it = index_.find(value);
-        if (it == index_.end()) {
+        auto ref = hash_index_->get(key_bytes_for_hash(value));
+        if (!ref.has_value()) {
             return;
         }
-        res.reserve(res.size() + it->second.size());
-        res.insert(res.end(), it->second.begin(), it->second.end());
+        row_ids_t rows(resource_);
+        if (!read_rows_at(ref->log_file_id, ref->log_offset, rows, nullptr)) {
+            return;
+        }
+        res.reserve(res.size() + rows.size());
+        res.insert(res.end(), rows.begin(), rows.end());
     }
 
     bitcask_index_disk_t::result bitcask_index_disk_t::find(const value_t& value) const {
-        bitcask_index_disk_t::result res;
+        result res;
         find(value, res);
         return res;
     }
 
     void bitcask_index_disk_t::lower_bound(const value_t& value, result& res) const {
         std::shared_lock lock(mutex_);
-        for (auto it = index_.begin(); it != index_.lower_bound(value); ++it) {
-            res.reserve(res.size() + it->second.size());
-            res.insert(res.end(), it->second.begin(), it->second.end());
-        }
+        hash_index_->for_each([&](const disk_hash_table_t::value_ref_t& ref) {
+            row_ids_t rows(resource_);
+            value_t key(resource_, nullptr);
+            if (!read_rows_at(ref.log_file_id, ref.log_offset, rows, &key)) {
+                return;
+            }
+            if (key < value) {
+                res.insert(res.end(), rows.begin(), rows.end());
+            }
+        });
     }
 
     bitcask_index_disk_t::result bitcask_index_disk_t::lower_bound(const value_t& value) const {
-        bitcask_index_disk_t::result res;
+        result res;
         lower_bound(value, res);
         return res;
     }
 
     void bitcask_index_disk_t::upper_bound(const value_t& value, result& res) const {
         std::shared_lock lock(mutex_);
-        for (auto it = index_.upper_bound(value); it != index_.end(); ++it) {
-            res.reserve(res.size() + it->second.size());
-            res.insert(res.end(), it->second.begin(), it->second.end());
-        }
+        hash_index_->for_each([&](const disk_hash_table_t::value_ref_t& ref) {
+            row_ids_t rows(resource_);
+            value_t key(resource_, nullptr);
+            if (!read_rows_at(ref.log_file_id, ref.log_offset, rows, &key)) {
+                return;
+            }
+            if (key > value) {
+                res.insert(res.end(), rows.begin(), rows.end());
+            }
+        });
     }
 
     bitcask_index_disk_t::result bitcask_index_disk_t::upper_bound(const value_t& value) const {
-        bitcask_index_disk_t::result res;
+        result res;
         upper_bound(value, res);
         return res;
+    }
+
+    void bitcask_index_disk_t::merge_immutable_segments() {
+        std::unique_lock lock(mutex_);
+        const uint64_t last_active_segment_id = active_segment_id_;
+        auto segments = collect_segments();
+        std::vector<segment_info_t> immutable_segments;
+        for (const auto& segment : segments) {
+            if (segment.id < last_active_segment_id) {
+                immutable_segments.push_back(segment);
+            }
+        }
+        if (immutable_segments.empty()) {
+            return;
+        }
+        const auto merged_segment_id = allocate_next_segment_id();
+        const auto merged_path = segment_file_path(path_, merged_segment_id);
+        const auto temp_path = merge_temp_file_path(path_, merged_segment_id);
+        remove_file(fs_, temp_path);
+
+        auto merged_file = open_file(fs_,
+                                     temp_path,
+                                     file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
+                                     file_lock_type::NO_LOCK);
+        if (!merged_file) {
+            throw std::runtime_error("failed to create merged bitcask data file");
+        }
+
+        std::vector<disk_hash_table_t::value_ref_t> refs;
+        hash_index_->for_each([&](const disk_hash_table_t::value_ref_t& ref) {
+            refs.push_back(ref);
+        });
+        for (const auto& ref : refs) {
+            if (ref.log_file_id >= last_active_segment_id) {
+                continue;
+            }
+            row_ids_t rows(resource_);
+            value_t key(resource_, nullptr);
+            if (!read_rows_at(ref.log_file_id, ref.log_offset, rows, &key)) {
+                continue;
+            }
+            auto payload = serialize_payload(resource_, key, rows);
+            const auto offset = merged_file->seek_position();
+            write_record(*merged_file, static_cast<uint8_t>(record_kind_t::value), ++next_timestamp_, payload);
+            hash_index_->put(key_bytes_for_hash(key),
+                             rows.empty() ? -1 : static_cast<int64_t>(rows.back()),
+                             static_cast<uint32_t>(merged_segment_id),
+                             offset + sizeof(record_header_t));
+        }
+
+        merged_file->sync();
+        merged_file.reset();
+        if (!move_files(fs_, temp_path, merged_path)) {
+            throw std::runtime_error("failed to publish merged segment");
+        }
+        for (const auto& segment : immutable_segments) {
+            remove_file(fs_, segment.path);
+        }
     }
 
     void bitcask_index_disk_t::drop() {
@@ -731,11 +709,13 @@ namespace services::index {
         std::unique_lock lock(mutex_);
         if (is_dirty() && file_) {
             file_->sync();
+            if (hash_index_) {
+                hash_index_->sync();
+            }
             reset_flush_state();
         }
         file_.reset();
-        index_.clear();
-        keydir_.clear();
+        hash_index_.reset();
         reset_flush_state();
         next_timestamp_ = 0;
         next_segment_id_.store(1);

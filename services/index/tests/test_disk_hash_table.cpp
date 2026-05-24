@@ -3,8 +3,16 @@
 
 using services::index::disk_hash_table_t;
 
+namespace {
+    std::filesystem::path mk_path(const std::string& name) {
+        const auto dir = std::filesystem::path("/tmp/index_disk");
+        std::filesystem::create_directories(dir);
+        return dir / name;
+    }
+} // namespace
+
 TEST_CASE("services::index::disk_hash_table::put_get_erase_roundtrip") {
-    std::filesystem::path path{"/tmp/index_disk/disk_hash_table_roundtrip.data"};
+    const auto path = mk_path("disk_hash_table_roundtrip.data");
     std::filesystem::remove(path);
 
     disk_hash_table_t table(path, 64);
@@ -27,7 +35,7 @@ TEST_CASE("services::index::disk_hash_table::put_get_erase_roundtrip") {
 }
 
 TEST_CASE("services::index::disk_hash_table::persist_reopen") {
-    std::filesystem::path path{"/tmp/index_disk/disk_hash_table_persist.data"};
+    const auto path = mk_path("disk_hash_table_persist.data");
     std::filesystem::remove(path);
 
     {
@@ -51,7 +59,7 @@ TEST_CASE("services::index::disk_hash_table::persist_reopen") {
 }
 
 TEST_CASE("services::index::disk_hash_table::long_key_prefix_and_loader") {
-    std::filesystem::path path{"/tmp/index_disk/disk_hash_table_long_key.data"};
+    const auto path = mk_path("disk_hash_table_long_key.data");
     std::filesystem::remove(path);
 
     const std::string long_key(200, 'x');
@@ -74,4 +82,83 @@ TEST_CASE("services::index::disk_hash_table::long_key_prefix_and_loader") {
         return true;
     });
     REQUIRE_FALSE(mismatch.has_value());
+}
+
+TEST_CASE("services::index::disk_hash_table::pending_insert_finalize_and_checkpoint") {
+    const auto path = mk_path("disk_hash_table_pending_insert.data");
+    std::filesystem::remove(path);
+    std::filesystem::remove(path.parent_path() / "pending.log");
+    std::filesystem::remove(path.parent_path() / "pending.checkpoint");
+
+    disk_hash_table_t table(path, 32);
+    table.append_pending_insert(101, "k.pending", 42);
+
+    REQUIRE_FALSE(table.get("k.pending").has_value());
+    REQUIRE(table.checkpoint_txn_id() == 0);
+
+    table.finalize_txn(101, true, false);
+
+    auto v = table.get("k.pending");
+    REQUIRE(v.has_value());
+    REQUIRE(v->value == 42);
+    REQUIRE(table.checkpoint_txn_id() == 101);
+}
+
+TEST_CASE("services::index::disk_hash_table::pending_delete_finalize") {
+    const auto path = mk_path("disk_hash_table_pending_delete.data");
+    std::filesystem::remove(path);
+    std::filesystem::remove(path.parent_path() / "pending.log");
+    std::filesystem::remove(path.parent_path() / "pending.checkpoint");
+
+    disk_hash_table_t table(path, 32);
+    REQUIRE(table.put("k.delete", 77, 0, 0));
+    REQUIRE(table.get("k.delete").has_value());
+
+    table.append_pending_delete(202, "k.delete", 77);
+    REQUIRE(table.get("k.delete").has_value());
+
+    table.finalize_txn(202, false, true);
+    REQUIRE_FALSE(table.get("k.delete").has_value());
+    REQUIRE(table.checkpoint_txn_id() == 202);
+}
+
+TEST_CASE("services::index::disk_hash_table::pending_revert_does_not_apply") {
+    const auto path = mk_path("disk_hash_table_pending_revert.data");
+    std::filesystem::remove(path);
+    std::filesystem::remove(path.parent_path() / "pending.log");
+    std::filesystem::remove(path.parent_path() / "pending.checkpoint");
+
+    disk_hash_table_t table(path, 32);
+    table.append_pending_insert(303, "k.revert", 1);
+    table.append_pending_delete(303, "k.absent", 0);
+
+    table.finalize_txn(303, false, false);
+
+    REQUIRE_FALSE(table.get("k.revert").has_value());
+    REQUIRE_FALSE(table.get("k.absent").has_value());
+    REQUIRE(table.checkpoint_txn_id() == 303);
+}
+
+TEST_CASE("services::index::disk_hash_table::pending_survives_reopen_until_finalize") {
+    const auto path = mk_path("disk_hash_table_pending_reopen.data");
+    std::filesystem::remove(path);
+    std::filesystem::remove(path.parent_path() / "pending.log");
+    std::filesystem::remove(path.parent_path() / "pending.checkpoint");
+
+    {
+        disk_hash_table_t table(path, 32);
+        table.append_pending_insert(404, "k.reopen", 404);
+        REQUIRE_FALSE(table.get("k.reopen").has_value());
+    }
+
+    {
+        disk_hash_table_t reopened(path, 32);
+        REQUIRE_FALSE(reopened.get("k.reopen").has_value());
+        REQUIRE(reopened.checkpoint_txn_id() == 0);
+        reopened.finalize_txn(404, true, false);
+        auto v = reopened.get("k.reopen");
+        REQUIRE(v.has_value());
+        REQUIRE(v->value == 404);
+        REQUIRE(reopened.checkpoint_txn_id() == 404);
+    }
 }

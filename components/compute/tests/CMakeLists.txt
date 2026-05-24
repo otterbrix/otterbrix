@@ -5,6 +5,7 @@ add_definitions(-DDEV_MODE)
 set( ${PROJECT_NAME}_SOURCES
         test_dispatch.cpp
         test_execution.cpp
+        test_gpu_aggregate.cpp
         test_registry.cpp
 )
 

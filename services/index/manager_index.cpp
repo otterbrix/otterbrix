@@ -8,6 +8,7 @@
 #include <components/index/hash_single_field_index.hpp>
 #include <components/index/index_engine.hpp>
 #include <components/index/disk_hash_single_field_index.hpp>
+#include <components/index/hash_single_field_index.hpp>
 #include <components/index/single_field_index.hpp>
 #include <core/b_plus_tree/b_plus_tree.hpp>
 #include <core/b_plus_tree/msgpack_reader/msgpack_reader.hpp>
@@ -67,6 +68,7 @@ namespace {
     }
 } // anonymous namespace
 
+
 namespace {
     // Batched disk operation types — collect per-agent ops, send once
     using disk_batch_t = std::vector<std::pair<value_t, size_t>>;
@@ -108,10 +110,7 @@ namespace services::index {
         , bitcask_segment_record_limit_(bitcask_segment_record_limit)
         , btree_flush_threshold_(btree_flush_threshold)
         , engines_(resource)
-        , pending_void_(resource)
-        , pending_disk_inserts_(resource)
-        , pending_disk_deletes_(resource)
-        , pending_disk_addrs_(resource) {
+        , pending_void_(resource) {
         if (!path_db_.empty()) {
             std::filesystem::create_directories(path_db_);
         }
@@ -295,10 +294,31 @@ namespace services::index {
                 break;
             }
             case components::logical_plan::index_type::hashed: {
-                id_index =
-                    components::index::make_index<components::index::disk_hash_single_field_index_t>(engine,
+                if (path_db_.empty()) {
+                    id_index =
+                        components::index::make_index<components::index::hash_single_field_index_t>(engine,
                                                                                                       index_name,
                                                                                                       keys);
+                } else {
+                    const auto base = path_db_ / std::to_string(static_cast<unsigned>(table_oid)) / index_name;
+                    std::filesystem::create_directories(base);
+                    try {
+                        id_index = components::index::make_index<components::index::disk_hash_single_field_index_t>(
+                            engine,
+                            index_name,
+                            keys,
+                            std::make_unique<services::index::disk_hash_table_t>(
+                                base / "disk_hash_single_field_index.bin"));
+                    } catch (const std::exception& e) {
+                        trace(log_,
+                              "manager_index_t::create_index: disk hash storage init failed, fallback to memory: {}",
+                              e.what());
+                        id_index = components::index::make_index<components::index::hash_single_field_index_t>(
+                            engine,
+                            index_name,
+                            keys);
+                    }
+                }
                 break;
             }
             case components::logical_plan::index_type::hashed: {
@@ -313,19 +333,9 @@ namespace services::index {
         }
 
         if (id_index != components::index::INDEX_ID_UNDEFINED) {
-            if (type == components::logical_plan::index_type::hashed && !path_db_.empty()) {
-                auto* idx = components::index::search_index(engine, keys);
-                if (auto* disk_hash_idx = dynamic_cast<components::index::disk_hash_single_field_index_t*>(idx)) {
-                    const auto base = path_db_ / std::to_string(static_cast<unsigned>(table_oid)) / index_name;
-                    std::filesystem::create_directories(base);
-                    disk_hash_idx->set_disk_storage(
-                        std::make_unique<services::index::disk_hash_table_t>(base / "disk_hash_single_field_index.bin"));
-                }
-            }
-
             // Load index data from btree (persistent storage). Path layout
             // mirrors disk-side ${path_db}/${table_oid}/${index_name}/.
-            if (!path_db_.empty() && type != components::logical_plan::index_type::hashed) {
+            if (!path_db_.empty() && type == components::logical_plan::index_type::single) {
                 auto btree_path = path_db_ / std::to_string(static_cast<unsigned>(table_oid)) / index_name;
                 if (std::filesystem::exists(btree_path / "metadata")) {
                     try {
@@ -460,20 +470,8 @@ namespace services::index {
         auto& engine = it->second;
         for (uint64_t i = 0; i < count; i++) {
             engine->insert_row(*data, i, static_cast<int64_t>(start_row_id + i), txn_id, ctx.session_tz);
-            engine->for_each_disk_op(*data,
-                                     static_cast<size_t>(i),
-                                     [&](const actor_zeta::address_t& agent_addr, const components::index::value_t& key) {
-                                         const auto id = reinterpret_cast<uintptr_t>(agent_addr.get());
-                                         pending_disk_addrs_.try_emplace(id, agent_addr);
-                                         auto& by_agent = pending_disk_inserts_[txn_id];
-                                         auto it_batch = by_agent.find(id);
-                                         if (it_batch == by_agent.end()) {
-                                             it_batch = by_agent.emplace(id, disk_batch_t(resource_)).first;
-                                         }
-                                         it_batch->second.emplace_back(value_t(resource_, key),
-                                                                       static_cast<size_t>(start_row_id + i));
-                                     });
         }
+        // No disk mirroring — uncommitted entries don't go to disk
 
         co_return;
     }
@@ -494,20 +492,8 @@ namespace services::index {
         auto& engine = it->second;
         for (size_t i = 0; i < row_ids.size(); i++) {
             engine->mark_delete_row(*data, i, row_ids[i], txn_id, ctx.session_tz);
-            engine->for_each_disk_op(*data,
-                                     i,
-                                     [&](const actor_zeta::address_t& agent_addr, const components::index::value_t& key) {
-                                         const auto id = reinterpret_cast<uintptr_t>(agent_addr.get());
-                                         pending_disk_addrs_.try_emplace(id, agent_addr);
-                                         auto& by_agent = pending_disk_deletes_[txn_id];
-                                         auto it_batch = by_agent.find(id);
-                                         if (it_batch == by_agent.end()) {
-                                             it_batch = by_agent.emplace(id, disk_batch_t(resource_)).first;
-                                         }
-                                         it_batch->second.emplace_back(value_t(resource_, key),
-                                                                       static_cast<size_t>(row_ids[i]));
-                                     });
         }
+        // No disk mirroring — uncommitted deletes don't go to disk
 
         co_return;
     }
@@ -532,38 +518,11 @@ namespace services::index {
         // Mark old entries as deleted
         for (size_t i = 0; i < row_ids.size(); i++) {
             engine->mark_delete_row(*old_data, i, row_ids[i], txn_id, ctx.session_tz);
-            engine->for_each_disk_op(
-                *old_data,
-                i,
-                [&](const actor_zeta::address_t& agent_addr, const components::index::value_t& key) {
-                    const auto id = reinterpret_cast<uintptr_t>(agent_addr.get());
-                    pending_disk_addrs_.try_emplace(id, agent_addr);
-                    auto& by_agent = pending_disk_deletes_[txn_id];
-                    auto it_batch = by_agent.find(id);
-                    if (it_batch == by_agent.end()) {
-                        it_batch = by_agent.emplace(id, disk_batch_t(resource_)).first;
-                    }
-                    it_batch->second.emplace_back(value_t(resource_, key), static_cast<size_t>(row_ids[i]));
-                });
         }
 
         // Insert new entries
         for (size_t i = 0; i < row_ids.size(); i++) {
             engine->insert_row(*new_data, i, new_start_row_id + static_cast<int64_t>(i), txn_id, ctx.session_tz);
-            engine->for_each_disk_op(
-                *new_data,
-                i,
-                [&](const actor_zeta::address_t& agent_addr, const components::index::value_t& key) {
-                    const auto id = reinterpret_cast<uintptr_t>(agent_addr.get());
-                    pending_disk_addrs_.try_emplace(id, agent_addr);
-                    auto& by_agent = pending_disk_inserts_[txn_id];
-                    auto it_batch = by_agent.find(id);
-                    if (it_batch == by_agent.end()) {
-                        it_batch = by_agent.emplace(id, disk_batch_t(resource_)).first;
-                    }
-                    it_batch->second.emplace_back(value_t(resource_, key),
-                                                  static_cast<size_t>(new_start_row_id + static_cast<int64_t>(i)));
-                });
         }
 
         co_return;
@@ -581,24 +540,22 @@ namespace services::index {
 
         auto& engine = it->second;
 
-        auto pending_insert_it = pending_disk_inserts_.find(txn_id);
-        if (pending_insert_it != pending_disk_inserts_.end()) {
-            for (auto& [id, batch] : pending_insert_it->second) {
-                auto addr_it = pending_disk_addrs_.find(id);
-                if (addr_it == pending_disk_addrs_.end()) {
-                    continue;
-                }
-                auto& addr = addr_it->second;
-                std::vector<std::pair<value_t, size_t>> vec;
-                vec.reserve(batch.size());
-                for (auto& [k, v] : batch) {
-                    vec.emplace_back(value_t(resource_, k), v);
-                }
-                auto [ns, f] = actor_zeta::otterbrix::send(addr, &index_agent_disk_t::insert_many, session, std::move(vec));
-                schedule_agent(addr, ns);
-                pending_void_.emplace_back(std::move(f));
-            }
-            pending_disk_inserts_.erase(pending_insert_it);
+        // Mirror committed inserts to disk agents BEFORE commit clears pending maps
+        agent_batch_map_t insert_batches;
+        agent_addr_map_t insert_addrs;
+        engine->for_each_pending_disk_insert(
+            txn_id,
+            [&](const actor_zeta::address_t& agent_addr, const components::index::value_t& key, int64_t row_index) {
+                auto id = reinterpret_cast<uintptr_t>(agent_addr.get());
+                insert_addrs.try_emplace(id, agent_addr);
+                insert_batches[id].emplace_back(value_t(resource_, key), static_cast<size_t>(row_index));
+            });
+        for (auto& [id, batch] : insert_batches) {
+            auto& addr = insert_addrs.at(id);
+            auto [ns, f] =
+                actor_zeta::otterbrix::send(addr, &index_agent_disk_t::insert_many, session, std::move(batch));
+            schedule_agent(addr, ns);
+            pending_void_.emplace_back(std::move(f));
         }
 
         engine->commit_insert(txn_id, commit_id);
@@ -616,24 +573,22 @@ namespace services::index {
 
         auto& engine = it->second;
 
-        auto pending_delete_it = pending_disk_deletes_.find(txn_id);
-        if (pending_delete_it != pending_disk_deletes_.end()) {
-            for (auto& [id, batch] : pending_delete_it->second) {
-                auto addr_it = pending_disk_addrs_.find(id);
-                if (addr_it == pending_disk_addrs_.end()) {
-                    continue;
-                }
-                auto& addr = addr_it->second;
-                std::vector<std::pair<value_t, size_t>> vec;
-                vec.reserve(batch.size());
-                for (auto& [k, v] : batch) {
-                    vec.emplace_back(value_t(resource_, k), v);
-                }
-                auto [ns, f] = actor_zeta::otterbrix::send(addr, &index_agent_disk_t::remove_many, session, std::move(vec));
-                schedule_agent(addr, ns);
-                pending_void_.emplace_back(std::move(f));
-            }
-            pending_disk_deletes_.erase(pending_delete_it);
+        // Mirror committed deletes to disk agents BEFORE commit clears pending maps
+        agent_batch_map_t remove_batches;
+        agent_addr_map_t remove_addrs;
+        engine->for_each_pending_disk_delete(
+            txn_id,
+            [&](const actor_zeta::address_t& agent_addr, const components::index::value_t& key, int64_t row_index) {
+                auto id = reinterpret_cast<uintptr_t>(agent_addr.get());
+                remove_addrs.try_emplace(id, agent_addr);
+                remove_batches[id].emplace_back(value_t(resource_, key), static_cast<size_t>(row_index));
+            });
+        for (auto& [id, batch] : remove_batches) {
+            auto& addr = remove_addrs.at(id);
+            auto [ns, f] =
+                actor_zeta::otterbrix::send(addr, &index_agent_disk_t::remove_many, session, std::move(batch));
+            schedule_agent(addr, ns);
+            pending_void_.emplace_back(std::move(f));
         }
 
         engine->commit_delete(txn_id, commit_id);
@@ -649,8 +604,7 @@ namespace services::index {
             co_return;
 
         it->second->revert_insert(txn_id);
-        pending_disk_inserts_.erase(txn_id);
-        pending_disk_deletes_.erase(txn_id);
+        // No disk action — uncommitted entries never went to disk
 
         co_return;
     }

@@ -4,7 +4,7 @@
 #include "disk_hash_storage.hpp"
 #include "index.hpp"
 
-#include <filesystem>
+#include <cassert>
 #include <memory_resource>
 #include <string>
 #include <vector>
@@ -18,9 +18,11 @@ namespace components::index {
         using result_storage_t = std::pmr::vector<index_value_t>;
         using const_iterator = result_storage_t::const_iterator;
 
-        disk_hash_single_field_index_t(std::pmr::memory_resource* resource, std::string name, const keys_base_storage_t& keys);
+        disk_hash_single_field_index_t(std::pmr::memory_resource* resource,
+                                       std::string name,
+                                       const keys_base_storage_t& keys,
+                                       std::unique_ptr<disk_hash_storage_t> storage);
         ~disk_hash_single_field_index_t() override;
-        void configure_storage(const std::filesystem::path& file_path);
 
     private:
         class impl_t final : public index_t::iterator::iterator_impl_t {
@@ -68,9 +70,8 @@ namespace components::index {
         mutable result_storage_t scratch_results_;
 
         std::string encode_key(const value_t& key) const;
+        disk_hash_storage_t& storage_ref() const;
 
-    public:
-        void set_disk_storage(std::unique_ptr<disk_hash_storage_t> storage);
     };
 
 } // namespace components::index

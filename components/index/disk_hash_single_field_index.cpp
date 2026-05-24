@@ -6,19 +6,17 @@ namespace components::index {
 
     disk_hash_single_field_index_t::disk_hash_single_field_index_t(std::pmr::memory_resource* resource,
                                                                    std::string name,
-                                                                   const keys_base_storage_t& keys)
+                                                                   const keys_base_storage_t& keys,
+                                                                   std::unique_ptr<disk_hash_storage_t> storage)
         : index_t(resource, logical_plan::index_type::hashed, std::move(name), keys)
+        , disk_table_(std::move(storage))
         , scratch_results_(resource) {}
 
     disk_hash_single_field_index_t::~disk_hash_single_field_index_t() = default;
 
-    void disk_hash_single_field_index_t::configure_storage(const std::filesystem::path& file_path) {
-        (void) file_path;
-        // TODO: non-injected fallback storage is intentionally not implemented.
-    }
-
-    void disk_hash_single_field_index_t::set_disk_storage(std::unique_ptr<disk_hash_storage_t> storage) {
-        disk_table_ = std::move(storage);
+    disk_hash_storage_t& disk_hash_single_field_index_t::storage_ref() const {
+        assert(disk_table_ && "disk_hash_single_field_index requires disk storage");
+        return *disk_table_;
     }
 
     std::string disk_hash_single_field_index_t::encode_key(const value_t& key) const {
@@ -35,31 +33,21 @@ namespace components::index {
     }
 
     auto disk_hash_single_field_index_t::insert_impl(value_t key, index_value_t value) -> void {
-        if (!disk_table_) {
-            // TODO: support non-disk configuration mode
-            return;
-        }
         if (value.insert_id < table::TRANSACTION_ID_START &&
             (value.delete_id == table::NOT_DELETED_ID || value.delete_id >= table::TRANSACTION_ID_START)) {
-            disk_table_->put(encode_key(key), value.row_index, 0, 0);
+            storage_ref().put(encode_key(key), value.row_index, 0, 0);
         }
     }
 
     auto disk_hash_single_field_index_t::remove_impl(value_t key) -> void {
-        if (!disk_table_) {
-            // TODO: support non-disk configuration mode
-            return;
-        }
-        disk_table_->erase(encode_key(key));
+        storage_ref().erase(encode_key(key));
     }
 
     index_t::range disk_hash_single_field_index_t::find_impl(const value_t& value) const {
         scratch_results_.clear();
-        if (disk_table_) {
-            auto v = disk_table_->get(encode_key(value));
-            if (v.has_value()) {
-                scratch_results_.emplace_back(v->value);
-            }
+        auto v = storage_ref().get(encode_key(value));
+        if (v.has_value()) {
+            scratch_results_.emplace_back(v->value);
         }
         return {iterator(new impl_t(scratch_results_.cbegin())), iterator(new impl_t(scratch_results_.cend()))};
     }
@@ -81,45 +69,25 @@ namespace components::index {
     }
 
     void disk_hash_single_field_index_t::insert_txn_impl(value_t key, int64_t row_index, uint64_t txn_id) {
-        if (!disk_table_) {
-            // TODO: support non-disk configuration mode
-            return;
-        }
-        disk_table_->append_pending_insert(txn_id, encode_key(key), row_index);
+        storage_ref().append_pending_insert(txn_id, encode_key(key), row_index);
     }
 
     void disk_hash_single_field_index_t::mark_delete_impl(value_t key, int64_t row_index, uint64_t txn_id) {
-        if (!disk_table_) {
-            // TODO: support non-disk configuration mode
-            return;
-        }
-        disk_table_->append_pending_delete(txn_id, encode_key(key), row_index);
+        storage_ref().append_pending_delete(txn_id, encode_key(key), row_index);
     }
 
     void disk_hash_single_field_index_t::commit_insert_impl(uint64_t txn_id, uint64_t commit_id) {
         (void) commit_id;
-        if (!disk_table_) {
-            // TODO: support non-disk configuration mode
-            return;
-        }
-        disk_table_->finalize_txn(txn_id, true, false);
+        storage_ref().finalize_txn(txn_id, true, false);
     }
 
     void disk_hash_single_field_index_t::commit_delete_impl(uint64_t txn_id, uint64_t commit_id) {
         (void) commit_id;
-        if (!disk_table_) {
-            // TODO: support non-disk configuration mode
-            return;
-        }
-        disk_table_->finalize_txn(txn_id, false, true);
+        storage_ref().finalize_txn(txn_id, false, true);
     }
 
     void disk_hash_single_field_index_t::revert_insert_impl(uint64_t txn_id) {
-        if (!disk_table_) {
-            // TODO: support non-disk configuration mode
-            return;
-        }
-        disk_table_->finalize_txn(txn_id, false, false);
+        storage_ref().finalize_txn(txn_id, false, false);
     }
 
     void disk_hash_single_field_index_t::cleanup_versions_impl(uint64_t lowest_active) {

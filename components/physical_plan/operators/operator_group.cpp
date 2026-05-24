@@ -3,6 +3,7 @@
 #include "arithmetic_eval.hpp"
 #include <cassert>
 #include <components/compute/function.hpp>
+#include <components/compute/gpu_aggregate.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/physical_plan/operators/aggregate/grouped_aggregate.hpp>
@@ -10,11 +11,51 @@
 #include <components/physical_plan/operators/operator_batch.hpp>
 #include <components/vector/vector_operations.hpp>
 #include <core/operations_helper.hpp>
+#include <future>
 #include <type_traits>
 
 namespace components::operators {
 
     namespace {
+        aggregate::builtin_agg to_builtin_agg(compute::gpu_aggregate_op op) noexcept {
+            switch (op) {
+                case compute::gpu_aggregate_op::sum:
+                    return aggregate::builtin_agg::SUM;
+                case compute::gpu_aggregate_op::min:
+                    return aggregate::builtin_agg::MIN;
+                case compute::gpu_aggregate_op::max:
+                    return aggregate::builtin_agg::MAX;
+                case compute::gpu_aggregate_op::count:
+                case compute::gpu_aggregate_op::count_star:
+                    return aggregate::builtin_agg::COUNT;
+                case compute::gpu_aggregate_op::avg:
+                    return aggregate::builtin_agg::AVG;
+                case compute::gpu_aggregate_op::custom:
+                    break;
+            }
+            return aggregate::builtin_agg::UNKNOWN;
+        }
+
+        aggregate::builtin_agg resolve_aggregate_kind(const compute::function& func,
+                                                      std::pmr::memory_resource* resource,
+                                                      const std::pmr::vector<types::complex_logical_type>& in_types) {
+            auto kind = aggregate::classify(func.name());
+            if (kind != aggregate::builtin_agg::UNKNOWN) {
+                return kind;
+            }
+
+            auto best = func.dispatch_best(resource, in_types, compute::prefer_gpu_first());
+            if (best.has_error()) {
+                return aggregate::builtin_agg::UNKNOWN;
+            }
+            const auto* desc = compute::gpu_aggregate_descriptor_of(best.value().get());
+            if (desc == nullptr) {
+                return aggregate::builtin_agg::UNKNOWN;
+            }
+            return to_builtin_agg(desc->op());
+        }
+
+
         // Placeholder columns (produced by projected scans) have no buffer and no auxiliary.
         // They must be skipped when reading values — vector_t::value() / data() would crash otherwise.
         bool is_placeholder(const vector::vector_t& v) noexcept {
@@ -326,10 +367,7 @@ namespace components::operators {
                 filter_having(pipeline_context, result);
             }
 
-            // Output. SELECT-order column reordering (formerly inline here via
-            // select_order_) is now handled by the downstream operator_select_t
-            // (PR #479 Projection lineage). Group emits columns in its internal
-            // order; the explicit SELECT operator picks/reorders them by name.
+            // Output. SELECT-order column reordering
             output_ = operators::make_operator_data(in->resource(), std::move(result));
             output_ = operators::split_large_output(in->resource(), std::move(output_));
 
@@ -348,8 +386,6 @@ namespace components::operators {
             group_keys_.clear();
             group_index_.clear();
         } else if (keys_.empty() && !values_.empty()) {
-            // Global aggregate over empty input (e.g. SELECT COUNT(*) FROM empty_table).
-            // Run each aggregator over zero rows and emit one result row.
             std::pmr::vector<std::pmr::vector<types::logical_value_t>> agg_results(resource_);
             agg_results.reserve(values_.size());
             for (const auto& value : values_) {
@@ -530,11 +566,6 @@ namespace components::operators {
                     can_vectorize = false;
                     break;
                 }
-                auto kind = aggregate::classify(func_op->func()->name());
-                if (kind == aggregate::builtin_agg::UNKNOWN) {
-                    can_vectorize = false;
-                    break;
-                }
                 if (func_op->distinct()) {
                     can_vectorize = false;
                     break;
@@ -543,7 +574,8 @@ namespace components::operators {
                 std::pmr::vector<size_t> col_path{{SIZE_MAX}, resource_};
                 types::logical_type col_type = types::logical_type::NA;
 
-                bool count_star = (kind == aggregate::builtin_agg::COUNT && func_op->args().empty());
+                bool count_star = (func_op->func()->name() == "count" && func_op->args().empty());
+                std::pmr::vector<types::complex_logical_type> input_types(resource_);
                 if (count_star) {
                     col_type = types::logical_type::UBIGINT;
                 } else if (func_op->args().size() == 1 &&
@@ -560,7 +592,14 @@ namespace components::operators {
                         can_vectorize = false;
                         break;
                     }
+                    input_types.emplace_back(col_type);
                 } else {
+                    can_vectorize = false;
+                    break;
+                }
+
+                auto kind = resolve_aggregate_kind(*func_op->func(), resource_, input_types);
+                if (kind == aggregate::builtin_agg::UNKNOWN) {
                     can_vectorize = false;
                     break;
                 }
@@ -583,45 +622,136 @@ namespace components::operators {
                 }
             }
 
-            // For each aggregate, run vectorized update across all input chunks,
-            // accumulating `states` incrementally.
-            std::pmr::vector<std::pmr::vector<types::logical_value_t>> agg_results(resource_);
-            agg_results.reserve(values_.size());
+            const bool gpu_enabled = aggregate::gpu_group_aggregate_test_enabled();
 
+            std::pmr::vector<types::complex_logical_type> out_types(resource_);
+            out_types.reserve(key_count + values_.size());
+            if (num_groups > 0) {
+                for (size_t k = 0; k < key_count; k++) {
+                    out_types.push_back(group_keys_[0][k].type());
+                }
+            }
             for (size_t a = 0; a < values_.size(); a++) {
-                std::pmr::vector<aggregate::raw_agg_state_t> states(resource_);
-                states.resize(num_groups);
-
-                auto& info = agg_infos[a];
-                for (size_t ci = 0; ci < in_chunks.size(); ++ci) {
-                    auto& chunk = in_chunks[ci];
-                    auto n = chunk.size();
-                    if (n == 0)
-                        continue;
-                    const auto* gids = group_ids_per_chunk[ci].data();
-                    if (info.is_count_star) {
-                        for (uint64_t i = 0; i < n; i++) {
-                            if (gids[i] != UINT32_MAX) {
-                                states[gids[i]].update_count();
-                            }
-                        }
-                    } else {
-                        aggregate::update_all(info.kind, *chunk.at(info.full_path), gids, n, states);
-                    }
-                }
-
-                // Finalize states to logical_value_t
-                std::pmr::vector<types::logical_value_t> results(resource_);
-                results.reserve(num_groups);
-                for (size_t g = 0; g < num_groups; g++) {
-                    auto val = aggregate::finalize_state(resource_, info.kind, states[g], info.col_type);
-                    val.set_alias(std::string(values_[a].name));
-                    results.push_back(std::move(val));
-                }
-                agg_results.push_back(std::move(results));
+                out_types.push_back(aggregate::result_type(agg_infos[a].kind, agg_infos[a].col_type));
             }
 
-            return build_result_chunk(num_groups, key_count, agg_results, in_chunks);
+            uint64_t cap = num_groups > 0 ? static_cast<uint64_t>(num_groups) : 1;
+            vector::data_chunk_t result(resource_, out_types, cap);
+            result.set_cardinality(static_cast<uint64_t>(num_groups));
+
+            for (size_t group_idx = 0; group_idx < num_groups; group_idx++) {
+                for (size_t key_idx = 0; key_idx < key_count; key_idx++) {
+                    result.set_value(key_idx, group_idx, std::move(group_keys_[group_idx][key_idx]));
+                }
+            }
+
+            std::pmr::vector<std::pmr::vector<aggregate::raw_agg_state_t>> states_per_agg(resource_);
+            states_per_agg.reserve(values_.size());
+            for (size_t a = 0; a < values_.size(); a++) {
+                states_per_agg.push_back(std::pmr::vector<aggregate::raw_agg_state_t>(resource_));
+                states_per_agg.back().resize(num_groups);
+            }
+
+            if (gpu_enabled && total_rows > 0) {
+                std::pmr::vector<uint32_t> flat_group_ids(resource_);
+                flat_group_ids.reserve(total_rows);
+                for (size_t ci = 0; ci < in_chunks.size(); ++ci) {
+                    const auto& ids = group_ids_per_chunk[ci];
+                    flat_group_ids.insert(flat_group_ids.end(), ids.begin(), ids.end());
+                }
+
+                std::pmr::vector<vector::vector_t> flat_columns(resource_);
+                flat_columns.reserve(values_.size());
+                std::pmr::vector<size_t> col_index_for_agg(resource_);
+                col_index_for_agg.assign(values_.size(), SIZE_MAX);
+
+                for (size_t a = 0; a < values_.size(); a++) {
+                    if (agg_infos[a].is_count_star) {
+                        continue;
+                    }
+                    for (size_t prev = 0; prev < a; prev++) {
+                        if (!agg_infos[prev].is_count_star &&
+                            agg_infos[prev].full_path == agg_infos[a].full_path) {
+                            col_index_for_agg[a] = col_index_for_agg[prev];
+                            break;
+                        }
+                    }
+                    if (col_index_for_agg[a] != SIZE_MAX) {
+                        continue;
+                    }
+
+                    const auto& first = *in_chunks.front().at(agg_infos[a].full_path);
+                    vector::vector_t flat(resource_, first.type(), total_rows);
+                    uint64_t pos = 0;
+                    for (const auto& chunk : in_chunks) {
+                        const auto n = chunk.size();
+                        if (n == 0) {
+                            continue;
+                        }
+                        const auto& src = *chunk.at(agg_infos[a].full_path);
+                        vector::indexing_vector_t indexing(resource_, n);
+                        auto* idx = indexing.data();
+                        for (uint64_t i = 0; i < n; ++i) {
+                            idx[i] = i;
+                        }
+                        vector::vector_ops::copy(src, flat, indexing, n, 0, pos);
+                        pos += n;
+                    }
+                    col_index_for_agg[a] = flat_columns.size();
+                    flat_columns.push_back(std::move(flat));
+                }
+
+                std::pmr::vector<aggregate::gpu_update_request_t> gpu_requests(resource_);
+                gpu_requests.reserve(values_.size());
+                for (size_t a = 0; a < values_.size(); a++) {
+                    aggregate::gpu_update_request_t request{};
+                    request.kind = agg_infos[a].kind;
+                    request.is_count_star = agg_infos[a].is_count_star;
+                    request.states = &states_per_agg[a];
+                    request.input_id = static_cast<uint32_t>(a);
+                    if (!agg_infos[a].is_count_star) {
+                        request.vec = &flat_columns[col_index_for_agg[a]];
+                    }
+                    gpu_requests.push_back(request);
+                }
+
+                aggregate::update_batch_gpu(gpu_requests.data(),
+                                            gpu_requests.size(),
+                                            flat_group_ids.data(),
+                                            total_rows);
+            } else {
+                for (size_t ci = 0; ci < in_chunks.size(); ++ci) {
+                    auto& chunk = in_chunks[ci];
+                    const auto n = chunk.size();
+                    if (n == 0) {
+                        continue;
+                    }
+                    const auto* gids = group_ids_per_chunk[ci].data();
+                    for (size_t a = 0; a < values_.size(); a++) {
+                        auto& info = agg_infos[a];
+                        if (info.is_count_star) {
+                            aggregate::update_count_star(gids, n, states_per_agg[a]);
+                        } else {
+                            aggregate::update_all(info.kind, *chunk.at(info.full_path), gids, n, states_per_agg[a]);
+                        }
+                    }
+                }
+            }
+
+            for (size_t a = 0; a < values_.size(); a++) {
+                auto& info = agg_infos[a];
+                auto& states = states_per_agg[a];
+                for (size_t g = 0; g < num_groups; g++) {
+                    aggregate::write_finalized_state(result.data[key_count + a],
+                                                     g,
+                                                     info.kind,
+                                                     states[g],
+                                                     info.col_type);
+                }
+                result.data[key_count + a].set_type_alias(std::string(values_[a].name));
+            }
+
+            return result;
         }
 
         // Fallback: gather per-group subchunk from multi-chunk source.
@@ -640,13 +770,6 @@ namespace components::operators {
         }
         size_t col_count = result_types.size();
 
-        // Build per-group subchunk by gathering (chunk_idx, row_idx) pairs from the
-        // multi-chunk source. Consecutive rows from the same source chunk are copied
-        // in a single vector_ops::copy() to keep the cost close to a flat memcpy.
-        // Group refs by source chunk, then issue one indexing-based copy per (chunk, column).
-        // This collapses N small per-row copies into N_chunks bulk copies and is much cheaper
-        // when refs are scattered (e.g. typical GROUP BY where each group's rows are spread
-        // across many source chunks).
         auto gather_group = [&](const std::pmr::vector<row_ref_t>& refs) {
             uint64_t cnt = static_cast<uint64_t>(refs.size());
             vector::data_chunk_t grp(resource_, result_types, cnt > 0 ? cnt : 1);
@@ -654,8 +777,6 @@ namespace components::operators {
             if (cnt == 0) {
                 return grp;
             }
-            // refs are inserted in (chunk_idx, row_idx) order during create_list_rows,
-            // so all refs for a given chunk form one contiguous span.
             uint64_t pos = 0;
             while (pos < cnt) {
                 uint32_t src_chunk = refs[pos].first;
@@ -735,12 +856,6 @@ namespace components::operators {
                                          size_t key_count,
                                          std::pmr::vector<std::pmr::vector<types::logical_value_t>>& agg_results,
                                          const chunks_vector_t& in_chunks) {
-        // Build result types: key types + aggregate types.
-        // Source key types from the incoming chunk's column schema (stable across
-        // NULL handling), not from group_keys_[0][k] — a NULL value in the first
-        // group would otherwise set out_types[k] = logical_type::NA, and any later
-        // group with a typed key would trip vector_t::set_value's cast_as path
-        // (NA has no cast handler → assert in logical_value.cpp).
         std::pmr::vector<types::complex_logical_type> out_types(resource_);
         if (num_groups > 0) {
             for (size_t k = 0; k < key_count; k++) {

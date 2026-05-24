@@ -3,8 +3,9 @@ project(test_compute)
 add_definitions(-DDEV_MODE)
 
 set( ${PROJECT_NAME}_SOURCES
-        test_registry.cpp
+        test_dispatch.cpp
         test_execution.cpp
+        test_registry.cpp
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})

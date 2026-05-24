@@ -193,7 +193,9 @@ void interpreted_benchmark_t::execute_sql_block(benchmark_state_t& state, const 
             if (!stmt.empty()) {
                 auto cursor = state.dispatcher->execute_sql(state.session, stmt);
                 if (cursor->is_error()) {
-                    throw std::runtime_error("SQL error: " + cursor->get_error().what);
+                    std::cerr << "SQL error: " << cursor->get_error().what << "\n";
+                    state.failed = true;
+                    return;
                 }
             }
             current.clear();
@@ -206,7 +208,9 @@ void interpreted_benchmark_t::execute_sql_block(benchmark_state_t& state, const 
     if (!stmt.empty()) {
         auto cursor = state.dispatcher->execute_sql(state.session, stmt);
         if (cursor->is_error()) {
-            throw std::runtime_error("SQL error: " + cursor->get_error().what);
+            std::cerr << "SQL error: " << cursor->get_error().what << "\n";
+            state.failed = true;
+            return;
         }
     }
 }
@@ -254,7 +258,9 @@ void interpreted_benchmark_t::load_csv_file(benchmark_state_t& state, const csv_
         }
         auto cursor = state.dispatcher->execute_sql(state.session, sql);
         if (cursor->is_error()) {
-            throw std::runtime_error("CSV load SQL error for " + entry.table + ": " + cursor->get_error().what);
+            std::cerr << "CSV load SQL error for " << entry.table << ": " << cursor->get_error().what << "\n";
+            state.failed = true;
+            return;
         }
         value_tuples.clear();
     };
@@ -314,7 +320,9 @@ std::string interpreted_benchmark_t::verify(benchmark_state_t& state) {
 
     auto cursor = state.dispatcher->execute_sql(state.session, run_sql_);
     if (cursor->is_error()) {
-        return "Verification SQL error: " + cursor->get_error().what;
+        std::ostringstream oss;
+        oss << "Verification SQL error: " << cursor->get_error().what;
+        return oss.str();
     }
 
     auto actual = static_cast<int64_t>(cursor->size());

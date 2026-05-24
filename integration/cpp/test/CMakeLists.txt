@@ -12,6 +12,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_wal_pool.cpp
         test_persistence.cpp
         test_sql_features.cpp
+        test_correctness_bugs.cpp
         test_production_scenarios.cpp
         test_join.cpp
         test_join_raw.cpp

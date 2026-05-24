@@ -276,7 +276,7 @@ namespace components::compute {
     // WARNING: array size, names order, uid and signatures has to be the same as in register_default_functions()
     // TODO: could be constexpr after C++20
     // TODO: initialize DEFAULT_FUNCTIONS with register_default_functions() call
-    static const std::array<std::pair<std::string, registered_func_id>, 5> DEFAULT_FUNCTIONS{
+    static const std::array<std::pair<std::string, registered_func_id>, 8> DEFAULT_FUNCTIONS{
         std::pair<std::string, registered_func_id>{"sum",
                                                    {0,
                                                     {kernel_signature_t{function_type_t::aggregate,
@@ -303,8 +303,37 @@ namespace components::compute {
                                                    {4,
                                                     {kernel_signature_t{function_type_t::aggregate,
                                                                         {input_type::make_numeric()},
-                                                                        {output_type::same_type_at(0)}}}}}};
+                                                                        {output_type::same_type_at(0)}}}}},
+        // substring/length/regexp_replace use make_always_true matchers so the
+        // dispatcher accepts NA inputs; the kernel body propagates NULL.
+        std::pair<std::string, registered_func_id>{
+            "substring",
+            {5,
+             {kernel_signature_t{function_type_t::row,
+                                 {input_type::make_always_true(),
+                                  input_type::make_always_true()},
+                                 {output_type::fixed(types::logical_type::STRING_LITERAL)}},
+              kernel_signature_t{function_type_t::row,
+                                 {input_type::make_always_true(),
+                                  input_type::make_always_true(),
+                                  input_type::make_always_true()},
+                                 {output_type::fixed(types::logical_type::STRING_LITERAL)}}}}},
+        std::pair<std::string, registered_func_id>{
+            "length",
+            {6,
+             {kernel_signature_t{function_type_t::row,
+                                 {input_type::make_always_true()},
+                                 {output_type::fixed(types::logical_type::BIGINT)}}}}},
+        std::pair<std::string, registered_func_id>{
+            "regexp_replace",
+            {7,
+             {kernel_signature_t{function_type_t::row,
+                                 {input_type::make_always_true(),
+                                  input_type::make_always_true(),
+                                  input_type::make_always_true()},
+                                 {output_type::fixed(types::logical_type::STRING_LITERAL)}}}}}};
 
     void register_default_functions(function_registry_t& registry);
+    void register_string_functions(function_registry_t& registry);
 
 } // namespace components::compute

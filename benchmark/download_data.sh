@@ -73,20 +73,22 @@ download_ssb() {
 
     # SSB .tbl files: pipe-delimited, no headers
     # Tables: customer.tbl, date.tbl, lineorder.tbl, part.tbl, supplier.tbl
-
-    local -A headers=(
-        ["customer.tbl"]="c_custkey|c_name|c_address|c_city|c_nation|c_region|c_phone|c_mktsegment"
-        ["date.tbl"]="d_datekey|d_date|d_dayofweek|d_month|d_year|d_yearmonthnum|d_yearmonth|d_daynuminweek|d_daynuminmonth|d_daynuminyear|d_monthnuminyear|d_weeknuminyear|d_sellingseason|d_lastdayinweekfl|d_lastdayinmonthfl|d_holidayfl|d_weekdayfl"
-        ["lineorder.tbl"]="lo_orderkey|lo_linenumber|lo_custkey|lo_partkey|lo_suppkey|lo_orderdate|lo_orderpriority|lo_shippriority|lo_quantity|lo_extendedprice|lo_ordtotalprice|lo_discount|lo_revenue|lo_supplycost|lo_tax|lo_commitdate|lo_shipmode"
-        ["part.tbl"]="p_partkey|p_name|p_mfgr|p_category|p_brand1|p_color|p_type|p_size|p_container"
-        ["supplier.tbl"]="s_suppkey|s_name|s_address|s_city|s_nation|s_region|s_phone"
-    )
+    # (bash 3.2 compatible: case-based lookup instead of associative arrays)
+    ssb_header_for() {
+        case "$1" in
+            customer.tbl)  echo "c_custkey|c_name|c_address|c_city|c_nation|c_region|c_phone|c_mktsegment" ;;
+            date.tbl)      echo "d_datekey|d_date|d_dayofweek|d_month|d_year|d_yearmonthnum|d_yearmonth|d_daynuminweek|d_daynuminmonth|d_daynuminyear|d_monthnuminyear|d_weeknuminyear|d_sellingseason|d_lastdayinweekfl|d_lastdayinmonthfl|d_holidayfl|d_weekdayfl" ;;
+            lineorder.tbl) echo "lo_orderkey|lo_linenumber|lo_custkey|lo_partkey|lo_suppkey|lo_orderdate|lo_orderpriority|lo_shippriority|lo_quantity|lo_extendedprice|lo_ordtotalprice|lo_discount|lo_revenue|lo_supplycost|lo_tax|lo_commitdate|lo_shipmode" ;;
+            part.tbl)      echo "p_partkey|p_name|p_mfgr|p_category|p_brand1|p_color|p_type|p_size|p_container" ;;
+            supplier.tbl)  echo "s_suppkey|s_name|s_address|s_city|s_nation|s_region|s_phone" ;;
+        esac
+    }
 
     local gen_dir="$ssb_dir/build"
-    for tbl in "${!headers[@]}"; do
+    for tbl in customer.tbl date.tbl lineorder.tbl part.tbl supplier.tbl; do
         if [ -f "$gen_dir/$tbl" ]; then
             cp "$gen_dir/$tbl" "$DATA_DIR/ssb/$tbl"
-            prepend_header "$DATA_DIR/ssb/$tbl" "${headers[$tbl]}"
+            prepend_header "$DATA_DIR/ssb/$tbl" "$(ssb_header_for "$tbl")"
             log "  $tbl -> $DATA_DIR/ssb/$tbl"
         else
             echo "  WARNING: $tbl not found"
@@ -117,21 +119,24 @@ download_tpch() {
     ./dbgen -s "$SCALE" -f
 
     # TPC-H .tbl files: pipe-delimited, no headers
-    local -A headers=(
-        ["customer.tbl"]="c_custkey|c_name|c_address|c_nationkey|c_phone|c_acctbal|c_mktsegment|c_comment"
-        ["orders.tbl"]="o_orderkey|o_custkey|o_orderstatus|o_totalprice|o_orderdate|o_orderpriority|o_clerk|o_shippriority|o_comment"
-        ["lineitem.tbl"]="l_orderkey|l_partkey|l_suppkey|l_linenumber|l_quantity|l_extendedprice|l_discount|l_tax|l_returnflag|l_linestatus|l_shipdate|l_commitdate|l_receiptdate|l_shipinstruct|l_shipmode|l_comment"
-        ["part.tbl"]="p_partkey|p_name|p_mfgr|p_brand|p_type|p_size|p_container|p_retailprice|p_comment"
-        ["partsupp.tbl"]="ps_partkey|ps_suppkey|ps_availqty|ps_supplycost|ps_comment"
-        ["supplier.tbl"]="s_suppkey|s_name|s_address|s_nationkey|s_phone|s_acctbal|s_comment"
-        ["nation.tbl"]="n_nationkey|n_name|n_regionkey|n_comment"
-        ["region.tbl"]="r_regionkey|r_name|r_comment"
-    )
+    # (bash 3.2 compatible: case-based lookup instead of associative arrays)
+    tpch_header_for() {
+        case "$1" in
+            customer.tbl) echo "c_custkey|c_name|c_address|c_nationkey|c_phone|c_acctbal|c_mktsegment|c_comment" ;;
+            orders.tbl)   echo "o_orderkey|o_custkey|o_orderstatus|o_totalprice|o_orderdate|o_orderpriority|o_clerk|o_shippriority|o_comment" ;;
+            lineitem.tbl) echo "l_orderkey|l_partkey|l_suppkey|l_linenumber|l_quantity|l_extendedprice|l_discount|l_tax|l_returnflag|l_linestatus|l_shipdate|l_commitdate|l_receiptdate|l_shipinstruct|l_shipmode|l_comment" ;;
+            part.tbl)     echo "p_partkey|p_name|p_mfgr|p_brand|p_type|p_size|p_container|p_retailprice|p_comment" ;;
+            partsupp.tbl) echo "ps_partkey|ps_suppkey|ps_availqty|ps_supplycost|ps_comment" ;;
+            supplier.tbl) echo "s_suppkey|s_name|s_address|s_nationkey|s_phone|s_acctbal|s_comment" ;;
+            nation.tbl)   echo "n_nationkey|n_name|n_regionkey|n_comment" ;;
+            region.tbl)   echo "r_regionkey|r_name|r_comment" ;;
+        esac
+    }
 
-    for tbl in "${!headers[@]}"; do
+    for tbl in customer.tbl orders.tbl lineitem.tbl part.tbl partsupp.tbl supplier.tbl nation.tbl region.tbl; do
         if [ -f "$tpch_dir/$tbl" ]; then
             cp "$tpch_dir/$tbl" "$DATA_DIR/tpch/$tbl"
-            prepend_header "$DATA_DIR/tpch/$tbl" "${headers[$tbl]}"
+            prepend_header "$DATA_DIR/tpch/$tbl" "$(tpch_header_for "$tbl")"
             log "  $tbl -> $DATA_DIR/tpch/$tbl"
         else
             echo "  WARNING: $tbl not found"
@@ -159,34 +164,40 @@ download_job() {
 
     # IMDB CSV files: comma-delimited, no headers
     # Prepend headers for all 21 tables
-    local -A headers=(
-        ["aka_name.csv"]="id,person_id,name,imdb_index,name_pcode_cf,name_pcode_nf,surname_pcode,md5sum"
-        ["aka_title.csv"]="id,movie_id,title,imdb_index,kind_id,production_year,phonetic_code,episode_of_id,season_nr,episode_nr,note,md5sum"
-        ["cast_info.csv"]="id,person_id,movie_id,person_role_id,note,nr_order,role_id"
-        ["char_name.csv"]="id,name,imdb_index,imdb_id,name_pcode_nf,surname_pcode,md5sum"
-        ["comp_cast_type.csv"]="id,kind"
-        ["company_name.csv"]="id,name,country_code,imdb_id,name_pcode_nf,name_pcode_sf,md5sum"
-        ["company_type.csv"]="id,kind"
-        ["complete_cast.csv"]="id,movie_id,subject_id,status_id"
-        ["info_type.csv"]="id,info"
-        ["keyword.csv"]="id,keyword,phonetic_code"
-        ["kind_type.csv"]="id,kind"
-        ["link_type.csv"]="id,link"
-        ["movie_companies.csv"]="id,movie_id,company_id,company_type_id,note"
-        ["movie_info.csv"]="id,movie_id,info_type_id,info,note"
-        ["movie_info_idx.csv"]="id,movie_id,info_type_id,info,note"
-        ["movie_keyword.csv"]="id,movie_id,keyword_id"
-        ["movie_link.csv"]="id,movie_id,linked_movie_id,link_type_id"
-        ["name.csv"]="id,name,imdb_index,imdb_id,gender,name_pcode_cf,name_pcode_nf,surname_pcode,md5sum"
-        ["person_info.csv"]="id,person_id,info_type_id,info,note"
-        ["role_type.csv"]="id,role"
-        ["title.csv"]="id,title,imdb_index,kind_id,production_year,imdb_id,phonetic_code,episode_of_id,season_nr,episode_nr,series_years,md5sum"
-    )
+    # (bash 3.2 compatible: case-based lookup instead of associative arrays)
+    job_header_for() {
+        case "$1" in
+            aka_name.csv)        echo "id,person_id,name,imdb_index,name_pcode_cf,name_pcode_nf,surname_pcode,md5sum" ;;
+            aka_title.csv)       echo "id,movie_id,title,imdb_index,kind_id,production_year,phonetic_code,episode_of_id,season_nr,episode_nr,note,md5sum" ;;
+            cast_info.csv)       echo "id,person_id,movie_id,person_role_id,note,nr_order,role_id" ;;
+            char_name.csv)       echo "id,name,imdb_index,imdb_id,name_pcode_nf,surname_pcode,md5sum" ;;
+            comp_cast_type.csv)  echo "id,kind" ;;
+            company_name.csv)    echo "id,name,country_code,imdb_id,name_pcode_nf,name_pcode_sf,md5sum" ;;
+            company_type.csv)    echo "id,kind" ;;
+            complete_cast.csv)   echo "id,movie_id,subject_id,status_id" ;;
+            info_type.csv)       echo "id,info" ;;
+            keyword.csv)         echo "id,keyword,phonetic_code" ;;
+            kind_type.csv)       echo "id,kind" ;;
+            link_type.csv)       echo "id,link" ;;
+            movie_companies.csv) echo "id,movie_id,company_id,company_type_id,note" ;;
+            movie_info.csv)      echo "id,movie_id,info_type_id,info,note" ;;
+            movie_info_idx.csv)  echo "id,movie_id,info_type_id,info,note" ;;
+            movie_keyword.csv)   echo "id,movie_id,keyword_id" ;;
+            movie_link.csv)      echo "id,movie_id,linked_movie_id,link_type_id" ;;
+            name.csv)            echo "id,name,imdb_index,imdb_id,gender,name_pcode_cf,name_pcode_nf,surname_pcode,md5sum" ;;
+            person_info.csv)     echo "id,person_id,info_type_id,info,note" ;;
+            role_type.csv)       echo "id,role" ;;
+            title.csv)           echo "id,title,imdb_index,kind_id,production_year,imdb_id,phonetic_code,episode_of_id,season_nr,episode_nr,series_years,md5sum" ;;
+        esac
+    }
 
-    for csv in "${!headers[@]}"; do
+    for csv in aka_name.csv aka_title.csv cast_info.csv char_name.csv comp_cast_type.csv \
+               company_name.csv company_type.csv complete_cast.csv info_type.csv keyword.csv \
+               kind_type.csv link_type.csv movie_companies.csv movie_info.csv movie_info_idx.csv \
+               movie_keyword.csv movie_link.csv name.csv person_info.csv role_type.csv title.csv; do
         local filepath="$DATA_DIR/job/$csv"
         if [ -f "$filepath" ]; then
-            prepend_header "$filepath" "${headers[$csv]}"
+            prepend_header "$filepath" "$(job_header_for "$csv")"
             log "  $csv (header added)"
         else
             echo "  WARNING: $csv not found"

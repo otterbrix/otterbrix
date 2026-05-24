@@ -130,10 +130,6 @@ namespace components::operators {
         size_t left_col_count = left_chunks.front().column_count();
         size_t right_col_count = right_chunks.front().column_count();
 
-        // TODO: switch to PostgreSQL-style semantics (validate_logical_plan.cpp:1563).
-        // Currently all joins collapse same-aliased columns into one slot (USING-like);
-        // PG only does that for USING/NATURAL, JOIN ... ON keeps duplicates addressable
-        // via table qualifier. This alias-dedup is a short-term fix for chained-JOIN.
         indices_left_.clear();
         indices_right_.clear();
         indices_left_.reserve(left_col_count);
@@ -142,15 +138,8 @@ namespace components::operators {
             indices_left_.emplace_back(i);
         }
         for (size_t i = 0; i < right_col_count; ++i) {
-            const auto& alias = right_types[i].alias();
-            auto dup =
-                std::find_if(res_types.begin(), res_types.end(), [&](const auto& t) { return t.alias() == alias; });
-            if (dup != res_types.end()) {
-                indices_right_.emplace_back(static_cast<size_t>(std::distance(res_types.begin(), dup)));
-            } else {
-                indices_right_.emplace_back(res_types.size());
-                res_types.push_back(right_types[i]);
-            }
+            indices_right_.emplace_back(left_col_count + i);
+            res_types.push_back(right_types[i]);
         }
 
         if (log_.is_valid()) {

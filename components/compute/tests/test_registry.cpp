@@ -24,7 +24,14 @@ TEST_CASE("components::compute::registry::basic") {
             if (name == "count") {
                 REQUIRE(fn->fn_arity().num_args == 0);
                 REQUIRE(fn->fn_arity().varargs == true);
+            } else if (name == "substring") {
+                // SUBSTRING(s, start[, len]) — 2 or 3 args
+                REQUIRE(fn->fn_arity().num_args == 2);
+                REQUIRE(fn->fn_arity().varargs == true);
+            } else if (name == "regexp_replace") {
+                REQUIRE(fn->fn_arity().num_args == 3);
             } else {
+                // sum, min, max, avg, length
                 REQUIRE(fn->fn_arity().num_args == 1);
             }
         }

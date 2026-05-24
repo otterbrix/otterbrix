@@ -401,9 +401,9 @@ namespace components::catalog {
             result.push_back(make_write(pg_depend_full, std::move(chunk)));
         }
 
-        // pg_rewrite row (ev_type='m')
+        // pg_rewrite row (ev_type='F' — matches macro relkind)
         if (const auto* def = find_system_table("pg_rewrite")) {
-            const std::string ev_type_str(1, 'm');
+            const std::string ev_type_str(1, relkind::macro);
             auto chunk =
                 make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                     set_oid(c, 0, 0, rule_oid);
@@ -413,6 +413,49 @@ namespace components::catalog {
                     set_str(c, 4, 0, body_sql, r);
                 });
             result.push_back(make_write(pg_rewrite_full, std::move(chunk)));
+        }
+
+        return result;
+    }
+
+    std::vector<catalog_write_t> build_matview_rewrite_writes(std::pmr::memory_resource* resource,
+                                                              oid_t mv_oid,
+                                                              oid_t rule_oid,
+                                                              const std::string& mv_name,
+                                                              const std::string& body_sql,
+                                                              oid_t source_table_oid) {
+        std::vector<catalog_write_t> result;
+
+        // pg_rewrite row (ev_class=mv_oid, ev_type='m', ev_action=body_sql) —
+        // mirror build_create_view_writes pattern but ev_type='m' for matview.
+        // REFRESH MATERIALIZED VIEW reads this row to re-execute the body.
+        if (const auto* def = find_system_table("pg_rewrite")) {
+            const std::string ev_type_str(1, relkind::materialized_view);
+            auto chunk =
+                make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                    set_oid(c, 0, 0, rule_oid);
+                    set_str(c, 1, 0, mv_name, r);
+                    set_oid(c, 2, 0, mv_oid);
+                    set_str(c, 3, 0, ev_type_str, r);
+                    set_str(c, 4, 0, body_sql, r);
+                });
+            result.push_back(make_write(pg_rewrite_full, std::move(chunk)));
+        }
+
+        // pg_depend row: matview depends on source table ('n' = normal).
+        // Allows future DROP TABLE source to detect dangling matview (followup #11).
+        if (source_table_oid != INVALID_OID) {
+            if (const auto* def = find_system_table("pg_depend")) {
+                auto chunk = make_pg_rows(
+                    resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                        set_oid(c, 0, 0, well_known_oid::pg_class_table);
+                        set_oid(c, 1, 0, mv_oid);
+                        set_oid(c, 2, 0, well_known_oid::pg_class_table);
+                        set_oid(c, 3, 0, source_table_oid);
+                        set_str(c, 4, 0, "n", r);
+                    });
+                result.push_back(make_write(pg_depend_full, std::move(chunk)));
+            }
         }
 
         return result;

@@ -212,6 +212,16 @@ namespace components::types {
         }
     }
 
+    constexpr bool is_string(logical_type type) {
+        switch (type) {
+            case logical_type::STRING_LITERAL:
+            case logical_type::BLOB:
+                return true;
+            default:
+                return false;
+        }
+    }
+
     constexpr bool is_signed(logical_type type) {
         switch (type) {
             case logical_type::TINYINT:

@@ -90,6 +90,7 @@ namespace components::operators {
         constexpr catalog::oid_t kPgClass = catalog::well_known_oid::pg_class_table;
         constexpr catalog::oid_t kPgAttribute = catalog::well_known_oid::pg_attribute_table;
         constexpr catalog::oid_t kPgComputedColumn = catalog::well_known_oid::pg_computed_column_table;
+        constexpr catalog::oid_t kPgRewrite = catalog::well_known_oid::pg_rewrite_table;
 
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
@@ -194,6 +195,30 @@ namespace components::operators {
             output_->data_chunk().set_cardinality(0);
             mark_executed();
             co_return;
+        }
+
+        // Step 2: for relkind 'v' (regular view) or 'm' (matview), read
+        // pg_rewrite.ev_action so dispatcher Phase 1.5 rewrite_views can
+        // re-parse the body. pg_rewrite layout: [0=oid, 1=rulename,
+        // 2=ev_class, 3=ev_type, 4=ev_action]. Matview body is also stored
+        // here for REFRESH MATERIALIZED VIEW.
+        std::string view_sql;
+        if (relkind_ == catalog::relkind::view || relkind_ == catalog::relkind::materialized_view) {
+            types::logical_value_t evclass_lv(resource_, table_oid_);
+            std::pmr::vector<std::string> pr_keys(resource_);
+            pr_keys.emplace_back("ev_class");
+            std::pmr::vector<types::logical_value_t> pr_vals(resource_);
+            pr_vals.emplace_back(evclass_lv);
+            auto [_pr, prf] = actor_zeta::send(ctx->disk_address,
+                                               &services::disk::manager_disk_t::read_rows_by_key,
+                                               exec_ctx,
+                                               kPgRewrite,
+                                               std::move(pr_keys),
+                                               std::move(pr_vals));
+            auto pr_rows = co_await std::move(prf);
+            if (!pr_rows.empty() && pr_rows[0].size() >= 5 && !pr_rows[0][4].is_null()) {
+                view_sql.assign(pr_rows[0][4].value<std::string_view>());
+            }
         }
 
         // Per-row metadata accumulated below, then materialized into the
@@ -302,8 +327,13 @@ namespace components::operators {
                     }
                 }
             }
+        } else if (relkind_ == catalog::relkind::view) {
+            // Views have no pg_attribute (their schema is derived from the
+            // body SQL on expansion). Leave `rows` empty; view_sql carries
+            // the body for dispatcher Phase 1.5 rewrite_views.
         } else {
-            // relkind='r' (and other static-schema kinds): scan pg_attribute.
+            // relkind='r', 'm' (matview), and other static-schema kinds:
+            // scan pg_attribute.
             // pg_attribute layout: [0=attoid, 1=attrelid, 2=attname,
             // 3=atttypid, 4=attnum, 5=attnotnull, 6=atthasdefault,
             // 7=attisdropped, 8=atttypspec, 9=attdefspec].
@@ -373,6 +403,7 @@ namespace components::operators {
             md.namespace_oid = namespace_oid_;
             md.relkind = relkind_;
             md.name = relname_;
+            md.view_sql = std::move(view_sql);
             md.columns.reserve(rows.size());
             for (const auto& r : rows) {
                 components::logical_plan::resolved_column_metadata_t cm;

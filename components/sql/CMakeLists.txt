@@ -49,6 +49,7 @@ set(SOURCE_${PROJECT_NAME}
     transformer/impl/transform_vacuum.cpp
     transformer/impl/transform_sequence.cpp
     transformer/impl/transform_view.cpp
+    transformer/impl/transform_matview.cpp
     transformer/impl/transform_macro.cpp
 )
 

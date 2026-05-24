@@ -198,6 +198,7 @@ namespace components::operators {
         void set_output(operator_data_ptr data);
         void take_output(ptr& src);
         void mark_executed();
+        void mark_failed() noexcept { state_ = operator_state::failed; }
         void clear(); //todo: replace by copy
 
         void set_error(const core::error_t& error);

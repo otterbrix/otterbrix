@@ -1,0 +1,160 @@
+#pragma once
+
+#include <core/file/file_handle.hpp>
+#include <core/file/local_file_system.hpp>
+
+#include <cstdint>
+#include <filesystem>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <shared_mutex>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace services::index {
+
+    class disk_hash_table_t {
+    public:
+        static constexpr uint32_t page_size = 4096;
+        static constexpr uint32_t default_bucket_count = 1024;
+        static constexpr uint16_t inline_key_limit = 64;
+        static constexpr uint16_t truncated_prefix_len = 32;
+
+        struct value_ref_t {
+            int64_t value{0};
+            uint32_t log_file_id{0};
+            uint64_t log_offset{0};
+            bool key_truncated{false};
+        };
+
+        using full_key_loader_t = std::function<bool(uint32_t, uint64_t, std::string&)>;
+
+        explicit disk_hash_table_t(const std::filesystem::path& file_path,
+                                   uint32_t bucket_count = default_bucket_count);
+        ~disk_hash_table_t();
+
+        bool put(std::string_view key,
+                 int64_t value,
+                 uint32_t log_file_id,
+                 uint64_t log_offset,
+                 const full_key_loader_t& key_loader = {});
+        std::optional<value_ref_t> get(std::string_view key, const full_key_loader_t& key_loader = {}) const;
+        bool erase(std::string_view key, const full_key_loader_t& key_loader = {});
+        void sync();
+
+    private:
+        struct slot_t {
+            uint16_t offset{0};
+            uint16_t length{0};
+            uint8_t flags{0};
+            uint32_t key_hash{0};
+        };
+
+        struct decoded_entry_t {
+            uint16_t stored_key_len{0};
+            uint16_t full_key_len{0};
+            uint8_t entry_flags{0};
+            std::string_view stored_key;
+            int64_t value{0};
+            uint32_t log_file_id{0};
+            uint64_t log_offset{0};
+        };
+
+        static constexpr uint64_t magic = 0x4f54425844534854ULL; // OTBXDSHT
+        static constexpr uint32_t version = 1;
+        static constexpr uint8_t slot_flag_free = 0;
+        static constexpr uint8_t slot_flag_used = 1;
+        static constexpr uint8_t entry_flag_truncated = 1U << 0U;
+
+        static constexpr uint16_t page_header_size = 12;
+        static constexpr uint16_t slot_size = 9;
+
+        struct header_t {
+            uint64_t magic_value{magic};
+            uint32_t version_value{version};
+            uint32_t page_size_value{page_size};
+            uint32_t bucket_count_value{default_bucket_count};
+            uint64_t next_overflow_page{0};
+            uint32_t checkpoint_log_file_id{0};
+            uint64_t checkpoint_log_offset{0};
+        };
+
+        void open_or_create();
+        void initialize_new_file();
+        void load_existing_file();
+
+        uint64_t data_page_count() const;
+        uint64_t page_offset(uint64_t page_id) const;
+        uint64_t bucket_primary_page_id(uint32_t bucket_id) const;
+
+        static uint16_t read_u16(const uint8_t* p);
+        static uint32_t read_u32(const uint8_t* p);
+        static uint64_t read_u64(const uint8_t* p);
+        static int64_t read_i64(const uint8_t* p);
+        static void write_u16(uint8_t* p, uint16_t v);
+        static void write_u32(uint8_t* p, uint32_t v);
+        static void write_u64(uint8_t* p, uint64_t v);
+        static void write_i64(uint8_t* p, int64_t v);
+
+        static uint32_t hash_key(std::string_view key);
+        uint32_t bucket_id_for_key(std::string_view key) const;
+
+        void read_page(uint64_t page_id, std::vector<uint8_t>& page) const;
+        void write_page(uint64_t page_id, const std::vector<uint8_t>& page);
+        void init_empty_page(std::vector<uint8_t>& page) const;
+
+        uint16_t page_count(const std::vector<uint8_t>& page) const;
+        uint16_t page_free_offset(const std::vector<uint8_t>& page) const;
+        uint64_t page_overflow(const std::vector<uint8_t>& page) const;
+        void set_page_count(std::vector<uint8_t>& page, uint16_t v) const;
+        void set_page_free_offset(std::vector<uint8_t>& page, uint16_t v) const;
+        void set_page_overflow(std::vector<uint8_t>& page, uint64_t v) const;
+
+        slot_t read_slot(const std::vector<uint8_t>& page, uint16_t slot_index) const;
+        void write_slot(std::vector<uint8_t>& page, uint16_t slot_index, const slot_t& slot) const;
+        uint16_t slot_dir_offset(uint16_t slot_index) const;
+        uint16_t slot_count_capacity(const std::vector<uint8_t>& page) const;
+
+        decoded_entry_t decode_entry(const std::vector<uint8_t>& page, const slot_t& slot) const;
+        bool keys_equal(std::string_view query_key,
+                        const decoded_entry_t& entry,
+                        const full_key_loader_t& key_loader) const;
+
+        bool try_update_in_page(std::vector<uint8_t>& page,
+                                std::string_view key,
+                                uint32_t key_hash,
+                                int64_t value,
+                                uint32_t log_file_id,
+                                uint64_t log_offset,
+                                const full_key_loader_t& key_loader,
+                                bool& changed);
+        bool try_insert_in_page(std::vector<uint8_t>& page,
+                                std::string_view key,
+                                uint32_t key_hash,
+                                int64_t value,
+                                uint32_t log_file_id,
+                                uint64_t log_offset,
+                                bool& changed);
+        bool try_erase_in_page(std::vector<uint8_t>& page,
+                               std::string_view key,
+                               uint32_t key_hash,
+                               const full_key_loader_t& key_loader,
+                               bool& erased);
+
+        std::vector<uint8_t> make_entry_payload(std::string_view key,
+                                                int64_t value,
+                                                uint32_t log_file_id,
+                                                uint64_t log_offset) const;
+        uint64_t allocate_overflow_page();
+        void persist_header();
+
+        std::filesystem::path file_path_;
+        mutable std::shared_mutex mutex_;
+        core::filesystem::local_file_system_t fs_;
+        std::unique_ptr<core::filesystem::file_handle_t> file_;
+        header_t header_{};
+    };
+
+} // namespace services::index

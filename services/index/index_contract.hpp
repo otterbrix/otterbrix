@@ -93,10 +93,6 @@ namespace services::index {
 
         unique_future<std::pmr::vector<components::index::keys_base_storage_t>>
         get_indexed_keys(session_id_t session, components::catalog::oid_t table_oid);
-        unique_future<std::pmr::vector<components::index::keys_base_storage_t>>
-        get_indexed_keys_by_type(session_id_t session,
-                                 components::catalog::oid_t table_oid,
-                                 components::logical_plan::index_type type);
         unique_future<std::pmr::vector<indexed_keys_typed_t>>
         get_indexed_keys_with_types(session_id_t session, components::catalog::oid_t table_oid);
 
@@ -117,7 +113,6 @@ namespace services::index {
                                                             &index_contract::has_index,
                                                             &index_contract::flush_all_indexes,
                                                             &index_contract::get_indexed_keys,
-                                                            &index_contract::get_indexed_keys_by_type,
                                                             &index_contract::get_indexed_keys_with_types>;
 
         index_contract() = delete;

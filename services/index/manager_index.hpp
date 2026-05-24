@@ -139,7 +139,6 @@ namespace services::index {
                                                        &manager_index_t::has_index,
                                                        &manager_index_t::flush_all_indexes,
                                                        &manager_index_t::get_indexed_keys,
-                                                       &manager_index_t::get_indexed_keys_by_type,
                                                        &manager_index_t::get_indexed_keys_with_types>;
 
     private:

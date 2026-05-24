@@ -26,6 +26,20 @@ namespace components::operators {
             expressions::key_t right_key;
         };
 
+        std::optional<components::expressions::key_t>
+        extract_probe_key_for_side(const expressions::compare_expression_t* comp, components::expressions::side_t side) {
+            using namespace components::expressions;
+            const auto& lhs = std::get<components::expressions::key_t>(comp->left());
+            const auto& rhs = std::get<components::expressions::key_t>(comp->right());
+            if (lhs.side() == side) {
+                return lhs;
+            }
+            if (rhs.side() == side) {
+                return rhs;
+            }
+            return std::nullopt;
+        }
+
         std::optional<equi_join_key_info_t>
         try_extract_inner_equi_keys(const expressions::expression_ptr& expression,
                                     const std::pmr::vector<types::complex_logical_type>& left_types,
@@ -43,16 +57,19 @@ namespace components::operators {
                 return std::nullopt;
             }
 
-            const auto& lhs_key = std::get<expressions::key_t>(comp->left());
-            const auto& rhs_key = std::get<expressions::key_t>(comp->right());
-            auto lhs_left = find_key_in_types(left_types, lhs_key);
-            auto rhs_right = find_key_in_types(right_types, rhs_key);
+            const auto& lhs_key = extract_probe_key_for_side(comp, expressions::side_t::left);
+            const auto& rhs_key = extract_probe_key_for_side(comp, expressions::side_t::right);
+            if (!lhs_key.has_value() || !rhs_key.has_value()) {
+                return std::nullopt;
+            }
+            auto lhs_left = find_key_in_types(left_types, lhs_key.value());
+            auto rhs_right = find_key_in_types(right_types, rhs_key.value());
 
             if (lhs_left.has_value() && rhs_right.has_value()) {
                 return equi_join_key_info_t{*lhs_left,
                                             *rhs_right,
-                                            expressions::key_t(resource, lhs_key.as_string()),
-                                            expressions::key_t(resource, rhs_key.as_string())};
+                                            expressions::key_t(resource, lhs_key.value().as_string()),
+                                            expressions::key_t(resource, rhs_key.value().as_string())};
             }
             return std::nullopt;
         }

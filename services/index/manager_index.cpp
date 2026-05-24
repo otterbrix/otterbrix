@@ -66,8 +66,7 @@ namespace {
                 return value_t(r, complex_logical_type{logical_type::NA});
         }
     }
-} // anonymous namespace
-
+} // anonymous namespace`
 
 namespace {
     // Batched disk operation types — collect per-agent ops, send once

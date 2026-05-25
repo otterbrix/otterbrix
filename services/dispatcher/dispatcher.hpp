@@ -95,10 +95,6 @@ namespace services::dispatcher {
                                                             &manager_dispatcher_t::commit_transaction,
                                                             &manager_dispatcher_t::abort_transaction>;
 
-        // Called once at startup (before schedulers start) to recover persisted
-        // instance settings (timezone, etc.) from disk's pg_settings table.
-        void recover_from_catalog(services::disk::manager_disk_t* disk);
-
     private:
         // Pipeline-routed OID allocation. Builds a node_allocate_oids_t leaf,
         // drives operator_allocate_oids_t via the standard executor loop, and

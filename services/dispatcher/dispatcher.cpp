@@ -315,17 +315,6 @@ namespace services::dispatcher {
         trace(log_, "manager_dispatcher_t: spawned {} executors with WAL/Disk/Index addresses", executor_pool_size_);
     }
 
-    void manager_dispatcher_t::recover_from_catalog(disk::manager_disk_t* disk) {
-        if (!disk) {
-            return;
-        }
-        auto tz_name = disk->read_setting_sync("TimeZone");
-        if (!tz_name.empty()) {
-            std::pmr::synchronized_pool_resource temp;
-            default_tz_cat_.set_timezone(&temp, tz_name);
-        }
-    }
-
     manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr>
     manager_dispatcher_t::execute_plan(components::session::session_id_t session,
                                        node_ptr plan,

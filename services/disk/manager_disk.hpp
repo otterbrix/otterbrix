@@ -209,10 +209,6 @@ namespace services::disk {
         // Synchronous — called at startup before actor schedulers start.
         std::string read_setting_sync(std::string_view name);
 
-        // Timezone offset recovered from pg_settings during bootstrap.
-        // Available after bootstrap_system_tables_sync() completes.
-        core::date::timezone_offset_t session_tz() const noexcept { return stored_catalog_.timezone_offset; }
-
         // Public accessor — ddl_* methods take their OIDs from this generator.
         components::catalog::oid_generator& oid_gen() noexcept { return oid_gen_; }
 

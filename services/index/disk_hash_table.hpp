@@ -80,8 +80,6 @@ namespace services::index {
         static constexpr uint16_t slot_size = 9;
 
         struct header_t {
-            uint64_t magic_value{magic};
-            uint32_t version_value{version};
             uint32_t page_size_value{page_size};
             uint32_t bucket_count_value{default_bucket_count};
             uint64_t next_overflow_page{0};

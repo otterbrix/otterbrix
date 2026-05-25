@@ -232,8 +232,6 @@ namespace services::index {
     }
 
     void disk_hash_table_t::initialize_new_file() {
-        header_.magic_value = magic;
-        header_.version_value = version;
         header_.page_size_value = page_size;
         header_.next_overflow_page = 1 + header_.bucket_count_value;
 
@@ -251,12 +249,10 @@ namespace services::index {
         if (!file_->read(hdr.data(), page_size, 0)) {
             throw std::runtime_error("disk_hash_table: failed to read header page");
         }
-        header_.magic_value = codec::read_le_ptr<uint64_t>(hdr.data());
-        header_.version_value = codec::read_le_ptr<uint32_t>(hdr.data() + 8);
         header_.page_size_value = codec::read_le_ptr<uint32_t>(hdr.data() + 12);
         header_.bucket_count_value = codec::read_le_ptr<uint32_t>(hdr.data() + 16);
         header_.next_overflow_page = codec::read_le_ptr<uint64_t>(hdr.data() + 20);
-        if (header_.magic_value != magic || header_.version_value != version || header_.page_size_value != page_size ||
+        if (header_.page_size_value != page_size ||
             header_.bucket_count_value == 0) {
             throw std::runtime_error("disk_hash_table: incompatible header");
         }
@@ -531,8 +527,8 @@ namespace services::index {
 
     void disk_hash_table_t::persist_header() {
         std::vector<uint8_t> hdr(page_size, 0);
-        codec::write_le_ptr<uint64_t>(hdr.data(), header_.magic_value);
-        codec::write_le_ptr<uint32_t>(hdr.data() + 8, header_.version_value);
+        codec::write_le_ptr<uint64_t>(hdr.data(), magic);
+        codec::write_le_ptr<uint32_t>(hdr.data() + 8, version);
         codec::write_le_ptr<uint32_t>(hdr.data() + 12, header_.page_size_value);
         codec::write_le_ptr<uint32_t>(hdr.data() + 16, header_.bucket_count_value);
         codec::write_le_ptr<uint64_t>(hdr.data() + 20, header_.next_overflow_page);

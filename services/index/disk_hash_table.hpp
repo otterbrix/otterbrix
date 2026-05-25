@@ -70,8 +70,6 @@ namespace services::index {
             uint64_t log_offset{0};
         };
 
-        static constexpr uint64_t magic = 0x4f54425844534854ULL; // OTBXDSHT
-        static constexpr uint32_t version = 1;
         static constexpr uint8_t slot_flag_free = 0;
         static constexpr uint8_t slot_flag_used = 1;
         static constexpr uint8_t entry_flag_truncated = 1U << 0U;

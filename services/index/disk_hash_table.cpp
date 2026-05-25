@@ -274,6 +274,9 @@ namespace services::index {
         if (rehash_in_progress_ || header_.bucket_count_value == 0) {
             return false;
         }
+        if (suppress_auto_rehash_.load(std::memory_order_acquire)) {
+            return false;
+        }
         const auto lf = static_cast<double>(entry_count_) / static_cast<double>(header_.bucket_count_value);
         if (lf <= max_load_factor_) {
             return false;
@@ -312,6 +315,12 @@ namespace services::index {
     }
 
     void disk_hash_table_t::finalize_txn(uint64_t txn_id, bool apply_inserts, bool apply_deletes) {
+        suppress_auto_rehash_.store(true, std::memory_order_release);
+        struct reset_rehash_guard_t {
+            std::atomic<bool>& flag;
+            ~reset_rehash_guard_t() { flag.store(false, std::memory_order_release); }
+        } reset_guard{suppress_auto_rehash_};
+
         auto records = read_pending_records();
         std::vector<pending_record_t> remaining;
         remaining.reserve(records.size());

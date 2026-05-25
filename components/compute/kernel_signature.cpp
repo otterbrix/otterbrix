@@ -33,6 +33,12 @@ namespace components::compute {
         return r;
     }
 
+    input_type input_type::make_string() {
+        input_type r{string_types_matcher()};
+        r.kind_ = kind_t::string;
+        return r;
+    }
+
     input_type input_type::make_any_of(std::pmr::vector<types::logical_type> types) {
         input_type r{any_type_matcher(types)};
         r.kind_ = kind_t::any_of;
@@ -112,7 +118,8 @@ namespace components::compute {
         return [](const types::complex_logical_type& t) {
             using lt = types::logical_type;
             auto id = t.type();
-            return id == lt::TINYINT || id == lt::SMALLINT || id == lt::INTEGER || id == lt::BIGINT ||
+            return id == lt::NA ||  // NA propagation (SQL NULL)
+                   id == lt::TINYINT || id == lt::SMALLINT || id == lt::INTEGER || id == lt::BIGINT ||
                    id == lt::HUGEINT || id == lt::UTINYINT || id == lt::USMALLINT || id == lt::UINTEGER ||
                    id == lt::UBIGINT || id == lt::UHUGEINT;
         };
@@ -123,6 +130,14 @@ namespace components::compute {
             using lt = types::logical_type;
             auto id = t.type();
             return id == lt::FLOAT || id == lt::DOUBLE;
+        };
+    }
+
+    type_matcher_fn string_types_matcher() {
+        return [](const types::complex_logical_type& t) {
+            auto id = t.type();
+            // NA — SQL NULL может быть в любой позиции; kernel body propagates.
+            return id == types::logical_type::NA || types::is_string(id);
         };
     }
 

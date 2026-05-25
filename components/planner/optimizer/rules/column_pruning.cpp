@@ -196,40 +196,89 @@ namespace components::planner::optimizer {
         void process_join(const logical_plan::node_ptr& join_node,
                           const std::vector<size_t>& parent_projected,
                           const table_cols_map& md) {
-            // A join produces [left_columns..., right_columns...]. Resolve left side's
-            // column count so we can split parent_projected correctly.
-            if (join_node->children().size() != 2) {
-                // malformed / unsupported — just recurse with defaults so inner aggregates
-                // still compute their own projection from their own SELECT lists.
-                for (const auto& child : join_node->children()) {
-                    if (child->type() == logical_plan::node_type::aggregate_t) {
-                        process_aggregate(child, md);
+            // An N-ary join produces [child0_columns..., child1_columns..., ..., child{N-1}_columns...]
+            // in left-to-right order. Today the comma-join transformer
+            // (transform_select.cpp T_FromExpr) synthesizes only binary JoinExprs, so
+            // n == 2 is the steady state. This implementation is forward-compatible
+            // with n >= 2 (e.g., a future star-flattening pass that produces N-ary
+            // logical joins) and degrades cleanly for n == 0 / n == 1.
+            const auto& children = join_node->children();
+            const size_t n = children.size();
+
+            // n == 0: defensive — nothing to descend into.
+            if (n == 0) {
+                return;
+            }
+
+            // n == 1: no join split; the single child sees parent_projected directly
+            // as if it were the join's output. Treat it the same as the binary path's
+            // descent step but without per-side index remapping.
+            if (n == 1) {
+                const auto& only = children[0];
+                if (only && only->type() == logical_plan::node_type::aggregate_t) {
+                    process_aggregate(only, md);
+                    auto* agg = static_cast<logical_plan::node_aggregate_t*>(only.get());
+                    if (agg->projected_cols().empty() && !parent_projected.empty()) {
+                        std::vector<size_t> projected = parent_projected;
+                        normalize(projected);
+                        agg->set_projected_cols(std::move(projected));
                     }
                 }
                 return;
             }
 
-            const auto& left = join_node->children()[0];
-            const auto& right = join_node->children()[1];
-            size_t left_cols = resolve_column_count(left, md);
+            // n >= 2: split parent_projected by per-child column counts.
+            std::vector<size_t> child_cols(n, 0);
+            std::vector<size_t> offsets(n, 0); // cumulative column offset of child[i] in joined schema
+            bool all_known = true;
+            size_t running = 0;
+            for (size_t i = 0; i < n; ++i) {
+                child_cols[i] = resolve_column_count(children[i], md);
+                offsets[i] = running;
+                if (child_cols[i] == 0) {
+                    all_known = false;
+                }
+                running += child_cols[i];
+            }
 
-            std::vector<size_t> left_projected;
-            std::vector<size_t> right_projected;
-            bool can_split = left_cols > 0 && !parent_projected.empty();
+            std::vector<std::vector<size_t>> per_child_projected(n);
+            bool can_split = all_known && !parent_projected.empty();
 
             if (can_split) {
                 for (size_t idx : parent_projected) {
-                    if (idx < left_cols) {
-                        left_projected.push_back(idx);
-                    } else {
-                        right_projected.push_back(idx - left_cols);
+                    // Locate which child this joined-schema index falls into.
+                    bool placed = false;
+                    for (size_t i = 0; i < n; ++i) {
+                        const size_t hi = offsets[i] + child_cols[i];
+                        if (idx < hi) {
+                            per_child_projected[i].push_back(idx - offsets[i]);
+                            placed = true;
+                            break;
+                        }
+                    }
+                    if (!placed) {
+                        // idx out of range for the joined schema — invariant violation;
+                        // disable split rather than corrupt projection.
+                        can_split = false;
+                        for (auto& pc : per_child_projected)
+                            pc.clear();
+                        break;
                     }
                 }
             }
 
             // Pull in columns referenced by the JOIN ON condition. Each key_t in the
-            // condition carries its own side_t, and its path[0] is an index into THAT
-            // side's schema (not the joined schema) — so we dispatch by side here.
+            // condition carries its own side_t (left/right/undefined), and its path[0]
+            // is an index into THAT side's schema (not the joined schema).
+            //
+            // DEGRADATION for n > 2: side_t has only {left, right, undefined}, which
+            // cannot distinguish the N-1 non-first children. We attribute side_t::left
+            // to child[0] and side_t::right to child[n-1]. Middle children (index in
+            // [1, n-2]) are NOT augmented from the ON walker here; they instead rely
+            // on their own SELECT-list-driven projection in process_aggregate (which
+            // already collects from group_t + match_t children regardless of join
+            // context). This is NOT a silent fallback — middle-child projection from
+            // SELECT-list is the documented contract of process_aggregate.
             std::function<bool(const expressions::expression_ptr&)> walk;
             walk = [&](const expressions::expression_ptr& expr) -> bool {
                 if (!expr)
@@ -263,10 +312,10 @@ namespace components::planner::optimizer {
                         return false;
                     switch (key.side()) {
                         case expressions::side_t::left:
-                            left_projected.push_back(idx);
+                            per_child_projected[0].push_back(idx);
                             break;
                         case expressions::side_t::right:
-                            right_projected.push_back(idx);
+                            per_child_projected[n - 1].push_back(idx);
                             break;
                         default:
                             return false;
@@ -283,28 +332,24 @@ namespace components::planner::optimizer {
                 }
             }
             if (can_split) {
-                normalize(left_projected);
-                normalize(right_projected);
-            }
-
-            // Descend into each side. Even if we couldn't split, each inner aggregate
-            // still computes its OWN projection from its SELECT list — that gives
-            // table-level reads of only the columns each side's subquery references.
-            if (left->type() == logical_plan::node_type::aggregate_t) {
-                process_aggregate(left, md);
-                if (can_split) {
-                    auto* agg = static_cast<logical_plan::node_aggregate_t*>(left.get());
-                    if (agg->projected_cols().empty() && !left_projected.empty()) {
-                        agg->set_projected_cols(std::move(left_projected));
-                    }
+                for (auto& pc : per_child_projected) {
+                    normalize(pc);
                 }
             }
-            if (right->type() == logical_plan::node_type::aggregate_t) {
-                process_aggregate(right, md);
+
+            // Descend into each child. Even if we couldn't split, each inner aggregate
+            // still computes its OWN projection from its SELECT list — that gives
+            // table-level reads of only the columns each side's subquery references.
+            for (size_t i = 0; i < n; ++i) {
+                const auto& child = children[i];
+                if (!child || child->type() != logical_plan::node_type::aggregate_t) {
+                    continue;
+                }
+                process_aggregate(child, md);
                 if (can_split) {
-                    auto* agg = static_cast<logical_plan::node_aggregate_t*>(right.get());
-                    if (agg->projected_cols().empty() && !right_projected.empty()) {
-                        agg->set_projected_cols(std::move(right_projected));
+                    auto* agg = static_cast<logical_plan::node_aggregate_t*>(child.get());
+                    if (agg->projected_cols().empty() && !per_child_projected[i].empty()) {
+                        agg->set_projected_cols(std::move(per_child_projected[i]));
                     }
                 }
             }

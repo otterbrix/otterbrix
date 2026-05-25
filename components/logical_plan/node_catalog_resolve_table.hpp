@@ -40,6 +40,10 @@ namespace components::logical_plan {
         char relkind{'r'};
         std::string name;
         std::vector<resolved_column_metadata_t> columns;
+        // pg_rewrite.ev_action body SQL, populated by operator_resolve_table_t for
+        // relkind 'v' (regular view) and 'm' (matview — used by REFRESH). Empty
+        // for other relkinds. Consumed by dispatcher Phase 1.5 rewrite_views.
+        std::string view_sql;
     };
 
     // Catalog-dependency leaf node carrying "resolve table 'relname' in

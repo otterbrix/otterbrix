@@ -18,6 +18,8 @@
 #include <logical_plan/node_create_database.hpp>
 #include <logical_plan/node_create_index.hpp>
 #include <logical_plan/node_create_macro.hpp>
+#include <logical_plan/node_create_matview.hpp>
+#include <logical_plan/node_refresh_matview.hpp>
 #include <logical_plan/node_create_sequence.hpp>
 #include <logical_plan/node_create_type.hpp>
 #include <logical_plan/node_create_view.hpp>
@@ -292,6 +294,57 @@ namespace components::planner {
                     boost::intrusive_ptr(new logical_plan::node_primitive_write_t(r, w.table_oid, std::move(w.row))));
             }
             return seq;
+        }
+
+        // CREATE MATERIALIZED VIEW — stamp-only rewrite.
+        //
+        // The matview node carries body_plan as child[0] (transformer wired it).
+        // Source schema was derived by enrich's derive_matview_output_schema —
+        // inferred_columns / namespace_oid / source_table_oid are already on the
+        // node. Planner consumes the oid batch and stamps:
+        //   - matview's own oid (mv_oid + N attoids via build_create_table_writes)
+        //   - rule_oid (for pg_rewrite)
+        //   - catalog_writes vector (pg_class + pg_attribute + pg_rewrite + pg_depend)
+        // physical_plan_generator's case create_matview_t then builds the composite
+        // operator_create_matview_t which atomically performs heap creation,
+        // catalog row writes, body scan, and storage_append in one async coroutine.
+        node_ptr
+        rewrite_create_matview(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
+            auto* cm = static_cast<logical_plan::node_create_matview_t*>(node.get());
+            const auto& cols = cm->inferred_columns();
+            if (cols.empty()) {
+                // Schema derivation failed (see derive_matview_output_schema).
+                // Leave the node unchanged; physical_plan_generator returns
+                // nullptr → executor surfaces "invalid query plan".
+                return node;
+            }
+            const catalog::oid_t ns_oid = cm->namespace_oid();
+            const catalog::oid_t source_oid = cm->source_table_oid();
+            const catalog::oid_t mv_oid = oid_batch.peek();
+
+            auto writes = catalog::build_create_table_writes(r,
+                                                             /*dbname=*/std::string{},
+                                                             cm->matviewname(),
+                                                             cols,
+                                                             /*is_disk_storage=*/true,
+                                                             ns_oid,
+                                                             oid_batch,
+                                                             catalog::relkind::materialized_view);
+            const catalog::oid_t rule_oid = oid_batch.allocate();
+            auto rewrite_writes = catalog::build_matview_rewrite_writes(r,
+                                                                        mv_oid,
+                                                                        rule_oid,
+                                                                        cm->matviewname(),
+                                                                        cm->body_sql(),
+                                                                        source_oid);
+
+            cm->set_matview_oid(mv_oid);
+            std::vector<catalog::catalog_write_t> all_writes;
+            all_writes.reserve(writes.size() + rewrite_writes.size());
+            for (auto& w : writes) all_writes.push_back(std::move(w));
+            for (auto& w : rewrite_writes) all_writes.push_back(std::move(w));
+            cm->set_catalog_writes(std::move(all_writes));
+            return node;
         }
 
         // CREATE TYPE → sequence_t(primitive_write × N).
@@ -604,6 +657,13 @@ namespace components::planner {
                     return rewrite_create_view(r, node, oid_batch);
                 case node_type::create_macro_t:
                     return rewrite_create_macro(r, node, oid_batch);
+                case node_type::create_matview_t:
+                    return rewrite_create_matview(r, node, oid_batch);
+                case node_type::refresh_matview_t:
+                    // First iteration: REFRESH not lowered; planner returns node
+                    // unchanged. Future PR wires DELETE + INSERT(re-parsed body)
+                    // using Phase A's dispatcher Pass 1 re-run infra.
+                    return node;
                 case node_type::create_constraint_t:
                     return rewrite_create_constraint(r, node, oid_batch);
                 case node_type::create_type_t:

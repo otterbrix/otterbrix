@@ -105,6 +105,21 @@ namespace components::sql::transform {
                 table_name = strVal(it->data);
                 ++it;
                 side = expressions::side_t::right;
+            } else if (lst.size() >= 3) {
+                // db.table.x style: first elem is database; check if second elem matches a known table.
+                auto second_it = std::next(it);
+                const char* second_name = strVal(second_it->data);
+                if (names.is_left_table(second_name)) {
+                    ++it;
+                    table_name = strVal(it->data);
+                    ++it;
+                    side = expressions::side_t::left;
+                } else if (names.is_right_table(second_name)) {
+                    ++it;
+                    table_name = strVal(it->data);
+                    ++it;
+                    side = expressions::side_t::right;
+                }
             }
             for (; it != lst.end(); ++it) {
                 if (nodeTag(it->data) == T_A_Star) {

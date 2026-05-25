@@ -4,12 +4,14 @@
 #include <components/logical_plan/node_limit.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/table/column_state.hpp>
+#include <core/result_wrapper.hpp>
 #include <expressions/compare_expression.hpp>
 
 namespace components::operators {
 
-    std::unique_ptr<table::table_filter_t>
-    transform_predicate(const expressions::compare_expression_ptr& expression,
+    core::result_wrapper_t<std::unique_ptr<table::table_filter_t>>
+    transform_predicate(std::pmr::memory_resource* resource,
+                        const expressions::compare_expression_ptr& expression,
                         const std::pmr::vector<types::complex_logical_type>& types,
                         const logical_plan::storage_parameters* parameters);
 

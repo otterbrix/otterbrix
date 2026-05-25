@@ -34,9 +34,11 @@ set(SOURCE_${PROJECT_NAME}
         node_create_database.cpp
         node_create_index.cpp
         node_create_macro.cpp
+        node_create_matview.cpp
         node_create_sequence.cpp
         node_create_type.cpp
         node_create_view.cpp
+        node_refresh_matview.cpp
         node_data.cpp
         node_delete.cpp
         node_drop_collection.cpp

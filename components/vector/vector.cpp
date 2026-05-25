@@ -539,7 +539,12 @@ namespace components::vector {
                 } else {
                     auto& val_children = val.children();
                     for (uint64_t i = 0; i < array_size; i++) {
-                        child.set_value(index * array_size + i, val_children[i]);
+                        // narrow per-element physical width (e.g. BIGINT literal into INT[N] slot)
+                        if (val_children[i].type().to_physical_type() != child.type().to_physical_type()) {
+                            child.set_value(index * array_size + i, val_children[i].cast_as(child.type()));
+                        } else {
+                            child.set_value(index * array_size + i, val_children[i]);
+                        }
                     }
                 }
                 break;

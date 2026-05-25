@@ -50,6 +50,17 @@ namespace components::sql::transform {
         logical_plan::node_ptr transform_create_enum_type(CreateEnumStmt& node);
         logical_plan::node_ptr transform_create_sequence(CreateSeqStmt& node);
         logical_plan::node_ptr transform_create_view(ViewStmt& node);
+        // CREATE MATERIALIZED VIEW … AS SELECT … (PostgreSQL-canonical, relkind='m').
+        // Body is transformed via transform_select; source's catalog_resolve_table
+        // is hoisted to the outer sequence_t front so Pass 1 stamps source's
+        // pg_attribute. The planner reads body_plan + stamped source metadata to
+        // derive output schema before lowering to physical operators.
+        logical_plan::node_ptr transform_create_matview(CreateTableAsStmt& cs,
+                                                        logical_plan::parameter_node_t* params);
+        // REFRESH MATERIALIZED VIEW [CONCURRENTLY] mv [WITH NO DATA].
+        // Wrapped with catalog_resolve_table(mv) so Pass 1 stamps view_sql from
+        // pg_rewrite.ev_action (already supported for relkind='m' by Phase A.A2).
+        logical_plan::node_ptr transform_refresh_matview(RefreshMatViewStmt& rs);
         logical_plan::node_ptr transform_create_function(CreateFunctionStmt& node);
         // ALTER TABLE → node_alter_table_t. Multi-clause ALTER TABLE (multiple AT_AddColumn
         // etc) emits a sequence — currently only first command supported. RENAME TABLE not

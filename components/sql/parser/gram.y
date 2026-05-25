@@ -10878,6 +10878,15 @@ CreatedbStmt:
 					CreatedbStmt *n = makeNode(resource, CreatedbStmt);
 					n->dbname = $3;
 					n->options = $5;
+					n->if_not_exists = false;
+					$$ = (Node *)n;
+				}
+			| CREATE DATABASE IF_P NOT EXISTS database_name opt_with createdb_opt_list
+				{
+					CreatedbStmt *n = makeNode(resource, CreatedbStmt);
+					n->dbname = $6;
+					n->options = $8;
+					n->if_not_exists = true;
 					$$ = (Node *)n;
 				}
 		;

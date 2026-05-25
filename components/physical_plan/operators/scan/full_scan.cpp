@@ -4,13 +4,14 @@
 
 namespace components::operators {
 
-    std::unique_ptr<table::table_filter_t>
-    transform_predicate(const expressions::compare_expression_ptr& expression,
+    core::result_wrapper_t<std::unique_ptr<table::table_filter_t>>
+    transform_predicate(std::pmr::memory_resource* resource,
+                        const expressions::compare_expression_ptr& expression,
                         const std::pmr::vector<types::complex_logical_type>& types,
                         const logical_plan::storage_parameters* parameters,
                         core::date::timezone_offset_t session_tz) {
         if (!expression || expression->type() == expressions::compare_type::all_true) {
-            return nullptr;
+            return std::unique_ptr<table::table_filter_t>{};
         }
         if (expression->type() == expressions::compare_type::all_false) {
             assert(false && "all_false should be short-circuited in await_async_and_resume");
@@ -19,62 +20,83 @@ namespace components::operators {
             case expressions::compare_type::union_and: {
                 auto filter = std::make_unique<table::conjunction_and_filter_t>();
                 for (const auto& child : expression->children()) {
-                    auto child_filter =
-                        transform_predicate(reinterpret_cast<const expressions::compare_expression_ptr&>(child),
+                    auto child_result =
+                        transform_predicate(resource,
+                                            reinterpret_cast<const expressions::compare_expression_ptr&>(child),
                                             types,
                                             parameters,
                                             session_tz);
-                    if (child_filter) {
-                        filter->child_filters.emplace_back(std::move(child_filter));
+                    if (child_result.has_error()) {
+                        return child_result;
+                    }
+                    if (child_result.value()) {
+                        filter->child_filters.emplace_back(std::move(child_result.value()));
                     }
                 }
                 if (filter->child_filters.size() < 2) {
-                    throw std::runtime_error("incomplete AND filter — expression construction error");
+                    return core::error_t{
+                        core::error_code_t::physical_plan_error,
+                        std::pmr::string{"incomplete AND filter — expression construction error", resource}};
                 }
-                return filter;
+                return std::unique_ptr<table::table_filter_t>(std::move(filter));
             }
             case expressions::compare_type::union_or: {
                 auto filter = std::make_unique<table::conjunction_or_filter_t>();
                 for (const auto& child : expression->children()) {
-                    auto child_filter =
-                        transform_predicate(reinterpret_cast<const expressions::compare_expression_ptr&>(child),
+                    auto child_result =
+                        transform_predicate(resource,
+                                            reinterpret_cast<const expressions::compare_expression_ptr&>(child),
                                             types,
                                             parameters,
                                             session_tz);
-                    if (child_filter) {
-                        filter->child_filters.emplace_back(std::move(child_filter));
+                    if (child_result.has_error()) {
+                        return child_result;
+                    }
+                    if (child_result.value()) {
+                        filter->child_filters.emplace_back(std::move(child_result.value()));
                     }
                 }
                 if (filter->child_filters.size() < 2) {
-                    throw std::runtime_error("incomplete OR filter — expression construction error");
+                    return core::error_t{
+                        core::error_code_t::physical_plan_error,
+                        std::pmr::string{"incomplete OR filter — expression construction error", resource}};
                 }
-                return filter;
+                return std::unique_ptr<table::table_filter_t>(std::move(filter));
             }
             case expressions::compare_type::union_not: {
                 auto filter = std::make_unique<table::conjunction_not_filter_t>();
                 filter->child_filters.reserve(expression->children().size());
                 for (const auto& child : expression->children()) {
-                    auto child_filter =
-                        transform_predicate(reinterpret_cast<const expressions::compare_expression_ptr&>(child),
+                    auto child_result =
+                        transform_predicate(resource,
+                                            reinterpret_cast<const expressions::compare_expression_ptr&>(child),
                                             types,
                                             parameters,
                                             session_tz);
-                    if (child_filter) {
-                        filter->child_filters.emplace_back(std::move(child_filter));
+                    if (child_result.has_error()) {
+                        return child_result;
+                    }
+                    if (child_result.value()) {
+                        filter->child_filters.emplace_back(std::move(child_result.value()));
                     }
                 }
                 if (filter->child_filters.empty()) {
-                    throw std::runtime_error("empty NOT filter — expression construction error");
+                    return core::error_t{
+                        core::error_code_t::physical_plan_error,
+                        std::pmr::string{"empty NOT filter — expression construction error", resource}};
                 }
-                return filter;
+                return std::unique_ptr<table::table_filter_t>(std::move(filter));
             }
             case expressions::compare_type::invalid:
-                throw std::runtime_error("unsupported compare_type in expression to filter conversion");
+                return core::error_t{
+                    core::error_code_t::physical_plan_error,
+                    std::pmr::string{"unsupported compare_type in expression to filter conversion", resource}};
             case expressions::compare_type::is_null:
             case expressions::compare_type::is_not_null: {
                 const auto& path = std::get<expressions::key_t>(expression->left()).path();
                 std::pmr::vector<uint64_t> indices(path.begin(), path.end(), path.get_allocator().resource());
-                return std::make_unique<table::is_null_filter_t>(expression->type(), std::move(indices));
+                return std::unique_ptr<table::table_filter_t>(
+                    std::make_unique<table::is_null_filter_t>(expression->type(), std::move(indices)));
             }
             default: {
                 const auto& path = std::get<expressions::key_t>(expression->left()).path();
@@ -82,12 +104,35 @@ namespace components::operators {
                 std::pmr::vector<uint64_t> indices(path.begin(), path.end(), path.get_allocator().resource());
                 auto it = parameters->parameters.find(id);
                 if (it == parameters->parameters.end()) {
-                    throw std::runtime_error("parameter not found in expression to filter conversion");
+                    return core::error_t{
+                        core::error_code_t::invalid_parameter,
+                        std::pmr::string{"parameter not found in expression to filter conversion", resource}};
                 }
-                const auto& cast_to_type = types::complex_logical_type::type_from_path(types, path);
-                return std::make_unique<table::constant_filter_t>(expression->type(),
-                                                                  it->second.cast_as(cast_to_type, session_tz),
-                                                                  std::move(indices));
+                // Coerce STRING parameter to ENUM ordinal when the target column is an ENUM:
+                // compare semantics see int32 storage on both sides, so the literal must be
+                // resolved to its ordinal up-front (else the filter matches 0 rows).
+                const auto& col_type = types[indices[0]];
+                const auto& param_value = it->second;
+                if (col_type.type() == types::logical_type::ENUM &&
+                    param_value.type().type() == types::logical_type::STRING_LITERAL) {
+                    auto key = param_value.value<std::string_view>();
+                    auto coerced = types::logical_value_t::create_enum(resource, col_type, key);
+                    if (coerced.type().type() == types::logical_type::NA) {
+                        return core::error_t{
+                            core::error_code_t::invalid_parameter,
+                            std::pmr::string{std::string{"enum value '"} + std::string{key} +
+                                                 "' not found in ENUM column",
+                                             resource}};
+                    }
+                    // Storage holds the ordinal as int32 (ENUM physical_type=INT32).
+                    // constant_filter_t's compare path doesn't auto-coerce ENUM<->INT32,
+                    // so wrap the ordinal as a plain INT32 logical_value_t.
+                    types::logical_value_t ordinal_val{resource, coerced.value<int32_t>()};
+                    return std::unique_ptr<table::table_filter_t>(std::make_unique<table::constant_filter_t>(
+                        expression->type(), std::move(ordinal_val), std::move(indices)));
+                }
+                return std::unique_ptr<table::table_filter_t>(
+                    std::make_unique<table::constant_filter_t>(expression->type(), it->second, std::move(indices)));
             }
         }
     }
@@ -130,7 +175,13 @@ namespace components::operators {
         auto types = co_await std::move(tf);
 
         // Build filter from expression
-        auto filter = transform_predicate(expression_, types, &ctx->parameters, ctx->session_tz);
+        auto filter_result = transform_predicate(resource_, expression_, types, &ctx->parameters, ctx->session_tz);
+        if (filter_result.has_error()) {
+            set_error(filter_result.error());
+            mark_failed();
+            co_return;
+        }
+        auto filter = std::move(filter_result.value());
 
         // Scan from storage — batched + projected (PR #477+#483).
         int64_t offset_val = limit_.offset();
@@ -163,6 +214,27 @@ namespace components::operators {
             if (skip_count > 0) {
                 batches.erase(batches.begin(), batches.begin() + static_cast<std::ptrdiff_t>(skip_count));
             }
+        }
+
+        // Maintain the operator_data_t invariant: at least one (possibly empty)
+        // chunk. storage_scan_batched can return an empty vector at SSB-scale when
+        // the disk service get_storage(table_oid) hits an oid-resolution race with
+        // CSV ingest commit. Without this guard, operator_join.cpp:125 asserts.
+        // Schema is taken from the projected scan signature so OUTER joins can
+        // still emit NULL-padded rows from the non-empty side.
+        if (batches.empty()) {
+            std::pmr::vector<types::complex_logical_type> projected_types(resource_);
+            if (projected_cols_.empty()) {
+                projected_types = types;
+            } else {
+                projected_types.reserve(projected_cols_.size());
+                for (auto idx : projected_cols_) {
+                    if (idx < types.size()) {
+                        projected_types.push_back(types[idx]);
+                    }
+                }
+            }
+            batches.emplace_back(resource_, projected_types, 0);
         }
 
         output_ = make_operator_data(resource_, std::move(batches));

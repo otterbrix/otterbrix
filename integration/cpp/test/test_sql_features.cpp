@@ -3314,3 +3314,203 @@ TEST_CASE("integration::cpp::test_sql_features::set_timezone") {
         REQUIRE_FALSE(cur->is_success());
     }
 }
+
+// End-to-end coverage for SQL-89 comma-join (FROM a, b WHERE a.x = b.y).
+// libpg_query parses each comma-separated table as an independent fromClause
+// entry; the SELECT transformer synthesizes a left-deep cross JoinExpr tree
+// out of them so the existing join lowering picks the multi-table FROM up,
+// and the user's WHERE filter (lowered into a sibling match_t) recovers
+// inner-join semantics by filtering the cross product. The benchmark
+// reproducer for this gap is SSB's `FROM lineorder, customer, date, part`.
+TEST_CASE("integration::cpp::test_sql_features::comma_join") {
+    auto config = test_create_config("/tmp/test_sql_features/comma_join");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("initialization") {
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher
+                        ->execute_sql(session, "CREATE TABLE TestDatabase.orders (id bigint, customer_id bigint);")
+                        ->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.customers (id bigint, name string);")
+                        ->is_success());
+        }
+        {
+            // orders: 4 rows; customer_id matches customers.id for rows 1..3,
+            // row 4 (customer_id=99) has no matching customer.
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.orders (id, customer_id) VALUES "
+                                               "(1, 10), (2, 20), (3, 30), (4, 99);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 4);
+        }
+        {
+            // customers: 3 rows that match orders 1..3.
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.customers (id, name) VALUES "
+                                               "(10, 'Alice'), (20, 'Bob'), (30, 'Carol');");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+        }
+    }
+
+    INFO("comma-join with equality WHERE returns inner-join rows") {
+        // Three orders (1, 2, 3) have matching customers; order 4 (customer_id=99)
+        // does not, so an inner-join-shaped result has exactly 3 rows.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.orders, TestDatabase.customers "
+                                           "WHERE orders.customer_id = customers.id;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+}
+
+// CREATE VIEW e2e — verifies SELECT * FROM v expands through the pipeline.
+// Pass 1 stamps view_sql on the resolve_table metadata (from pg_rewrite.ev_action),
+// Phase 1.5 in the dispatcher re-parses + transforms the body and splices the
+// sub-plan in. First iteration handles top-level `SELECT * FROM v` only — see
+// docs/pr496-followups.md #1 for composition-on-top-of-view followup.
+TEST_CASE("integration::cpp::test_sql_features::create_view_e2e") {
+    auto config = test_create_config("/tmp/test_sql_features/create_view_e2e");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto session = otterbrix::session_id_t();
+
+    REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase")->is_success());
+    REQUIRE(dispatcher
+                ->execute_sql(session, "CREATE TABLE TestDatabase.t (col_a STRING, col_b BIGINT)")
+                ->is_success());
+    REQUIRE(dispatcher
+                ->execute_sql(session,
+                              "INSERT INTO TestDatabase.t (col_a, col_b) VALUES "
+                              "('a', 5), ('b', 15), ('c', 20), ('d', 8)")
+                ->is_success());
+    REQUIRE(dispatcher
+                ->execute_sql(session,
+                              "CREATE VIEW TestDatabase.v AS "
+                              "SELECT col_a FROM TestDatabase.t WHERE col_b > 10")
+                ->is_success());
+
+    INFO("SELECT * FROM v expands through the pipeline to view's body");
+    auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.v");
+    REQUIRE(cur->is_success());
+    REQUIRE(cur->size() == 2); // col_b > 10 filters to ('b', 15) and ('c', 20)
+}
+
+// CREATE MATERIALIZED VIEW e2e — verifies the matview is a real physical
+// table (relkind='m') with pg_class+pg_attribute+pg_rewrite rows, created
+// through the pipeline-canonical path (logical_plan → planner → composite
+// operator_create_matview_t → executor → disk). First-iteration semantics
+// follow PostgreSQL's `WITH NO DATA` default — initial population from body
+// SELECT is deferred to REFRESH MATERIALIZED VIEW (followup #2). After CREATE,
+// the matview exists as an empty table; `SELECT * FROM mv` returns 0 rows
+// without view expansion (relkind='m' falls through to the regular scan
+// pipeline via operator_resolve_table else-branch).
+TEST_CASE("integration::cpp::test_sql_features::create_matview_e2e") {
+    auto config = test_create_config("/tmp/test_sql_features/create_matview_e2e");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto session = otterbrix::session_id_t();
+
+    REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase")->is_success());
+    REQUIRE(dispatcher
+                ->execute_sql(session, "CREATE TABLE TestDatabase.t (col_a STRING, col_b BIGINT)")
+                ->is_success());
+    REQUIRE(dispatcher
+                ->execute_sql(session,
+                              "INSERT INTO TestDatabase.t (col_a, col_b) VALUES "
+                              "('a', 5), ('b', 15), ('c', 20), ('d', 8)")
+                ->is_success());
+    REQUIRE(dispatcher
+                ->execute_sql(session,
+                              "CREATE MATERIALIZED VIEW TestDatabase.mv AS "
+                              "SELECT col_a FROM TestDatabase.t WHERE col_b > 10")
+                ->is_success());
+
+    INFO("SELECT * FROM mv reads the matview's empty heap (WITH NO DATA semantics)");
+    auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.mv");
+    REQUIRE(cur->is_success());
+    REQUIRE(cur->size() == 0); // empty until REFRESH populates (followup #2)
+}
+
+// PostgreSQL CREATE DATABASE / CREATE TABLE IF NOT EXISTS — second CREATE on the same
+// name must succeed as a no-op (no error). Dispatcher short-circuits on existing
+// namespace / collection when the create node carries if_not_exists=true.
+TEST_CASE("integration::cpp::test_sql_features::create_database_if_not_exists") {
+    auto config = test_create_config("/tmp/test_sql_features/create_db_if_not_exists");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("first CREATE creates the DB") {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(
+            dispatcher->execute_sql(session, "CREATE DATABASE IF NOT EXISTS TestDatabase;")->is_success());
+    }
+
+    INFO("second CREATE IF NOT EXISTS succeeds as a no-op") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "CREATE DATABASE IF NOT EXISTS TestDatabase;");
+        REQUIRE(cur->is_success());
+    }
+
+    INFO("CREATE DATABASE without IF NOT EXISTS on existing name still errors") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        REQUIRE_FALSE(cur->is_success());
+    }
+}
+
+TEST_CASE("integration::cpp::test_sql_features::create_table_if_not_exists") {
+    auto config = test_create_config("/tmp/test_sql_features/create_tbl_if_not_exists");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup DB") {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+    }
+
+    INFO("first CREATE TABLE creates it") {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(
+            dispatcher->execute_sql(session, "CREATE TABLE IF NOT EXISTS TestDatabase.t();")->is_success());
+    }
+
+    INFO("second CREATE TABLE IF NOT EXISTS succeeds as a no-op") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "CREATE TABLE IF NOT EXISTS TestDatabase.t();");
+        REQUIRE(cur->is_success());
+    }
+
+    // Note: CREATE TABLE without IF NOT EXISTS on an existing relation is rejected
+    // later in the execution pipeline (storage layer), not at the dispatcher's
+    // pre-validate step — dispatcher_idx for CREATE TABLE has the namespace but not
+    // the target relation (no resolve_table sibling). The IF NOT EXISTS short-circuit
+    // is what matters for benchmark idempotency, and step 2 above covers it.
+}

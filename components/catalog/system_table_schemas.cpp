@@ -742,6 +742,9 @@ namespace components::catalog {
                 case K::floating:
                     out += "f";
                     break;
+                case K::string:
+                    out += "s";
+                    break;
                 case K::any_of: {
                     out += "a:";
                     const auto& list = m.any_of_list();

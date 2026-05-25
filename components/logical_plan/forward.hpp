@@ -35,6 +35,12 @@ namespace components::logical_plan {
         drop_view_t,
         create_macro_t,
         drop_macro_t,
+        // CREATE MATERIALIZED VIEW (relkind='m'). Carries body_sql + body_plan as
+        // child[0]. Planner derives output schema from body_plan + Pass 1-stamped
+        // source metadata, then lowers to sequence_t(create_collection +
+        // pg_class/pg_attribute/pg_rewrite/pg_depend writes + insert_t).
+        create_matview_t,
+        refresh_matview_t,
         checkpoint_t,
         vacuum_t,
         having_t,

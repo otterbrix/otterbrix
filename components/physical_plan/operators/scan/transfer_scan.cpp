@@ -57,6 +57,32 @@ namespace components::operators {
             }
         }
 
+        // Maintain the operator_data_t invariant: at least one (possibly empty)
+        // chunk. storage_scan_batched can return an empty vector when the disk
+        // service get_storage(table_oid) hits an oid-resolution race (observed
+        // at SSB-scale on comma-join cross-products). Without this guard,
+        // operator_join.cpp:125 asserts. Fetch types only on the empty path so
+        // the steady-state scan keeps a single async round-trip.
+        if (batches.empty()) {
+            auto [_t, tf] = actor_zeta::send(ctx->disk_address,
+                                             &services::disk::manager_disk_t::storage_types,
+                                             ctx->session,
+                                             table_oid_);
+            auto tbl_types = co_await std::move(tf);
+            std::pmr::vector<types::complex_logical_type> projected_types(resource_);
+            if (projected_cols_.empty()) {
+                projected_types = tbl_types;
+            } else {
+                projected_types.reserve(projected_cols_.size());
+                for (auto idx : projected_cols_) {
+                    if (idx < tbl_types.size()) {
+                        projected_types.push_back(tbl_types[idx]);
+                    }
+                }
+            }
+            batches.emplace_back(resource_, projected_types, 0);
+        }
+
         output_ = make_operator_data(resource_, std::move(batches));
         mark_executed();
         co_return;

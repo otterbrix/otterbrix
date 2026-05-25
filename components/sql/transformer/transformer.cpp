@@ -100,6 +100,22 @@ namespace components::sql::transform {
             case T_ViewStmt:
                 log_node = transform_create_view(pg_cast<ViewStmt>(node));
                 break;
+            case T_CreateTableAsStmt: {
+                auto& cs = pg_cast<CreateTableAsStmt>(node);
+                if (cs.relkind == OBJECT_MATVIEW) {
+                    log_node = transform_create_matview(cs, params.get());
+                } else {
+                    error_ = core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{
+                            "CREATE TABLE AS without MATERIALIZED — see docs/pr496-followups.md #4",
+                            resource_});
+                }
+                break;
+            }
+            case T_RefreshMatViewStmt:
+                log_node = transform_refresh_matview(pg_cast<RefreshMatViewStmt>(node));
+                break;
             case T_CreateFunctionStmt:
                 log_node = transform_create_function(pg_cast<CreateFunctionStmt>(node));
                 break;

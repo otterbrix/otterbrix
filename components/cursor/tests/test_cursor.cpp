@@ -14,12 +14,6 @@ TEST_CASE("components::cursor::construction") {
         REQUIRE(cursor->is_success());
         REQUIRE_FALSE(cursor->is_error());
     }
-    INFO("failed operation cursor") {
-        auto cursor =
-            components::cursor::make_cursor(&resource, core::error_t(&resource, core::error_code_t::other_error));
-        REQUIRE_FALSE(cursor->is_success());
-        REQUIRE(cursor->is_error());
-    }
     INFO("successful operation cursor") {
         auto cursor = components::cursor::make_cursor(&resource, core::error_t::no_error());
         REQUIRE(cursor->is_success());

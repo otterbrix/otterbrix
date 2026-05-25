@@ -406,3 +406,188 @@ TEST_CASE("components::compute::errors") {
         REQUIRE(status == core::error_code_t::kernel_error);
     }
 }
+
+// ---------------------------------------------------------------------------
+// SUBSTRING / LENGTH / REGEXP_REPLACE — string row-kernel execution tests
+// ---------------------------------------------------------------------------
+
+namespace {
+    struct string_registry_fixture {
+        std::pmr::synchronized_pool_resource resource;
+        function_registry_t registry{&resource};
+
+        string_registry_fixture() { register_string_functions(registry); }
+
+        function* get(const std::string& name) const {
+            for (const auto& [n, uid] : registry.get_functions()) {
+                if (n == name) {
+                    return registry.get_function(uid);
+                }
+            }
+            return nullptr;
+        }
+    };
+} // namespace
+
+TEST_CASE("components::compute::string::substring_basic") {
+    string_registry_fixture fx;
+    auto* fn = fx.get("substring");
+    REQUIRE(fn != nullptr);
+
+    std::pmr::vector<logical_value_t> inputs(&fx.resource);
+    inputs.emplace_back(&fx.resource, std::string("hello world"));
+    inputs.emplace_back(&fx.resource, static_cast<int64_t>(7));
+    inputs.emplace_back(&fx.resource, static_cast<int64_t>(5));
+
+    auto res = fn->execute(inputs);
+    REQUIRE_FALSE(res.has_error());
+    auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
+    REQUIRE(vals.size() == 1);
+    REQUIRE(vals[0].value<std::string_view>() == "world");
+}
+
+TEST_CASE("components::compute::string::substring_omit_len") {
+    string_registry_fixture fx;
+    auto* fn = fx.get("substring");
+    REQUIRE(fn != nullptr);
+
+    std::pmr::vector<logical_value_t> inputs(&fx.resource);
+    inputs.emplace_back(&fx.resource, std::string("abcdefgh"));
+    inputs.emplace_back(&fx.resource, static_cast<int64_t>(3));
+
+    auto res = fn->execute(inputs);
+    REQUIRE_FALSE(res.has_error());
+    auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
+    REQUIRE(vals.size() == 1);
+    REQUIRE(vals[0].value<std::string_view>() == "cdefgh");
+}
+
+TEST_CASE("components::compute::string::substring_out_of_range") {
+    string_registry_fixture fx;
+    auto* fn = fx.get("substring");
+    REQUIRE(fn != nullptr);
+
+    std::pmr::vector<logical_value_t> inputs(&fx.resource);
+    inputs.emplace_back(&fx.resource, std::string("abc"));
+    inputs.emplace_back(&fx.resource, static_cast<int64_t>(99));
+    inputs.emplace_back(&fx.resource, static_cast<int64_t>(5));
+
+    auto res = fn->execute(inputs);
+    REQUIRE_FALSE(res.has_error());
+    auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
+    REQUIRE(vals.size() == 1);
+    REQUIRE(vals[0].value<std::string_view>().empty());
+}
+
+TEST_CASE("components::compute::string::substring_null") {
+    string_registry_fixture fx;
+    auto* fn = fx.get("substring");
+    REQUIRE(fn != nullptr);
+
+    std::pmr::vector<logical_value_t> inputs(&fx.resource);
+    inputs.emplace_back(&fx.resource, logical_type::NA);
+    inputs.emplace_back(&fx.resource, static_cast<int64_t>(1));
+    inputs.emplace_back(&fx.resource, static_cast<int64_t>(2));
+
+    auto res = fn->execute(inputs);
+    REQUIRE_FALSE(res.has_error());
+    auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
+    REQUIRE(vals.size() == 1);
+    REQUIRE(vals[0].type().type() == logical_type::NA);
+}
+
+TEST_CASE("components::compute::string::length_basic") {
+    string_registry_fixture fx;
+    auto* fn = fx.get("length");
+    REQUIRE(fn != nullptr);
+
+    std::pmr::vector<logical_value_t> inputs(&fx.resource);
+    inputs.emplace_back(&fx.resource, std::string("hello"));
+
+    auto res = fn->execute(inputs);
+    REQUIRE_FALSE(res.has_error());
+    auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
+    REQUIRE(vals.size() == 1);
+    REQUIRE(vals[0].value<int64_t>() == 5);
+}
+
+TEST_CASE("components::compute::string::length_empty") {
+    string_registry_fixture fx;
+    auto* fn = fx.get("length");
+    REQUIRE(fn != nullptr);
+
+    std::pmr::vector<logical_value_t> inputs(&fx.resource);
+    inputs.emplace_back(&fx.resource, std::string(""));
+
+    auto res = fn->execute(inputs);
+    REQUIRE_FALSE(res.has_error());
+    auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
+    REQUIRE(vals.size() == 1);
+    REQUIRE(vals[0].value<int64_t>() == 0);
+}
+
+TEST_CASE("components::compute::string::length_null") {
+    string_registry_fixture fx;
+    auto* fn = fx.get("length");
+    REQUIRE(fn != nullptr);
+
+    std::pmr::vector<logical_value_t> inputs(&fx.resource);
+    inputs.emplace_back(&fx.resource, logical_type::NA);
+
+    auto res = fn->execute(inputs);
+    REQUIRE_FALSE(res.has_error());
+    auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
+    REQUIRE(vals.size() == 1);
+    REQUIRE(vals[0].type().type() == logical_type::NA);
+}
+
+TEST_CASE("components::compute::string::regexp_replace_basic") {
+    string_registry_fixture fx;
+    auto* fn = fx.get("regexp_replace");
+    REQUIRE(fn != nullptr);
+
+    std::pmr::vector<logical_value_t> inputs(&fx.resource);
+    inputs.emplace_back(&fx.resource, std::string("hello 123 world 456"));
+    inputs.emplace_back(&fx.resource, std::string("[0-9]+"));
+    inputs.emplace_back(&fx.resource, std::string("#"));
+
+    auto res = fn->execute(inputs);
+    REQUIRE_FALSE(res.has_error());
+    auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
+    REQUIRE(vals.size() == 1);
+    REQUIRE(vals[0].value<std::string_view>() == "hello # world #");
+}
+
+TEST_CASE("components::compute::string::regexp_replace_no_match") {
+    string_registry_fixture fx;
+    auto* fn = fx.get("regexp_replace");
+    REQUIRE(fn != nullptr);
+
+    std::pmr::vector<logical_value_t> inputs(&fx.resource);
+    inputs.emplace_back(&fx.resource, std::string("abcdef"));
+    inputs.emplace_back(&fx.resource, std::string("[0-9]+"));
+    inputs.emplace_back(&fx.resource, std::string("#"));
+
+    auto res = fn->execute(inputs);
+    REQUIRE_FALSE(res.has_error());
+    auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
+    REQUIRE(vals.size() == 1);
+    REQUIRE(vals[0].value<std::string_view>() == "abcdef");
+}
+
+TEST_CASE("components::compute::string::regexp_replace_null") {
+    string_registry_fixture fx;
+    auto* fn = fx.get("regexp_replace");
+    REQUIRE(fn != nullptr);
+
+    std::pmr::vector<logical_value_t> inputs(&fx.resource);
+    inputs.emplace_back(&fx.resource, logical_type::NA);
+    inputs.emplace_back(&fx.resource, std::string("x"));
+    inputs.emplace_back(&fx.resource, std::string("y"));
+
+    auto res = fn->execute(inputs);
+    REQUIRE_FALSE(res.has_error());
+    auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
+    REQUIRE(vals.size() == 1);
+    REQUIRE(vals[0].type().type() == logical_type::NA);
+}

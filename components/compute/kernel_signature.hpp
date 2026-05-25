@@ -52,6 +52,7 @@ namespace components::compute {
             numeric,
             integer,
             floating,
+            string,
             any_of,
             always_true
         };
@@ -60,6 +61,7 @@ namespace components::compute {
         static input_type make_numeric();
         static input_type make_integer();
         static input_type make_floating();
+        static input_type make_string();
         static input_type make_any_of(std::pmr::vector<types::logical_type> types);
         static input_type make_always_true();
 
@@ -132,6 +134,7 @@ namespace components::compute {
     type_matcher_fn numeric_types_matcher();
     type_matcher_fn integer_types_matcher();
     type_matcher_fn floating_types_matcher();
+    type_matcher_fn string_types_matcher();
     type_matcher_fn any_type_matcher(std::pmr::vector<types::logical_type> type_list);
     type_matcher_fn always_true_type_matcher();
 

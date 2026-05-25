@@ -1,5 +1,6 @@
 #pragma once
 
+#include "bitcask_task_executor.hpp"
 #include "index_disk.hpp"
 
 #include <components/types/logical_value.hpp>
@@ -8,8 +9,11 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
+#include <memory>
 #include <memory_resource>
+#include <atomic>
 #include <shared_mutex>
 #include <vector>
 
@@ -42,6 +46,7 @@ namespace services::index {
         void drop() override;
         void force_flush() override;
         void load_entries(entries_t& entries) const;
+        void enqueue_task(std::function<void()> task);
 
     private:
         enum class record_kind_t : uint8_t
@@ -53,7 +58,6 @@ namespace services::index {
         struct keydir_entry_t {
             uint64_t segment_id{0};
             uint64_t value_offset{0};
-            uint64_t value_size{0};
             uint64_t timestamp{0};
         };
 
@@ -72,6 +76,7 @@ namespace services::index {
         void open_active_segment();
         void rotate_active_segment();
         void rotate_active_segment_if_needed();
+        uint64_t allocate_next_segment_id();
         void merge_immutable_segments();
         row_ids_t clone_rows(const row_ids_t& rows) const;
         row_ids_t current_rows(const value_t& key) const;
@@ -90,10 +95,12 @@ namespace services::index {
         ordered_index_t index_;
         std::map<value_t, keydir_entry_t, std::less<>> keydir_;
         uint64_t next_timestamp_{0};
+        std::atomic<uint64_t> next_segment_id_{1};
         uint64_t active_segment_id_{0};
         uint64_t active_segment_records_{0};
         uint64_t segment_record_limit_{default_segment_record_limit_};
         mutable std::shared_mutex mutex_;
+        std::unique_ptr<bitcask_task_executor_t> task_executor_;
     };
 
 } // namespace services::index

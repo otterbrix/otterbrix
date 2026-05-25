@@ -41,7 +41,9 @@ namespace components::sql::transform {
 
         logical_plan::node_ptr created;
         if (col_defs.value().empty()) {
-            created = logical_plan::make_node_create_collection(resource_, core::relname_t{qn.relname});
+            created = logical_plan::make_node_create_collection(resource_,
+                                                                core::relname_t{qn.relname},
+                                                                node.if_not_exists);
         }
 
         auto constraints = extract_table_constraints(resource_, *coldefs);
@@ -71,7 +73,8 @@ namespace components::sql::transform {
                                                             core::relname_t{qn.relname},
                                                             std::move(col_defs.value()),
                                                             std::move(constraints.value()),
-                                                            disk_storage);
+                                                            disk_storage,
+                                                            node.if_not_exists);
         // Collect every UDT type_name referenced by the column defs
         // (including nested STRUCT children) so Pass 1's resolve_type
         // operator can stamp pg_type metadata into the plan-tree idx.

@@ -174,12 +174,20 @@ namespace services::index {
                 co_await actor_zeta::dispatch(this, &manager_index_t::search, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::search_with_preferred_type>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::search_with_preferred_type, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_index_t, &manager_index_t::flush_all_indexes>: {
                 co_await actor_zeta::dispatch(this, &manager_index_t::flush_all_indexes, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_index_t, &manager_index_t::get_indexed_keys>: {
                 co_await actor_zeta::dispatch(this, &manager_index_t::get_indexed_keys, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::get_indexed_descriptions>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::get_indexed_descriptions, msg);
                 break;
             }
             default:
@@ -604,6 +612,32 @@ namespace services::index {
     // --- Txn-aware Query ---
 
     manager_index_t::unique_future<std::pmr::vector<int64_t>>
+    manager_index_t::search_with_preferred_type(session_id_t /*session*/,
+                                                components::catalog::oid_t table_oid,
+                                                components::index::keys_base_storage_t keys,
+                                                components::types::logical_value_t value,
+                                                components::expressions::compare_type compare,
+                                                components::logical_plan::index_type preferred_type,
+                                                uint64_t start_time,
+                                                uint64_t txn_id,
+                                                core::date::timezone_offset_t session_tz) {
+        std::pmr::vector<int64_t> result(resource_);
+        auto it = engines_.find(table_oid);
+        if (it == engines_.end()) {
+            co_return result;
+        }
+
+        auto* index = it->second->matching(keys, preferred_type);
+        if (!index) {
+            index = components::index::search_index(it->second, keys);
+        }
+        if (!index) {
+            co_return result;
+        }
+        co_return index->search(compare, value, start_time, txn_id, session_tz);
+    }
+
+    manager_index_t::unique_future<std::pmr::vector<int64_t>>
     manager_index_t::search(session_id_t /*session*/,
                             components::catalog::oid_t table_oid,
                             components::index::keys_base_storage_t keys,
@@ -632,6 +666,15 @@ namespace services::index {
             co_return std::pmr::vector<components::index::keys_base_storage_t>(resource_);
         }
         co_return it->second->all_indexed_keys();
+    }
+
+    manager_index_t::unique_future<std::pmr::vector<components::index::index_description_t>>
+    manager_index_t::get_indexed_descriptions(session_id_t /*session*/, components::catalog::oid_t table_oid) {
+        auto it = engines_.find(table_oid);
+        if (it == engines_.end()) {
+            co_return std::pmr::vector<components::index::index_description_t>(resource_);
+        }
+        co_return it->second->all_indexed_descriptions();
     }
 
     manager_index_t::unique_future<void> manager_index_t::flush_all_indexes(session_id_t session) {

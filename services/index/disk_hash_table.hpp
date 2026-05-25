@@ -40,7 +40,9 @@ namespace services::index {
         bool erase(std::string_view key, int64_t value, const full_key_loader_t& key_loader = {}) override;
         void for_each(const std::function<void(const value_ref_t&)>& cb) const;
         bool rehash(uint32_t new_bucket_count, const full_key_loader_t& key_loader = {});
+        bool trigger_rehash_if_needed(const full_key_loader_t& key_loader = {});
         uint32_t bucket_count() const;
+        double load_factor() const;
         void sync() override;
         void append_pending_insert(uint64_t txn_id, std::string_view key, int64_t row_id) override;
         void append_pending_delete(uint64_t txn_id, std::string_view key, int64_t row_id) override;
@@ -133,7 +135,11 @@ namespace services::index {
                           int64_t value,
                           uint32_t log_file_id,
                           uint64_t log_offset,
-                          const full_key_loader_t& key_loader);
+                          const full_key_loader_t& key_loader,
+                          bool allow_rehash = true);
+        uint64_t count_entries_unlocked() const;
+        bool rehash_unlocked(uint32_t new_bucket_count, const full_key_loader_t& key_loader);
+        bool maybe_rehash_if_needed_unlocked(const full_key_loader_t& key_loader);
 
         std::vector<uint8_t> make_entry_payload(std::string_view key,
                                                 int64_t value,
@@ -155,6 +161,9 @@ namespace services::index {
         core::filesystem::local_file_system_t fs_;
         std::unique_ptr<core::filesystem::file_handle_t> file_;
         header_t header_{};
+        uint64_t entry_count_{0};
+        bool rehash_in_progress_{false};
+        double max_load_factor_{0.85};
     };
 
 } // namespace services::index

@@ -48,14 +48,15 @@ namespace services::index {
                                 uint64_t log_offset,
                                 const full_key_loader_t& key_loader) {
         std::unique_lock lock(mutex_);
-        return put_unlocked(key, value, log_file_id, log_offset, key_loader);
+        return put_unlocked(key, value, log_file_id, log_offset, key_loader, true);
     }
 
     bool disk_hash_table_t::put_unlocked(std::string_view key,
                                          int64_t value,
                                          uint32_t log_file_id,
                                          uint64_t log_offset,
-                                         const full_key_loader_t& key_loader) {
+                                         const full_key_loader_t& key_loader,
+                                         bool allow_rehash) {
         (void) key_loader;
         const uint32_t key_hash = hash_key(key);
         const uint32_t bucket_id = bucket_id_for_key(key);
@@ -68,6 +69,10 @@ namespace services::index {
             if (try_insert_in_page(page, key, key_hash, value, log_file_id, log_offset, changed)) {
                 if (changed) {
                     write_page(page_id, page);
+                }
+                ++entry_count_;
+                if (allow_rehash) {
+                    maybe_rehash_if_needed_unlocked(key_loader);
                 }
                 return true;
             }
@@ -141,6 +146,9 @@ namespace services::index {
             if (try_erase_in_page(page, key, key_hash, expected_value, key_loader, erased)) {
                 if (erased) {
                     write_page(page_id, page);
+                    if (entry_count_ > 0) {
+                        --entry_count_;
+                    }
                 }
                 return erased;
             }
@@ -174,15 +182,35 @@ namespace services::index {
     }
 
     bool disk_hash_table_t::rehash(uint32_t new_bucket_count, const full_key_loader_t& key_loader) {
+        std::unique_lock lock(mutex_);
+        return rehash_unlocked(new_bucket_count, key_loader);
+    }
+
+    bool disk_hash_table_t::trigger_rehash_if_needed(const full_key_loader_t& key_loader) {
+        std::unique_lock lock(mutex_);
+        return maybe_rehash_if_needed_unlocked(key_loader);
+    }
+
+    double disk_hash_table_t::load_factor() const {
+        std::shared_lock lock(mutex_);
+        if (header_.bucket_count_value == 0) {
+            return 0.0;
+        }
+        return static_cast<double>(entry_count_) / static_cast<double>(header_.bucket_count_value);
+    }
+
+    bool disk_hash_table_t::rehash_unlocked(uint32_t new_bucket_count, const full_key_loader_t& key_loader) {
         if (new_bucket_count == 0) {
             throw std::runtime_error("disk_hash_table: rehash bucket_count must be > 0");
         }
-
-        std::unique_lock lock(mutex_);
         if (new_bucket_count == header_.bucket_count_value) {
             return false;
         }
-
+        rehash_in_progress_ = true;
+        struct reset_flag_t {
+            bool& flag;
+            ~reset_flag_t() { flag = false; }
+        } reset{rehash_in_progress_};
         struct entry_t {
             std::string key;
             int64_t value{0};
@@ -231,12 +259,36 @@ namespace services::index {
         header_.bucket_count_value = new_bucket_count;
         header_.next_overflow_page = 1 + header_.bucket_count_value;
         open_or_create();
+        entry_count_ = 0;
 
         for (const auto& e : entries) {
-            put_unlocked(e.key, e.value, e.log_file_id, e.log_offset, key_loader);
+            put_unlocked(e.key, e.value, e.log_file_id, e.log_offset, key_loader, false);
         }
-        sync();
+        if (file_) {
+            file_->sync();
+        }
         return true;
+    }
+
+    bool disk_hash_table_t::maybe_rehash_if_needed_unlocked(const full_key_loader_t& key_loader) {
+        if (rehash_in_progress_ || header_.bucket_count_value == 0) {
+            return false;
+        }
+        const auto lf = static_cast<double>(entry_count_) / static_cast<double>(header_.bucket_count_value);
+        if (lf <= max_load_factor_) {
+            return false;
+        }
+        uint64_t target = static_cast<uint64_t>(header_.bucket_count_value) * 2U;
+        while (target < entry_count_ && target < (static_cast<uint64_t>(UINT32_MAX) / 2U)) {
+            target *= 2U;
+        }
+        if (target > UINT32_MAX) {
+            target = UINT32_MAX;
+        }
+        if (target <= header_.bucket_count_value) {
+            return false;
+        }
+        return rehash_unlocked(static_cast<uint32_t>(target), key_loader);
     }
 
     uint32_t disk_hash_table_t::bucket_count() const {
@@ -303,6 +355,7 @@ namespace services::index {
             return;
         }
         load_existing_file();
+        entry_count_ = count_entries_unlocked();
     }
 
     void disk_hash_table_t::initialize_new_file() {
@@ -315,6 +368,7 @@ namespace services::index {
             init_empty_page(page);
             write_page(bucket_primary_page_id(i), page);
         }
+        entry_count_ = 0;
         file_->sync();
     }
 
@@ -353,6 +407,26 @@ namespace services::index {
 
     uint32_t disk_hash_table_t::bucket_id_for_key(std::string_view key) const {
         return hash_key(key) % header_.bucket_count_value;
+    }
+
+    uint64_t disk_hash_table_t::count_entries_unlocked() const {
+        uint64_t count = 0;
+        std::vector<uint8_t> page(page_size);
+        for (uint32_t bucket = 0; bucket < header_.bucket_count_value; ++bucket) {
+            uint64_t page_id = bucket_primary_page_id(bucket);
+            while (page_id != 0) {
+                read_page(page_id, page);
+                const auto cnt = page_count(page);
+                for (uint16_t i = 0; i < cnt; ++i) {
+                    const auto slot = read_slot(page, i);
+                    if (slot.flags == slot_flag_used && slot.length != 0) {
+                        ++count;
+                    }
+                }
+                page_id = page_overflow(page);
+            }
+        }
+        return count;
     }
 
     void disk_hash_table_t::read_page(uint64_t page_id, std::vector<uint8_t>& page) const {

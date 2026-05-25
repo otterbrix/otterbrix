@@ -249,3 +249,20 @@ TEST_CASE("services::index::disk_hash_table::rehash_truncated_keys_requires_load
     REQUIRE(v2.has_value());
     REQUIRE(v2->value == 22);
 }
+
+TEST_CASE("services::index::disk_hash_table::auto_rehash_by_load_factor") {
+    const auto path = mk_path("disk_hash_table_auto_rehash.data");
+    std::filesystem::remove(path);
+
+    disk_hash_table_t table(path, 4);
+    const auto initial_buckets = table.bucket_count();
+    REQUIRE(initial_buckets == 4);
+
+    for (int i = 0; i < 20; ++i) {
+        const auto key = "auto.k." + std::to_string(i);
+        REQUIRE(table.put(key, static_cast<int64_t>(i), 10, static_cast<uint64_t>(i + 1)));
+    }
+
+    REQUIRE(table.bucket_count() > initial_buckets);
+    REQUIRE(table.load_factor() <= 0.85);
+}

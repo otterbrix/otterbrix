@@ -236,7 +236,10 @@ namespace services::index {
                     hash_index_->put(key_bytes,
                                      rows.empty() ? -1 : static_cast<int64_t>(rows.back()),
                                      static_cast<uint32_t>(segment.id),
-                                     payload_offset);
+                                     payload_offset,
+                                     [this](uint32_t log_file_id, uint64_t log_offset, std::string& out_key) {
+                                         return load_full_key_for_hash_ref(log_file_id, log_offset, out_key);
+                                     });
                 } else {
                     break;
                 }
@@ -257,7 +260,6 @@ namespace services::index {
         next_segment_id_.store(segments.back().id + 1);
         active_segment_records_ = active_segment.record_count;
         active_data_file_path_ = active_segment.path;
-        maybe_rehash_hash_index();
     }
 
     std::vector<bitcask_index_disk_t::segment_info_t> bitcask_index_disk_t::collect_segments() const {
@@ -367,7 +369,9 @@ namespace services::index {
 
     bitcask_index_disk_t::row_ids_t bitcask_index_disk_t::current_rows(const value_t& key) const {
         const auto key_bytes = key_bytes_for_hash(key);
-        auto ref = hash_index_->get(key_bytes);
+        auto ref = hash_index_->get(key_bytes, [this](uint32_t log_file_id, uint64_t log_offset, std::string& out_key) {
+            return load_full_key_for_hash_ref(log_file_id, log_offset, out_key);
+        });
         if (!ref.has_value()) {
             return row_ids_t(resource_);
         }
@@ -378,32 +382,11 @@ namespace services::index {
         return rows;
     }
 
-    void bitcask_index_disk_t::maybe_rehash_hash_index() {
-        uint64_t entries = 0;
-        hash_index_->for_each([&](const disk_hash_table_t::value_ref_t&) {
-            ++entries;
-        });
-        const auto current_buckets = hash_index_->bucket_count();
-        if (entries == 0 || current_buckets == 0) {
-            return;
-        }
-
-        uint64_t target_buckets = current_buckets;
-        while (target_buckets < entries && target_buckets < (static_cast<uint64_t>(UINT32_MAX) / 2U)) {
-            target_buckets *= 2U;
-        }
-        if (target_buckets <= current_buckets) {
-            return;
-        }
-
-        hash_index_->rehash(static_cast<uint32_t>(target_buckets),
-                            [this](uint32_t log_file_id, uint64_t log_offset, std::string& out_key) {
-                                return load_full_key_for_hash_ref(log_file_id, log_offset, out_key);
-                            });
-    }
-
     void bitcask_index_disk_t::erase_all_refs_for_key(std::string_view key_bytes) {
-        while (hash_index_->erase(key_bytes)) {
+        while (hash_index_->erase(key_bytes,
+                                  [this](uint32_t log_file_id, uint64_t log_offset, std::string& out_key) {
+                                      return load_full_key_for_hash_ref(log_file_id, log_offset, out_key);
+                                  })) {
         }
     }
 
@@ -417,7 +400,10 @@ namespace services::index {
         hash_index_->put(key_bytes,
                          rows.empty() ? -1 : static_cast<int64_t>(rows.back()),
                          static_cast<uint32_t>(active_segment_id_),
-                         offset + sizeof(record_header_t));
+                         offset + sizeof(record_header_t),
+            [this](uint32_t log_file_id, uint64_t log_offset, std::string& out_key) {
+                return load_full_key_for_hash_ref(log_file_id, log_offset, out_key);
+            });
         ++active_segment_records_;
     }
 
@@ -444,7 +430,12 @@ namespace services::index {
 
     void bitcask_index_disk_t::remove(value_t key) {
         std::unique_lock lock(mutex_);
-        if (!hash_index_->get(key_bytes_for_hash(key)).has_value()) {
+        if (!hash_index_
+                 ->get(key_bytes_for_hash(key),
+                       [this](uint32_t log_file_id, uint64_t log_offset, std::string& out_key) {
+                           return load_full_key_for_hash_ref(log_file_id, log_offset, out_key);
+                       })
+                 .has_value()) {
             return;
         }
         append_tombstone(key);
@@ -508,7 +499,10 @@ namespace services::index {
 
     void bitcask_index_disk_t::find(const value_t& value, result& res) const {
         std::shared_lock lock(mutex_);
-        auto ref = hash_index_->get(key_bytes_for_hash(value));
+        auto ref = hash_index_->get(key_bytes_for_hash(value),
+                                    [this](uint32_t log_file_id, uint64_t log_offset, std::string& out_key) {
+                                        return load_full_key_for_hash_ref(log_file_id, log_offset, out_key);
+                                    });
         if (!ref.has_value()) {
             return;
         }
@@ -587,7 +581,10 @@ namespace services::index {
             hash_index_->put(key_bytes_for_hash(key),
                              rows.empty() ? -1 : static_cast<int64_t>(rows.back()),
                              static_cast<uint32_t>(merged_segment_id),
-                             offset + sizeof(record_header_t));
+                             offset + sizeof(record_header_t),
+                             [this](uint32_t log_file_id, uint64_t log_offset, std::string& out_key) {
+                                 return load_full_key_for_hash_ref(log_file_id, log_offset, out_key);
+                             });
         }
 
         merged_file->sync();

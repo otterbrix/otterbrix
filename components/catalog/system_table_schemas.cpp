@@ -214,6 +214,13 @@ namespace components::catalog {
             return c;
         }
 
+        std::vector<column_definition_t> pg_settings_columns() {
+            std::vector<column_definition_t> c;
+            c.emplace_back("name", str_col(), /*not_null*/ true);    // setting name (e.g. "TimeZone")
+            c.emplace_back("setting", str_col(), /*not_null*/ true); // setting value
+            return c;
+        }
+
         std::vector<column_definition_t> pg_computed_column_columns() {
             std::vector<column_definition_t> c;
             c.emplace_back("relid",
@@ -241,9 +248,9 @@ namespace components::catalog {
         // relation, type, function) is conceptually scoped to a database. The default "main"
         // database row is seeded with well_known_oid::main_database in
         // manager_disk_t::bootstrap_system_tables_sync.
-        static const std::array<system_table_def_t, 12> tables = []() {
+        static const std::array<system_table_def_t, 13> tables = []() {
             const oid_t pg_catalog = well_known_oid::pg_catalog_namespace;
-            return std::array<system_table_def_t, 12>{{
+            return std::array<system_table_def_t, 13>{{
                 {"pg_database", well_known_oid::pg_database_table, pg_catalog, relkind::regular, pg_database_columns()},
                 {"pg_namespace",
                  well_known_oid::pg_namespace_table,
@@ -272,6 +279,7 @@ namespace components::catalog {
                  pg_computed_column_columns()},
                 {"pg_sequence", well_known_oid::pg_sequence_table, pg_catalog, relkind::regular, pg_sequence_columns()},
                 {"pg_rewrite", well_known_oid::pg_rewrite_table, pg_catalog, relkind::regular, pg_rewrite_columns()},
+                {"pg_settings", well_known_oid::pg_settings_table, pg_catalog, relkind::regular, pg_settings_columns()},
             }};
         }();
         return tables;
@@ -329,11 +337,18 @@ namespace components::catalog {
                 return "float8"; // pg: float8
             case LT::STRING_LITERAL:
                 return "text"; // pg: text
-            case LT::TIMESTAMP_SEC:
-            case LT::TIMESTAMP_MS:
-            case LT::TIMESTAMP_US:
-            case LT::TIMESTAMP_NS:
+            case LT::TIMESTAMP:
                 return "timestamp";
+            case LT::TIMESTAMP_TZ:
+                return "timestamp with time zone";
+            case LT::DATE:
+                return "date";
+            case LT::TIME:
+                return "time";
+            case LT::TIME_TZ:
+                return "time with time zone";
+            case LT::INTERVAL:
+                return "interval";
             case LT::BLOB:
                 return "bytea"; // pg: bytea
             case LT::UUID:
@@ -371,7 +386,17 @@ namespace components::catalog {
         if (n == "text")
             return LT::STRING_LITERAL;
         if (n == "timestamp")
-            return LT::TIMESTAMP_MS;
+            return LT::TIMESTAMP;
+        if (n == "timestamp with time zone")
+            return LT::TIMESTAMP_TZ;
+        if (n == "date")
+            return LT::DATE;
+        if (n == "time")
+            return LT::TIME;
+        if (n == "time with time zone")
+            return LT::TIME_TZ;
+        if (n == "interval")
+            return LT::INTERVAL;
         if (n == "bytea")
             return LT::BLOB;
         if (n == "uuid")
@@ -612,10 +637,12 @@ namespace components::catalog {
             case LT::FLOAT:
             case LT::DOUBLE:
             case LT::STRING_LITERAL:
-            case LT::TIMESTAMP_SEC:
-            case LT::TIMESTAMP_MS:
-            case LT::TIMESTAMP_US:
-            case LT::TIMESTAMP_NS:
+            case LT::TIMESTAMP:
+            case LT::TIMESTAMP_TZ:
+            case LT::DATE:
+            case LT::TIME:
+            case LT::TIME_TZ:
+            case LT::INTERVAL:
             case LT::BLOB:
             case LT::UUID:
                 return "";
@@ -792,7 +819,17 @@ namespace components::catalog {
             case ns::string_type:
                 return LT::STRING_LITERAL;
             case ns::timestamp_type:
-                return LT::TIMESTAMP_NS;
+                return LT::TIMESTAMP;
+            case ns::timestamp_tz_type:
+                return LT::TIMESTAMP_TZ;
+            case ns::date_type:
+                return LT::DATE;
+            case ns::time_type:
+                return LT::TIME;
+            case ns::time_tz_type:
+                return LT::TIME_TZ;
+            case ns::interval_type:
+                return LT::INTERVAL;
             default:
                 return LT::UNKNOWN;
         }
@@ -818,11 +855,18 @@ namespace components::catalog {
                 return ns::float64_type;
             case LT::STRING_LITERAL:
                 return ns::string_type;
-            case LT::TIMESTAMP_NS:
-            case LT::TIMESTAMP_US:
-            case LT::TIMESTAMP_MS:
-            case LT::TIMESTAMP_SEC:
+            case LT::TIMESTAMP:
                 return ns::timestamp_type;
+            case LT::TIMESTAMP_TZ:
+                return ns::timestamp_tz_type;
+            case LT::DATE:
+                return ns::date_type;
+            case LT::TIME:
+                return ns::time_type;
+            case LT::TIME_TZ:
+                return ns::time_tz_type;
+            case LT::INTERVAL:
+                return ns::interval_type;
             default:
                 return INVALID_OID;
         }

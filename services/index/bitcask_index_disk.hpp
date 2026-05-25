@@ -7,13 +7,13 @@
 #include <core/file/file_handle.hpp>
 #include <core/file/local_file_system.hpp>
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <map>
 #include <memory>
 #include <memory_resource>
-#include <atomic>
 #include <shared_mutex>
 #include <vector>
 

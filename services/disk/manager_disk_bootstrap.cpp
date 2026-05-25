@@ -83,10 +83,12 @@ namespace services::disk {
                 {wk::float64_type, "double precision"},
                 {wk::numeric_type, "decimal"},
                 // Timestamp variants
-                {wk::timestamp_type, "timestamp_sec"},
-                {wk::timestamp_type, "timestamp_ms"},
-                {wk::timestamp_type, "timestamp_us"},
-                {wk::timestamp_type, "timestamp_ns"},
+                {wk::timestamp_type, "timestamp"},
+                {wk::timestamp_tz_type, "timestamp with time zone"},
+                {wk::date_type, "date"},
+                {wk::time_type, "time"},
+                {wk::time_tz_type, "time with time zone"},
+                {wk::interval_type, "interval"},
             };
         }
 
@@ -127,6 +129,8 @@ namespace services::disk {
                 return components::catalog::well_known_oid::pg_sequence_table;
             if (name == "pg_rewrite")
                 return components::catalog::well_known_oid::pg_rewrite_table;
+            if (name == "pg_settings")
+                return components::catalog::well_known_oid::pg_settings_table;
             return components::catalog::INVALID_OID;
         }
     } // namespace
@@ -136,24 +140,17 @@ namespace services::disk {
         const auto sys_db_oid = catalog::well_known_oid::main_database;
         std::filesystem::path sys_dir;
         if (disk_backed) {
-            // pg_catalog system tables under ${configpath}/${main_database_oid}/
             sys_dir = config_.path / std::to_string(static_cast<unsigned>(sys_db_oid));
             std::filesystem::create_directories(sys_dir);
         }
 
-        // Idempotent per-table: load if .otbx already exists, else create fresh and
-        // seed builtin rows. `freshly_created` collects only the tables that were
-        // initialised from scratch — those need their builtin rows inserted and an
-        // initial checkpoint flush. Existing .otbx files already carry their data
-        // from a previous run.
-        std::unordered_set<catalog::oid_t> freshly_created;
-        for (const auto& def : components::catalog::all_system_tables()) {
+        // Helper: load or create a single system table. Returns true if freshly created.
+        auto bootstrap_one = [&](const components::catalog::system_table_def_t& def) -> bool {
             const auto tbl_oid = well_known_oid_for_system_table(def.name);
             if (tbl_oid == catalog::INVALID_OID)
-                continue;
-            if (storages_.find(tbl_oid) != storages_.end()) {
-                continue;
-            }
+                return false;
+            if (storages_.find(tbl_oid) != storages_.end())
+                return false; // already loaded
             if (disk_backed) {
                 auto coll_dir = sys_dir / std::to_string(static_cast<unsigned>(tbl_oid));
                 std::filesystem::create_directories(coll_dir);
@@ -164,7 +161,7 @@ namespace services::disk {
                           std::string(def.name),
                           static_cast<unsigned>(tbl_oid));
                     load_storage_disk_sync(tbl_oid, sys_db_oid, otbx);
-                    continue;
+                    return false; // loaded, not freshly created
                 }
                 trace(log_,
                       "manager_disk_t::bootstrap_system_tables_sync creating disk : {} oid={}",
@@ -179,20 +176,55 @@ namespace services::disk {
                 auto cols = def.columns;
                 create_storage_with_columns_sync(tbl_oid, sys_db_oid, std::move(cols));
             }
-            freshly_created.insert(tbl_oid);
+            return true; // freshly created
+        };
+
+        std::unordered_set<catalog::oid_t> freshly_created;
+
+        // Bootstrap pg_settings FIRST so stored_catalog_ is populated before any
+        // other table's seeding calls direct_append_sync (which takes the timezone).
+        if (const auto* settings_def = catalog::find_system_table("pg_settings")) {
+            if (bootstrap_one(*settings_def)) {
+                freshly_created.insert(catalog::well_known_oid::pg_settings_table);
+                auto row = make_row(resource(), settings_def->columns, [&](data_chunk_t& chunk, auto* res) {
+                    chunk.set_value(0, 0, lv_str(res, "TimeZone"));
+                    chunk.set_value(1, 0, lv_str(res, "UTC"));
+                });
+                direct_append_sync(catalog::well_known_oid::pg_settings_table, row, {});
+            }
+            auto tz_name = read_setting_sync("TimeZone");
+            if (!tz_name.empty()) {
+                stored_catalog_.set_timezone(resource(), tz_name);
+            }
         }
 
-        if (freshly_created.empty()) {
-            return;
+        // Remaining tables — pg_settings is already in storages_ so bootstrap_one skips it.
+        for (const auto& def : components::catalog::all_system_tables()) {
+            if (bootstrap_one(def)) {
+                freshly_created.insert(well_known_oid_for_system_table(def.name));
+            }
         }
+
+        if (freshly_created.empty() ||
+            freshly_created == std::unordered_set<catalog::oid_t>{catalog::well_known_oid::pg_settings_table}) {
+            // Only pg_settings was freshly created — still need to checkpoint it if disk-backed.
+            if (disk_backed && freshly_created.count(catalog::well_known_oid::pg_settings_table)) {
+                auto it = storages_.find(catalog::well_known_oid::pg_settings_table);
+                if (it != storages_.end()) {
+                    it->second->table_storage.checkpoint();
+                }
+            }
+            if (freshly_created.size() <= 1)
+                return;
+        }
+
         trace(log_,
               "manager_disk_t::bootstrap_system_tables_sync : seeding well-known rows for {} fresh tables",
               freshly_created.size());
 
         const auto pg_catalog_ns_oid = catalog::well_known_oid::pg_catalog_namespace;
+        const auto tz = stored_catalog_.timezone_offset;
 
-        // Builtin rows are seeded only into freshly-created tables. Tables loaded
-        // from existing .otbx already carry their data from the previous run.
         if (freshly_created.count(pg_database_oid)) {
             if (auto* def = catalog::find_system_table("pg_database")) {
                 const auto db = builtin_database_row();
@@ -200,7 +232,7 @@ namespace services::disk {
                     chunk.set_value(0, 0, lv_oid(res, db.oid));
                     chunk.set_value(1, 0, lv_str(res, std::string(db.name)));
                 });
-                direct_append_sync(pg_database_oid, row);
+                direct_append_sync(pg_database_oid, row, tz);
             }
         }
 
@@ -211,7 +243,7 @@ namespace services::disk {
                         chunk.set_value(0, 0, lv_oid(res, nrow.oid));
                         chunk.set_value(1, 0, lv_str(res, std::string(nrow.name)));
                     });
-                    direct_append_sync(pg_namespace_oid_tbl, row);
+                    direct_append_sync(pg_namespace_oid_tbl, row, tz);
                 }
             }
         }
@@ -224,7 +256,7 @@ namespace services::disk {
                         chunk.set_value(1, 0, lv_str(res, std::string(trow.name)));
                         chunk.set_value(2, 0, lv_oid(res, pg_catalog_ns_oid));
                     });
-                    direct_append_sync(pg_type_oid, row);
+                    direct_append_sync(pg_type_oid, row, tz);
                 }
             }
         }
@@ -237,14 +269,11 @@ namespace services::disk {
                         chunk.set_value(1, 0, lv_str(res, std::string(frow.name)));
                         chunk.set_value(2, 0, lv_oid(res, pg_catalog_ns_oid));
                     });
-                    direct_append_sync(pg_proc_oid, row);
+                    direct_append_sync(pg_proc_oid, row, tz);
                 }
             }
         }
 
-        // Initial checkpoint flushes the seeded rows into freshly-created .otbx
-        // files so a subsequent load picks them up. Existing tables already have
-        // their data on disk; skip them.
         if (disk_backed) {
             for (auto tbl_oid : freshly_created) {
                 auto it = storages_.find(tbl_oid);
@@ -427,6 +456,50 @@ namespace services::disk {
             }
         }
         return alive;
+    }
+
+    std::string manager_disk_t::read_setting_sync(std::string_view name) {
+        const auto settings_oid = catalog::well_known_oid::pg_settings_table;
+        auto it = storages_.find(settings_oid);
+        if (it == storages_.end()) {
+            return {};
+        }
+        auto& table = it->second->table_storage.table();
+        if (table.column_count() < 2 || table.calculate_size() == 0) {
+            return {};
+        }
+        std::pmr::synchronized_pool_resource scan_resource;
+        std::vector<components::table::storage_index_t> col_indices;
+        col_indices.emplace_back(static_cast<int64_t>(0)); // name column
+        col_indices.emplace_back(static_cast<int64_t>(1)); // setting column
+        components::table::table_scan_state scan_state(&scan_resource);
+        table.initialize_scan(scan_state, col_indices);
+        std::pmr::vector<components::types::complex_logical_type> types(&scan_resource);
+        types.push_back(table.columns()[0].type());
+        types.push_back(table.columns()[1].type());
+        // pg_settings is append-only: return the LAST row with the matching name
+        // so that a SET TIMEZONE append supersedes the seeded default.
+        std::string last_value;
+        while (true) {
+            components::vector::data_chunk_t chunk(&scan_resource, types, components::vector::DEFAULT_VECTOR_CAPACITY);
+            table.scan(chunk, scan_state);
+            if (chunk.size() == 0) {
+                break;
+            }
+            for (uint64_t i = 0; i < chunk.size(); i++) {
+                auto key_val = chunk.value(0, i);
+                if (key_val.is_null()) {
+                    continue;
+                }
+                if (key_val.value<std::string_view>() == name) {
+                    auto setting_val = chunk.value(1, i);
+                    if (!setting_val.is_null()) {
+                        last_value = std::string{setting_val.value<std::string_view>()};
+                    }
+                }
+            }
+        }
+        return last_value;
     }
 
 } // namespace services::disk

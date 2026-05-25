@@ -264,8 +264,12 @@ namespace components::operators {
             }
             for (auto& chunk : in_chunks) {
                 for (auto& comp : computed_columns_) {
-                    auto result_vec =
-                        evaluate_arithmetic(resource_, comp.op, comp.operands, chunk, pipeline_context->parameters);
+                    auto result_vec = evaluate_arithmetic(resource_,
+                                                          comp.op,
+                                                          comp.operands,
+                                                          chunk,
+                                                          pipeline_context->parameters,
+                                                          pipeline_context->session_tz);
                     if (result_vec.has_error()) {
                         set_error(result_vec.error());
                         return;
@@ -379,8 +383,12 @@ namespace components::operators {
             chunk.set_cardinality(1);
 
             for (auto& comp : computed_columns_) {
-                auto result_vec =
-                    evaluate_arithmetic(resource_, comp.op, comp.operands, chunk, pipeline_context->parameters);
+                auto result_vec = evaluate_arithmetic(resource_,
+                                                      comp.op,
+                                                      comp.operands,
+                                                      chunk,
+                                                      pipeline_context->parameters,
+                                                      pipeline_context->session_tz);
                 if (result_vec.has_error()) {
                     set_error(result_vec.error());
                     return;
@@ -953,6 +961,9 @@ namespace components::operators {
         for (size_t group_idx = 0; group_idx < result.size(); group_idx++) {
             auto left_val = resolve(cmp->left(), group_idx, resolve);
             auto right_val = resolve(cmp->right(), group_idx, resolve);
+            auto promoted_type = types::promote_type(left_val.type().type(), right_val.type().type());
+            left_val = left_val.cast_as(promoted_type, pipeline_context->session_tz);
+            right_val = right_val.cast_as(promoted_type, pipeline_context->session_tz);
             auto cmp_result = left_val.compare(right_val);
             bool passes = false;
             switch (cmp->type()) {

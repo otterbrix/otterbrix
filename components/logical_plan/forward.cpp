@@ -120,6 +120,8 @@ namespace components::logical_plan {
                 return "catalog_resolve_constraint_t";
             case node_type::allocate_oids_t:
                 return "allocate_oids_t";
+            case node_type::set_timezone_t:
+                return "set_timezone_t";
             default:
                 return "unused";
         }

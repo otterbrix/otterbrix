@@ -133,7 +133,6 @@ namespace components::table {
             const auto& constant = constant_filter.constant;
             const auto& min = seg_stats.min_value();
             const auto& max = seg_stats.max_value();
-
             switch (filter.filter_type) {
                 case expressions::compare_type::eq:
                     if (constant < min || constant > max) {
@@ -420,7 +419,6 @@ namespace components::table {
     }
 
     bool column_data_t::check_predicate(int64_t row_id, const table_filter_t* filter) {
-        auto segment = data_.get_segment(row_id);
         if (updates_ &&
             updates_->has_updates(static_cast<uint64_t>(row_id - start_) / vector::DEFAULT_VECTOR_CAPACITY)) {
             // The vector has some updated rows. Check if THIS specific row is updated.
@@ -429,6 +427,17 @@ namespace components::table {
                 return updates_->check_row(row_id, filter);
             }
         }
+        // STRUCT columns store child data in sub_columns, not in data_ segments — fetch the full value
+        if (type_.to_physical_type() == types::physical_type::STRUCT) {
+            column_fetch_state fetch_state;
+            vector::vector_t result(resource_, type_, 1);
+            fetch_row(fetch_state, row_id, result, 0);
+            if (!result.validity().row_is_valid(0)) {
+                return false;
+            }
+            return filter->cast<constant_filter_t>().compare(result.value(0));
+        }
+        auto segment = data_.get_segment(row_id);
         // For compressed segments, fetch the actual decompressed value
         auto comp = segment->compression();
         if (comp == compression::compression_type::RLE || comp == compression::compression_type::DICTIONARY) {

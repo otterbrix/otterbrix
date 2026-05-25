@@ -14,9 +14,12 @@ namespace components::sql::transform {
                                                        logical_plan::parameter_node_t* params) {
         switch (nodeTag(node)) {
             case T_TypeCast: {
-                auto value = pg_ptr_cast<TypeCast>(node);
-                bool is_true = std::string(strVal(&pg_ptr_cast<A_Const>(value->arg)->val)) == "t";
-                core::parameter_id_t id = params->add_parameter(types::logical_value_t(resource_, is_true));
+                auto res = get_value(resource_, node);
+                if (res.has_error()) {
+                    error_ = res.error();
+                    return nullptr;
+                }
+                core::parameter_id_t id = params->add_parameter(std::move(res.value()));
                 return {new update_expr_get_const_value_t(id)};
             }
             case T_A_Const: {

@@ -41,9 +41,8 @@ namespace components::sql::transform {
 
         logical_plan::node_ptr created;
         if (col_defs.value().empty()) {
-            created = logical_plan::make_node_create_collection(resource_,
-                                                                core::relname_t{qn.relname},
-                                                                node.if_not_exists);
+            created =
+                logical_plan::make_node_create_collection(resource_, core::relname_t{qn.relname}, node.if_not_exists);
         }
 
         auto constraints = extract_table_constraints(resource_, *coldefs);

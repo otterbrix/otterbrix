@@ -17,12 +17,12 @@ TEST_CASE("hash_single_field_index:base") {
 
     for (const auto& [value, row_idx] : data) {
         components::types::logical_value_t val(&resource, value);
-        index.insert(val, row_idx);
+        index.insert(val, row_idx, {});
     }
 
     SECTION("find existing value") {
         components::types::logical_value_t value(&resource, static_cast<int64_t>(10));
-        auto find_range = index.find(value);
+        auto find_range = index.find(value, {});
         REQUIRE(find_range.first != find_range.second);
         REQUIRE(std::distance(find_range.first, find_range.second) == 1);
         REQUIRE(find_range.first->row_index == 2);
@@ -30,17 +30,17 @@ TEST_CASE("hash_single_field_index:base") {
 
     SECTION("find non-existing value") {
         components::types::logical_value_t value(&resource, static_cast<int64_t>(11));
-        auto find_range = index.find(value);
+        auto find_range = index.find(value, {});
         REQUIRE(find_range.first == find_range.second);
     }
 
     SECTION("duplicate values") {
         for (const auto& [value, row_idx] : data) {
             components::types::logical_value_t val(&resource, value);
-            index.insert(val, row_idx + 100);
+            index.insert(val, row_idx + 100, {});
         }
         components::types::logical_value_t value(&resource, static_cast<int64_t>(10));
-        auto find_range = index.find(value);
+        auto find_range = index.find(value, {});
         REQUIRE(find_range.first != find_range.second);
         REQUIRE(std::distance(find_range.first, find_range.second) == 2);
 
@@ -61,9 +61,9 @@ TEST_CASE("hash_single_field_index:engine") {
     auto* idx = search_index(index_engine, id);
     REQUIRE(idx != nullptr);
 
-    idx->insert(components::types::logical_value_t(&resource, 0), int64_t(0));
+    idx->insert(components::types::logical_value_t(&resource, 0), int64_t(0), {});
     for (int i = 10; i >= 1; --i) {
-        idx->insert(components::types::logical_value_t(&resource, i), int64_t(11 - i));
+        idx->insert(components::types::logical_value_t(&resource, i), int64_t(11 - i), {});
     }
 
     int count = 0;
@@ -73,7 +73,7 @@ TEST_CASE("hash_single_field_index:engine") {
     REQUIRE(count == 11);
 
     components::types::logical_value_t value(&resource, 5);
-    auto find_range = idx->find(value);
+    auto find_range = idx->find(value, {});
     REQUIRE(find_range.first != find_range.second);
     REQUIRE(find_range.first->row_index == 6);
 }

@@ -46,8 +46,17 @@ namespace services::index {
                                 int64_t value,
                                 uint32_t log_file_id,
                                 uint64_t log_offset,
-                                const full_key_loader_t&) {
+                                const full_key_loader_t& key_loader) {
         std::unique_lock lock(mutex_);
+        return put_unlocked(key, value, log_file_id, log_offset, key_loader);
+    }
+
+    bool disk_hash_table_t::put_unlocked(std::string_view key,
+                                         int64_t value,
+                                         uint32_t log_file_id,
+                                         uint64_t log_offset,
+                                         const full_key_loader_t& key_loader) {
+        (void) key_loader;
         const uint32_t key_hash = hash_key(key);
         const uint32_t bucket_id = bucket_id_for_key(key);
         uint64_t page_id = bucket_primary_page_id(bucket_id);
@@ -162,6 +171,77 @@ namespace services::index {
                 page_id = page_overflow(page);
             }
         }
+    }
+
+    bool disk_hash_table_t::rehash(uint32_t new_bucket_count, const full_key_loader_t& key_loader) {
+        if (new_bucket_count == 0) {
+            throw std::runtime_error("disk_hash_table: rehash bucket_count must be > 0");
+        }
+
+        std::unique_lock lock(mutex_);
+        if (new_bucket_count == header_.bucket_count_value) {
+            return false;
+        }
+
+        struct entry_t {
+            std::string key;
+            int64_t value{0};
+            uint32_t log_file_id{0};
+            uint64_t log_offset{0};
+        };
+        std::vector<entry_t> entries;
+
+        std::vector<uint8_t> page(page_size);
+        for (uint32_t bucket = 0; bucket < header_.bucket_count_value; ++bucket) {
+            uint64_t page_id = bucket_primary_page_id(bucket);
+            while (page_id != 0) {
+                read_page(page_id, page);
+                const auto cnt = page_count(page);
+                for (uint16_t i = 0; i < cnt; ++i) {
+                    const auto slot = read_slot(page, i);
+                    if (slot.flags != slot_flag_used || slot.length == 0) {
+                        continue;
+                    }
+                    const auto decoded = decode_entry(page, slot);
+                    entry_t e{};
+                    e.value = decoded.value;
+                    e.log_file_id = decoded.log_file_id;
+                    e.log_offset = decoded.log_offset;
+
+                    if ((decoded.entry_flags & entry_flag_truncated) == 0) {
+                        e.key.assign(decoded.stored_key.data(), decoded.stored_key.size());
+                    } else {
+                        if (!key_loader) {
+                            throw std::runtime_error("disk_hash_table: rehash requires key loader for truncated keys");
+                        }
+                        if (!key_loader(decoded.log_file_id, decoded.log_offset, e.key)) {
+                            throw std::runtime_error("disk_hash_table: rehash key loader failed");
+                        }
+                    }
+                    entries.emplace_back(std::move(e));
+                }
+                page_id = page_overflow(page);
+            }
+        }
+
+        file_.reset();
+        std::error_code ec;
+        std::filesystem::remove(file_path_, ec);
+
+        header_.bucket_count_value = new_bucket_count;
+        header_.next_overflow_page = 1 + header_.bucket_count_value;
+        open_or_create();
+
+        for (const auto& e : entries) {
+            put_unlocked(e.key, e.value, e.log_file_id, e.log_offset, key_loader);
+        }
+        sync();
+        return true;
+    }
+
+    uint32_t disk_hash_table_t::bucket_count() const {
+        std::shared_lock lock(mutex_);
+        return header_.bucket_count_value;
     }
 
     void disk_hash_table_t::sync() {

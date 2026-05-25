@@ -39,6 +39,8 @@ namespace services::index {
         bool erase(std::string_view key, const full_key_loader_t& key_loader = {}) override;
         bool erase(std::string_view key, int64_t value, const full_key_loader_t& key_loader = {}) override;
         void for_each(const std::function<void(const value_ref_t&)>& cb) const;
+        bool rehash(uint32_t new_bucket_count, const full_key_loader_t& key_loader = {});
+        uint32_t bucket_count() const;
         void sync() override;
         void append_pending_insert(uint64_t txn_id, std::string_view key, int64_t row_id) override;
         void append_pending_delete(uint64_t txn_id, std::string_view key, int64_t row_id) override;
@@ -127,6 +129,11 @@ namespace services::index {
                                std::optional<int64_t> expected_value,
                                const full_key_loader_t& key_loader,
                                bool& erased);
+        bool put_unlocked(std::string_view key,
+                          int64_t value,
+                          uint32_t log_file_id,
+                          uint64_t log_offset,
+                          const full_key_loader_t& key_loader);
 
         std::vector<uint8_t> make_entry_payload(std::string_view key,
                                                 int64_t value,

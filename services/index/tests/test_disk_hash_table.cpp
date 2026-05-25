@@ -187,3 +187,65 @@ TEST_CASE("services::index::disk_hash_table::pending_survives_reopen_until_final
         REQUIRE(reopened.checkpoint_txn_id() == 404);
     }
 }
+
+TEST_CASE("services::index::disk_hash_table::rehash_preserves_entries") {
+    const auto path = mk_path("disk_hash_table_rehash.data");
+    std::filesystem::remove(path);
+
+    disk_hash_table_t table(path, 4);
+    REQUIRE(table.bucket_count() == 4);
+
+    for (int i = 0; i < 300; ++i) {
+        const auto key = "k." + std::to_string(i);
+        REQUIRE(table.put(key, static_cast<int64_t>(i), 1, static_cast<uint64_t>(1000 + i)));
+    }
+
+    REQUIRE(table.rehash(128));
+    REQUIRE(table.bucket_count() == 128);
+
+    for (int i = 0; i < 300; ++i) {
+        const auto key = "k." + std::to_string(i);
+        auto v = table.get(key);
+        REQUIRE(v.has_value());
+        REQUIRE(v->value == static_cast<int64_t>(i));
+    }
+}
+
+TEST_CASE("services::index::disk_hash_table::rehash_truncated_keys_requires_loader") {
+    const auto path = mk_path("disk_hash_table_rehash_truncated.data");
+    std::filesystem::remove(path);
+
+    const std::string key1(200, 'a');
+    const std::string key2 = std::string(199, 'a') + "b";
+
+    disk_hash_table_t table(path, 4);
+    REQUIRE(table.put(key1, 11, 5, 500));
+    REQUIRE(table.put(key2, 22, 6, 600));
+
+    REQUIRE_THROWS(table.rehash(64));
+
+    REQUIRE(table.rehash(64, [&](uint32_t file_id, uint64_t offset, std::string& out) {
+        if (file_id == 5 && offset == 500) {
+            out = key1;
+            return true;
+        }
+        if (file_id == 6 && offset == 600) {
+            out = key2;
+            return true;
+        }
+        return false;
+    }));
+
+    auto v1 = table.get(key1, [&](uint32_t, uint64_t, std::string& out) {
+        out = key1;
+        return true;
+    });
+    auto v2 = table.get(key2, [&](uint32_t, uint64_t, std::string& out) {
+        out = key2;
+        return true;
+    });
+    REQUIRE(v1.has_value());
+    REQUIRE(v1->value == 11);
+    REQUIRE(v2.has_value());
+    REQUIRE(v2->value == 22);
+}

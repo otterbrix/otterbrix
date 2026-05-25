@@ -24,9 +24,8 @@ using namespace components::expressions;
 using key = components::expressions::key_t;
 using id_par = core::parameter_id_t;
 
-static collection_full_name_t coll() {
-    return {database_name_t("db"), collection_name_t("t")};
-}
+static const core::dbname_t db{"db"};
+static const core::relname_t rel{"t"};
 
 static node_data_ptr make_data(std::pmr::memory_resource* r,
                                 std::initializer_list<const char*> col_names) {
@@ -45,21 +44,20 @@ static node_data_ptr make_data(std::pmr::memory_resource* r,
 // out: aggregate[ data, select(a), match(a > ?) ]  -- filter pushed under the identity projection
 TEST_CASE("logical_plan::pushdown_filter_under_identity_select") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto c = coll();
     auto data = make_data(&resource, {"a", "b"});
 
-    node_aggregate_ptr inner = make_node_aggregate(&resource, c);
+    node_aggregate_ptr inner = make_node_aggregate(&resource, db, rel);
     inner->append_child(data);
-    auto select = make_node_select(&resource, c);
+    auto select = make_node_select(&resource, db, rel);
     select->append_expression(make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "a")));
     select->append_expression(make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "b")));
     inner->append_child(select);
 
     auto cmp =
         make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
-    node_aggregate_ptr outer = make_node_aggregate(&resource, c);
+    node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
     outer->append_child(inner);
-    outer->append_child(make_node_match(&resource, c, std::move(cmp)));
+    outer->append_child(make_node_match(&resource, db, rel, std::move(cmp)));
 
     node_ptr out = components::planner::optimize(&resource, outer, nullptr);
 
@@ -73,12 +71,11 @@ TEST_CASE("logical_plan::pushdown_filter_under_identity_select") {
 // filter on "x" move below it: "x" does not exist in the pre-projection schema.
 TEST_CASE("logical_plan::pushdown_filter_skips_renamed_select_output") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto c = coll();
     auto data = make_data(&resource, {"a", "b"});
 
-    node_aggregate_ptr inner = make_node_aggregate(&resource, c);
+    node_aggregate_ptr inner = make_node_aggregate(&resource, db, rel);
     inner->append_child(data);
-    auto select = make_node_select(&resource, c);
+    auto select = make_node_select(&resource, db, rel);
     auto renamed = make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "x"));
     renamed->append_param(key(&resource, "a"));
     select->append_expression(std::move(renamed));
@@ -86,9 +83,9 @@ TEST_CASE("logical_plan::pushdown_filter_skips_renamed_select_output") {
 
     auto cmp =
         make_compare_expression(&resource, compare_type::gt, key(&resource, "x", side_t::left), id_par{1});
-    node_aggregate_ptr outer = make_node_aggregate(&resource, c);
+    node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
     outer->append_child(inner);
-    outer->append_child(make_node_match(&resource, c, std::move(cmp)));
+    outer->append_child(make_node_match(&resource, db, rel, std::move(cmp)));
 
     node_ptr out = components::planner::optimize(&resource, outer, nullptr);
 
@@ -102,20 +99,19 @@ TEST_CASE("logical_plan::pushdown_filter_skips_renamed_select_output") {
 // out: aggregate[ data, sort(b), match(a > ?) ]  -- filter swapped below the sort
 TEST_CASE("logical_plan::pushdown_filter_under_sort") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto c = coll();
     auto data = make_data(&resource, {"a", "b"});
 
-    node_aggregate_ptr inner = make_node_aggregate(&resource, c);
+    node_aggregate_ptr inner = make_node_aggregate(&resource, db, rel);
     inner->append_child(data);
     std::vector<components::expressions::expression_ptr> sort_exprs;
     sort_exprs.emplace_back(make_sort_expression(key(&resource, "b"), sort_order::asc));
-    inner->append_child(make_node_sort(&resource, c, sort_exprs));
+    inner->append_child(make_node_sort(&resource, db, rel, sort_exprs));
 
     auto cmp =
         make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
-    node_aggregate_ptr outer = make_node_aggregate(&resource, c);
+    node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
     outer->append_child(inner);
-    outer->append_child(make_node_match(&resource, c, std::move(cmp)));
+    outer->append_child(make_node_match(&resource, db, rel, std::move(cmp)));
 
     node_ptr out = components::planner::optimize(&resource, outer, nullptr);
 
@@ -133,19 +129,18 @@ TEST_CASE("logical_plan::pushdown_filter_under_sort") {
 // The predicate touches only left-side columns, so it descends into the left branch.
 TEST_CASE("logical_plan::pushdown_filter_into_join_branch") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto c = coll();
     auto left_data = make_data(&resource, {"a", "b"});
     auto right_data = make_data(&resource, {"c", "d"});
 
-    auto join = make_node_join(&resource, c, join_type::inner);
+    auto join = make_node_join(&resource, db, rel, join_type::inner);
     join->append_child(left_data);
     join->append_child(right_data);
 
     auto cmp =
         make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
-    node_aggregate_ptr outer = make_node_aggregate(&resource, c);
+    node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
     outer->append_child(join);
-    outer->append_child(make_node_match(&resource, c, std::move(cmp)));
+    outer->append_child(make_node_match(&resource, db, rel, std::move(cmp)));
 
     node_ptr out = components::planner::optimize(&resource, outer, nullptr);
 
@@ -164,11 +159,10 @@ TEST_CASE("logical_plan::pushdown_filter_into_join_branch") {
 // either branch and must stay above the join.
 TEST_CASE("logical_plan::pushdown_filter_skips_join_predicate_on_both_sides") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto c = coll();
     auto left_data = make_data(&resource, {"a", "b"});
     auto right_data = make_data(&resource, {"c", "d"});
 
-    auto join = make_node_join(&resource, c, join_type::inner);
+    auto join = make_node_join(&resource, db, rel, join_type::inner);
     join->append_child(left_data);
     join->append_child(right_data);
 
@@ -176,9 +170,9 @@ TEST_CASE("logical_plan::pushdown_filter_skips_join_predicate_on_both_sides") {
                                        compare_type::eq,
                                        key(&resource, "a", side_t::left),
                                        key(&resource, "c"));
-    node_aggregate_ptr outer = make_node_aggregate(&resource, c);
+    node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
     outer->append_child(join);
-    outer->append_child(make_node_match(&resource, c, std::move(cmp)));
+    outer->append_child(make_node_match(&resource, db, rel, std::move(cmp)));
 
     node_ptr out = components::planner::optimize(&resource, outer, nullptr);
 
@@ -198,24 +192,23 @@ TEST_CASE("logical_plan::pushdown_filter_skips_join_predicate_on_both_sides") {
 // The predicate references only the grouping key, so it descends below the group node.
 TEST_CASE("logical_plan::pushdown_filter_under_group_by_key") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto c = coll();
     auto data = make_data(&resource, {"a", "b"});
 
-    auto group = make_node_group(&resource, c);
+    auto group = make_node_group(&resource, db, rel);
     group->append_expression(make_scalar_expression(&resource, scalar_type::group_field, key(&resource, "a")));
     auto sum_expr = make_aggregate_expression(&resource, "sum", key(&resource, "sum_b"));
     sum_expr->append_param(key(&resource, "b"));
     group->append_expression(std::move(sum_expr));
 
-    node_aggregate_ptr inner = make_node_aggregate(&resource, c);
+    node_aggregate_ptr inner = make_node_aggregate(&resource, db, rel);
     inner->append_child(data);
     inner->append_child(group);
 
     auto cmp =
         make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
-    node_aggregate_ptr outer = make_node_aggregate(&resource, c);
+    node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
     outer->append_child(inner);
-    outer->append_child(make_node_match(&resource, c, std::move(cmp)));
+    outer->append_child(make_node_match(&resource, db, rel, std::move(cmp)));
 
     node_ptr out = components::planner::optimize(&resource, outer, nullptr);
 
@@ -230,24 +223,23 @@ TEST_CASE("logical_plan::pushdown_filter_under_group_by_key") {
 // not be pushed below the group node — it would change the query result.
 TEST_CASE("logical_plan::pushdown_filter_skips_group_by_aggregate_output") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto c = coll();
     auto data = make_data(&resource, {"a", "b"});
 
-    auto group = make_node_group(&resource, c);
+    auto group = make_node_group(&resource, db, rel);
     group->append_expression(make_scalar_expression(&resource, scalar_type::group_field, key(&resource, "a")));
     auto sum_expr = make_aggregate_expression(&resource, "sum", key(&resource, "sum_b"));
     sum_expr->append_param(key(&resource, "b"));
     group->append_expression(std::move(sum_expr));
 
-    node_aggregate_ptr inner = make_node_aggregate(&resource, c);
+    node_aggregate_ptr inner = make_node_aggregate(&resource, db, rel);
     inner->append_child(data);
     inner->append_child(group);
 
     auto cmp =
         make_compare_expression(&resource, compare_type::gt, key(&resource, "sum_b", side_t::left), id_par{1});
-    node_aggregate_ptr outer = make_node_aggregate(&resource, c);
+    node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
     outer->append_child(inner);
-    outer->append_child(make_node_match(&resource, c, std::move(cmp)));
+    outer->append_child(make_node_match(&resource, db, rel, std::move(cmp)));
 
     node_ptr out = components::planner::optimize(&resource, outer, nullptr);
 
@@ -266,11 +258,10 @@ TEST_CASE("logical_plan::pushdown_filter_skips_group_by_aggregate_output") {
 // Each conjunct references only one side, so the AND is split across branches.
 TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_into_both_join_branches") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto c = coll();
     auto left_data = make_data(&resource, {"a", "b"});
     auto right_data = make_data(&resource, {"c", "d"});
 
-    auto join = make_node_join(&resource, c, join_type::inner);
+    auto join = make_node_join(&resource, db, rel, join_type::inner);
     join->append_child(left_data);
     join->append_child(right_data);
 
@@ -282,9 +273,9 @@ TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_into_both_join_branc
     conj->append_child(cmp_a);
     conj->append_child(cmp_c);
 
-    node_aggregate_ptr outer = make_node_aggregate(&resource, c);
+    node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
     outer->append_child(join);
-    outer->append_child(make_node_match(&resource, c, conj));
+    outer->append_child(make_node_match(&resource, db, rel, conj));
 
     node_ptr out = components::planner::optimize(&resource, outer, nullptr);
 
@@ -309,11 +300,10 @@ TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_into_both_join_branc
 // The (a == c) conjunct touches both sides and stays above the join as residual.
 TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_with_residual_join") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto c = coll();
     auto left_data = make_data(&resource, {"a", "b"});
     auto right_data = make_data(&resource, {"c", "d"});
 
-    auto join = make_node_join(&resource, c, join_type::inner);
+    auto join = make_node_join(&resource, db, rel, join_type::inner);
     join->append_child(left_data);
     join->append_child(right_data);
 
@@ -327,9 +317,9 @@ TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_with_residual_join")
     conj->append_child(cmp_a);
     conj->append_child(cmp_ac);
 
-    node_aggregate_ptr outer = make_node_aggregate(&resource, c);
+    node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
     outer->append_child(join);
-    outer->append_child(make_node_match(&resource, c, conj));
+    outer->append_child(make_node_match(&resource, db, rel, conj));
 
     node_ptr out = components::planner::optimize(&resource, outer, nullptr);
 
@@ -354,11 +344,10 @@ TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_with_residual_join")
 // conjuncts descend into their branches, the cross-side conjunct stays as residual.
 TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_into_all_three_buckets") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto c = coll();
     auto left_data = make_data(&resource, {"a", "b"});
     auto right_data = make_data(&resource, {"c", "d"});
 
-    auto join = make_node_join(&resource, c, join_type::inner);
+    auto join = make_node_join(&resource, db, rel, join_type::inner);
     join->append_child(left_data);
     join->append_child(right_data);
 
@@ -375,9 +364,9 @@ TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_into_all_three_bucke
     conj->append_child(cmp_c);
     conj->append_child(cmp_ac);
 
-    node_aggregate_ptr outer = make_node_aggregate(&resource, c);
+    node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
     outer->append_child(join);
-    outer->append_child(make_node_match(&resource, c, conj));
+    outer->append_child(make_node_match(&resource, db, rel, conj));
 
     node_ptr out = components::planner::optimize(&resource, outer, nullptr);
 
@@ -408,11 +397,10 @@ TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_into_all_three_bucke
 // residual; flattening lets b descend left and c descend right independently.
 TEST_CASE("logical_plan::pushdown_filter_flattens_nested_conjunction") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto c = coll();
     auto left_data = make_data(&resource, {"a", "b"});
     auto right_data = make_data(&resource, {"c", "d"});
 
-    auto join = make_node_join(&resource, c, join_type::inner);
+    auto join = make_node_join(&resource, db, rel, join_type::inner);
     join->append_child(left_data);
     join->append_child(right_data);
 
@@ -429,9 +417,9 @@ TEST_CASE("logical_plan::pushdown_filter_flattens_nested_conjunction") {
     conj->append_child(cmp_a);
     conj->append_child(inner_conj);
 
-    node_aggregate_ptr outer = make_node_aggregate(&resource, c);
+    node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
     outer->append_child(join);
-    outer->append_child(make_node_match(&resource, c, conj));
+    outer->append_child(make_node_match(&resource, db, rel, conj));
 
     node_ptr out = components::planner::optimize(&resource, outer, nullptr);
 
@@ -469,16 +457,15 @@ TEST_CASE("logical_plan::pushdown_filter_flattens_nested_conjunction") {
 // conjunct stays above as residual.
 TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_through_group_by") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto c = coll();
     auto data = make_data(&resource, {"a", "b"});
 
-    auto group = make_node_group(&resource, c);
+    auto group = make_node_group(&resource, db, rel);
     group->append_expression(make_scalar_expression(&resource, scalar_type::group_field, key(&resource, "a")));
     auto sum_expr = make_aggregate_expression(&resource, "sum", key(&resource, "sum_b"));
     sum_expr->append_param(key(&resource, "b"));
     group->append_expression(std::move(sum_expr));
 
-    node_aggregate_ptr inner = make_node_aggregate(&resource, c);
+    node_aggregate_ptr inner = make_node_aggregate(&resource, db, rel);
     inner->append_child(data);
     inner->append_child(group);
 
@@ -490,9 +477,9 @@ TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_through_group_by") {
     conj->append_child(cmp_key);
     conj->append_child(cmp_agg);
 
-    node_aggregate_ptr outer = make_node_aggregate(&resource, c);
+    node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
     outer->append_child(inner);
-    outer->append_child(make_node_match(&resource, c, conj));
+    outer->append_child(make_node_match(&resource, db, rel, conj));
 
     node_ptr out = components::planner::optimize(&resource, outer, nullptr);
 
@@ -512,20 +499,19 @@ TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_through_group_by") {
 // it would widen the filter's input rows, so the cost guard vetoes the move.
 TEST_CASE("logical_plan::pushdown_filter_vetoed_by_narrowing_projection") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto c = coll();
     auto data = make_data(&resource, {"a", "b", "c"});
 
-    node_aggregate_ptr inner = make_node_aggregate(&resource, c);
+    node_aggregate_ptr inner = make_node_aggregate(&resource, db, rel);
     inner->append_child(data);
-    auto select = make_node_select(&resource, c);
+    auto select = make_node_select(&resource, db, rel);
     select->append_expression(make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "a")));
     inner->append_child(select);
 
     auto cmp =
         make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
-    node_aggregate_ptr outer = make_node_aggregate(&resource, c);
+    node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
     outer->append_child(inner);
-    outer->append_child(make_node_match(&resource, c, std::move(cmp)));
+    outer->append_child(make_node_match(&resource, db, rel, std::move(cmp)));
 
     node_ptr out = components::planner::optimize(&resource, outer, nullptr);
 
@@ -539,21 +525,20 @@ TEST_CASE("logical_plan::pushdown_filter_vetoed_by_narrowing_projection") {
 // width, so the cost guard allows the pushdown.
 TEST_CASE("logical_plan::pushdown_filter_allowed_through_non_narrowing_projection") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto c = coll();
     auto data = make_data(&resource, {"a", "b"});
 
-    node_aggregate_ptr inner = make_node_aggregate(&resource, c);
+    node_aggregate_ptr inner = make_node_aggregate(&resource, db, rel);
     inner->append_child(data);
-    auto select = make_node_select(&resource, c);
+    auto select = make_node_select(&resource, db, rel);
     select->append_expression(make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "b")));
     select->append_expression(make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "a")));
     inner->append_child(select);
 
     auto cmp =
         make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
-    node_aggregate_ptr outer = make_node_aggregate(&resource, c);
+    node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
     outer->append_child(inner);
-    outer->append_child(make_node_match(&resource, c, std::move(cmp)));
+    outer->append_child(make_node_match(&resource, db, rel, std::move(cmp)));
 
     node_ptr out = components::planner::optimize(&resource, outer, nullptr);
 
@@ -571,21 +556,20 @@ TEST_CASE("logical_plan::pushdown_filter_allowed_through_non_narrowing_projectio
 // even though the three-column source is wider than the two-column projection.
 TEST_CASE("logical_plan::pushdown_filter_allowed_when_projection_width_unknown") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto c = coll();
     auto data = make_data(&resource, {"a", "b", "c"});
 
-    node_aggregate_ptr inner = make_node_aggregate(&resource, c);
+    node_aggregate_ptr inner = make_node_aggregate(&resource, db, rel);
     inner->append_child(data);
-    auto select = make_node_select(&resource, c);
+    auto select = make_node_select(&resource, db, rel);
     select->append_expression(make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "a")));
     select->append_expression(make_scalar_expression(&resource, scalar_type::constant, key(&resource, "k")));
     inner->append_child(select);
 
     auto cmp =
         make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
-    node_aggregate_ptr outer = make_node_aggregate(&resource, c);
+    node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
     outer->append_child(inner);
-    outer->append_child(make_node_match(&resource, c, std::move(cmp)));
+    outer->append_child(make_node_match(&resource, db, rel, std::move(cmp)));
 
     node_ptr out = components::planner::optimize(&resource, outer, nullptr);
 

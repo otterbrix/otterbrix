@@ -256,8 +256,6 @@ namespace services::index {
         header_.page_size_value = codec::read_le_ptr<uint32_t>(hdr.data() + 12);
         header_.bucket_count_value = codec::read_le_ptr<uint32_t>(hdr.data() + 16);
         header_.next_overflow_page = codec::read_le_ptr<uint64_t>(hdr.data() + 20);
-        header_.checkpoint_log_file_id = codec::read_le_ptr<uint32_t>(hdr.data() + 28);
-        header_.checkpoint_log_offset = codec::read_le_ptr<uint64_t>(hdr.data() + 32);
         if (header_.magic_value != magic || header_.version_value != version || header_.page_size_value != page_size ||
             header_.bucket_count_value == 0) {
             throw std::runtime_error("disk_hash_table: incompatible header");
@@ -361,21 +359,6 @@ namespace services::index {
     uint16_t disk_hash_table_t::slot_dir_offset(uint16_t slot_index) const {
         const auto idx = static_cast<uint32_t>(slot_index) + 1U;
         return static_cast<uint16_t>(static_cast<uint32_t>(page_size) - static_cast<uint32_t>(slot_size) * idx);
-    }
-
-    uint16_t disk_hash_table_t::slot_count_capacity(const std::vector<uint8_t>& page) const {
-        const auto free_off = page_free_offset(page);
-        uint16_t n = 0;
-        while (n < page_count(page)) {
-            ++n;
-        }
-        while (slot_dir_offset(n) >= free_off + slot_size) {
-            ++n;
-            if (n > (page_size / slot_size)) {
-                break;
-            }
-        }
-        return n;
     }
 
     disk_hash_table_t::decoded_entry_t disk_hash_table_t::decode_entry(const std::vector<uint8_t>& page, const slot_t& slot) const {
@@ -553,8 +536,6 @@ namespace services::index {
         codec::write_le_ptr<uint32_t>(hdr.data() + 12, header_.page_size_value);
         codec::write_le_ptr<uint32_t>(hdr.data() + 16, header_.bucket_count_value);
         codec::write_le_ptr<uint64_t>(hdr.data() + 20, header_.next_overflow_page);
-        codec::write_le_ptr<uint32_t>(hdr.data() + 28, header_.checkpoint_log_file_id);
-        codec::write_le_ptr<uint64_t>(hdr.data() + 32, header_.checkpoint_log_offset);
         if (!file_->write(hdr.data(), page_size, 0)) {
             throw std::runtime_error("disk_hash_table: failed to write header page");
         }

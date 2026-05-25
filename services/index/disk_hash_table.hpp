@@ -85,8 +85,6 @@ namespace services::index {
             uint32_t page_size_value{page_size};
             uint32_t bucket_count_value{default_bucket_count};
             uint64_t next_overflow_page{0};
-            uint32_t checkpoint_log_file_id{0};
-            uint64_t checkpoint_log_offset{0};
         };
 
         void open_or_create();
@@ -114,7 +112,6 @@ namespace services::index {
         slot_t read_slot(const std::vector<uint8_t>& page, uint16_t slot_index) const;
         void write_slot(std::vector<uint8_t>& page, uint16_t slot_index, const slot_t& slot) const;
         uint16_t slot_dir_offset(uint16_t slot_index) const;
-        uint16_t slot_count_capacity(const std::vector<uint8_t>& page) const;
 
         decoded_entry_t decode_entry(const std::vector<uint8_t>& page, const slot_t& slot) const;
         bool keys_equal(std::string_view query_key,

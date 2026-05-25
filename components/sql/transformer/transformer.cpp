@@ -107,9 +107,8 @@ namespace components::sql::transform {
                 } else {
                     error_ = core::error_t(
                         core::error_code_t::sql_parse_error,
-                        std::pmr::string{
-                            "CREATE TABLE AS without MATERIALIZED — see docs/pr496-followups.md #4",
-                            resource_});
+                        std::pmr::string{"CREATE TABLE AS without MATERIALIZED — see docs/pr496-followups.md #4",
+                                         resource_});
                 }
                 break;
             }

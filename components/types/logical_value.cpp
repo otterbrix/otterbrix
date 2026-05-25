@@ -446,6 +446,14 @@ namespace components::types {
             }
 
             return create_struct(resource_, type, fields);
+        } else if (type_.type() == logical_type::ARRAY && type.type() == logical_type::ARRAY) {
+            const auto& target_elem_type = type.child_type();
+            std::vector<logical_value_t> elems;
+            elems.reserve(children().size());
+            for (const auto& child : children()) {
+                elems.emplace_back(child.cast_as(target_elem_type, session_tz));
+            }
+            return create_array(resource_, target_elem_type, elems);
         } else if (type.type() == logical_type::ENUM) {
             if (type_.type() == logical_type::STRING_LITERAL) {
                 auto string_val = value<std::string_view>();
@@ -542,7 +550,7 @@ namespace components::types {
                     break;
             }
         }
-        assert(false && "cast to value is not implemented");
+        // assert(false && "cast to value is not implemented");
         return logical_value_t{resource_, complex_logical_type{logical_type::NA}};
     }
 

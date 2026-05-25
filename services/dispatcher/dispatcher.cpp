@@ -27,7 +27,6 @@
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/logical_plan/node_create_macro.hpp>
 #include <components/logical_plan/node_create_matview.hpp>
-#include <components/logical_plan/node_refresh_matview.hpp>
 #include <components/logical_plan/node_create_sequence.hpp>
 #include <components/logical_plan/node_create_type.hpp>
 #include <components/logical_plan/node_create_view.hpp>
@@ -45,6 +44,7 @@
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_primitive_write.hpp>
+#include <components/logical_plan/node_refresh_matview.hpp>
 #include <components/logical_plan/node_register_udf.hpp>
 #include <components/logical_plan/node_sequence.hpp>
 #include <components/logical_plan/node_set_timezone.hpp>
@@ -262,39 +262,35 @@ namespace services::dispatcher {
         // Parse view body SQL and transform it into a fresh logical plan.
         // The transformer is instantiated per-call (its mutable state lives on
         // the instance — re-entrant when allocated fresh per call).
-        view_expansion_result_t
-        expand_view_body(std::pmr::memory_resource* resource, const std::string& view_sql) {
+        view_expansion_result_t expand_view_body(std::pmr::memory_resource* resource, const std::string& view_sql) {
             view_expansion_result_t out;
             std::pmr::monotonic_buffer_resource parser_arena(resource);
             void* parse_cell = nullptr;
             try {
                 auto* parsed = raw_parser(&parser_arena, view_sql.c_str());
                 if (!parsed) {
-                    out.error = make_cursor(
-                        resource,
-                        core::error_t(core::error_code_t::sql_parse_error,
-                                      std::pmr::string{"view body re-parse returned null", resource}));
+                    out.error =
+                        make_cursor(resource,
+                                    core::error_t(core::error_code_t::sql_parse_error,
+                                                  std::pmr::string{"view body re-parse returned null", resource}));
                     return out;
                 }
                 parse_cell = linitial(parsed);
             } catch (const std::exception& ex) {
                 out.error = make_cursor(
                     resource,
-                    core::error_t(core::error_code_t::sql_parse_error,
-                                  std::pmr::string{ex.what(), resource}));
+                    core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{ex.what(), resource}));
                 return out;
             }
             if (!parse_cell) {
-                out.error = make_cursor(
-                    resource,
-                    core::error_t(core::error_code_t::sql_parse_error,
-                                  std::pmr::string{"empty view body parse", resource}));
+                out.error = make_cursor(resource,
+                                        core::error_t(core::error_code_t::sql_parse_error,
+                                                      std::pmr::string{"empty view body parse", resource}));
                 return out;
             }
             components::sql::transform::transformer local_transformer(resource, view_sql.c_str());
-            auto tr = local_transformer
-                          .transform(components::sql::transform::pg_cell_to_node_cast(parse_cell))
-                          .finalize();
+            auto tr =
+                local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_cell)).finalize();
             if (tr.has_error()) {
                 out.error = make_cursor(resource, tr.error());
                 return out;
@@ -321,13 +317,15 @@ namespace services::dispatcher {
                 return out;
             }
             for (auto& c : root->children()) {
-                if (!c) continue;
+                if (!c)
+                    continue;
                 const auto t = c->type();
                 const bool is_resolve =
                     t == node_type::catalog_resolve_namespace_t || t == node_type::catalog_resolve_table_t ||
                     t == node_type::catalog_resolve_type_t || t == node_type::catalog_resolve_function_t ||
                     t == node_type::catalog_resolve_constraint_t;
-                if (!is_resolve) continue;
+                if (!is_resolve)
+                    continue;
                 if (t == node_type::catalog_resolve_table_t) {
                     auto* rt = static_cast<node_catalog_resolve_table_t*>(c.get());
                     if (rt->resolved_metadata().has_value()) {
@@ -1314,8 +1312,7 @@ namespace services::dispatcher {
         // OID batch holds: mv_oid + N×attoid + rule_oid = 2 + N (where N is the
         // matview's inferred column count populated by enrich's
         // derive_matview_output_schema).
-        if (original_type == node_type::create_matview_t &&
-            disk_address_ != actor_zeta::address_t::empty_address()) {
+        if (original_type == node_type::create_matview_t && disk_address_ != actor_zeta::address_t::empty_address()) {
             auto* cm = static_cast<node_create_matview_t*>(effective_root_node(logic_plan.get()));
             const std::size_t col_count = cm ? cm->inferred_columns().size() : std::size_t{0};
             const std::size_t need = 2 + col_count;

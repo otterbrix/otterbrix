@@ -1238,8 +1238,7 @@ namespace services::dispatcher {
                            !static_cast<const std::string&>(agg_node->dbname()).empty()) {
                     const auto& agg_dbname_s = static_cast<const std::string&>(agg_node->dbname());
                     const auto& agg_relname_s = static_cast<const std::string&>(agg_node->relname());
-                    const auto& visible_alias =
-                        node->result_alias().empty() ? agg_relname_s : node->result_alias();
+                    const auto& visible_alias = node->result_alias().empty() ? agg_relname_s : node->result_alias();
                     // there will be a scan
                     const auto* tbl = impl::tbl_md_for(idx, agg_dbname_s, agg_relname_s);
                     if (tbl && tbl->relkind != 'g') {
@@ -1315,26 +1314,23 @@ namespace services::dispatcher {
                                         }
                                     }
                                     if (matched.empty()) {
-                                        return core::error_t(
-                                            core::error_code_t::schema_error,
-                                            std::pmr::string{(std::string{"alias '"} + alias.c_str() +
-                                                              "' has no columns in scope")
-                                                                 .c_str(),
-                                                             resource});
+                                        return core::error_t(core::error_code_t::schema_error,
+                                                             std::pmr::string{(std::string{"alias '"} + alias.c_str() +
+                                                                               "' has no columns in scope")
+                                                                                  .c_str(),
+                                                                              resource});
                                     }
                                     exprs.erase(exprs.begin() + static_cast<ptrdiff_t>(expr_index));
                                     for (size_t j = 0; j < matched.size(); j++) {
                                         size_t schema_idx = matched[j];
                                         components::expressions::key_t new_key(resource);
                                         if (incoming_schema[schema_idx].type.has_alias()) {
-                                            new_key.storage().push_back(std::pmr::string(
-                                                incoming_schema[schema_idx].type.alias(), resource));
+                                            new_key.storage().push_back(
+                                                std::pmr::string(incoming_schema[schema_idx].type.alias(), resource));
                                         }
                                         new_key.set_path(column_path{{schema_idx}, resource});
                                         exprs.insert(exprs.begin() + static_cast<ptrdiff_t>(expr_index + j),
-                                                     make_scalar_expression(resource,
-                                                                            scalar_type::get_field,
-                                                                            new_key));
+                                                     make_scalar_expression(resource, scalar_type::get_field, new_key));
                                     }
                                     expr_index += matched.size();
                                     continue;

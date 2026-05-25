@@ -264,8 +264,12 @@ namespace components::operators {
             }
             for (auto& chunk : in_chunks) {
                 for (auto& comp : computed_columns_) {
-                    auto result_vec =
-                        evaluate_arithmetic(resource_, comp.op, comp.operands, chunk, pipeline_context->parameters);
+                    auto result_vec = evaluate_arithmetic(resource_,
+                                                          comp.op,
+                                                          comp.operands,
+                                                          chunk,
+                                                          pipeline_context->parameters,
+                                                          pipeline_context->session_tz);
                     if (result_vec.has_error()) {
                         set_error(result_vec.error());
                         return;
@@ -379,8 +383,12 @@ namespace components::operators {
             chunk.set_cardinality(1);
 
             for (auto& comp : computed_columns_) {
-                auto result_vec =
-                    evaluate_arithmetic(resource_, comp.op, comp.operands, chunk, pipeline_context->parameters);
+                auto result_vec = evaluate_arithmetic(resource_,
+                                                      comp.op,
+                                                      comp.operands,
+                                                      chunk,
+                                                      pipeline_context->parameters,
+                                                      pipeline_context->session_tz);
                 if (result_vec.has_error()) {
                     set_error(result_vec.error());
                     return;

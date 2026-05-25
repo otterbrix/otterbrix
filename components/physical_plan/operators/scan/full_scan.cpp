@@ -118,18 +118,28 @@ namespace components::operators {
                     auto key = param_value.value<std::string_view>();
                     auto coerced = types::logical_value_t::create_enum(resource, col_type, key);
                     if (coerced.type().type() == types::logical_type::NA) {
-                        return core::error_t{
-                            core::error_code_t::invalid_parameter,
-                            std::pmr::string{std::string{"enum value '"} + std::string{key} +
-                                                 "' not found in ENUM column",
-                                             resource}};
+                        return core::error_t{core::error_code_t::invalid_parameter,
+                                             std::pmr::string{std::string{"enum value '"} + std::string{key} +
+                                                                  "' not found in ENUM column",
+                                                              resource}};
                     }
                     // Storage holds the ordinal as int32 (ENUM physical_type=INT32).
                     // constant_filter_t's compare path doesn't auto-coerce ENUM<->INT32,
                     // so wrap the ordinal as a plain INT32 logical_value_t.
                     types::logical_value_t ordinal_val{resource, coerced.value<int32_t>()};
-                    return std::unique_ptr<table::table_filter_t>(std::make_unique<table::constant_filter_t>(
-                        expression->type(), std::move(ordinal_val), std::move(indices)));
+                    return std::unique_ptr<table::table_filter_t>(
+                        std::make_unique<table::constant_filter_t>(expression->type(),
+                                                                   std::move(ordinal_val),
+                                                                   std::move(indices)));
+                }
+                if (!param_value.is_null() && param_value.type() != col_type) {
+                    auto coerced = param_value.cast_as(col_type, session_tz);
+                    if (!coerced.is_null()) {
+                        return std::unique_ptr<table::table_filter_t>(
+                            std::make_unique<table::constant_filter_t>(expression->type(),
+                                                                       std::move(coerced),
+                                                                       std::move(indices)));
+                    }
                 }
                 return std::unique_ptr<table::table_filter_t>(
                     std::make_unique<table::constant_filter_t>(expression->type(), it->second, std::move(indices)));

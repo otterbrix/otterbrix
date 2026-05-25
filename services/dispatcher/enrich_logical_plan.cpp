@@ -17,6 +17,7 @@
 #include "plan_resolve_index.hpp"
 #include "resolve_type.hpp"
 
+#include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_alter_column_add.hpp>
 #include <components/logical_plan/node_alter_column_drop.hpp>
@@ -31,8 +32,6 @@
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/logical_plan/node_create_macro.hpp>
 #include <components/logical_plan/node_create_matview.hpp>
-#include <components/logical_plan/node_refresh_matview.hpp>
-#include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_create_sequence.hpp>
 #include <components/logical_plan/node_create_view.hpp>
 #include <components/logical_plan/node_data.hpp>
@@ -50,6 +49,7 @@
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/node_match.hpp>
+#include <components/logical_plan/node_refresh_matview.hpp>
 #include <components/logical_plan/node_sort.hpp>
 #include <components/logical_plan/node_update.hpp>
 
@@ -530,7 +530,7 @@ namespace services::dispatcher {
                             // (which also carries view_sql via Phase A.A2 since
                             // operator_resolve_table reads pg_rewrite for relkind='m').
                             // No fields to stamp here — planner reads from rt directly.
-                            (void)c;
+                            (void) c;
                             break;
                         }
                         case node_type::create_index_t: {

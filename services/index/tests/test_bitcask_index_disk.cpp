@@ -1,14 +1,14 @@
-#include <catch2/catch.hpp>
-#include <services/index/bitcask_index_disk.hpp>
-#include <services/index/btree_index_disk.hpp>
 #include <atomic>
+#include <catch2/catch.hpp>
+#include <charconv>
 #include <fstream>
 #include <limits>
 #include <mutex>
 #include <random>
+#include <services/index/bitcask_index_disk.hpp>
+#include <services/index/btree_index_disk.hpp>
 #include <thread>
 #include <unordered_set>
-#include <charconv>
 
 using components::types::logical_value_t;
 using services::index::bitcask_index_disk_t;
@@ -109,9 +109,7 @@ TEST_CASE("services::index::bitcask_index_disk::int64_basic") {
         index.remove(logical_value_t(&resource, int64_t(i)));
     }
 
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
+    { std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
 
     REQUIRE(index.find(logical_value_t(&resource, 2l)).empty());
     REQUIRE(index.lower_bound(logical_value_t(&resource, 10l)).size() == 5);
@@ -126,10 +124,7 @@ TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen") {
     std::filesystem::create_directories(path);
 
     {
-        auto index = bitcask_index_disk_t(path,
-                                          &resource,
-                                          bitcask_index_disk_t::default_flush_threshold_,
-                                          1000);
+        auto index = bitcask_index_disk_t(path, &resource, bitcask_index_disk_t::default_flush_threshold_, 1000);
         for (int i = 1; i <= 100; ++i) {
             index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
         }
@@ -139,17 +134,12 @@ TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen") {
         index.force_flush();
     }
 
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
+    { std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
 
     REQUIRE(count_bitcask_data_files(path) == 1);
 
     {
-        auto index = bitcask_index_disk_t(path,
-                                          &resource,
-                                          bitcask_index_disk_t::default_flush_threshold_,
-                                          1000);
+        auto index = bitcask_index_disk_t(path, &resource, bitcask_index_disk_t::default_flush_threshold_, 1000);
 
         REQUIRE(index.find(logical_value_t(&resource, 1l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 1l)).front() == 1);
@@ -178,9 +168,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_immutable_segments") {
         index.force_flush();
     }
 
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
+    { std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
 
     REQUIRE(count_bitcask_data_files(path) == 2);
 
@@ -221,9 +209,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_keeps_latest_snapshot_for_
         index.force_flush();
     }
 
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
+    { std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
 
     REQUIRE(count_bitcask_data_files(path) == 2);
 
@@ -260,9 +246,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_drops_tombstoned_keys") {
         index.force_flush();
     }
 
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
+    { std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
 
     REQUIRE(count_bitcask_data_files(path) == 2);
 
@@ -291,9 +275,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_preserves_active_segment_e
         index.force_flush();
     }
 
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
+    { std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
 
     REQUIRE(count_bitcask_data_files(path) == 2);
 
@@ -501,7 +483,6 @@ TEST_CASE("services::index::bitcask_index_disk::flush_threshold_persists_without
         REQUIRE(index.find(logical_value_t(&resource, 3l)).size() == 1);
     }
 }
-
 
 TEST_CASE("services::index::bitcask_index_disk::merge_fs_error_does_not_lose_data") {
     auto resource = std::pmr::synchronized_pool_resource();

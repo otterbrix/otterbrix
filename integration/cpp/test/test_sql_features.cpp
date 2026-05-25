@@ -3337,9 +3337,9 @@ TEST_CASE("integration::cpp::test_sql_features::comma_join") {
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher
-                        ->execute_sql(session, "CREATE TABLE TestDatabase.orders (id bigint, customer_id bigint);")
-                        ->is_success());
+            REQUIRE(
+                dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.orders (id bigint, customer_id bigint);")
+                    ->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -3394,9 +3394,7 @@ TEST_CASE("integration::cpp::test_sql_features::create_view_e2e") {
     auto session = otterbrix::session_id_t();
 
     REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase")->is_success());
-    REQUIRE(dispatcher
-                ->execute_sql(session, "CREATE TABLE TestDatabase.t (col_a STRING, col_b BIGINT)")
-                ->is_success());
+    REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.t (col_a STRING, col_b BIGINT)")->is_success());
     REQUIRE(dispatcher
                 ->execute_sql(session,
                               "INSERT INTO TestDatabase.t (col_a, col_b) VALUES "
@@ -3433,9 +3431,7 @@ TEST_CASE("integration::cpp::test_sql_features::create_matview_e2e") {
     auto session = otterbrix::session_id_t();
 
     REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase")->is_success());
-    REQUIRE(dispatcher
-                ->execute_sql(session, "CREATE TABLE TestDatabase.t (col_a STRING, col_b BIGINT)")
-                ->is_success());
+    REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.t (col_a STRING, col_b BIGINT)")->is_success());
     REQUIRE(dispatcher
                 ->execute_sql(session,
                               "INSERT INTO TestDatabase.t (col_a, col_b) VALUES "
@@ -3466,8 +3462,7 @@ TEST_CASE("integration::cpp::test_sql_features::create_database_if_not_exists") 
 
     INFO("first CREATE creates the DB") {
         auto session = otterbrix::session_id_t();
-        REQUIRE(
-            dispatcher->execute_sql(session, "CREATE DATABASE IF NOT EXISTS TestDatabase;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE IF NOT EXISTS TestDatabase;")->is_success());
     }
 
     INFO("second CREATE IF NOT EXISTS succeeds as a no-op") {
@@ -3498,8 +3493,7 @@ TEST_CASE("integration::cpp::test_sql_features::create_table_if_not_exists") {
 
     INFO("first CREATE TABLE creates it") {
         auto session = otterbrix::session_id_t();
-        REQUIRE(
-            dispatcher->execute_sql(session, "CREATE TABLE IF NOT EXISTS TestDatabase.t();")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE IF NOT EXISTS TestDatabase.t();")->is_success());
     }
 
     INFO("second CREATE TABLE IF NOT EXISTS succeeds as a no-op") {

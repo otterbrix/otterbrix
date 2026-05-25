@@ -46,8 +46,12 @@ namespace components::operators {
                 continue;
             }
             for (const auto& ck : computed_keys_) {
-                auto result_vec =
-                    evaluate_arithmetic(resource_, ck.op, ck.operands, chunk, pipeline_context->parameters);
+                auto result_vec = evaluate_arithmetic(resource_,
+                                                      ck.op,
+                                                      ck.operands,
+                                                      chunk,
+                                                      pipeline_context->parameters,
+                                                      pipeline_context->session_tz);
                 if (result_vec.has_error()) {
                     set_error(result_vec.error());
                     return;

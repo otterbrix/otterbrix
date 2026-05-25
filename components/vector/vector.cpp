@@ -420,7 +420,7 @@ namespace components::vector {
             auto& indexing_vector = indexing();
             return child().set_value(indexing_vector.get_index(index), val);
         }
-        if (!val.is_null() && val.type().to_physical_type() != type_.to_physical_type()) {
+        if (!val.is_null() && val.type() != type_) {
             assert(false && "value has to be casted to vector's type before set_value");
             return;
         }
@@ -540,11 +540,7 @@ namespace components::vector {
                     auto& val_children = val.children();
                     for (uint64_t i = 0; i < array_size; i++) {
                         // narrow per-element physical width (e.g. BIGINT literal into INT[N] slot)
-                        if (val_children[i].type().to_physical_type() != child.type().to_physical_type()) {
-                            child.set_value(index * array_size + i, val_children[i].cast_as(child.type()));
-                        } else {
-                            child.set_value(index * array_size + i, val_children[i]);
-                        }
+                        child.set_value(index * array_size + i, val_children[i]);
                     }
                 }
                 break;

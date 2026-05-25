@@ -481,43 +481,19 @@ namespace services::index {
     }
 
     void bitcask_index_disk_t::lower_bound(const value_t& value, result& res) const {
-        std::shared_lock lock(mutex_);
-        hash_index_->for_each([&](const disk_hash_table_t::value_ref_t& ref) {
-            row_ids_t rows(resource_);
-            value_t key(resource_, nullptr);
-            if (!read_rows_at(ref.log_file_id, ref.log_offset, rows, &key)) {
-                return;
-            }
-            if (key < value) {
-                res.insert(res.end(), rows.begin(), rows.end());
-            }
-        });
+        throw "not supported"; // not supported
     }
 
     bitcask_index_disk_t::result bitcask_index_disk_t::lower_bound(const value_t& value) const {
-        result res;
-        lower_bound(value, res);
-        return res;
+        throw "not supported"; // not supported
     }
 
     void bitcask_index_disk_t::upper_bound(const value_t& value, result& res) const {
-        std::shared_lock lock(mutex_);
-        hash_index_->for_each([&](const disk_hash_table_t::value_ref_t& ref) {
-            row_ids_t rows(resource_);
-            value_t key(resource_, nullptr);
-            if (!read_rows_at(ref.log_file_id, ref.log_offset, rows, &key)) {
-                return;
-            }
-            if (key > value) {
-                res.insert(res.end(), rows.begin(), rows.end());
-            }
-        });
+        throw "not supported"; // not supported
     }
 
     bitcask_index_disk_t::result bitcask_index_disk_t::upper_bound(const value_t& value) const {
-        result res;
-        upper_bound(value, res);
-        return res;
+        throw "not supported"; // not supported
     }
 
     void bitcask_index_disk_t::merge_immutable_segments() {

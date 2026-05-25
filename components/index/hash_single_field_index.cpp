@@ -46,12 +46,12 @@ namespace components::index {
         return std::make_pair(iterator(new impl_t(range.first)), iterator(new impl_t(range.second)));
     }
 
-    index_t::range hash_single_field_index_t::lower_bound_impl(const value_t&, core::date::timezone_offset_t) const {
-        throw "not supported"; // todo
+    index_t::range hash_single_field_index_t::lower_bound_impl(const value_t&) const {
+        throw "not supported"; // not supported
     }
 
-    index_t::range hash_single_field_index_t::upper_bound_impl(const value_t&, core::date::timezone_offset_t) const {
-        throw "not supported"; // todo
+    index_t::range hash_single_field_index_t::upper_bound_impl(const value_t&) const {
+        throw "not supported"; // not supported
     }
 
     index_t::iterator hash_single_field_index_t::cbegin_impl() const {

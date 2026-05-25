@@ -114,14 +114,6 @@ namespace services::index {
                         const decoded_entry_t& entry,
                         const full_key_loader_t& key_loader) const;
 
-        bool try_update_in_page(std::vector<uint8_t>& page,
-                                std::string_view key,
-                                uint32_t key_hash,
-                                int64_t value,
-                                uint32_t log_file_id,
-                                uint64_t log_offset,
-                                const full_key_loader_t& key_loader,
-                                bool& changed);
         bool try_insert_in_page(std::vector<uint8_t>& page,
                                 std::string_view key,
                                 uint32_t key_hash,

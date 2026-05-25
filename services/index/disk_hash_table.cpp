@@ -46,7 +46,7 @@ namespace services::index {
                                 int64_t value,
                                 uint32_t log_file_id,
                                 uint64_t log_offset,
-                                const full_key_loader_t& key_loader) {
+                                const full_key_loader_t&) {
         std::unique_lock lock(mutex_);
         const uint32_t key_hash = hash_key(key);
         const uint32_t bucket_id = bucket_id_for_key(key);
@@ -56,12 +56,6 @@ namespace services::index {
         while (true) {
             read_page(page_id, page);
             bool changed = false;
-            if (try_update_in_page(page, key, key_hash, value, log_file_id, log_offset, key_loader, changed)) {
-                if (changed) {
-                    write_page(page_id, page);
-                }
-                return true;
-            }
             if (try_insert_in_page(page, key, key_hash, value, log_file_id, log_offset, changed)) {
                 if (changed) {
                     write_page(page_id, page);
@@ -396,43 +390,6 @@ namespace services::index {
             return false;
         }
         return full == query_key;
-    }
-
-    bool disk_hash_table_t::try_update_in_page(std::vector<uint8_t>& page,
-                                               std::string_view key,
-                                               uint32_t key_hash,
-                                               int64_t value,
-                                               uint32_t log_file_id,
-                                               uint64_t log_offset,
-                                               const full_key_loader_t& key_loader,
-                                               bool& changed) {
-        const auto cnt = page_count(page);
-        for (uint16_t i = 0; i < cnt; ++i) {
-            auto slot = read_slot(page, i);
-            if (slot.flags != slot_flag_used || slot.key_hash != key_hash || slot.length == 0) {
-                continue;
-            }
-            const auto entry = decode_entry(page, slot);
-            if (!keys_equal(key, entry, key_loader)) {
-                continue;
-            }
-            if (entry.value != value) {
-                continue;
-            }
-            auto payload = make_entry_payload(key, value, log_file_id, log_offset);
-            if (payload.size() <= slot.length) {
-                std::memcpy(page.data() + slot.offset, payload.data(), payload.size());
-                if (payload.size() < slot.length) {
-                    std::memset(page.data() + slot.offset + payload.size(), 0, slot.length - payload.size());
-                }
-                changed = true;
-                return true;
-            }
-            slot.flags = slot_flag_free;
-            write_slot(page, i, slot);
-            break;
-        }
-        return false;
     }
 
     bool disk_hash_table_t::try_insert_in_page(std::vector<uint8_t>& page,

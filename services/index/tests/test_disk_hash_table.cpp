@@ -58,6 +58,31 @@ TEST_CASE("services::index::disk_hash_table::persist_reopen") {
     }
 }
 
+TEST_CASE("services::index::disk_hash_table::multiple_values_per_key") {
+    const auto path = mk_path("disk_hash_table_multi_values.data");
+    std::filesystem::remove(path);
+
+    disk_hash_table_t table(path, 32);
+    REQUIRE(table.put("dup", 10, 1, 100));
+    REQUIRE(table.put("dup", 20, 2, 200));
+    REQUIRE(table.put("dup", 10, 3, 300));
+
+    const auto values = table.get_all("dup");
+    REQUIRE(values.size() == 3);
+
+    size_t count10 = 0;
+    size_t count20 = 0;
+    for (const auto& v : values) {
+        if (v.value == 10) {
+            ++count10;
+        } else if (v.value == 20) {
+            ++count20;
+        }
+    }
+    REQUIRE(count10 == 2);
+    REQUIRE(count20 == 1);
+}
+
 TEST_CASE("services::index::disk_hash_table::long_key_prefix_and_loader") {
     const auto path = mk_path("disk_hash_table_long_key.data");
     std::filesystem::remove(path);

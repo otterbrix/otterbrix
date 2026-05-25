@@ -320,12 +320,6 @@ namespace services::index {
                 }
                 break;
             }
-            case components::logical_plan::index_type::hashed: {
-                id_index = components::index::make_index<components::index::hash_single_field_index_t>(engine,
-                                                                                                       index_name,
-                                                                                                       keys);
-                break;
-            }
             default:
                 trace(log_, "manager_index_t::create_index: unsupported index type");
                 co_return components::index::INDEX_ID_UNDEFINED;

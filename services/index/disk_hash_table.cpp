@@ -527,8 +527,6 @@ namespace services::index {
 
     void disk_hash_table_t::persist_header() {
         std::vector<uint8_t> hdr(page_size, 0);
-        codec::write_le_ptr<uint64_t>(hdr.data(), magic);
-        codec::write_le_ptr<uint32_t>(hdr.data() + 8, version);
         codec::write_le_ptr<uint32_t>(hdr.data() + 12, header_.page_size_value);
         codec::write_le_ptr<uint32_t>(hdr.data() + 16, header_.bucket_count_value);
         codec::write_le_ptr<uint64_t>(hdr.data() + 20, header_.next_overflow_page);

@@ -24,18 +24,18 @@ namespace components::index {
         return codec::encode_disk_hash_key(key);
     }
 
-    auto disk_hash_single_field_index_t::insert_impl(value_t key, index_value_t value) -> void {
+    auto disk_hash_single_field_index_t::insert_impl(value_t key, index_value_t value, core::date::timezone_offset_t local_timezone) -> void {
         if (value.insert_id < table::TRANSACTION_ID_START &&
             (value.delete_id == table::NOT_DELETED_ID || value.delete_id >= table::TRANSACTION_ID_START)) {
             storage_ref().put(encode_key(key), value.row_index, 0, 0);
         }
     }
 
-    auto disk_hash_single_field_index_t::remove_impl(value_t key) -> void {
+    auto disk_hash_single_field_index_t::remove_impl(value_t key, core::date::timezone_offset_t local_timezone) -> void {
         storage_ref().erase(encode_key(key));
     }
 
-    index_t::range disk_hash_single_field_index_t::find_impl(const value_t& value) const {
+    index_t::range disk_hash_single_field_index_t::find_impl(const value_t& value, core::date::timezone_offset_t local_timezone) const {
         scratch_results_.clear();
         const auto encoded = encode_key(value);
         auto values = storage_ref().get_all(encoded);
@@ -65,11 +65,11 @@ namespace components::index {
         return {iterator(new impl_t(scratch_results_.cbegin())), iterator(new impl_t(scratch_results_.cend()))};
     }
 
-    index_t::range disk_hash_single_field_index_t::lower_bound_impl(const value_t&) const {
+    index_t::range disk_hash_single_field_index_t::lower_bound_impl(const value_t&, core::date::timezone_offset_t local_timezone) const {
         throw "not supported"; // hash index has no ordering
     }
 
-    index_t::range disk_hash_single_field_index_t::upper_bound_impl(const value_t&) const {
+    index_t::range disk_hash_single_field_index_t::upper_bound_impl(const value_t&, core::date::timezone_offset_t local_timezone) const {
         throw "not supported"; // hash index has no ordering
     }
 
@@ -81,13 +81,13 @@ namespace components::index {
         return iterator(new impl_t(scratch_results_.cend()));
     }
 
-    void disk_hash_single_field_index_t::insert_txn_impl(value_t key, int64_t row_index, uint64_t txn_id) {
+    void disk_hash_single_field_index_t::insert_txn_impl(value_t key, int64_t row_index, uint64_t txn_id, core::date::timezone_offset_t local_timezone) {
         auto encoded = encode_key(key);
         pending_inserts_[txn_id].emplace_back(encoded, row_index);
         storage_ref().append_pending_insert(txn_id, encoded, row_index);
     }
 
-    void disk_hash_single_field_index_t::mark_delete_impl(value_t key, int64_t row_index, uint64_t txn_id) {
+    void disk_hash_single_field_index_t::mark_delete_impl(value_t key, int64_t row_index, uint64_t txn_id, core::date::timezone_offset_t local_timezone) {
         auto encoded = encode_key(key);
         pending_deletes_[txn_id].emplace_back(encoded, row_index);
         storage_ref().append_pending_delete(txn_id, encoded, row_index);

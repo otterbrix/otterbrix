@@ -136,20 +136,20 @@ namespace {
         const uint64_t commit_delete = 200;
         components::types::logical_value_t val42(&resource, int64_t(42));
 
-        index->insert(val42, int64_t(7), txn_insert);
+        index->insert(val42, int64_t(7), txn_insert, {});
         index->commit_insert(txn_insert, commit_insert);
 
-        index->mark_delete(val42, int64_t(7), txn_delete);
+        index->mark_delete(val42, int64_t(7), txn_delete, {});
 
-        auto seen_by_deleter = index->search(compare_type::eq, val42, commit_insert + 1, txn_delete);
+        auto seen_by_deleter = index->search(compare_type::eq, val42, commit_insert + 1, txn_delete, {});
         REQUIRE(seen_by_deleter.empty());
 
-        auto seen_by_other = index->search(compare_type::eq, val42, commit_insert + 1, txn_other);
+        auto seen_by_other = index->search(compare_type::eq, val42, commit_insert + 1, txn_other, {});
         REQUIRE(seen_by_other.size() == 1);
         REQUIRE(seen_by_other[0] == 7);
 
         index->commit_delete(txn_delete, commit_delete);
-        auto gone_after_commit = index->search(compare_type::eq, val42, commit_delete + 1, txn_other + 1);
+        auto gone_after_commit = index->search(compare_type::eq, val42, commit_delete + 1, txn_other + 1, {});
         REQUIRE(gone_after_commit.empty());
     }
 
@@ -164,16 +164,16 @@ namespace {
         const uint64_t txn_other = TRANSACTION_ID_START + 55;
         components::types::logical_value_t val42(&resource, int64_t(42));
 
-        index->insert(val42, int64_t(9), txn_insert);
-        auto own_before_revert = index->search(compare_type::eq, val42, txn_insert - 1, txn_insert);
+        index->insert(val42, int64_t(9), txn_insert, {});
+        auto own_before_revert = index->search(compare_type::eq, val42, txn_insert - 1, txn_insert, {});
         REQUIRE(own_before_revert.size() == 1);
 
         index->revert_insert(txn_insert);
 
-        auto own_after_revert = index->search(compare_type::eq, val42, txn_insert - 1, txn_insert);
+        auto own_after_revert = index->search(compare_type::eq, val42, txn_insert - 1, txn_insert, {});
         REQUIRE(own_after_revert.empty());
 
-        auto other_after_revert = index->search(compare_type::eq, val42, txn_insert - 1, txn_other);
+        auto other_after_revert = index->search(compare_type::eq, val42, txn_insert - 1, txn_other, {});
         REQUIRE(other_after_revert.empty());
     }
 } // namespace

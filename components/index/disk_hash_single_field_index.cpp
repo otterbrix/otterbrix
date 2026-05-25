@@ -24,15 +24,23 @@ namespace components::index {
         return codec::encode_disk_hash_key(key);
     }
 
-    auto disk_hash_single_field_index_t::insert_impl(value_t key, index_value_t value, core::date::timezone_offset_t local_timezone) -> void {
-        if (value.insert_id < table::TRANSACTION_ID_START &&
-            (value.delete_id == table::NOT_DELETED_ID || value.delete_id >= table::TRANSACTION_ID_START)) {
-            storage_ref().put(encode_key(key), value.row_index, 0, 0);
+    namespace {
+        components::types::logical_value_t decode_key(std::pmr::memory_resource* resource, const std::string& encoded) {
+            std::pmr::string payload(encoded.data(), encoded.size(), resource);
+            size_t pos = 0;
+            return codec::read_logical_value(resource, payload, pos);
         }
+    } // namespace
+
+    auto disk_hash_single_field_index_t::insert_impl(value_t key, index_value_t value, core::date::timezone_offset_t local_timezone) -> void {
+        (void) key;
+        (void) value;
+        (void) local_timezone;
     }
 
     auto disk_hash_single_field_index_t::remove_impl(value_t key, core::date::timezone_offset_t local_timezone) -> void {
-        storage_ref().erase(encode_key(key));
+        (void) key;
+        (void) local_timezone;
     }
 
     index_t::range disk_hash_single_field_index_t::find_impl(const value_t& value, core::date::timezone_offset_t local_timezone) const {
@@ -95,31 +103,16 @@ namespace components::index {
 
     void disk_hash_single_field_index_t::commit_insert_impl(uint64_t txn_id, uint64_t commit_id) {
         (void) commit_id;
-        auto it = pending_inserts_.find(txn_id);
-        if (it != pending_inserts_.end()) {
-            for (const auto& [encoded, row_id] : it->second) {
-                storage_ref().put(encoded, row_id, 0, 0);
-            }
-            pending_inserts_.erase(it);
-        }
-        storage_ref().finalize_txn(txn_id, true, false);
+        pending_inserts_.erase(txn_id);
     }
 
     void disk_hash_single_field_index_t::commit_delete_impl(uint64_t txn_id, uint64_t commit_id) {
         (void) commit_id;
-        auto it = pending_deletes_.find(txn_id);
-        if (it != pending_deletes_.end()) {
-            for (const auto& [encoded, row_id] : it->second) {
-                storage_ref().erase(encoded, row_id);
-            }
-            pending_deletes_.erase(it);
-        }
-        storage_ref().finalize_txn(txn_id, false, true);
+        pending_deletes_.erase(txn_id);
     }
 
     void disk_hash_single_field_index_t::revert_insert_impl(uint64_t txn_id) {
         pending_inserts_.erase(txn_id);
-        storage_ref().finalize_txn(txn_id, false, false);
     }
 
     void disk_hash_single_field_index_t::cleanup_versions_impl(uint64_t lowest_active) {
@@ -134,7 +127,7 @@ namespace components::index {
             return;
         }
         for (const auto& [encoded, row_id] : it->second) {
-            fn(value_t(resource(), encoded), row_id);
+            fn(decode_key(resource(), encoded), row_id);
         }
     }
 
@@ -146,7 +139,7 @@ namespace components::index {
             return;
         }
         for (const auto& [encoded, row_id] : it->second) {
-            fn(value_t(resource(), encoded), row_id);
+            fn(decode_key(resource(), encoded), row_id);
         }
     }
 

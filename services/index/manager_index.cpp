@@ -8,7 +8,6 @@
 #include <components/index/hash_single_field_index.hpp>
 #include <components/index/index_engine.hpp>
 #include <components/index/disk_hash_single_field_index.hpp>
-#include <components/index/hash_single_field_index.hpp>
 #include <components/index/single_field_index.hpp>
 #include <core/b_plus_tree/b_plus_tree.hpp>
 #include <core/b_plus_tree/msgpack_reader/msgpack_reader.hpp>
@@ -306,8 +305,7 @@ namespace services::index {
                             engine,
                             index_name,
                             keys,
-                            std::make_unique<services::index::disk_hash_table_t>(
-                                base / "disk_hash_single_field_index.bin"));
+                            std::make_unique<services::index::disk_hash_table_t>(base / "hash_index.bin"));
                     } catch (const std::exception& e) {
                         trace(log_,
                               "manager_index_t::create_index: disk hash storage init failed, fallback to memory: {}",

@@ -230,8 +230,9 @@ namespace services::index {
                 deserialize_payload(resource_, payload, key, rows);
                 const auto key_bytes = key_bytes_for_hash(key);
                 if (static_cast<record_kind_t>(header.kind) == record_kind_t::tombstone) {
-                    hash_index_->erase(key_bytes);
+                    erase_all_refs_for_key(key_bytes);
                 } else if (static_cast<record_kind_t>(header.kind) == record_kind_t::value) {
+                    erase_all_refs_for_key(key_bytes);
                     hash_index_->put(key_bytes,
                                      rows.empty() ? -1 : static_cast<int64_t>(rows.back()),
                                      static_cast<uint32_t>(segment.id),
@@ -364,12 +365,19 @@ namespace services::index {
         return rows;
     }
 
+    void bitcask_index_disk_t::erase_all_refs_for_key(std::string_view key_bytes) {
+        while (hash_index_->erase(key_bytes)) {
+        }
+    }
+
     void bitcask_index_disk_t::append_snapshot(const value_t& key, const row_ids_t& rows) {
         rotate_active_segment_if_needed();
         auto payload = serialize_payload(resource_, key, rows);
         const auto offset = file_->seek_position();
         write_record(*file_, static_cast<uint8_t>(record_kind_t::value), ++next_timestamp_, payload);
-        hash_index_->put(key_bytes_for_hash(key),
+        const auto key_bytes = key_bytes_for_hash(key);
+        erase_all_refs_for_key(key_bytes);
+        hash_index_->put(key_bytes,
                          rows.empty() ? -1 : static_cast<int64_t>(rows.back()),
                          static_cast<uint32_t>(active_segment_id_),
                          offset + sizeof(record_header_t));
@@ -380,7 +388,8 @@ namespace services::index {
         rotate_active_segment_if_needed();
         auto payload = serialize_payload(resource_, key, row_ids_t(resource_));
         write_record(*file_, static_cast<uint8_t>(record_kind_t::tombstone), ++next_timestamp_, payload);
-        hash_index_->erase(key_bytes_for_hash(key));
+        const auto key_bytes = key_bytes_for_hash(key);
+        erase_all_refs_for_key(key_bytes);
         ++active_segment_records_;
     }
 

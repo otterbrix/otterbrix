@@ -60,7 +60,6 @@
 #include <optional>
 #include <queue>
 #include <set>
-#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -1536,12 +1535,16 @@ namespace services::dispatcher {
                         // Duplicate names across JOIN'd tables are likewise legitimate
                         // (PostgreSQL semantics). Reject only a truly-identical column:
                         // same output alias AND same source name AND same physical type.
-                        std::set<std::tuple<std::string, std::string, components::types::logical_type>> seen_cols;
+                        struct column_key {
+                            std::string result_alias;
+                            std::string name;
+                            logical_type type;
+                            auto operator<=>(const column_key&) const = default;
+                        };
+                        std::set<column_key> seen_cols;
                         for (const auto& col : incoming_schema) {
-                            auto k = std::make_tuple(col.result_alias,
-                                                     std::string(col.type.alias()),
-                                                     col.type.type());
-                            if (!seen_cols.insert(k).second) {
+                            column_key key{col.result_alias, std::string(col.type.alias()), col.type.type()};
+                            if (!seen_cols.insert(std::move(key)).second) {
                                 return core::error_t(
                                     core::error_code_t::schema_error,
                                     std::pmr::string{"column '" + col.type.alias() +

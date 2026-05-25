@@ -214,16 +214,14 @@ namespace components::sql::transform {
     //   ->  /  #>   return jsonb  -> a (sub)table (relation position only)
     //   ->> / #>>   return text   -> a typed scalar value (SELECT/WHERE)
     // '#>'/'#>>' take a whole path on the right ('{a,b}' or dotted 'a.b').
-    inline bool is_jsonb_nav_operator(std::string_view op) {
-        return op == "->" || op == "->>" || op == "#>" || op == "#>>";
-    }
+    bool is_jsonb_nav_operator(std::string_view op);
 
     // True for the scalar (text-returning) variants usable in SELECT/WHERE.
-    inline bool jsonb_nav_returns_scalar(std::string_view op) { return op == "->>" || op == "#>>"; }
+    bool jsonb_nav_returns_scalar(std::string_view op);
 
     // True for operators whose right operand is a whole path ('{a,b}' / 'a.b'),
     // not a single key — '#>', '#>>' (navigation) and '#-' (delete by path).
-    inline bool jsonb_op_takes_path(std::string_view op) { return op == "#>" || op == "#>>" || op == "#-"; }
+    bool jsonb_op_takes_path(std::string_view op);
 
     std::string node_tag_to_string(NodeTag type);
     std::string expr_kind_to_string(A_Expr_Kind type);

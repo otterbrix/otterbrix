@@ -35,7 +35,9 @@ namespace services::index {
                  uint64_t log_offset,
                  const full_key_loader_t& key_loader = {}) override;
         std::optional<value_ref_t> get(std::string_view key, const full_key_loader_t& key_loader = {}) const override;
+        std::vector<value_ref_t> get_all(std::string_view key, const full_key_loader_t& key_loader = {}) const override;
         bool erase(std::string_view key, const full_key_loader_t& key_loader = {}) override;
+        bool erase(std::string_view key, int64_t value, const full_key_loader_t& key_loader = {}) override;
         void for_each(const std::function<void(const value_ref_t&)>& cb) const;
         void sync() override;
         void append_pending_insert(uint64_t txn_id, std::string_view key, int64_t row_id) override;
@@ -146,6 +148,7 @@ namespace services::index {
         bool try_erase_in_page(std::vector<uint8_t>& page,
                                std::string_view key,
                                uint32_t key_hash,
+                               std::optional<int64_t> expected_value,
                                const full_key_loader_t& key_loader,
                                bool& erased);
 
@@ -162,6 +165,7 @@ namespace services::index {
         std::vector<pending_record_t> read_pending_records() const;
         void write_pending_records(const std::vector<pending_record_t>& records);
         void write_checkpoint(uint64_t finalized_txn_id);
+        bool erase(std::string_view key, std::optional<int64_t> expected_value, const full_key_loader_t& key_loader);
 
         std::filesystem::path file_path_;
         mutable std::shared_mutex mutex_;

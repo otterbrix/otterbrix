@@ -36,33 +36,57 @@ namespace {
 
     void run_txn_insert_search_contract(hash_index_mode mode) {
         auto resource = std::pmr::synchronized_pool_resource();
-        auto index = make_hash_mvcc_index(&resource,
-                                          "test_hash_idx",
-                                          mode == hash_index_mode::in_memory ? "txn_insert_search_mem.bin"
-                                                                              : "txn_insert_search_disk.bin",
-                                          mode);
-
         uint64_t txn1 = TRANSACTION_ID_START + 1;
         uint64_t txn2 = TRANSACTION_ID_START + 2;
-
         components::types::logical_value_t val42(&resource, int64_t(42));
-        index->insert(val42, int64_t(0), txn1, {});
 
-        auto result = index->search(compare_type::eq, val42, txn1 - 1, txn1, {});
-        REQUIRE(result.size() == 1);
-        REQUIRE(result[0] == 0);
+        {
+            auto index = make_hash_mvcc_index(&resource,
+                                              "test_hash_idx",
+                                              mode == hash_index_mode::in_memory ? "txn_insert_search_mem_1.bin"
+                                                                                  : "txn_insert_search_disk_1.bin",
+                                              mode);
+            index->insert(val42, int64_t(0), txn1, {});
+            auto result = index->search(compare_type::eq, val42, txn1 - 1, txn1, {});
+            REQUIRE(result.size() == 1);
+            REQUIRE(result[0] == 0);
+        }
 
-        result = index->search(compare_type::eq, val42, txn1 - 1, txn2, {});
-        REQUIRE(result.empty());
+        {
+            auto index = make_hash_mvcc_index(&resource,
+                                              "test_hash_idx",
+                                              mode == hash_index_mode::in_memory ? "txn_insert_search_mem_2.bin"
+                                                                                  : "txn_insert_search_disk_2.bin",
+                                              mode);
+            index->insert(val42, int64_t(0), txn1, {});
+            auto result = index->search(compare_type::eq, val42, txn1 - 1, txn2, {});
+            REQUIRE(result.empty());
+        }
 
-        index->commit_insert(txn1, 10);
-        result = index->search(compare_type::eq, val42, 15, txn2, {});
-        REQUIRE(result.size() == 1);
-        REQUIRE(result[0] == 0);
+        {
+            auto index = make_hash_mvcc_index(&resource,
+                                              "test_hash_idx",
+                                              mode == hash_index_mode::in_memory ? "txn_insert_search_mem_3.bin"
+                                                                                  : "txn_insert_search_disk_3.bin",
+                                              mode);
+            index->insert(val42, int64_t(0), txn1, {});
+            index->commit_insert(txn1, 10);
+            auto result = index->search(compare_type::eq, val42, 15, txn2, {});
+            REQUIRE(result.size() == 1);
+            REQUIRE(result[0] == 0);
+        }
 
-        index->revert_insert(txn1);
-        result = index->search(compare_type::eq, val42, txn1 - 1, txn1, {});
-        REQUIRE(result.empty());
+        {
+            auto index = make_hash_mvcc_index(&resource,
+                                              "test_hash_idx",
+                                              mode == hash_index_mode::in_memory ? "txn_insert_search_mem_4.bin"
+                                                                                  : "txn_insert_search_disk_4.bin",
+                                              mode);
+            index->insert(val42, int64_t(0), txn1, {});
+            index->revert_insert(txn1);
+            auto result = index->search(compare_type::eq, val42, txn1 - 1, txn1, {});
+            REQUIRE(result.empty());
+        }
     }
 
     void run_full_lifecycle_contract(hash_index_mode mode) {

@@ -1,6 +1,7 @@
 #include "disk_hash_single_field_index.hpp"
 
 #include <sstream>
+#include <components/table/row_version_manager.hpp>
 
 namespace components::index {
 
@@ -45,9 +46,30 @@ namespace components::index {
 
     index_t::range disk_hash_single_field_index_t::find_impl(const value_t& value) const {
         scratch_results_.clear();
-        auto v = storage_ref().get(encode_key(value));
-        if (v.has_value()) {
-            scratch_results_.emplace_back(v->value);
+        const auto encoded = encode_key(value);
+        auto values = storage_ref().get_all(encoded);
+        for (const auto& v : values) {
+            scratch_results_.emplace_back(v.value, 0, table::NOT_DELETED_ID);
+        }
+        for (const auto& [txn_id, rows] : pending_inserts_) {
+            for (const auto& [pending_key, row_id] : rows) {
+                if (pending_key == encoded) {
+                    scratch_results_.emplace_back(row_id, txn_id, table::NOT_DELETED_ID);
+                }
+            }
+        }
+        for (const auto& [txn_id, rows] : pending_deletes_) {
+            for (const auto& [pending_key, row_id] : rows) {
+                if (pending_key != encoded) {
+                    continue;
+                }
+                for (auto& entry : scratch_results_) {
+                    if (entry.row_index == row_id && entry.delete_id == table::NOT_DELETED_ID) {
+                        entry.delete_id = txn_id;
+                        break;
+                    }
+                }
+            }
         }
         return {iterator(new impl_t(scratch_results_.cbegin())), iterator(new impl_t(scratch_results_.cend()))};
     }
@@ -69,24 +91,43 @@ namespace components::index {
     }
 
     void disk_hash_single_field_index_t::insert_txn_impl(value_t key, int64_t row_index, uint64_t txn_id) {
-        storage_ref().append_pending_insert(txn_id, encode_key(key), row_index);
+        auto encoded = encode_key(key);
+        pending_inserts_[txn_id].emplace_back(encoded, row_index);
+        storage_ref().append_pending_insert(txn_id, encoded, row_index);
     }
 
     void disk_hash_single_field_index_t::mark_delete_impl(value_t key, int64_t row_index, uint64_t txn_id) {
-        storage_ref().append_pending_delete(txn_id, encode_key(key), row_index);
+        auto encoded = encode_key(key);
+        pending_deletes_[txn_id].emplace_back(encoded, row_index);
+        storage_ref().append_pending_delete(txn_id, encoded, row_index);
     }
 
     void disk_hash_single_field_index_t::commit_insert_impl(uint64_t txn_id, uint64_t commit_id) {
         (void) commit_id;
+        auto it = pending_inserts_.find(txn_id);
+        if (it != pending_inserts_.end()) {
+            for (const auto& [encoded, row_id] : it->second) {
+                storage_ref().put(encoded, row_id, 0, 0);
+            }
+            pending_inserts_.erase(it);
+        }
         storage_ref().finalize_txn(txn_id, true, false);
     }
 
     void disk_hash_single_field_index_t::commit_delete_impl(uint64_t txn_id, uint64_t commit_id) {
         (void) commit_id;
+        auto it = pending_deletes_.find(txn_id);
+        if (it != pending_deletes_.end()) {
+            for (const auto& [encoded, row_id] : it->second) {
+                storage_ref().erase(encoded, row_id);
+            }
+            pending_deletes_.erase(it);
+        }
         storage_ref().finalize_txn(txn_id, false, true);
     }
 
     void disk_hash_single_field_index_t::revert_insert_impl(uint64_t txn_id) {
+        pending_inserts_.erase(txn_id);
         storage_ref().finalize_txn(txn_id, false, false);
     }
 
@@ -97,21 +138,31 @@ namespace components::index {
     void disk_hash_single_field_index_t::for_each_pending_insert_impl(
         uint64_t txn_id,
         const std::function<void(const value_t&, int64_t)>& fn) const {
-        (void) txn_id;
-        (void) fn;
-        // TODO: expose pending entries from disk_hash_storage_t when needed by caller.
+        auto it = pending_inserts_.find(txn_id);
+        if (it == pending_inserts_.end()) {
+            return;
+        }
+        for (const auto& [encoded, row_id] : it->second) {
+            fn(value_t(resource(), encoded), row_id);
+        }
     }
 
     void disk_hash_single_field_index_t::for_each_pending_delete_impl(
         uint64_t txn_id,
         const std::function<void(const value_t&, int64_t)>& fn) const {
-        (void) txn_id;
-        (void) fn;
-        // TODO: expose pending entries from disk_hash_storage_t when needed by caller.
+        auto it = pending_deletes_.find(txn_id);
+        if (it == pending_deletes_.end()) {
+            return;
+        }
+        for (const auto& [encoded, row_id] : it->second) {
+            fn(value_t(resource(), encoded), row_id);
+        }
     }
 
     void disk_hash_single_field_index_t::clean_memory_to_new_elements_impl(std::size_t) {
         scratch_results_.clear();
+        pending_inserts_.clear();
+        pending_deletes_.clear();
     }
 
 } // namespace components::index

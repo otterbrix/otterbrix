@@ -79,9 +79,19 @@ namespace services::index {
 
     std::optional<disk_hash_table_t::value_ref_t> disk_hash_table_t::get(std::string_view key,
                                                                           const full_key_loader_t& key_loader) const {
+        auto all = get_all(key, key_loader);
+        if (all.empty()) {
+            return std::nullopt;
+        }
+        return all.front();
+    }
+
+    std::vector<disk_hash_table_t::value_ref_t> disk_hash_table_t::get_all(std::string_view key,
+                                                                            const full_key_loader_t& key_loader) const {
         std::shared_lock lock(mutex_);
         const uint32_t key_hash = hash_key(key);
         uint64_t page_id = bucket_primary_page_id(bucket_id_for_key(key));
+        std::vector<value_ref_t> values;
 
         std::vector<uint8_t> page(page_size);
         while (page_id != 0) {
@@ -96,14 +106,25 @@ namespace services::index {
                 if (!keys_equal(key, entry, key_loader)) {
                     continue;
                 }
-                return value_ref_t{entry.value, entry.log_file_id, entry.log_offset, (entry.entry_flags & entry_flag_truncated) != 0};
+                values.push_back(
+                    value_ref_t{entry.value, entry.log_file_id, entry.log_offset, (entry.entry_flags & entry_flag_truncated) != 0});
             }
             page_id = page_overflow(page);
         }
-        return std::nullopt;
+        return values;
     }
 
     bool disk_hash_table_t::erase(std::string_view key, const full_key_loader_t& key_loader) {
+        return erase(key, std::nullopt, key_loader);
+    }
+
+    bool disk_hash_table_t::erase(std::string_view key, int64_t value, const full_key_loader_t& key_loader) {
+        return erase(key, std::optional<int64_t>(value), key_loader);
+    }
+
+    bool disk_hash_table_t::erase(std::string_view key,
+                                  std::optional<int64_t> expected_value,
+                                  const full_key_loader_t& key_loader) {
         std::unique_lock lock(mutex_);
         const uint32_t key_hash = hash_key(key);
         uint64_t page_id = bucket_primary_page_id(bucket_id_for_key(key));
@@ -111,7 +132,7 @@ namespace services::index {
         while (page_id != 0) {
             read_page(page_id, page);
             bool erased = false;
-            if (try_erase_in_page(page, key, key_hash, key_loader, erased)) {
+            if (try_erase_in_page(page, key, key_hash, expected_value, key_loader, erased)) {
                 if (erased) {
                     write_page(page_id, page);
                 }
@@ -173,7 +194,7 @@ namespace services::index {
             if (rec.op == 'I' && apply_inserts) {
                 put(rec.key, rec.row_id, 0, 0);
             } else if (rec.op == 'D' && apply_deletes) {
-                erase(rec.key);
+                erase(rec.key, rec.row_id);
             }
         }
         write_pending_records(remaining);
@@ -438,6 +459,9 @@ namespace services::index {
             if (!keys_equal(key, entry, key_loader)) {
                 continue;
             }
+            if (entry.value != value) {
+                continue;
+            }
             auto payload = make_entry_payload(key, value, log_file_id, log_offset);
             if (payload.size() <= slot.length) {
                 std::memcpy(page.data() + slot.offset, payload.data(), payload.size());
@@ -488,6 +512,7 @@ namespace services::index {
     bool disk_hash_table_t::try_erase_in_page(std::vector<uint8_t>& page,
                                               std::string_view key,
                                               uint32_t key_hash,
+                                              std::optional<int64_t> expected_value,
                                               const full_key_loader_t& key_loader,
                                               bool& erased) {
         const auto cnt = page_count(page);
@@ -498,6 +523,9 @@ namespace services::index {
             }
             const auto entry = decode_entry(page, slot);
             if (!keys_equal(key, entry, key_loader)) {
+                continue;
+            }
+            if (expected_value.has_value() && entry.value != *expected_value) {
                 continue;
             }
             slot.flags = slot_flag_free;

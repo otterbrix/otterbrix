@@ -5,6 +5,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace components::index {
 
@@ -27,7 +28,9 @@ namespace components::index {
                          uint64_t log_offset,
                          const full_key_loader_t& key_loader = {}) = 0;
         virtual std::optional<value_ref_t> get(std::string_view key, const full_key_loader_t& key_loader = {}) const = 0;
+        virtual std::vector<value_ref_t> get_all(std::string_view key, const full_key_loader_t& key_loader = {}) const = 0;
         virtual bool erase(std::string_view key, const full_key_loader_t& key_loader = {}) = 0;
+        virtual bool erase(std::string_view key, int64_t value, const full_key_loader_t& key_loader = {}) = 0;
         virtual void sync() = 0;
 
         virtual void append_pending_insert(uint64_t txn_id, std::string_view key, int64_t row_id) = 0;

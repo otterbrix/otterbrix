@@ -5,6 +5,7 @@
 #include "index.hpp"
 
 #include <cassert>
+#include <unordered_map>
 #include <memory_resource>
 #include <string>
 #include <vector>
@@ -68,6 +69,8 @@ namespace components::index {
 
         std::unique_ptr<disk_hash_storage_t> disk_table_;
         mutable result_storage_t scratch_results_;
+        std::unordered_map<uint64_t, std::vector<std::pair<std::string, int64_t>>> pending_inserts_;
+        std::unordered_map<uint64_t, std::vector<std::pair<std::string, int64_t>>> pending_deletes_;
 
         std::string encode_key(const value_t& key) const;
         disk_hash_storage_t& storage_ref() const;

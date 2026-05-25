@@ -26,6 +26,30 @@ namespace components::planner::optimizer {
         using namespace components::expressions;
         using namespace components::logical_plan;
 
+        // Per-call type switch for cfn extraction. node_t no longer exposes a
+        // polymorphic collection_full_name(); each derived node owns role-named
+        // dbname()/relname() accessors. Returns empty identifiers for node
+        // kinds that don't carry a single-table identity (joins, functions,
+        // sub-aggregates), which preserves the old polymorphic helper's
+        // behavior on those nodes.
+        std::pair<core::dbname_t, core::relname_t> node_cfn(const node_ptr& n) {
+            if (!n) {
+                return {core::dbname_t{}, core::relname_t{}};
+            }
+            switch (n->type()) {
+                case node_type::match_t: {
+                    auto* m = static_cast<const node_match_t*>(n.get());
+                    return {core::dbname_t{m->dbname()}, core::relname_t{m->relname()}};
+                }
+                case node_type::aggregate_t: {
+                    auto* a = static_cast<const node_aggregate_t*>(n.get());
+                    return {a->dbname(), a->relname()};
+                }
+                default:
+                    return {core::dbname_t{}, core::relname_t{}};
+            }
+        }
+
         std::set<std::string> collect_referenced_columns(const expression_ptr& expr);
 
         void extract_from_param(const param_storage& param, std::set<std::string>& result) {
@@ -418,8 +442,9 @@ namespace components::planner::optimizer {
                             }
                         }
                         if (!pushable.empty()) {
+                            auto [m_db, m_rel] = node_cfn(match_child);
                             source_agg->append_child(make_node_match(
-                                resource, match_child->collection_full_name(),
+                                resource, m_db, m_rel,
                                 rebuild_conjunction(resource, pushable)));
                             auto residual_expr = rebuild_conjunction(resource, residual);
                             if (!residual_expr) {
@@ -461,22 +486,22 @@ namespace components::planner::optimizer {
                     }
 
                     if (!left_bucket.empty() || !right_bucket.empty()) {
-                        auto coll = match_child->collection_full_name();
+                        auto [m_db, m_rel] = node_cfn(match_child);
                         if (!left_bucket.empty()) {
-                            auto new_agg = make_node_aggregate(
-                                resource, join->children()[0]->collection_full_name());
+                            auto [l_db, l_rel] = node_cfn(join->children()[0]);
+                            auto new_agg = make_node_aggregate(resource, l_db, l_rel);
                             new_agg->append_child(join->children()[0]);
                             new_agg->append_child(make_node_match(
-                                resource, coll,
+                                resource, m_db, m_rel,
                                 rebuild_conjunction(resource, left_bucket)));
                             join->children()[0] = boost::static_pointer_cast<node_t>(new_agg);
                         }
                         if (!right_bucket.empty()) {
-                            auto new_agg = make_node_aggregate(
-                                resource, join->children()[1]->collection_full_name());
+                            auto [r_db, r_rel] = node_cfn(join->children()[1]);
+                            auto new_agg = make_node_aggregate(resource, r_db, r_rel);
                             new_agg->append_child(join->children()[1]);
                             new_agg->append_child(make_node_match(
-                                resource, coll,
+                                resource, m_db, m_rel,
                                 rebuild_conjunction(resource, right_bucket)));
                             join->children()[1] = boost::static_pointer_cast<node_t>(new_agg);
                         }

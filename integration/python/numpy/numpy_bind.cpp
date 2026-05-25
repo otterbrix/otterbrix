@@ -14,7 +14,8 @@ namespace otterbrix {
 using components::types::complex_logical_type;
 
 void NumpyBind::Bind(py::handle df, vector<PandasColumnBindData> &bind_columns,
-                     vector<complex_logical_type> &return_types, vector<string> &names) {
+                     vector<complex_logical_type> &return_types, vector<string> &names,
+                     const configuration::config_pandas &cfg) {
 
 	auto df_columns = py::list(df.attr("keys")());
 	auto df_types = py::list();
@@ -48,7 +49,7 @@ void NumpyBind::Bind(py::handle df, vector<PandasColumnBindData> &bind_columns,
 		}
 
 		if (bind_data.numpy_type.type == NumpyNullableType::OBJECT) {
-			PandasAnalyzer analyzer;
+			PandasAnalyzer analyzer(cfg);
 			if (analyzer.Analyze(get_fun(df_columns[col_idx]))) {
 				otterbrix_col_type = analyzer.AnalyzedType();
 			}

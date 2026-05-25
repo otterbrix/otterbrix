@@ -28,7 +28,7 @@ jobs:
     steps:
       - id: setVariables
         run: |
-          echo 'matrix=["3.9", "3.10", "3.11"]' >> $GITHUB_OUTPUT
+          echo 'matrix=["3.9", "3.10", "3.11" ]' >> $GITHUB_OUTPUT
 
   build-wheel:
     name: Build native wheel
@@ -49,18 +49,19 @@ jobs:
           export PYTHON_SHORT_VERSION=$(echo '${{ matrix.PYTHON_VERSION }}' | tr -d '.')
           echo "PYTHON_SHORT_VERSION=${PYTHON_SHORT_VERSION}" >> $GITHUB_ENV 
           export PYTHON_PATH=/opt/python/cp${PYTHON_SHORT_VERSION}-cp${PYTHON_SHORT_VERSION}
+          echo "PYTHON_PATH=${PYTHON_PATH}" >> $GITHUB_ENV
+          echo "PYTHON_EXECUTABLE=${PYTHON_PATH}/bin/python" >> $GITHUB_ENV
           export PATH=$PYTHON_PATH:$PYTHON_PATH/bin:$PATH
-          echo "PYTHON_PATH=${PYTHON_PATH}" >> $GITHUB_ENV 
           echo "PATH=${PATH}" >> $GITHUB_ENV
 
       - name: Install system packages
         run: |
-          yum install -y ninja-build python3-pip python3-devel wget unzip zip flex bison
+          yum install -y ninja-build python3-pip python3-devel wget unzip zip flex bison git
 
       - name: Set env conan dependencies
         run: |
-          "$PYTHON_PATH/bin/python" -m pip install --user --retries=30 --upgrade pip
-          "$PYTHON_PATH/bin/python" -m pip install --user --retries=30 conan==2.24.0
+          "$PYTHON_EXECUTABLE" -m pip install --user --retries=30 --upgrade pip
+          "$PYTHON_EXECUTABLE" -m pip install --user --retries=30 conan==2.24.0
 
       - name: Add user local bin to PATH
         run: echo "$HOME/.local/bin" >> $GITHUB_PATH
@@ -68,16 +69,18 @@ jobs:
       - name: Use conan
         run: |
           conan profile detect --force
-          conan remote add otterbrix http://conan.otterbrix.com
+          git clone --depth 1 https://github.com/duckstax/conan-duckstax.git /tmp/conan-duckstax
+          conan remote add duckstax /tmp/conan-duckstax --type=local-recipes-index
 
       - name: Download and Install conan dependencies
         run: |
-          python${{ matrix.PYTHON_VERSION }} -m pip install --user --retries=30 --upgrade pip
-          python${{ matrix.PYTHON_VERSION }} -m pip install wheel setuptools scikit-build pytest==6.2.5 cmake==3.28.3
+          "$PYTHON_EXECUTABLE" -m pip install --user --retries=30 --upgrade pip
+          "$PYTHON_EXECUTABLE" -m pip install wheel setuptools scikit-build pytest==6.2.5 cmake==3.28.3
           
           cp integration/python/otterbrix/get_path.py .
-          mkdir -p $(echo "./$(python${{ matrix.PYTHON_VERSION }} get_path.py )")
-          conan install conanfile.py --build missing -s build_type=Release -o build_python=True -of=$(echo "./$(python${{ matrix.PYTHON_VERSION }} get_path.py )")
+          BUILD_OUT="./$("$PYTHON_EXECUTABLE" get_path.py)"
+          mkdir -p "$BUILD_OUT"
+          conan install conanfile.py --build missing -s build_type=Release -o build_python=True -of="$BUILD_OUT"
 
       - name: Build wheel
         run: |
@@ -86,7 +89,7 @@ jobs:
           touch MANIFEST.in
         
           
-          python${{ matrix.PYTHON_VERSION }} setup.py bdist_wheel --verbose
+          "$PYTHON_EXECUTABLE" setup.py bdist_wheel --verbose
 
       - name: Repair wheel
         run: |
@@ -129,7 +132,7 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y python3-pip python3-venv
-          pip3 install --retries=30 pytest==6.2.5
+          python3 -m pip install --retries=30 pytest==6.2.5
 
       - name: Download artifact
         uses: actions/download-artifact@v4
@@ -144,7 +147,7 @@ jobs:
       - name: Install package from wheel
         run: |
           python3 --version
-          pip3 install --retries=30 ./app/otterbrix-*.whl
+          python3 -m pip install --retries=30 ./app/otterbrix-*.whl
 
       - name: Test package imports
         run: |
@@ -197,7 +200,7 @@ jobs:
 
       - name: Install twine
         run: |
-          pip3 install --retries=30 twine
+          python3 -m pip install --retries=30 twine
 
       - name: Publish wheels
         env:

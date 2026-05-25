@@ -21,7 +21,7 @@ namespace otterbrix {
 // string_utils as std
 namespace string_utils {
 
-	static char CharacterToLower(char c) {
+	inline char CharacterToLower(char c) {
 		if (c >= 'A' && c <= 'Z') {
 			return static_cast<char>(c + ('a' - 'A'));
 		}

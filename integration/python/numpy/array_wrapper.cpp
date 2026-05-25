@@ -26,7 +26,7 @@ struct RegularConvert {
 	template <class OTTERBRIX_T, class NUMPY_T>
 	static NUMPY_T ConvertValue(OTTERBRIX_T val, NumpyAppendData &append_data) {
 		(void)append_data;
-		return (NUMPY_T)val;
+		return static_cast<NUMPY_T>(val);
 	}
 
 	template <class NUMPY_T, bool PANDAS>
@@ -56,7 +56,7 @@ struct StringConvert {
 		(void)append_data;
 		auto data = const_data_ptr_cast(val.data());
 		auto len = val.size();
-		return PyUnicode_FromStringAndSize(const_char_ptr_cast(data), len);
+		return PyUnicode_FromStringAndSize(const_char_ptr_cast(data), static_cast<Py_ssize_t>(len));
 	}
 	template <class NUMPY_T, bool PANDAS>
 	static NUMPY_T NullValue(bool &set_mask) {
@@ -73,7 +73,7 @@ struct BlobConvert {
 	template <class OTTERBRIX_T, class NUMPY_T>
 	static PyObject *ConvertValue(std::string_view val, NumpyAppendData &append_data) {
 		(void)append_data;
-		return PyByteArray_FromStringAndSize(val.data(), val.size());
+		return PyByteArray_FromStringAndSize(val.data(), static_cast<Py_ssize_t>(val.size()));
 	}
 
 	template <class NUMPY_T, bool PANDAS>
@@ -87,7 +87,7 @@ struct BitConvert {
 	template <class OTTERBRIX_T, class NUMPY_T>
 	static PyObject *ConvertValue(std::string_view val, NumpyAppendData &append_data) {
 		(void)append_data;
-		return PyBytes_FromStringAndSize(val.data(), val.size());
+		return PyBytes_FromStringAndSize(val.data(), static_cast<Py_ssize_t>(val.size()));
 	}
 
 	template <class NUMPY_T, bool PANDAS>
@@ -167,7 +167,7 @@ struct ArrayConvert {
 
 struct StructConvert {
 	static py::dict ConvertValue(vector_t &input, idx_t chunk_offset, NumpyAppendData &append_data) {
-
+		(void)append_data;
 		py::dict py_struct;
 		auto val = input.value(chunk_offset);
 		auto &child_types = input.type().child_types();
@@ -182,20 +182,9 @@ struct StructConvert {
 		return py_struct;
 	}
 };
-/*
-struct UnionConvert {
-	static py::object ConvertValue(vector_t &input, idx_t chunk_offset, NumpyAppendData &append_data) {
-		auto &client_properties = append_data.client_properties;
-		auto val = input.GetValue(chunk_offset);
-		auto value = UnionValue::GetValue(val);
-
-		return PythonObject::FromValue(value, UnionValue::GetType(val), client_properties);
-	}
-};
-*/
 struct MapConvert {
-	static py::dict ConvertValue(vector_t &input, idx_t chunk_offset, 
-        NumpyAppendData &append_data) {
+	static py::dict ConvertValue(vector_t &input, idx_t chunk_offset, NumpyAppendData &append_data) {
+		(void)append_data;
 		auto val = input.value(chunk_offset);
 		return PythonObject::FromValue(val, input.type());
 	}
@@ -257,12 +246,8 @@ static bool ConvertColumnTemplated(NumpyAppendData &append_data) {
 
 template <class OTTERBRIX_T, class NUMPY_T, class CONVERT>
 static bool ConvertColumn(NumpyAppendData &append_data) {
-	auto target_offset = append_data.target_offset;
-	auto target_data = append_data.target_data;
 	auto &idata = append_data.idata;
 
-	auto src_ptr = idata.get_data<OTTERBRIX_T>();
-	auto out_ptr = reinterpret_cast<NUMPY_T *>(target_data);
 	if (!idata.validity.all_valid()) {
 		if (append_data.pandas) {
 			return ConvertColumnTemplated<OTTERBRIX_T, NUMPY_T, CONVERT, /*has_nulls=*/true, /*pandas=*/true>(append_data);
@@ -414,21 +399,10 @@ static bool ConvertDecimalInternal(NumpyAppendData &append_data, double division
 
 static bool ConvertDecimal(NumpyAppendData &append_data) {
 	auto &decimal_type = append_data.input.type();
-    auto* decimal_extention = static_cast<decimal_logical_type_extention*>(decimal_type.extention());
-	auto dec_scale = decimal_extention->scale();
+    auto* decimal_extension = static_cast<decimal_logical_type_extension*>(decimal_type.extension());
+	auto dec_scale = decimal_extension->scale();
 	double division = pow(10, dec_scale);
-	/*switch (decimal_type.to_physical_type()) {
-	case physical_type::INT16:
-		return ConvertDecimalInternal<int16_t>(append_data, division);
-	case physical_type::INT32:
-		return ConvertDecimalInternal<int32_t>(append_data, division);
-	case physical_type::INT64:*/
-		return ConvertDecimalInternal<int64_t>(append_data, division);
-    /*case physical_type::INT128:
-		return ConvertDecimalInternal<absl::int128>(append_data, division);
-	default:
-		throw std::runtime_error("Unimplemented internal type for DECIMAL");
-	}*/
+	return ConvertDecimalInternal<int64_t>(append_data, division);
 }
 
 ArrayWrapper::ArrayWrapper(const complex_logical_type &type, bool pandas)
@@ -455,7 +429,7 @@ void ArrayWrapper::Append(idx_t current_offset, vector_t &input, idx_t source_si
 	assert(input.type() == data->type);
 	bool may_have_null;
 
-	unified_vector_format idata{};
+	unified_vector_format idata(input.resource(), source_size);
 	input.to_unified_format(source_size, idata);
 
 	if (count == components::table::storage::INVALID_INDEX) {
@@ -473,20 +447,6 @@ void ArrayWrapper::Append(idx_t current_offset, vector_t &input, idx_t source_si
 	append_data.pandas = pandas;
 
 	switch (input.type().type()) {
-	/*case logical_type::ENUM: {
-		auto size = EnumType::GetSize(input.GetType());
-		append_data.physical_type = input.GetType().InternalType();
-		if (size <= (idx_t)NumericLimits<int8_t>::Maximum()) {
-			may_have_null = ConvertColumnCategorical<int8_t>(append_data);
-		} else if (size <= (idx_t)NumericLimits<int16_t>::Maximum()) {
-			may_have_null = ConvertColumnCategorical<int16_t>(append_data);
-		} else if (size <= (idx_t)NumericLimits<int32_t>::Maximum()) {
-			may_have_null = ConvertColumnCategorical<int32_t>(append_data);
-		} else {
-			throw std::runtime_error("Size not supported on ENUM types");
-		}
-		break;
-	}*/
 	case logical_type::BOOLEAN:
 		may_have_null = ConvertColumnRegular<bool>(append_data);
 		break;
@@ -530,7 +490,6 @@ void ArrayWrapper::Append(idx_t current_offset, vector_t &input, idx_t source_si
 		may_have_null = ConvertDecimal(append_data);
 		break;
 	case logical_type::TIMESTAMP_US:
-	//case logical_type::TIMESTAMP_TZ:
 	case logical_type::TIMESTAMP_SEC:
 	case logical_type::TIMESTAMP_MS:
 	case logical_type::TIMESTAMP_NS:
@@ -562,7 +521,7 @@ void ArrayWrapper::Append(idx_t current_offset, vector_t &input, idx_t source_si
 		break;
 
 	default:
-		throw std::runtime_error("Unsupported type "+to_string((int)input.type().type()));
+		throw std::runtime_error("Unsupported type "+to_string(static_cast<int>(input.type().type())));
 	}
 	if (may_have_null) {
 		requires_mask = true;

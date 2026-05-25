@@ -1,34 +1,19 @@
 # Created by .ignore support service (hsz.mobi)
-### GitBook template
-# Node rules:
-## Grunt intermediate storage (http://gruntjs.com/creating-plugins#storing-task-files)
+
+### GitBook
 .grunt
-
-## Dependency directory
-## Commenting this out is preferred by some people, see
-## https://docs.npmjs.com/misc/faq#should-i-check-my-node_modules-folder-into-git
 node_modules
-
-# Book build output
 _book
-
-# eBook build output
 *.epub
 *.mobi
 *.pdf
-### macOS template
-# General
+
+### macOS
 .DS_Store
 .AppleDouble
 .LSOverride
-
-# Icon must end with two \r
 Icon
-
-# Thumbnails
 ._*
-
-# Files that might appear in the root of a volume
 .DocumentRevisions-V100
 .fseventsd
 .Spotlight-V100
@@ -36,54 +21,33 @@ Icon
 .Trashes
 .VolumeIcon.icns
 .com.apple.timemachine.donotpresent
-
-# Directories potentially created on remote AFP share
 .AppleDB
 .AppleDesktop
 Network Trash Folder
 Temporary Items
 .apdisk
-### Vim template
-# Swap
+
+### Linux / Vim
 [._]*.s[a-v][a-z]
 [._]*.sw[a-p]
 [._]s[a-v][a-z]
 [._]sw[a-p]
-
-# Session
 Session.vim
-
-# Temporary
 .netrwhist
 *~
-# Auto-generated tag files
 tags
-### Linux template
-*~
-
-# temporary files which can be created if a process still has a handle open of a deleted file
 .fuse_hidden*
-
-# KDE directory preferences
 .directory
-
-# Linux trash folder which might appear on any partition or disk
 .Trash-*
-
-# .nfs files are created when an open file is removed but is still being accessed
 .nfs*
-### Autotools template
-# http://www.gnu.org/software/automake
 
+### Autotools
 Makefile.in
 /ar-lib
 /mdate-sh
 /py-compile
 /test-driver
 /ylwrap
-
-# http://www.gnu.org/software/autoconf
-
 /autom4te.cache
 /autoscan.log
 /autoscan-*.log
@@ -98,86 +62,70 @@ Makefile.in
 /install-sh
 /missing
 /stamp-h1
-
-# https://www.gnu.org/software/libtool/
-
 /ltmain.sh
-
-# http://www.gnu.org/software/texinfo
-
 /texinfo.tex
-
-# http://www.gnu.org/software/m4/
-
 m4/libtool.m4
 m4/ltoptions.m4
 m4/ltsugar.m4
 m4/ltversion.m4
 m4/lt~obsolete.m4
 autom4te.cache
-### C template
-# Prerequisites
-*.d
 
-# Object files
+### C / C++ / Lua — compiled artifacts
+*.d
 *.o
+*.os
 *.ko
 *.obj
 *.elf
-
-# Linker output
+*.slo
+*.lo
 *.ilk
 *.map
 *.exp
-
-# Precompiled Headers
+*.def
 *.gch
 *.pch
-
-# Libraries
 *.lib
 *.a
 *.la
+*.lai
 *.lo
-
-# Shared objects (inc. Windows DLLs)
 *.dll
 *.so
 *.so.*
 *.dylib
-
-# Executables
 *.exe
 *.out
 *.app
 *.i*86
 *.x86_64
 *.hex
-
-# Debug files
-*.dSYM/
+*.mod
+*.mod*
+*.smod
 *.su
 *.idb
 *.pdb
-
-# Kernel Module Compile Results
-*.mod*
+*.dSYM/
 *.cmd
 .tmp_versions/
 modules.order
 Module.symvers
 Mkfile.old
 dkms.conf
-### Mercurial template
+luac.out
+*.src.rock
+
+### Mercurial
 .hg/
 .hgignore
 .hgsigs
 .hgsub
 .hgsubstate
 .hgtags
-### VirtualEnv template
-# Virtualenv
-# http://iamzed.com/2009/05/07/a-primer-on-virtualenv/
+
+### Python
 .Python
 __pycache__
 [Bb]in
@@ -188,18 +136,35 @@ __pycache__
 [S]cripts
 pyvenv.cfg
 .venv
+venv/
 pip-selfcheck.json
-### Ninja template
+
+### Build systems
 .ninja_deps
 .ninja_log
-### Dropbox template
-# Dropbox settings and caches
-.dropbox
-.dropbox.attr
-.dropbox.cache
-### Archives template
-# It's better to unpack these files and commit the raw source because
-# git has its own built in compression methods.
+CMakeCache.txt
+CMakeFiles
+CMakeScripts
+Testing
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+CMakeUserPresets.json
+cmake-build-*
+build
+build/
+
+### Conan
+conan.lock
+graph_info.json
+conan_paths.cmake
+conanbuildinfo.cmake
+conanbuildinfo.txt
+conaninfo.txt
+
+### Archives and packages
 *.7z
 *.jar
 *.rar
@@ -211,12 +176,9 @@ pip-selfcheck.json
 *.xz
 *.lzma
 *.cab
-
-# Packing-only formats
 *.iso
 *.tar
-
-# Package management formats
+*.tar.*
 *.dmg
 *.xpi
 *.gem
@@ -226,10 +188,13 @@ pip-selfcheck.json
 *.msi
 *.msm
 *.msp
-conan.lock
-graph_info.json
-### Eclipse template
+*.sig
+pkg/
 
+### IDEs
+.idea
+.vscode
+.opencode
 .metadata
 bin/
 tmp/
@@ -241,114 +206,29 @@ local.properties
 .settings/
 .loadpath
 .recommenders
-
-# External tool builders
 .externalToolBuilders/
-
-# Locally stored "Eclipse launch configurations"
 *.launch
-
-# PyDev specific (Python IDE for Eclipse)
 *.pydevproject
-
-# CDT-specific (C/C++ Development Tooling)
 .cproject
-
-# CDT- autotools
 .autotools
-
-# Java annotation processor (APT)
 .factorypath
-
-# PDT-specific (PHP Development Tools)
 .buildpath
-
-# sbteclipse service
 .target
-
-# Tern service
 .tern-project
-
-# TeXlipse service
 .texlipse
-
-# STS (Spring Tool Suite)
 .springBeans
-
-# Code Recommenders
 .recommenders/
-
-# Scala IDE specific (Scala & Java development for Eclipse)
 .cache-main
 .scala_dependencies
 .worksheet
-### NetBeans template
 nbproject/private/
-build/
 nbbuild/
 dist/
 nbdist/
 .nb-gradle/
-### C++ template
-# Prerequisites
-*.d
-
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
-### ArchLinuxPackages template
-*.tar
-*.tar.*
-*.jar
-*.exe
-*.msi
-*.zip
-*.tgz
-*.log
-*.log.*
-*.sig
-
-pkg/
-### Xcode template
-# Xcode
-#
-# gitignore contributors: remember to update Global/Xcode.gitignore, Objective-C.gitignore & Swift.gitignore
-
-## User settings
 xcuserdata/
-
-## compatibility with Xcode 8 and earlier (ignoring not required starting Xcode 9)
 *.xcscmblueprint
 *.xccheckout
-
-## compatibility with Xcode 3 and earlier (ignoring not required starting Xcode 4)
-build/
 DerivedData/
 *.moved-aside
 *.pbxuser
@@ -359,72 +239,48 @@ DerivedData/
 !default.mode2v3
 *.perspectivev3
 !default.perspectivev3
-### CMake template
-CMakeCache.txt
-CMakeFiles
-CMakeScripts
-Testing
-Makefile
-cmake_install.cmake
-install_manifest.txt
-compile_commands.json
-CTestTestfile.cmake
-### Lua template
-# Compiled Lua sources
-luac.out
 
-# luarocks build files
-*.src.rock
-*.zip
-*.tar.gz
+### Dropbox
+.dropbox
+.dropbox.attr
+.dropbox.cache
 
-# Object files
-*.o
-*.os
-*.ko
-*.obj
-*.elf
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Libraries
-*.lib
-*.a
-*.la
-*.lo
-*.def
-*.exp
-
-# Shared objects (inc. Windows DLLs)
-*.dll
-*.so
-*.so.*
-*.dylib
-
-# Executables
-*.exe
-*.out
-*.app
-*.i*86
-*.x86_64
-*.hex
-
-
-.idea
-cmake-build-*
-venv/
-conan_paths.cmake
-conanbuildinfo.cmake
-conanbuildinfo.txt
-conaninfo.txt
+### Otterbrix — project-specific
 **/.#session.*
-build
-.vscode
-.opencode
 *.wal
 *.txt.user
+*.png
+*.tbl
+default/
 benchmark/data/
+benchmarks/default/
+benchmarks/results.before_rounding.csv
+benchmarks/bench_lazy_vs_eager.py
+benchmarks/bench_tpch_rerun.log
+benchmarks/bench_run.log
 
-CMakeUserPresets.json
+# Runtime log/WAL from local runs and integration tests (not components/log/).
+/log/
+/wal/
+test_collection_*/
+integration/python/**/log/
+integration/python/**/wal/
+/integration/python/.coverage
+
+# Python wheel build artifacts — CI generates root-level setup.py,
+# pyproject.toml, get_path.py, and MANIFEST.in by copying from
+# integration/python/otterbrix/, so root copies are derived state.
+_skbuild/
+*.egg-info/
+/otterbrix.egg-info/
+/setup.py
+/pyproject.toml
+/get_path.py
+/MANIFEST.in
+
+# Local Docker-CI helper script
+/build_local_ci.sh
+/build_local_ci.log
+
+# Local verification build tree
+build-verify/

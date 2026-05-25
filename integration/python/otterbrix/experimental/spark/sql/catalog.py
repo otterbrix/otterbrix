@@ -37,13 +37,9 @@ class Catalog:
         self._session = session
 
     def listDatabases(self) -> List[Database]:
-        #res = self._session.conn.sql('select database_name from otterbrix_databases()').fetchall()
-
         def transform_to_database(x) -> Database:
             return Database(name=x[0], description=None, locationUri='')
 
-        #databases = [transform_to_database(x) for x in res]
-        #return databases
         raise NotImplementedError
 
     def listTables(self) -> List[Table]:
@@ -67,13 +63,10 @@ class Catalog:
 		"""
         if dbName:
             query += f" and database_name = '{dbName}'"
-        #res = self._session.conn.sql(query).fetchall()
 
         def transform_to_column(x) -> Column:
             return Column(name=x[0], description=None, dataType=x[1], nullable=x[2], isPartition=False, isBucket=False)
 
-        #columns = [transform_to_column(x) for x in res]
-        #return columns
         raise NotImplementedError
 
     def listFunctions(self, dbName: Optional[str] = None) -> List[Function]:

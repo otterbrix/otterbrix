@@ -14,7 +14,7 @@
 namespace otterbrix {
     using components::types::logical_type;
     using components::types::complex_logical_type;
-    using components::types::map_logical_type_extention;
+    using components::types::map_logical_type_extension;
     
 static bool SameTypeRealm(const complex_logical_type &a, const complex_logical_type &b) {
 	auto a_id = a.type();
@@ -121,7 +121,6 @@ static bool SatisfiesMapConstraints(const complex_logical_type &left, const comp
 }
 
 static complex_logical_type ConvertStructToMap(complex_logical_type &map_value_type) {
-	// TODO: find a way to figure out actual type of the keys, not just the converted one
 	return complex_logical_type::create_map(logical_type::STRING_LITERAL, map_value_type);
 }
 
@@ -142,7 +141,6 @@ static bool UpgradeType(complex_logical_type &left, const complex_logical_type &
     case logical_type::LIST: {
 		if (right.type() != left.type()) {
 			// Not both sides are LIST, not compatible
-			// FIXME: maybe compatible with ARRAY type??
 			return false;
 		}
 		complex_logical_type child_type = logical_type::NA;
@@ -180,7 +178,7 @@ static bool UpgradeType(complex_logical_type &left, const complex_logical_type &
                     new_child.set_alias(child_name);
 					children.push_back(new_child);
 				}
-				left = complex_logical_type::create_struct(std::move(children));
+				left = complex_logical_type::create_struct("struct", std::move(children));
 			} else {
 				complex_logical_type value_type = logical_type::NA;
 				if (SatisfiesMapConstraints(left, right, value_type)) {
@@ -194,7 +192,7 @@ static bool UpgradeType(complex_logical_type &left, const complex_logical_type &
 			// Left: STRUCT, Right: MAP
 			// Combine all the child types of the STRUCT into the value type of the MAP
             auto value_type = 
-                static_cast<map_logical_type_extention*>(right.extention())->value();
+                static_cast<map_logical_type_extension*>(right.extension())->value();
 			if (!CombineStructTypes(value_type, left)) {
 				return false;
 			}
@@ -208,31 +206,31 @@ static bool UpgradeType(complex_logical_type &left, const complex_logical_type &
 		throw std::runtime_error("UNION types are not being detected yet, this should never happen");
 	}
     case logical_type::MAP: {
-        auto left_map_extention = 
-            static_cast<map_logical_type_extention*>(left.extention());
+        auto left_map_extension =
+            static_cast<map_logical_type_extension*>(left.extension());
 		if (right.type() == logical_type::MAP) {
-            auto right_map_extention = 
-                static_cast<map_logical_type_extention*>(right.extention());
+            auto right_map_extension =
+                static_cast<map_logical_type_extension*>(right.extension());
 			// Key Type
 			complex_logical_type key_type = logical_type::NA;
-			if (!UpgradeType(key_type, left_map_extention->key())) {
+			if (!UpgradeType(key_type, left_map_extension->key())) {
 				return false;
 			}
-			if (!UpgradeType(key_type, right_map_extention->key())) {
+			if (!UpgradeType(key_type, right_map_extension->key())) {
 				return false;
 			}
 
 			// Value Type
 			complex_logical_type value_type = logical_type::NA;
-			if (!UpgradeType(value_type, left_map_extention->value())) {
+			if (!UpgradeType(value_type, left_map_extension->value())) {
 				return false;
 			}
-			if (!UpgradeType(value_type, right_map_extention->value())) {
+			if (!UpgradeType(value_type, right_map_extension->value())) {
 				return false;
 			}
 			left = complex_logical_type::create_map(key_type, value_type);
 		} else if (right.type() == logical_type::STRUCT) {
-			auto value_type = left_map_extention->value();
+			auto value_type = left_map_extension->value();
 			if (!CombineStructTypes(value_type, right)) {
 				return false;
 			}
@@ -246,7 +244,6 @@ static bool UpgradeType(complex_logical_type &left, const complex_logical_type &
 		if (!CheckTypeCompatibility(left, right)) {
 			return false;
 		}
-		//left = complex_logical_type::ForceMaxLogicalType(left, right);
 		return true;
 	}
 	}
@@ -285,7 +282,7 @@ static complex_logical_type EmptyMap() {
 }
 
 //! Check if the keys match
-static bool StructKeysAreEqual(idx_t row, const vector<complex_logical_type> &reference,
+static bool StructKeysAreEqual(const vector<complex_logical_type> &reference,
                                const vector<complex_logical_type> &compare) {
 	assert(reference.size() == compare.size());
 	for (idx_t i = 0; i < reference.size(); i++) {
@@ -324,7 +321,7 @@ static bool VerifyStructValidity(vector<complex_logical_type> &structs) {
 		if (entry_children.size() != reference_children.size()) {
 			return false;
 		}
-		if (!StructKeysAreEqual(i, reference_children, entry_children)) {
+		if (!StructKeysAreEqual(reference_children, entry_children)) {
 			return false;
 		}
 	}
@@ -368,7 +365,7 @@ complex_logical_type PandasAnalyzer::DictToStruct(const PyDictionary &dict, bool
         val.set_alias(key);
 		struct_children.push_back(val);
 	}
-	return complex_logical_type::create_struct(struct_children);
+	return complex_logical_type::create_struct("struct", struct_children);
 }
 
 //! 'can_convert' is used to communicate if internal structures encountered here are valid
@@ -384,7 +381,7 @@ complex_logical_type PandasAnalyzer::GetItemType(py::object ele, bool &can_conve
 	case PythonObjectType::Bool:
 		return logical_type::BOOLEAN;
 	case PythonObjectType::Integer: {
-		components::types::logical_value_t integer;
+		components::types::logical_value_t integer(std::pmr::get_default_resource(), components::types::logical_type::UNKNOWN);
 		if (!TryTransformPythonNumeric(integer, ele)) {
 			can_convert = false;
 			return logical_type::NA;
@@ -476,8 +473,7 @@ complex_logical_type PandasAnalyzer::InnerAnalyze(py::object column, bool &can_c
 	auto pandas_series = pandas_module.attr("core").attr("series").attr("Series");
 
 	if (py::isinstance(column, pandas_series)) {
-		// TODO: check if '_values' is more portable, and behaves the same as '__array__()'
-		column = column.attr("__array__")();
+		column = column.attr("to_numpy")();
 	}
 	auto row = column.attr("__getitem__");
 

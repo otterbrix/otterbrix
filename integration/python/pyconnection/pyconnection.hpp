@@ -5,7 +5,6 @@
 #include <otterbrix_wrapper/pyrelation.hpp>
 
 #include <connection_environment/connection_environment.hpp>
-//#include <native/python_objects.hpp>
 #include <core/string_util/case_insensitive.hpp>
 #include <core/types/memory.hpp>
 #include <core/types/vector.hpp>
@@ -101,16 +100,7 @@ namespace otterbrix {
         bool HasResult() const;
         PyResult& GetResult();   
         const PyResult& GetResult() const;
-        void SetResult(Result res); 
-        //unique_ptr<PyRelation> FromDF(const PandasDataFrame &value);
-        //pyarrow::Table FetchArrow(idx_t rows_per_batch);
-
-    public:
-        //Optional<py::tuple> FetchOne();
-
-
-    public:
-        //py::tuple test(py::array& np);
+        void SetResult(Result res);
 
     };
 } // namespace otterbrix

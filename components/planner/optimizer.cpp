@@ -2,6 +2,7 @@
 
 #include "optimizer/rules/column_pruning.hpp"
 #include "optimizer/rules/constant_folding.hpp"
+#include "optimizer/rules/pushdown_filter.hpp"
 
 namespace components::planner {
 
@@ -16,6 +17,10 @@ namespace components::planner {
         if (parameters) {
             optimizer::fold_constants(resource, node, parameters);
         }
+
+        // Predicate pushdown: move match_t under aggregate/join/group/select
+        // when the rewrite is provably safe. May return a different root.
+        node = optimizer::pushdown_filter(resource, node);
 
         return node;
     }

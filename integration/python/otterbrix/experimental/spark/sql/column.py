@@ -60,23 +60,6 @@ def _bin_op(
     return _
 
 
-# def _bin_func(
-#     name: str,
-#     doc: str = "binary function",
-# ) -> Callable[["Column", Union["Column", "LiteralType", "DecimalLiteral", "DateTimeLiteral"]], "Column"]:
-#     """Create a function expression for the given binary function"""
-
-#     def _(
-#         self: "Column",
-#         other: Union["Column", "LiteralType", "DecimalLiteral", "DateTimeLiteral"],
-#     ) -> "Column":
-#         other = _get_expr(other)
-#         func = FunctionExpression(name, self.expr, other)
-#         return Column(func)
-
-#     _.__doc__ = doc
-#     return _
-
 
 class Column:
     """
@@ -175,11 +158,7 @@ class Column:
         """
         if isinstance(k, slice):
             raise ContributionsAcceptedError
-            # if k.step is not None:
-            #    raise ValueError("Using a slice with a step value is not supported")
-            # return self.substr(k.start, k.stop)
         else:
-            # FIXME: this is super hacky
             expr_str = str(self.expr) + "." + str(k)
             return Column(ColumnExpression(expr_str, SparkContext._active_spark_context))
 
@@ -218,15 +197,9 @@ class Column:
     def when(self, condition: "Column", value: Any):
         if not isinstance(condition, Column):
             raise TypeError("condition should be a Column")
-        # v = _get_expr(value)
-        # expr = self.expr.when(condition.expr, v)
-        # return Column(expr)
         raise NotImplementedError
 
     def otherwise(self, value: Any):
-        # v = _get_expr(value)
-        # expr = self.expr.otherwise(v)
-        # return Column(expr)
         raise NotImplementedError
 
     def cast(self, dataType: Union[DataType, str]) -> "Column":
@@ -235,18 +208,9 @@ class Column:
             internal_type = OtterBrixPyType(dataType)
         else:
             internal_type = dataType.otterbrix_type
-        # return Column(self.expr.cast(internal_type))
         raise NotImplementedError
     
     def isin(self, *cols: Any) -> "Column":
-        # if len(cols) == 1 and isinstance(cols[0], (list, set)):
-            # Only one argument supplied, it's a list
-            # cols = cast(Tuple, cols[0])
-
-        # cols = cast(
-        #     Tuple,
-        #     [_get_expr(c) for c in cols],
-        # )
         return Column(self.expr.isin(*cols))
 
     # logistic operators
@@ -274,26 +238,21 @@ class Column:
 
     # String interrogation methods
 
-    # contains = _bin_func("contains")
     def contains(self, param):
         return Column(self.expr.rlike(_get_expr(param)))
 
-    # rlike = _bin_func("regexp_matches")
     def rlike(self, param):
         return Column(self.expr.rlike(_get_expr(param)))
 
     def like(self, pattern : str):
         raise NotImplementedError
     
-    # ilike = _bin_func("~~*")
     def ilike(self, param):
         raise NotImplementedError
 
-    # startswith = _bin_func("starts_with")
     def startswith(self, param):
         return Column(self.expr.rlike(_get_expr("^"+param)))
 
-    # endswith = _bin_func("suffix")
     def endswith(self, param):
         return Column(self.expr.rlike(_get_expr(param+"$")))
 
@@ -369,20 +328,14 @@ class Column:
     asc = _unary_op("asc", _asc_doc)
     desc = _unary_op("desc", _desc_doc)
 
-    # nulls_first = _unary_op("null_first")
-
     def asc_nulls_first(self) -> "Column":
-        # return self.asc().nulls_first()
         raise NotImplementedError
 
     def asc_nulls_last(self) -> "Column":
-        # return self.asc().nulls_last()
         raise NotImplementedError
 
     def desc_nulls_first(self) -> "Column":
-        # return self.desc().nulls_first()
         raise NotImplementedError
 
     def desc_nulls_last(self) -> "Column":
-        # return self.desc().nulls_last()
         raise NotImplementedError

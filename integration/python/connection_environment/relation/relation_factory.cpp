@@ -3,6 +3,7 @@
 #include "relation_factory.hpp"
 #include <components/expressions/sort_expression.hpp>
 #include <components/logical_plan/node_match.hpp>
+#include <components/logical_plan/node_limit.hpp>
 #include <integration/cpp/otterbrix.hpp>
 #include <scan/python_replacement_scan.hpp>
 #include <core/types/string.hpp>
@@ -26,14 +27,14 @@ namespace otterbrix {
         return make_shared<Relation>(data, external_dependency, std::move(columns));
     }
     
-    shared_ptr<Relation> RelationFactory::make_aggregate_relation(shared_ptr<Relation> from, node_group_ptr group, 
-            node_match_ptr match, node_sort_ptr sort) {
+    shared_ptr<Relation> RelationFactory::make_aggregate_relation(shared_ptr<Relation> from, node_group_ptr group,
+            node_match_ptr match, node_sort_ptr sort, node_select_ptr select) {
         static int indx = 0;
         auto session = otterbrix::session_id_t();
         string name = "t";
         name += to_string(indx++);
         space->dispatcher()->create_collection(session, "tmp", name);
-        auto res = make_shared<Relation>(from, group, match, sort, name);
+        auto res = make_shared<Relation>(from, group, match, sort, select, name);
         return res;
     }
 
@@ -57,7 +58,7 @@ namespace otterbrix {
                    } 
                    throw std::runtime_error("The method supports only condition expression");
                }, condition);
-        return make_aggregate_relation(relation, nullptr, match_node, nullptr);
+        return make_aggregate_relation(relation, nullptr, match_node, nullptr, nullptr);
     }
 
     shared_ptr<Relation> RelationFactory::SortRelation(shared_ptr<Relation> relation, const vector<Expression>& exprs) {
@@ -86,7 +87,7 @@ namespace otterbrix {
         }
         auto sort = make_node_sort(space->dispatcher()->resource(), {}, std::move(sort_exprs));
 
-        return make_aggregate_relation(relation, nullptr, nullptr, sort);
+        return make_aggregate_relation(relation, nullptr, nullptr, sort, nullptr);
 
     }
 
@@ -122,7 +123,36 @@ namespace otterbrix {
         }
         auto group = make_node_group(space->dispatcher()->resource(), {}, std::move(fields));
 
-        return make_aggregate_relation(relation, group, nullptr, nullptr);
+        return make_aggregate_relation(relation, group, nullptr, nullptr, nullptr);
+    }
+
+    shared_ptr<Relation> RelationFactory::SelectRelation(shared_ptr<Relation> relation, const vector<Expression>& exprs) {
+        auto* resource = space->dispatcher()->resource();
+        auto select = make_node_select(resource, {});
+        for (const auto& expr : exprs) {
+            auto scalar = std::visit([resource](const auto& field) -> expressions::expression_ptr {
+                using T = std::decay_t<decltype(field)>;
+                if constexpr (std::is_same_v<T, expressions::expression_ptr>) {
+                    if (field->group() == expressions::expression_group::scalar) {
+                        return field;
+                    }
+                    if (field->group() == expressions::expression_group::aggregate) {
+                        throw std::runtime_error(
+                            "Aggregate expressions are not allowed in select(); use groupBy().agg() instead");
+                    }
+                    throw std::runtime_error("Undefined expression type for select relation");
+                } else if constexpr (std::is_same_v<T, expressions::key_t>) {
+                    return make_scalar_expression(resource, expressions::scalar_type::get_field, field);
+                } else if constexpr (std::is_same_v<T, types::logical_value_t>) {
+                    throw std::runtime_error("The method supports only column expressions and fields");
+                } else {
+                    throw std::runtime_error("Implementation Error. Undefined expression type for select relation");
+                }
+            }, expr);
+            select->append_expression(scalar);
+        }
+
+        return make_aggregate_relation(relation, nullptr, nullptr, nullptr, select);
     }
 
     shared_ptr<Relation> RelationFactory::JoinRelation(shared_ptr<Relation> relation, shared_ptr<Relation> other, 
@@ -155,15 +185,11 @@ namespace otterbrix {
         }
         return make_join_relation(relation, other, std::move(conditions), type);
     }
-    // // bad, because no columns info
-    // Relation RelationFactory::CreateFromTable(const collection_full_name_t& name) {
-    //     auto aggregator = logical_plan::make_node_aggregate(space->dispatcher()->resource(), name);
+    shared_ptr<Relation> RelationFactory::LimitRelation(shared_ptr<Relation> relation, int64_t count) {
+        return make_shared<Relation>(relation, count);
+    }
 
-    //     return Relation{aggregator};
-    // }
-
-    shared_ptr<Relation> RelationFactory::CreateFromSelect(components::logical_plan::node_ptr plan) {
-        //return Relation::make_relation(boost::static_pointer_cast<components::logical_plan::node_aggregate_t>(plan));
+    shared_ptr<Relation> RelationFactory::CreateFromSelect(components::logical_plan::node_ptr /*plan*/) {
         return nullptr;
     }
 
@@ -194,7 +220,10 @@ namespace otterbrix {
                 if (rel.sort) {
                     aggregator->append_child(rel.sort);
                 }
-                return boost::static_pointer_cast<node_t>(aggregator); 
+                if (rel.select) {
+                    aggregator->append_child(rel.select);
+                }
+                return boost::static_pointer_cast<node_t>(aggregator);
             } else if constexpr (std::is_same_v<plan_type, Relation::Data>) {
                 return boost::static_pointer_cast<node_t>(rel.data);
             } else if constexpr (std::is_same_v<plan_type, Relation::Join>) {
@@ -210,6 +239,11 @@ namespace otterbrix {
                     }
                 }
                 return boost::static_pointer_cast<node_t>(join_node);
+            } else if constexpr (std::is_same_v<plan_type, Relation::Limit>) {
+                auto child = RelationFactory::Execute(*(rel.resource));
+                auto limit_node = logical_plan::make_node_limit(resource, {}, limit_t(rel.count));
+                limit_node->append_child(child);
+                return boost::static_pointer_cast<node_t>(limit_node);
             }
             throw std::runtime_error("Implementation error. Undefined executed node");
         }, rel.relation);

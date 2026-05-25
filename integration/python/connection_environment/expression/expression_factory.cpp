@@ -5,7 +5,6 @@
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 
-#include <util/convert_value.hpp>
 #include <util/util.hpp>
 
 #include <magic_enum.hpp>
@@ -17,8 +16,8 @@ using namespace components::expressions;
 namespace otterbrix {
 
 
-    ExpressionFactory::ExpressionFactory(const boost::intrusive_ptr<otterbrix_t>& space) 
-        : space(space), counter(0) {} 
+    ExpressionFactory::ExpressionFactory(const boost::intrusive_ptr<otterbrix_t>& space)
+        : counter(0), space(space) {}
 
     ExpressionFactory::~ExpressionFactory() = default;
 
@@ -31,18 +30,18 @@ namespace otterbrix {
     }
 
     Expression ExpressionFactory::MakeCountExpression() {
-        return make_aggregate_expression(space->dispatcher()->resource(), aggregate_type::count, expressions::key_t("count"));
+        return make_aggregate_expression(space->dispatcher()->resource(), "count", expressions::key_t(space->dispatcher()->resource(), "count"));
     }
 
     Expression ExpressionFactory::SortExpression(const string& arg) {
-        return make_sort_expression(expressions::key_t(arg), sort_order::asc);
+        return make_sort_expression(expressions::key_t(space->dispatcher()->resource(), arg), sort_order::asc);
     }
 
-    Expression ExpressionFactory::SortExpression(const Expression& arg) {
-        return std::visit([](const auto& expr) -> Expression {
+    Expression ExpressionFactory::SortExpression(const Expression& arg, sort_order order) {
+        return std::visit([order](const auto& expr) -> Expression {
             using T = std::decay_t<decltype(expr)>;
             if constexpr (std::is_same_v<T, expressions::key_t>) {
-                return Expression(make_sort_expression(expr, sort_order::asc));
+                return Expression(make_sort_expression(expr, order));
             } else if constexpr (std::is_same_v<T, expressions::expression_ptr>) {
                 if (expr->group() == expression_group::sort) {
                     return Expression(expr);
@@ -56,23 +55,47 @@ namespace otterbrix {
             }}, arg);
     }
 
-    Expression ExpressionFactory::AggregationUnaryExpression(components::expressions::aggregate_type type, 
+    Expression ExpressionFactory::AggregationUnaryExpression(const string& function_name,
         const Expression& expr) {
+        auto* resource = space->dispatcher()->resource();
         string sub_name = std::visit([](const auto& param) -> string {
                 using T = std::decay_t<decltype(param)>;
                 if constexpr (std::is_same_v<T, expressions::key_t>) {
                     return param.as_string();
-                } else if (std::is_same_v<T, expressions::expression_ptr> || 
-                        std::is_same_v<T, core::parameter_id_t>) {
+                } else if (std::is_same_v<T, expressions::expression_ptr> ||
+                           std::is_same_v<T, core::parameter_id_t>) {
                     throw std::runtime_error("Current configuration support only column names as argument of aggregation function");
                 } else {
                     throw std::runtime_error("Implementation Error. Undefined parameter of aggregaton function");
                 }
-                }, expr);
+            },
+            expr);
 
-        string agg_str = string(magic_enum::enum_name(type));
-        agg_str += "(" + sub_name +")";
-        auto aggregation_expression = expressions::make_aggregate_expression(space->dispatcher()->resource(), type, expressions::key_t(agg_str));
+        string agg_str = function_name + "(" + sub_name + ")";
+        auto aggregation_expression =
+            expressions::make_aggregate_expression(resource, function_name, expressions::key_t(resource, agg_str));
+
+        // Spark-style avg over integers uses floating accumulator:
+        // https://github.com/apache/spark/blob/master/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/aggregate/Average.scala#L63-L79
+        // But grouped_aggregate truncates back to the column type when the input vector is integral:
+        // https://github.com/prawwtocol/otterbrix/blob/main/components/physical_plan/operators/aggregate/grouped_aggregate.cpp#L265
+        // Multiply by 1.0 so arithmetic promotes to DOUBLE
+        if (function_name == "avg") {
+            Expression one = MakeConstant(types::logical_value_t(resource, 1.0));
+            Expression scaled = ScalarBinaryExpression(scalar_type::multiply, expr, std::move(one));
+            std::visit(
+                [&](const auto& inner) {
+                    using T = std::decay_t<decltype(inner)>;
+                    if constexpr (std::is_same_v<T, expressions::expression_ptr>) {
+                        aggregation_expression->append_param(inner);
+                    } else {
+                        throw std::runtime_error("avg: internal multiply expression expected");
+                    }
+                },
+                scaled);
+            return Expression(aggregation_expression);
+        }
+
         aggregation_expression->append_param(expr);
         return Expression(aggregation_expression);
     }
@@ -138,13 +161,13 @@ namespace otterbrix {
             if constexpr (std::is_same_v<T, expressions::key_t>) {
                 expressions::scalar_expression_ptr scalar_expr = 
                     expressions::make_scalar_expression(resource, 
-                        expressions::scalar_type::get_field, expressions::key_t(alias));
+                        expressions::scalar_type::get_field, expressions::key_t(resource, alias));
                 scalar_expr->append_param(expr);
                 return Expression(boost::static_pointer_cast<expressions::expression_i>(scalar_expr));
             } else  if constexpr (std::is_same_v<T, expressions::expression_ptr>) {
                 if (expr->group() == expression_group::aggregate) {
                     const auto& agg = boost::static_pointer_cast<expressions::aggregate_expression_t>(expr);
-                    auto alias_expr = make_aggregate_expression(resource, agg->type(), expressions::key_t(alias));
+                    auto alias_expr = make_aggregate_expression(resource, agg->function_name(), expressions::key_t(resource, alias));
                     for (const auto& param : agg->params()) {
                         alias_expr->append_param(param);
                     }
@@ -209,22 +232,6 @@ namespace otterbrix {
 
     }
 
-    /*PrepExpression ExpressionFactory::PrepareExpression(const Expression& expr) {
-        return std::visit([this](const auto& expr) -> PrepExpression {
-            using T = std::decay_t<decltype(expr)>;
-            if constexpr (std::is_same_v<T, document::value_t>) {
-                auto param = this->params->add_parameter(expr);
-                return PrepExpression(param);
-            } else if constexpr (std::is_same_v<T, expressions::expression_ptr> || 
-                std::is_same_v<T, expressions::key_t> ){
-                return PrepExpression(expr);
-            } else {
-                throw std::runtime_error("Implementation Error: Couldn\'t convert Expression to PrepExpression");
-            }
-        }, expr);
-    }*/
-
-    
     core::parameter_id_t ExpressionFactory::AddValue(components::types::logical_value_t&& value) {
         auto param = core::parameter_id_t(counter);
         counter++;

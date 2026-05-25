@@ -24,8 +24,8 @@ namespace otterbrix {
         this->executed = false;
     }
 
-    PyRelation::PyRelation(unique_ptr<PyResult> result) : 
-        result(std::move(result)), rel(nullptr) {
+    PyRelation::PyRelation(unique_ptr<PyResult> result) :
+        rel(nullptr), result(std::move(result)) {
         if (!result) {
             throw std::runtime_error("PyRelation created without a result");
         }
@@ -39,21 +39,27 @@ namespace otterbrix {
         rel.reset();
     }
 
-    static cursor::cursor_t_ptr PyExecuteRelation(ConnectionEnvironment* env, const Relation& rel, bool stream_result = false) {
-
+    static cursor::cursor_t_ptr PyExecuteRelation(ConnectionEnvironment* env, const Relation& rel,
+            bool /*stream_result*/ = false, bool optimize = false) {
         assert(py::gil_check());
         py::gil_scoped_release release;
-        // auto pending_query = context->PendingQuery(rel, stream_result);
-        // return DuckDBPyConnection::CompletePendingQuery(*pending_query);
-        return env->Execute(rel);
+        return env->Execute(rel, optimize);
     }
 
     unique_ptr<PyRelation> PyRelation::Project(const py::args& args) {
-        // ToDo change after otterbrix project release
         if (args.size() == 0) {
             return nullptr;
         }
-        return Group(args);
+        vector<Expression> fields;
+        fields.reserve(args.size());
+        for (auto arg : args) {
+            shared_ptr<PyExpression> py_expr;
+            if (!py::try_cast<shared_ptr<PyExpression>>(arg, py_expr)) {
+                throw std::runtime_error("Please provide arguments of type Expression");
+            }
+            fields.push_back(py_expr->GetExpression());
+        }
+        return make_unique<PyRelation>(env, env->SelectRelation(rel, std::move(fields)));
     }
 
     unique_ptr<PyRelation> PyRelation::Filter(const py::object &condition) {
@@ -146,12 +152,18 @@ namespace otterbrix {
         return Join(other, py::none(), "cross");
     }
 
+    unique_ptr<PyRelation> PyRelation::Limit(int64_t count) {
+        if (!rel) return nullptr;
+        auto new_rel = env->LimitRelation(rel, count);
+        return make_unique<PyRelation>(env, new_rel);
+    }
+
     cursor::cursor_t_ptr PyRelation::ExecuteInternal(bool stream_result) {
         executed = true;
         if (!rel) {
             return nullptr;
         }
-        return PyExecuteRelation(env, *rel, stream_result);
+        return PyExecuteRelation(env, *rel, stream_result, optimize_);
     }
 
 
@@ -163,7 +175,7 @@ namespace otterbrix {
             throw std::runtime_error("ExecuteOrThrow - no query available to execute");
         }
         if (query_result->is_error()) {
-            throw std::runtime_error(query_result->get_error().what);
+            throw std::runtime_error(query_result->get_error().what.c_str());
         }
         result = make_unique<PyResult>(env, std::move(query_result), rel->GetColumns());
     }
@@ -229,7 +241,7 @@ namespace otterbrix {
 
     pyexpr_ptr PyRelation::ColumnExpression(const string& name) {
 
-        return make_shared<PyExpression>(expressions::key_t{name}, GetExpressionFactory());
+        return make_shared<PyExpression>(expressions::key_t(std::pmr::get_default_resource(), name), GetExpressionFactory());
     }
 
     py::list PyRelation::Columns() {

@@ -7,6 +7,7 @@
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_join.hpp>
+#include <components/logical_plan/node_select.hpp>
 #include <components/logical_plan/node_sort.hpp>
 #include <core/external_dependencies.hpp>
 #include <core/types/memory.hpp>
@@ -28,8 +29,11 @@ namespace otterbrix {
                 shared_ptr<ExternalDependency> external_dependency, 
                 unique_ptr<vector<components::table::column_definition_t>> columns);
     
-        shared_ptr<Relation> make_aggregate_relation(shared_ptr<Relation> from, components::logical_plan::node_group_ptr group, 
-                components::logical_plan::node_match_ptr match, components::logical_plan::node_sort_ptr sort);
+        shared_ptr<Relation> make_aggregate_relation(shared_ptr<Relation> from,
+                components::logical_plan::node_group_ptr group,
+                components::logical_plan::node_match_ptr match,
+                components::logical_plan::node_sort_ptr sort,
+                components::logical_plan::node_select_ptr select);
         
         static shared_ptr<Relation> make_join_relation(shared_ptr<Relation> left, shared_ptr<Relation> right, 
                 unique_ptr<vector<components::expressions::expression_ptr>> conditions,
@@ -38,13 +42,15 @@ namespace otterbrix {
         shared_ptr<Relation> FilterRelation(shared_ptr<Relation> relation, const Expression& condition);
         shared_ptr<Relation> SortRelation(shared_ptr<Relation> relation, const vector<Expression>& exprs);
         shared_ptr<Relation> GroupRelation(shared_ptr<Relation> relation, const vector<Expression>& exprs);
+        shared_ptr<Relation> SelectRelation(shared_ptr<Relation> relation, const vector<Expression>& exprs);
 
-        shared_ptr<Relation> JoinRelation(shared_ptr<Relation> relation, shared_ptr<Relation> other, 
+        shared_ptr<Relation> JoinRelation(shared_ptr<Relation> relation, shared_ptr<Relation> other,
                 const vector<Expression>& exprs, components::logical_plan::join_type type);
+
+        shared_ptr<Relation> LimitRelation(shared_ptr<Relation> relation, int64_t count);
 
 
         shared_ptr<Relation> CreateFromSelect(components::logical_plan::node_ptr plan);
-        //Relation CreateFromTable(const collection_full_name_t& name);
         shared_ptr<Relation> CreateDFRelation(unique_ptr<components::tableref::TableRef> tableref);
 
         components::logical_plan::node_ptr Execute(const Relation& rel);

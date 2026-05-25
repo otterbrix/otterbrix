@@ -1,10 +1,12 @@
 #include "connection_environment.hpp"
 #include <iostream>
+#include <functional>
 #include <components/configuration/configuration.hpp>
 #include <integration/cpp/otterbrix.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
+#include <components/planner/optimizer.hpp>
 using namespace components;
 
 namespace otterbrix {
@@ -25,7 +27,7 @@ namespace otterbrix {
         : ConnectionEnvironment(MakeSpace()) {    
     }
 
-    ConnectionEnvironment::ConnectionEnvironment(const boost::intrusive_ptr<otterbrix_t>& space) 
+    ConnectionEnvironment::ConnectionEnvironment(const boost::intrusive_ptr<otterbrix_t>& space)
         : ExpressionFactory(space), RelationFactory(space), space(space) {
             auto session = otterbrix::session_id_t();
             space->dispatcher()->create_database(session, "tmp");
@@ -38,7 +40,6 @@ namespace otterbrix {
     }
 
     void ConnectionEnvironment::ThrowConnectionException() {
-           // throw PyConnectionException("Connection already closed!");
             throw std::runtime_error("Connection already closed!");
     }
 
@@ -53,40 +54,58 @@ namespace otterbrix {
     }
 
     shared_ptr<Relation> ConnectionEnvironment::RelationFromQuery(const string& query) {
-        auto session = session_id_t();
-        auto node = raw_parser(query.c_str())->lst.front().data;
+        // parse sql, transform to AST
+        using namespace components::sql::transform;
+
+        // call parser with explicit memory arena, normalize with linitial to get the root ast element for transform
+        std::pmr::monotonic_buffer_resource parser_arena(space->dispatcher()->resource());
+        auto parse_result = linitial(raw_parser(&parser_arena, query.c_str()));
+        // parse sql result
+
+        // convert ast to logical plan
         sql::transform::transformer transformer(space->dispatcher()->resource());
-        auto plan =
-            transformer.transform(sql::transform::pg_cell_to_node_cast(node), nullptr);
-        // todo split node and plan; check select statement, use node.type 
-        return RelationFactory::CreateFromSelect(plan);
+        auto result = transformer.transform(sql::transform::pg_cell_to_node_cast(parse_result)).finalize();
+
+        if (result.has_error()) {
+            throw std::runtime_error(result.error().what.c_str());
+        }
+        auto view = std::move(result.value());
+        return RelationFactory::CreateFromSelect(std::move(view.node));
     }
 
     Result ConnectionEnvironment::ExecuteInternal(const string& query) {
+        using namespace components::sql::transform;
+
         auto session = session_id_t();
-        auto node = raw_parser(query.c_str())->lst.front().data;
+        std::pmr::monotonic_buffer_resource parser_arena(space->dispatcher()->resource());
+        auto parse_result = linitial(raw_parser(&parser_arena, query.c_str()));
+
         sql::transform::transformer transformer(space->dispatcher()->resource());
-        auto plan =
-            transformer.transform(sql::transform::pg_cell_to_node_cast(node), nullptr);
+        auto result = transformer.transform(sql::transform::pg_cell_to_node_cast(parse_result)).finalize();
 
-        auto plan_type = logical_plan::node_type::create_collection_t;
-        auto cursor = space->dispatcher()->execute_plan(session, plan);
+        if (result.has_error()) {
+            return components::cursor::make_cursor(space->dispatcher()->resource(), result.error());
+        }
+        auto view = std::move(result.value());
+        auto plan = std::move(view.node);
+        auto cursor = space->dispatcher()->execute_plan(session, plan, std::move(view.params));
 
-        if (cursor->is_success() && plan_type == logical_plan::node_type::create_collection_t) {
+        if (cursor->is_success() && plan->type() == logical_plan::node_type::create_collection_t) {
             auto full_name = plan->collection_full_name();
             auto& collections = GetCollections();
             collections.insert(full_name.to_string());
         }
 
         return cursor;
-
     }
 
-    Result ConnectionEnvironment::Execute(const Relation& rel) {
+    Result ConnectionEnvironment::Execute(const Relation& rel, bool optimize) {
         auto session = session_id_t();
-        auto plan = RelationFactory::Execute(rel);
-        auto cursor = space->dispatcher()->execute_plan(session, plan, ExpressionFactory::GetParams());
-        return cursor;
+        auto node = RelationFactory::Execute(rel);
+        if (optimize) {
+            node = components::planner::optimize(node->resource(), node, nullptr);
+        }
+        return space->dispatcher()->execute_plan(session, node, ExpressionFactory::GetParams());
     }
 
     cursor::cursor_t_ptr ConnectionEnvironment::QueryRelation(const components::logical_plan::node_ptr &rel) {

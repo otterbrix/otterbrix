@@ -5,6 +5,7 @@ set(SOURCE_${PROJECT_NAME}
         optimizer.cpp
         optimizer/rules/constant_folding.cpp
         optimizer/rules/column_pruning.cpp
+        optimizer/rules/pushdown_filter.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}

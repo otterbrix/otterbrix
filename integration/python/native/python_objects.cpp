@@ -8,11 +8,10 @@
 #include <boost/lexical_cast.hpp>
 
 #include <ctime>
+#include <memory_resource>
 #include <sstream>
 #include <stdexcept>
 #include <limits>
-
-// #include "datetime.h" // Python datetime initialize #1
 
 using components::types::logical_type;
 using components::types::logical_value_t;
@@ -120,29 +119,19 @@ static bool WidthFitsInDecimal(int32_t width) {
 }
 
 template <class OP>
-logical_value_t PyDecimalCastSwitch(PyDecimal &decimal, uint8_t width, uint8_t scale) {
-	/*if (width > DecimalWidth<int64_t>::max) {
-		return OP::template Operation<int128_t>(decimal.signed_value, decimal.digits, width, scale);
-	}*/
-	//if (width > DecimalWidth<int32_t>::max) {
-		return OP::template Operation<int64_t>(decimal.signed_value, decimal.digits, width, scale);
-	//}
-	/*if (width > DecimalWidth<int16_t>::max) {
-		return OP::template Operation<int32_t>(decimal.signed_value, decimal.digits, width, scale);
-	}
-	return OP::template Operation<int16_t>(decimal.signed_value, decimal.digits, width, scale);
-    */
+logical_value_t PyDecimalCastSwitch(std::pmr::memory_resource* r, PyDecimal &decimal, uint8_t width, uint8_t scale) {
+		return OP::template Operation<int64_t>(r, decimal.signed_value, decimal.digits, width, scale);
 }
 
 // Wont fit in a DECIMAL, fall back to DOUBLE
-static logical_value_t CastToDouble(py::handle &obj) {
-	return logical_value_t(py::cast<double>(obj));
+static logical_value_t CastToDouble(std::pmr::memory_resource* r, py::handle &obj) {
+	return logical_value_t(r, py::cast<double>(obj));
 }
 
-logical_value_t PyDecimal::to_logical_value() {
+logical_value_t PyDecimal::to_logical_value(std::pmr::memory_resource* r) {
 	int32_t width = digits.size();
 	if (!WidthFitsInDecimal(width)) {
-		return CastToDouble(obj);
+		return CastToDouble(r, obj);
 	}
 	switch (exponent_type) {
 	case PyDecimalExponentType::EXPONENT_SCALE: {
@@ -153,23 +142,23 @@ logical_value_t PyDecimal::to_logical_value() {
 			width = scale + 1; // leave 1 room for the non-decimal value
 		}
 		if (!WidthFitsInDecimal(width)) {
-			return CastToDouble(obj);
+			return CastToDouble(r, obj);
 		}
-		return PyDecimalCastSwitch<PyDecimalScaleConverter>(*this, width, scale);
+		return PyDecimalCastSwitch<PyDecimalScaleConverter>(r, *this, width, scale);
 	}
 	case PyDecimalExponentType::EXPONENT_POWER: {
 		uint8_t scale = exponent_value;
 		width += scale;
 		if (!WidthFitsInDecimal(width)) {
-			return CastToDouble(obj);
+			return CastToDouble(r, obj);
 		}
-		return PyDecimalCastSwitch<PyDecimalPowerConverter>(*this, width, scale);
+		return PyDecimalCastSwitch<PyDecimalPowerConverter>(r, *this, width, scale);
 	}
 	case PyDecimalExponentType::EXPONENT_NAN: {
-		return logical_value_t(NAN);
+		return logical_value_t(r, NAN);
 	}
 	case PyDecimalExponentType::EXPONENT_INFINITY: {
-		return logical_value_t(INFINITY);
+		return logical_value_t(r, INFINITY);
 	}
 	// LCOV_EXCL_START
 	default: {
@@ -206,14 +195,14 @@ py::object PythonObject::FromStruct(const logical_value_t &val, const complex_lo
 			assert(child_type.alias().empty());
 			py_tuple[i] = FromValue(struct_values[i], child_type);
 		}
-		return std::move(py_tuple);
+		return py_tuple;
 	} else {
 		py::dict py_struct;
 		for (idx_t i = 0; i < struct_values.size(); i++) {
 			auto &child_type = child_types[i];
 			py_struct[child_type.alias().c_str()] = FromValue(struct_values[i], child_type); 
 		}
-		return std::move(py_struct);
+		return py_struct;
 	}
 }
 
@@ -250,7 +239,7 @@ static bool KeyIsHashable(const complex_logical_type &type) {
 	case logical_type::UNION: {
 		const auto& child_types = type.child_types();
 		for (idx_t i = 0; i < child_types.size(); i++) {
-			if (!KeyIsHashable(child_types[i])) { /*UnionType::GetMemberType(type, i)) */
+			if (!KeyIsHashable(child_types[i])) {
 				return false;
 			}
 		}
@@ -260,7 +249,7 @@ static bool KeyIsHashable(const complex_logical_type &type) {
 	case logical_type::STRUCT:
 		return false;
 	default:
-		throw std::runtime_error("Unsupported type: "); //+ type.ToString());
+		throw std::runtime_error("Unsupported type: ");
 	}
 }
 
@@ -290,16 +279,10 @@ py::object PythonObject::FromValue(const logical_value_t &val, const complex_log
 		return py::cast(val.value<uint64_t>());
 	case logical_type::HUGEINT: {
         std::stringstream ss;
-        // ss << val.value<int128_t>();
-        // auto res = ss.str();
-		// return py::reinterpret_steal<py::object>(PyLong_FromString(res.c_str(), nullptr, 10));
-		std::runtime_error("OtterBrix doen\'t support hugeint conversation to python object");
-    }	
+		throw std::runtime_error("OtterBrix doen\'t support hugeint conversation to python object");
+    }
 	case logical_type::UHUGEINT: {
-        // ss << val.value<uint128_t>();
-        // auto res = ss.str();
-		// return py::reinterpret_steal<py::object>(PyLong_FromString(res.c_str(), nullptr, 10));
-		std::runtime_error("OtterBrix doen\'t support uhugeint conversation to python object");
+		throw std::runtime_error("OtterBrix doen\'t support uhugeint conversation to python object");
     }
 	case logical_type::FLOAT:
 		return py::cast(val.value<float>());
@@ -307,17 +290,17 @@ py::object PythonObject::FromValue(const logical_value_t &val, const complex_log
 		return py::cast(val.value<double>());
     case logical_type::DECIMAL: {
         int64_t value = val.value<int64_t>();
-		auto* extention = static_cast<components::types::decimal_logical_type_extention*>(val.type().extention());
-		auto scale = extention->scale();
+		auto* extension = static_cast<components::types::decimal_logical_type_extension*>(val.type().extension());
+		auto scale = extension->scale();
         std::string digits = std::to_string(value);
         auto pydigits = import_cache.decimal.Decimal()(digits);
 		return pydigits.attr("__truediv__")(py::cast<int>(scale));
 	}
 	case logical_type::ENUM: {
-		std::runtime_error("OtterBrix doen\'t support enum type");
+		throw std::runtime_error("OtterBrix doen\'t support enum type");
 	}
 	case logical_type::UNION: {
-		std::runtime_error("OtterBrix doen\'t support union type");
+		throw std::runtime_error("OtterBrix doen\'t support union type");
 	}
 	case logical_type::STRING_LITERAL:
 		return py::str(val.value<const std::string&>());
@@ -347,12 +330,12 @@ py::object PythonObject::FromValue(const logical_value_t &val, const complex_log
 		for (auto &list_elem : list_values) {
 			list.append(FromValue(list_elem, type.child_type()));
 		}
-		return std::move(list);
+		return list;
 	}
 	case logical_type::ARRAY: {
 		auto &array_values = val.children();
-		auto* extention = static_cast<components::types::array_logical_type_extention*>(type.extention());
-		auto array_size = extention->size();
+		auto* extension = static_cast<components::types::array_logical_type_extension*>(type.extension());
+		auto array_size = extension->size();
 		auto &child_type = type.child_type();
 
 		// do not remove the static cast here, it's required for building
@@ -367,14 +350,14 @@ py::object PythonObject::FromValue(const logical_value_t &val, const complex_log
 		for (idx_t elem_idx = 0; elem_idx < array_size; elem_idx++) {
 			arr[elem_idx] = FromValue(array_values[elem_idx], child_type);
 		}
-		return std::move(arr);
+		return arr;
 	}
 	case logical_type::MAP: {
 		auto &list_values = val.children(); 
 
-        auto* map_extention = static_cast<components::types::map_logical_type_extention*>(type.extention()); 
-		auto &key_type = map_extention->key();
-		auto &val_type = map_extention->value();
+        auto* map_extension = static_cast<components::types::map_logical_type_extension*>(type.extension());
+		auto &key_type = map_extension->key();
+		auto &val_type = map_extension->value();
 
 		py::dict py_struct;
 		if (KeyIsHashable(key_type)) {
@@ -395,20 +378,17 @@ py::object PythonObject::FromValue(const logical_value_t &val, const complex_log
 			py_struct["key"] = std::move(keys);
 			py_struct["value"] = std::move(values);
 		}
-		return std::move(py_struct);
+		return py_struct;
 	}
 	case logical_type::STRUCT: {
 		return FromStruct(val, type);
 	}
 	case logical_type::UUID: {
-		// auto uuid_value = val.GetValueUnsafe<int128_t>();
-		// return import_cache.uuid.UUID()(UUID::ToString(uuid_value));
-		std::runtime_error("OtterBrix doen\'t support uhugeint conversation to python object");
-
+		throw std::runtime_error("OtterBrix doen\'t support uhugeint conversation to python object");
 	}
 
 	default:
-		throw std::runtime_error("Unsupported type: "); //+ type.ToString());
+		throw std::runtime_error("Unsupported type: ");
 	}
 }
 

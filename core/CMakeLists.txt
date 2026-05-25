@@ -9,6 +9,9 @@ add_subdirectory(string_heap)
 add_subdirectory(non_thread_scheduler)
 add_subdirectory(file)
 
+add_subdirectory(string_util)
+add_subdirectory(types)
+
 if (DEV_MODE)
     add_subdirectory(tests)
 endif ()

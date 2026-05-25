@@ -1,5 +1,6 @@
 #include "box_render.hpp"
 
+#include <util/util.hpp>
 #include <components/types/types.hpp>
 #include <tabulate/table.hpp>
 
@@ -22,53 +23,16 @@ namespace otterbrix {
         box.column(0).format().font_align(FontAlign::center);
 
         int idx = 0;
-        while (idx < 100) {//cursor->has_next()) {
-            auto value = cursor->next();
+        while (idx < 100 && cursor->has_next()) {
+            cursor->advance();
             Table::Row_t row;
-            
-            for (const auto& col_def : col_defs) {
-                const auto& json_pointer = col_def.name();
-            	switch (col_def.type().type()) {
-            	case logical_type::BOOLEAN:
-            		row.push_back(to_string(value->get_bool(json_pointer))); 
-                    break;
-            	case logical_type::TINYINT:
-            		row.push_back(to_string(value->get_tinyint(json_pointer)));
-                    break;
-            	case logical_type::SMALLINT:
-            		row.push_back(to_string(value->get_smallint(json_pointer)));
-                    break;
-            	case logical_type::INTEGER:
-            		row.push_back(to_string(value->get_int(json_pointer)));
-                    break;
-            	case logical_type::BIGINT:
-            		row.push_back(to_string(value->get_long(json_pointer)));
-                    break;
-            	case logical_type::UTINYINT:
-            		row.push_back(to_string(value->get_utinyint(json_pointer)));
-                    break;
-            	case logical_type::USMALLINT:
-            		row.push_back(to_string(value->get_usmallint(json_pointer)));
-                    break;
-            	case logical_type::UINTEGER:
-            		row.push_back(to_string(value->get_uint(json_pointer)));
-                    break;
-                case logical_type::UBIGINT:
-            		row.push_back(to_string(value->get_ulong(json_pointer)));
-                    break;
-            	case logical_type::FLOAT:
-            		row.push_back(to_string(value->get_float(json_pointer)));
-                    break;
-            	case logical_type::DOUBLE:
-            		row.push_back(to_string(value->get_double(json_pointer)));
-                    break;
-                default:
-                    throw std::runtime_error("Could\'t convert document::value to box cell");
-                }
+
+            for (idx_t col = 0; col < col_defs.size(); col++) {
+                auto val = cursor->value(col);
+                row.push_back(util::LogicalValueToString(val));
             }
-            
+
             box.add_row(row);
-//            box.column(idx+1).format().font_align(FontAlign::right);
             idx++;
         }
         return box.str();

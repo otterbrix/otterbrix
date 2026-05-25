@@ -1,0 +1,7 @@
+[run]
+source = otterbrix/experimental/spark
+
+[report]
+exclude_also =
+    raise NotImplementedError
+    raise ContributionsAcceptedError

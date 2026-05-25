@@ -105,18 +105,6 @@ string RawArrayWrapper::OtterBrixToNumpyDtype(const complex_logical_type &type) 
 	case logical_type::UUID:
 	case logical_type::ARRAY:
 		return "object";
-	/*case logical_type::ENUM: {
-		auto size = EnumType::Size(type);
-		if (size <= (idx_t)std::numeric_limits<int8_t>::max()) {
-			return "int8";
-		} else if (size <= (idx_t)std::numeric_limits<int16_t>::max()) {
-			return "int16";
-		} else if (size <= (idx_t)std::numeric_limits<int32_t>::max()) {
-			return "int32";
-		} else {
-			throw std::runtime_error("Size not supported on ENUM types");
-		}
-	}*/
 	default:
 		throw std::runtime_error("Unsupported type "+to_string(int(type.type())));
 	}

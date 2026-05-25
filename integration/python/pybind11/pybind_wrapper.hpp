@@ -8,15 +8,10 @@
 
 #include <vector>
 
-//PYBIND11_DECLARE_HOLDER_TYPE(T, otterbrix::unique_ptr<T>)
-//PYBIND11_DECLARE_HOLDER_TYPE(T, otterbrix::shared_ptr<T>)
-
 namespace pybind11 {
 
 namespace detail {
 
-//template <typename T, typename Allocator  = std::allocator<T>>
-//struct type_caster<otterbrix::vector<T,Allocator>> : list_caster<otterbrix::vector<T,Allocator>, T> {};
 } // namespace detail
 
 bool gil_check();

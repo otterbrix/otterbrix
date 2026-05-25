@@ -22,7 +22,7 @@ namespace components::function {
         throw std::runtime_error("Copy not supported for TableFunctionData");
     }   
             
-    bool TableFunctionData::Equals(const FunctionData &other) const {
+    bool TableFunctionData::Equals(const FunctionData& /*other*/) const {
         return false;
     }  
 

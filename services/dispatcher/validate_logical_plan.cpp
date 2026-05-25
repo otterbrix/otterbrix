@@ -1225,8 +1225,14 @@ namespace services::dispatcher {
                             }
                         }
 
-                        // Resolve key paths in node_select scalar expressions against incoming schema.
+                        // Resolve key paths in node_select scalar expressions against incoming schema,
+                        // AND build the projection's OUTPUT schema. The output of a projection is the
+                        // SELECT columns (in order) — NOT the incoming schema. A consumer stacked above
+                        // this projection (e.g. a filter) resolves its column indices against this
+                        // returned schema; returning the wider incoming schema makes those indices
+                        // stale, so the consumer reads out-of-range columns at execution time.
                         // Aggregates are always in node_group_t now, so only scalar expressions appear here.
+                        bool has_computed_column = false;
                         for (auto& expr : node_select->expressions()) {
                             if (expr->group() != expression_group::scalar) {
                                 continue;
@@ -1244,14 +1250,41 @@ namespace services::dispatcher {
                                         return res.convert_error<named_schema>();
                                     }
                                 }
-                            } else if (scalar_expr->type() != scalar_type::constant &&
-                                       scalar_expr->type() != scalar_type::star_expand) {
-                                auto res =
-                                    impl::resolve_key_paths_in_group(resource, scalar_expr->params(), incoming_schema);
-                                if (res.has_error()) {
-                                    return res.convert_error<named_schema>();
+                                const auto& col_type = incoming_schema[key.path()[0]].type;
+                                const components::types::complex_logical_type* res_type = &col_type;
+                                for (size_t j = 1; j < key.path().size(); j++) {
+                                    if (!res_type->is_nested()) {
+                                        return core::error_t(
+                                            core::error_code_t::schema_error,
+                                            std::pmr::string{"trying to access field of non-nested type", resource});
+                                    } else if (res_type->type() == logical_type::STRUCT) {
+                                        res_type = &res_type->child_types()[key.path()[j]];
+                                    } else {
+                                        res_type = &res_type->child_type();
+                                    }
                                 }
+                                result.emplace_back(type_from_t{node->result_alias(), *res_type});
+                            } else if (scalar_expr->type() == scalar_type::star_expand) {
+                                for (const auto& col : incoming_schema) {
+                                    result.emplace_back(col);
+                                }
+                            } else {
+                                // Computed column (constant / arithmetic / case). Resolve its key paths
+                                // as before; its output type is not derived here, so fall back to the
+                                // incoming schema for the whole projection rather than risk a wrong type.
+                                if (scalar_expr->type() != scalar_type::constant) {
+                                    auto res = impl::resolve_key_paths_in_group(resource,
+                                                                                scalar_expr->params(),
+                                                                                incoming_schema);
+                                    if (res.has_error()) {
+                                        return res.convert_error<named_schema>();
+                                    }
+                                }
+                                has_computed_column = true;
                             }
+                        }
+                        if (!has_computed_column) {
+                            return result;
                         }
                     } else {
                         // Reject only truly-identical columns (same alias from same table).

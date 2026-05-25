@@ -97,15 +97,6 @@ namespace services::index {
         uint64_t page_offset(uint64_t page_id) const;
         uint64_t bucket_primary_page_id(uint32_t bucket_id) const;
 
-        static uint16_t read_u16(const uint8_t* p);
-        static uint32_t read_u32(const uint8_t* p);
-        static uint64_t read_u64(const uint8_t* p);
-        static int64_t read_i64(const uint8_t* p);
-        static void write_u16(uint8_t* p, uint16_t v);
-        static void write_u32(uint8_t* p, uint32_t v);
-        static void write_u64(uint8_t* p, uint64_t v);
-        static void write_i64(uint8_t* p, int64_t v);
-
         static uint32_t hash_key(std::string_view key);
         uint32_t bucket_id_for_key(std::string_view key) const;
 

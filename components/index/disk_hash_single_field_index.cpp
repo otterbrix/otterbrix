@@ -1,6 +1,6 @@
 #include "disk_hash_single_field_index.hpp"
+#include "logical_value_binary_codec.hpp"
 
-#include <sstream>
 #include <components/table/row_version_manager.hpp>
 
 namespace components::index {
@@ -21,16 +21,7 @@ namespace components::index {
     }
 
     std::string disk_hash_single_field_index_t::encode_key(const value_t& key) const {
-        std::ostringstream os;
-        os << static_cast<int>(key.type().type()) << ":";
-        if (key.type().type() == components::types::logical_type::STRING_LITERAL) {
-            auto sv = key.value<std::string_view>();
-            os << sv.size() << ":";
-            os.write(sv.data(), static_cast<std::streamsize>(sv.size()));
-            return os.str();
-        }
-        os << key.hash();
-        return os.str();
+        return codec::encode_disk_hash_key(key);
     }
 
     auto disk_hash_single_field_index_t::insert_impl(value_t key, index_value_t value) -> void {

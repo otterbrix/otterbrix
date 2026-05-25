@@ -1,6 +1,7 @@
 #include "bitcask_index_disk.hpp"
 
 #include "absl/crc/crc32c.h"
+#include <components/index/logical_value_binary_codec.hpp>
 
 #include <algorithm>
 #include <charconv>
@@ -37,138 +38,14 @@ namespace services::index {
             uint64_t timestamp;
         };
 
-        // Minimal binary codec for bitcask payloads. The HEAD branch removed the
-        // msgpack_serializer_t / msgpack_deserializer_t wrappers in P2.8/P3.7;
-        // bitcask only stores scalar keys (single-column index) + a row-id list,
-        // so we ship a self-contained typed-byte codec here instead of pulling
-        // the whole serializer back. Format:
-        //   [key_type: uint8][key_payload: type-dependent]
-        //   [row_count: uint32 LE]
-        //   [row_id_1..N: uint64 LE]
-        // Composite/complex logical_types are not persisted by bitcask (single-
-        // column hash index only); attempts to serialize them are rejected with
-        // an exception so a higher layer can fall back to btree.
-        using lt = components::types::logical_type;
-
-        template<typename T>
-        void buf_append_le(std::pmr::string& out, T v) {
-            unsigned char bytes[sizeof(T)];
-            std::memcpy(bytes, &v, sizeof(T));
-            out.append(reinterpret_cast<const char*>(bytes), sizeof(T));
-        }
-
-        template<typename T>
-        T buf_read_le(const std::pmr::string& in, size_t& pos) {
-            if (pos + sizeof(T) > in.size()) {
-                throw std::runtime_error("bitcask payload: short read");
-            }
-            T v{};
-            std::memcpy(&v, in.data() + pos, sizeof(T));
-            pos += sizeof(T);
-            return v;
-        }
-
-        void write_value(std::pmr::string& out, const services::index::index_disk_t::value_t& key) {
-            const auto t = key.type().type();
-            buf_append_le<uint8_t>(out, static_cast<uint8_t>(t));
-            switch (t) {
-                case lt::NA:
-                    break;
-                case lt::BOOLEAN:
-                    buf_append_le<uint8_t>(out, key.value<bool>() ? 1 : 0);
-                    break;
-                case lt::TINYINT:
-                    buf_append_le<int8_t>(out, key.value<int8_t>());
-                    break;
-                case lt::UTINYINT:
-                    buf_append_le<uint8_t>(out, key.value<uint8_t>());
-                    break;
-                case lt::SMALLINT:
-                    buf_append_le<int16_t>(out, key.value<int16_t>());
-                    break;
-                case lt::USMALLINT:
-                    buf_append_le<uint16_t>(out, key.value<uint16_t>());
-                    break;
-                case lt::INTEGER:
-                    buf_append_le<int32_t>(out, key.value<int32_t>());
-                    break;
-                case lt::UINTEGER:
-                    buf_append_le<uint32_t>(out, key.value<uint32_t>());
-                    break;
-                case lt::BIGINT:
-                    buf_append_le<int64_t>(out, key.value<int64_t>());
-                    break;
-                case lt::UBIGINT:
-                    buf_append_le<uint64_t>(out, key.value<uint64_t>());
-                    break;
-                case lt::FLOAT:
-                    buf_append_le<float>(out, key.value<float>());
-                    break;
-                case lt::DOUBLE:
-                    buf_append_le<double>(out, key.value<double>());
-                    break;
-                case lt::STRING_LITERAL: {
-                    auto s = key.value<std::string_view>();
-                    buf_append_le<uint32_t>(out, static_cast<uint32_t>(s.size()));
-                    out.append(s.data(), s.size());
-                    break;
-                }
-                default:
-                    throw std::runtime_error("bitcask: unsupported key type for binary codec");
-            }
-        }
-
-        services::index::index_disk_t::value_t
-        read_value(std::pmr::memory_resource* resource, const std::pmr::string& in, size_t& pos) {
-            using value_t = services::index::index_disk_t::value_t;
-            const auto t = static_cast<lt>(buf_read_le<uint8_t>(in, pos));
-            switch (t) {
-                case lt::NA:
-                    return value_t(resource, components::types::complex_logical_type{lt::NA});
-                case lt::BOOLEAN:
-                    return value_t(resource, buf_read_le<uint8_t>(in, pos) != 0);
-                case lt::TINYINT:
-                    return value_t(resource, buf_read_le<int8_t>(in, pos));
-                case lt::UTINYINT:
-                    return value_t(resource, buf_read_le<uint8_t>(in, pos));
-                case lt::SMALLINT:
-                    return value_t(resource, buf_read_le<int16_t>(in, pos));
-                case lt::USMALLINT:
-                    return value_t(resource, buf_read_le<uint16_t>(in, pos));
-                case lt::INTEGER:
-                    return value_t(resource, buf_read_le<int32_t>(in, pos));
-                case lt::UINTEGER:
-                    return value_t(resource, buf_read_le<uint32_t>(in, pos));
-                case lt::BIGINT:
-                    return value_t(resource, buf_read_le<int64_t>(in, pos));
-                case lt::UBIGINT:
-                    return value_t(resource, buf_read_le<uint64_t>(in, pos));
-                case lt::FLOAT:
-                    return value_t(resource, buf_read_le<float>(in, pos));
-                case lt::DOUBLE:
-                    return value_t(resource, buf_read_le<double>(in, pos));
-                case lt::STRING_LITERAL: {
-                    const auto n = buf_read_le<uint32_t>(in, pos);
-                    if (pos + n > in.size()) {
-                        throw std::runtime_error("bitcask payload: string overrun");
-                    }
-                    std::pmr::string s(in.data() + pos, n, resource);
-                    pos += n;
-                    return value_t(resource, std::move(s));
-                }
-                default:
-                    throw std::runtime_error("bitcask: unsupported key type during decode");
-            }
-        }
-
         std::pmr::string serialize_payload(std::pmr::memory_resource* resource,
                                            const services::index::index_disk_t::value_t& key,
                                            const std::pmr::vector<size_t>& rows) {
             std::pmr::string out(resource);
-            write_value(out, key);
-            buf_append_le<uint32_t>(out, static_cast<uint32_t>(rows.size()));
+            components::index::codec::append_logical_value(out, key);
+            components::index::codec::append_le<uint32_t>(out, static_cast<uint32_t>(rows.size()));
             for (auto row : rows) {
-                buf_append_le<uint64_t>(out, static_cast<uint64_t>(row));
+                components::index::codec::append_le<uint64_t>(out, static_cast<uint64_t>(row));
             }
             return out;
         }
@@ -178,12 +55,12 @@ namespace services::index {
                                  services::index::index_disk_t::value_t& key,
                                  std::pmr::vector<size_t>& rows) {
             size_t pos = 0;
-            key = read_value(resource, payload, pos);
-            const auto n = buf_read_le<uint32_t>(payload, pos);
+            key = components::index::codec::read_logical_value(resource, payload, pos);
+            const auto n = components::index::codec::read_le<uint32_t>(payload, pos);
             rows.clear();
             rows.reserve(n);
             for (uint32_t i = 0; i < n; ++i) {
-                rows.emplace_back(static_cast<size_t>(buf_read_le<uint64_t>(payload, pos)));
+                rows.emplace_back(static_cast<size_t>(components::index::codec::read_le<uint64_t>(payload, pos)));
             }
         }
 

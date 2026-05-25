@@ -1,11 +1,14 @@
 #include "disk_hash_table.hpp"
 
+#include <components/index/logical_value_binary_codec.hpp>
+
 #include <fstream>
 #include <cstring>
 #include <mutex>
 #include <stdexcept>
 
 namespace services::index {
+    namespace codec = components::index::codec;
 
     namespace {
         uint32_t fnv1a_32(std::string_view s) {
@@ -248,13 +251,13 @@ namespace services::index {
         if (!file_->read(hdr.data(), page_size, 0)) {
             throw std::runtime_error("disk_hash_table: failed to read header page");
         }
-        header_.magic_value = read_u64(hdr.data());
-        header_.version_value = read_u32(hdr.data() + 8);
-        header_.page_size_value = read_u32(hdr.data() + 12);
-        header_.bucket_count_value = read_u32(hdr.data() + 16);
-        header_.next_overflow_page = read_u64(hdr.data() + 20);
-        header_.checkpoint_log_file_id = read_u32(hdr.data() + 28);
-        header_.checkpoint_log_offset = read_u64(hdr.data() + 32);
+        header_.magic_value = codec::read_le_ptr<uint64_t>(hdr.data());
+        header_.version_value = codec::read_le_ptr<uint32_t>(hdr.data() + 8);
+        header_.page_size_value = codec::read_le_ptr<uint32_t>(hdr.data() + 12);
+        header_.bucket_count_value = codec::read_le_ptr<uint32_t>(hdr.data() + 16);
+        header_.next_overflow_page = codec::read_le_ptr<uint64_t>(hdr.data() + 20);
+        header_.checkpoint_log_file_id = codec::read_le_ptr<uint32_t>(hdr.data() + 28);
+        header_.checkpoint_log_offset = codec::read_le_ptr<uint64_t>(hdr.data() + 32);
         if (header_.magic_value != magic || header_.version_value != version || header_.page_size_value != page_size ||
             header_.bucket_count_value == 0) {
             throw std::runtime_error("disk_hash_table: incompatible header");
@@ -275,31 +278,6 @@ namespace services::index {
     uint64_t disk_hash_table_t::bucket_primary_page_id(uint32_t bucket_id) const {
         return 1 + bucket_id;
     }
-
-    uint16_t disk_hash_table_t::read_u16(const uint8_t* p) {
-        uint16_t v;
-        std::memcpy(&v, p, sizeof(v));
-        return v;
-    }
-    uint32_t disk_hash_table_t::read_u32(const uint8_t* p) {
-        uint32_t v;
-        std::memcpy(&v, p, sizeof(v));
-        return v;
-    }
-    uint64_t disk_hash_table_t::read_u64(const uint8_t* p) {
-        uint64_t v;
-        std::memcpy(&v, p, sizeof(v));
-        return v;
-    }
-    int64_t disk_hash_table_t::read_i64(const uint8_t* p) {
-        int64_t v;
-        std::memcpy(&v, p, sizeof(v));
-        return v;
-    }
-    void disk_hash_table_t::write_u16(uint8_t* p, uint16_t v) { std::memcpy(p, &v, sizeof(v)); }
-    void disk_hash_table_t::write_u32(uint8_t* p, uint32_t v) { std::memcpy(p, &v, sizeof(v)); }
-    void disk_hash_table_t::write_u64(uint8_t* p, uint64_t v) { std::memcpy(p, &v, sizeof(v)); }
-    void disk_hash_table_t::write_i64(uint8_t* p, int64_t v) { std::memcpy(p, &v, sizeof(v)); }
 
     uint32_t disk_hash_table_t::hash_key(std::string_view key) {
         return fnv1a_32(key);
@@ -339,45 +317,45 @@ namespace services::index {
     }
 
     uint16_t disk_hash_table_t::page_count(const std::vector<uint8_t>& page) const {
-        return read_u16(page.data());
+        return codec::read_le_ptr<uint16_t>(page.data());
     }
 
     uint16_t disk_hash_table_t::page_free_offset(const std::vector<uint8_t>& page) const {
-        return read_u16(page.data() + 2);
+        return codec::read_le_ptr<uint16_t>(page.data() + 2);
     }
 
     uint64_t disk_hash_table_t::page_overflow(const std::vector<uint8_t>& page) const {
-        return read_u64(page.data() + 4);
+        return codec::read_le_ptr<uint64_t>(page.data() + 4);
     }
 
     void disk_hash_table_t::set_page_count(std::vector<uint8_t>& page, uint16_t v) const {
-        write_u16(page.data(), v);
+        codec::write_le_ptr<uint16_t>(page.data(), v);
     }
 
     void disk_hash_table_t::set_page_free_offset(std::vector<uint8_t>& page, uint16_t v) const {
-        write_u16(page.data() + 2, v);
+        codec::write_le_ptr<uint16_t>(page.data() + 2, v);
     }
 
     void disk_hash_table_t::set_page_overflow(std::vector<uint8_t>& page, uint64_t v) const {
-        write_u64(page.data() + 4, v);
+        codec::write_le_ptr<uint64_t>(page.data() + 4, v);
     }
 
     disk_hash_table_t::slot_t disk_hash_table_t::read_slot(const std::vector<uint8_t>& page, uint16_t slot_index) const {
         const auto off = slot_dir_offset(slot_index);
         slot_t s{};
-        s.offset = read_u16(page.data() + off);
-        s.length = read_u16(page.data() + off + 2);
+        s.offset = codec::read_le_ptr<uint16_t>(page.data() + off);
+        s.length = codec::read_le_ptr<uint16_t>(page.data() + off + 2);
         s.flags = page[off + 4];
-        s.key_hash = read_u32(page.data() + off + 5);
+        s.key_hash = codec::read_le_ptr<uint32_t>(page.data() + off + 5);
         return s;
     }
 
     void disk_hash_table_t::write_slot(std::vector<uint8_t>& page, uint16_t slot_index, const slot_t& slot) const {
         const auto off = slot_dir_offset(slot_index);
-        write_u16(page.data() + off, slot.offset);
-        write_u16(page.data() + off + 2, slot.length);
+        codec::write_le_ptr<uint16_t>(page.data() + off, slot.offset);
+        codec::write_le_ptr<uint16_t>(page.data() + off + 2, slot.length);
         page[off + 4] = slot.flags;
-        write_u32(page.data() + off + 5, slot.key_hash);
+        codec::write_le_ptr<uint32_t>(page.data() + off + 5, slot.key_hash);
     }
 
     uint16_t disk_hash_table_t::slot_dir_offset(uint16_t slot_index) const {
@@ -406,8 +384,8 @@ namespace services::index {
         }
         const auto* p = page.data() + slot.offset;
         decoded_entry_t e{};
-        e.stored_key_len = read_u16(p);
-        e.full_key_len = read_u32(p + 2);
+        e.stored_key_len = codec::read_le_ptr<uint16_t>(p);
+        e.full_key_len = codec::read_le_ptr<uint32_t>(p + 2);
         e.entry_flags = *(p + 6);
         const uint16_t header_len = 7;
         const uint16_t min_tail = 8 + 4 + 8;
@@ -416,9 +394,9 @@ namespace services::index {
         }
         e.stored_key = std::string_view(reinterpret_cast<const char*>(p + header_len), e.stored_key_len);
         const auto* vptr = p + header_len + e.stored_key_len;
-        e.value = read_i64(vptr);
-        e.log_file_id = read_u32(vptr + 8);
-        e.log_offset = read_u64(vptr + 12);
+        e.value = codec::read_le_ptr<int64_t>(vptr);
+        e.log_file_id = codec::read_le_ptr<uint32_t>(vptr + 8);
+        e.log_offset = codec::read_le_ptr<uint64_t>(vptr + 12);
         return e;
     }
 
@@ -546,16 +524,16 @@ namespace services::index {
         const uint32_t full_len = static_cast<uint32_t>(std::min<size_t>(key.size(), UINT32_MAX));
         const size_t total = 2 + 4 + 1 + stored_len + 8 + 4 + 8;
         std::vector<uint8_t> payload(total);
-        write_u16(payload.data(), stored_len);
-        write_u32(payload.data() + 2, full_len);
+        codec::write_le_ptr<uint16_t>(payload.data(), stored_len);
+        codec::write_le_ptr<uint32_t>(payload.data() + 2, full_len);
         payload[6] = truncated ? entry_flag_truncated : 0;
         if (stored_len > 0) {
             std::memcpy(payload.data() + 7, key.data(), stored_len);
         }
         auto* tail = payload.data() + 7 + stored_len;
-        write_i64(tail, value);
-        write_u32(tail + 8, log_file_id);
-        write_u64(tail + 12, log_offset);
+        codec::write_le_ptr<int64_t>(tail, value);
+        codec::write_le_ptr<uint32_t>(tail + 8, log_file_id);
+        codec::write_le_ptr<uint64_t>(tail + 12, log_offset);
         return payload;
     }
 
@@ -570,13 +548,13 @@ namespace services::index {
 
     void disk_hash_table_t::persist_header() {
         std::vector<uint8_t> hdr(page_size, 0);
-        write_u64(hdr.data(), header_.magic_value);
-        write_u32(hdr.data() + 8, header_.version_value);
-        write_u32(hdr.data() + 12, header_.page_size_value);
-        write_u32(hdr.data() + 16, header_.bucket_count_value);
-        write_u64(hdr.data() + 20, header_.next_overflow_page);
-        write_u32(hdr.data() + 28, header_.checkpoint_log_file_id);
-        write_u64(hdr.data() + 32, header_.checkpoint_log_offset);
+        codec::write_le_ptr<uint64_t>(hdr.data(), header_.magic_value);
+        codec::write_le_ptr<uint32_t>(hdr.data() + 8, header_.version_value);
+        codec::write_le_ptr<uint32_t>(hdr.data() + 12, header_.page_size_value);
+        codec::write_le_ptr<uint32_t>(hdr.data() + 16, header_.bucket_count_value);
+        codec::write_le_ptr<uint64_t>(hdr.data() + 20, header_.next_overflow_page);
+        codec::write_le_ptr<uint32_t>(hdr.data() + 28, header_.checkpoint_log_file_id);
+        codec::write_le_ptr<uint64_t>(hdr.data() + 32, header_.checkpoint_log_offset);
         if (!file_->write(hdr.data(), page_size, 0)) {
             throw std::runtime_error("disk_hash_table: failed to write header page");
         }

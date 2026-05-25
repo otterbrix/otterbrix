@@ -4,7 +4,6 @@
 
 #include <cstring>
 #include <memory_resource>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 
@@ -134,18 +133,68 @@ namespace components::index::codec {
         }
     }
 
-    // Must stay format-compatible with existing disk_hash_single_field_index encoding.
     inline std::string encode_disk_hash_key(const logical_value_t& key) {
-        std::ostringstream os;
-        os << static_cast<int>(key.type().type()) << ":";
-        if (key.type().type() == components::types::logical_type::STRING_LITERAL) {
-            auto sv = key.value<std::string_view>();
-            os << sv.size() << ":";
-            os.write(sv.data(), static_cast<std::streamsize>(sv.size()));
-            return os.str();
+        auto append_raw = [](std::string& out, const void* data, size_t size) {
+            out.append(reinterpret_cast<const char*>(data), size);
+        };
+        auto append_le_std = [&](auto v, std::string& out) {
+            using T = decltype(v);
+            unsigned char bytes[sizeof(T)];
+            std::memcpy(bytes, &v, sizeof(T));
+            append_raw(out, bytes, sizeof(T));
+        };
+
+        std::string out;
+        out.reserve(32);
+
+        const auto t = key.type().type();
+        append_le_std(static_cast<uint8_t>(t), out);
+        switch (t) {
+            case logical_type_t::NA:
+                break;
+            case logical_type_t::BOOLEAN:
+                append_le_std(static_cast<uint8_t>(key.value<bool>() ? 1 : 0), out);
+                break;
+            case logical_type_t::TINYINT:
+                append_le_std(key.value<int8_t>(), out);
+                break;
+            case logical_type_t::UTINYINT:
+                append_le_std(key.value<uint8_t>(), out);
+                break;
+            case logical_type_t::SMALLINT:
+                append_le_std(key.value<int16_t>(), out);
+                break;
+            case logical_type_t::USMALLINT:
+                append_le_std(key.value<uint16_t>(), out);
+                break;
+            case logical_type_t::INTEGER:
+                append_le_std(key.value<int32_t>(), out);
+                break;
+            case logical_type_t::UINTEGER:
+                append_le_std(key.value<uint32_t>(), out);
+                break;
+            case logical_type_t::BIGINT:
+                append_le_std(key.value<int64_t>(), out);
+                break;
+            case logical_type_t::UBIGINT:
+                append_le_std(key.value<uint64_t>(), out);
+                break;
+            case logical_type_t::FLOAT:
+                append_le_std(key.value<float>(), out);
+                break;
+            case logical_type_t::DOUBLE:
+                append_le_std(key.value<double>(), out);
+                break;
+            case logical_type_t::STRING_LITERAL: {
+                auto sv = key.value<std::string_view>();
+                append_le_std(static_cast<uint32_t>(sv.size()), out);
+                append_raw(out, sv.data(), sv.size());
+                break;
+            }
+            default:
+                throw std::runtime_error("disk hash key codec: unsupported key type");
         }
-        os << key.hash();
-        return os.str();
+        return out;
     }
 
 } // namespace components::index::codec

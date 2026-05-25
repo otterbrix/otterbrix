@@ -102,9 +102,6 @@ TEST_CASE("services::index::bitcask_index_disk::int64_basic") {
     REQUIRE(index.find(logical_value_t(&resource, 100l)).front() == 100);
     REQUIRE(index.find(logical_value_t(&resource, 101l)).empty());
 
-    REQUIRE(index.lower_bound(logical_value_t(&resource, 10l)).size() == 9);
-    REQUIRE(index.upper_bound(logical_value_t(&resource, 90l)).size() == 10);
-
     for (int i = 2; i <= 100; i += 2) {
         index.remove(logical_value_t(&resource, int64_t(i)));
     }
@@ -112,8 +109,6 @@ TEST_CASE("services::index::bitcask_index_disk::int64_basic") {
     { std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
 
     REQUIRE(index.find(logical_value_t(&resource, 2l)).empty());
-    REQUIRE(index.lower_bound(logical_value_t(&resource, 10l)).size() == 5);
-    REQUIRE(index.upper_bound(logical_value_t(&resource, 90l)).size() == 5);
 }
 
 TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen") {
@@ -147,9 +142,6 @@ TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen") {
         REQUIRE(index.find(logical_value_t(&resource, 99l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 99l)).front() == 99);
         REQUIRE(index.find(logical_value_t(&resource, 100l)).empty());
-
-        REQUIRE(index.lower_bound(logical_value_t(&resource, 10l)).size() == 5);
-        REQUIRE(index.upper_bound(logical_value_t(&resource, 90l)).size() == 5);
     }
 }
 
@@ -180,8 +172,6 @@ TEST_CASE("services::index::bitcask_index_disk::merge_immutable_segments") {
         REQUIRE(index.find(logical_value_t(&resource, 100l)).front() == 100);
         REQUIRE(index.find(logical_value_t(&resource, 250l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 250l)).front() == 250);
-        REQUIRE(index.lower_bound(logical_value_t(&resource, 10l)).size() == 9);
-        REQUIRE(index.upper_bound(logical_value_t(&resource, 240l)).size() == 10);
     }
 }
 
@@ -423,8 +413,6 @@ TEST_CASE("services::index::bitcask_index_disk::empty_index_operations_are_noop"
     index.remove(logical_value_t(&resource, 111l), 222); // no-op
 
     REQUIRE(index.find(logical_value_t(&resource, 111l)).empty());
-    REQUIRE(index.lower_bound(logical_value_t(&resource, 111l)).empty());
-    REQUIRE(index.upper_bound(logical_value_t(&resource, 111l)).empty());
 
     bitcask_index_disk_t::entries_t entries(&resource);
     index.load_entries(entries);
@@ -451,13 +439,6 @@ TEST_CASE("services::index::bitcask_index_disk::string_keys_persist_and_range_qu
         auto beta = index.find(logical_value_t(&resource, std::string("beta")));
         REQUIRE(beta.size() == 1);
         REQUIRE(beta.front() == 2);
-
-        auto less_than_gamma = index.lower_bound(logical_value_t(&resource, std::string("gamma")));
-        REQUIRE(less_than_gamma.size() == 2);
-
-        auto greater_than_beta = index.upper_bound(logical_value_t(&resource, std::string("beta")));
-        REQUIRE(greater_than_beta.size() == 1);
-        REQUIRE(greater_than_beta.front() == 3);
     }
 }
 

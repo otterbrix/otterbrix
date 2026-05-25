@@ -13,6 +13,91 @@ using namespace components::table;
 using namespace components::expressions;
 using key = components::expressions::key_t;
 
+namespace {
+    enum class hash_index_mode { in_memory, on_disk };
+
+    std::unique_ptr<index_t> make_hash_mvcc_index(std::pmr::memory_resource* resource,
+                                                  const std::string& name,
+                                                  const std::string& file_name,
+                                                  hash_index_mode mode) {
+        if (mode == hash_index_mode::in_memory) {
+            return std::make_unique<hash_single_field_index_t>(resource, name, keys_base_storage_t{key(resource, "val")});
+        }
+        const auto base = std::filesystem::path("/tmp/index_disk/components_hash_mvcc_tests");
+        std::filesystem::create_directories(base);
+        const auto file = base / file_name;
+        std::filesystem::remove(file);
+        return std::make_unique<disk_hash_single_field_index_t>(
+            resource,
+            name,
+            keys_base_storage_t{key(resource, "val")},
+            std::make_unique<services::index::disk_hash_table_t>(file));
+    }
+
+    void run_txn_insert_search_contract(hash_index_mode mode) {
+        auto resource = std::pmr::synchronized_pool_resource();
+        auto index = make_hash_mvcc_index(&resource,
+                                          "test_hash_idx",
+                                          mode == hash_index_mode::in_memory ? "txn_insert_search_mem.bin"
+                                                                              : "txn_insert_search_disk.bin",
+                                          mode);
+
+        uint64_t txn1 = TRANSACTION_ID_START + 1;
+        uint64_t txn2 = TRANSACTION_ID_START + 2;
+
+        components::types::logical_value_t val42(&resource, int64_t(42));
+        index->insert(val42, int64_t(0), txn1, {});
+
+        auto result = index->search(compare_type::eq, val42, txn1 - 1, txn1, {});
+        REQUIRE(result.size() == 1);
+        REQUIRE(result[0] == 0);
+
+        result = index->search(compare_type::eq, val42, txn1 - 1, txn2, {});
+        REQUIRE(result.empty());
+
+        index->commit_insert(txn1, 10);
+        result = index->search(compare_type::eq, val42, 15, txn2, {});
+        REQUIRE(result.size() == 1);
+        REQUIRE(result[0] == 0);
+
+        index->revert_insert(txn1);
+        result = index->search(compare_type::eq, val42, txn1 - 1, txn1, {});
+        REQUIRE(result.empty());
+    }
+
+    void run_full_lifecycle_contract(hash_index_mode mode) {
+        auto resource = std::pmr::synchronized_pool_resource();
+        auto index = make_hash_mvcc_index(&resource,
+                                          "test_hash_idx",
+                                          mode == hash_index_mode::in_memory ? "full_lifecycle_mem.bin"
+                                                                              : "full_lifecycle_disk.bin",
+                                          mode);
+
+        uint64_t txn1 = TRANSACTION_ID_START + 1;
+        uint64_t txn2 = TRANSACTION_ID_START + 2;
+        uint64_t commit1 = 10;
+        uint64_t commit2 = 20;
+
+        components::types::logical_value_t val42(&resource, int64_t(42));
+
+        index->insert(val42, int64_t(0), txn1, {});
+        index->commit_insert(txn1, commit1);
+
+        auto result = index->search(compare_type::eq, val42, commit1 + 1, txn2, {});
+        REQUIRE(result.size() == 1);
+
+        index->mark_delete(val42, int64_t(0), txn2, {});
+        index->commit_delete(txn2, commit2);
+
+        result = index->search(compare_type::eq, val42, commit2 + 1, TRANSACTION_ID_START + 3, {});
+        REQUIRE(result.empty());
+
+        index->cleanup_versions(commit2 + 1);
+        result = index->search(compare_type::eq, val42, {});
+        REQUIRE(result.empty());
+    }
+} // namespace
+
 TEST_CASE("index_value_t:backward_compat") {
     SECTION("default constructor") {
         index_value_t val;
@@ -173,90 +258,19 @@ TEST_CASE("single_field_index:full_lifecycle") {
 }
 
 TEST_CASE("hash_single_field_index:txn_insert_search") {
-    auto resource = std::pmr::synchronized_pool_resource();
-    for (bool disk_mode : {false, true}) {
-        INFO("disk_mode=" << disk_mode);
-        std::unique_ptr<index_t> index;
-        if (!disk_mode) {
-            index = std::make_unique<hash_single_field_index_t>(&resource, "test_hash_idx", keys_base_storage_t{key(&resource, "val")});
-        } else {
-            const auto base = std::filesystem::path("/tmp/index_disk/components_hash_mvcc_tests");
-            std::filesystem::create_directories(base);
-            const auto file = base / "txn_insert_search.bin";
-            std::filesystem::remove(file);
-            index = std::make_unique<disk_hash_single_field_index_t>(
-                &resource,
-                "test_hash_idx",
-                keys_base_storage_t{key(&resource, "val")},
-                std::make_unique<services::index::disk_hash_table_t>(file));
-        }
-
-        uint64_t txn1 = TRANSACTION_ID_START + 1;
-        uint64_t txn2 = TRANSACTION_ID_START + 2;
-
-        components::types::logical_value_t val42(&resource, int64_t(42), {});
-        index->insert(val42, int64_t(0), txn1);
-
-        auto result = index->search(compare_type::eq, val42, txn1 - 1, txn1, {});
-        REQUIRE(result.size() == 1);
-        REQUIRE(result[0] == 0);
-
-        result = index->search(compare_type::eq, val42, txn1 - 1, txn2, {});
-        REQUIRE(result.empty());
-
-        index->commit_insert(txn1, 10);
-        result = index->search(compare_type::eq, val42, 15, txn2, {});
-        REQUIRE(result.size() == 1);
-        REQUIRE(result[0] == 0);
-
-        index->revert_insert(txn1);
-        result = index->search(compare_type::eq, val42, txn1 - 1, txn1, {});
-        REQUIRE(result.empty());
-    }
+    run_txn_insert_search_contract(hash_index_mode::in_memory);
 }
 
 TEST_CASE("hash_single_field_index:full_lifecycle") {
-    auto resource = std::pmr::synchronized_pool_resource();
-    for (bool disk_mode : {false, true}) {
-        INFO("disk_mode=" << disk_mode);
-        std::unique_ptr<index_t> index;
-        if (!disk_mode) {
-            index = std::make_unique<hash_single_field_index_t>(&resource, "test_hash_idx", keys_base_storage_t{key(&resource, "val")});
-        } else {
-            const auto base = std::filesystem::path("/tmp/index_disk/components_hash_mvcc_tests");
-            std::filesystem::create_directories(base);
-            const auto file = base / "full_lifecycle.bin";
-            std::filesystem::remove(file);
-            index = std::make_unique<disk_hash_single_field_index_t>(
-                &resource,
-                "test_hash_idx",
-                keys_base_storage_t{key(&resource, "val")},
-                std::make_unique<services::index::disk_hash_table_t>(file));
-        }
+    run_full_lifecycle_contract(hash_index_mode::in_memory);
+}
 
-        uint64_t txn1 = TRANSACTION_ID_START + 1;
-        uint64_t txn2 = TRANSACTION_ID_START + 2;
-        uint64_t commit1 = 10;
-        uint64_t commit2 = 20;
+TEST_CASE("disk_single_field_index:txn_insert_search") {
+    run_txn_insert_search_contract(hash_index_mode::on_disk);
+}
 
-        components::types::logical_value_t val42(&resource, int64_t(42));
-
-        index->insert(val42, int64_t(0), txn1, {});
-        index->commit_insert(txn1, commit1);
-
-        auto result = index->search(compare_type::eq, val42, commit1 + 1, txn2, {});
-        REQUIRE(result.size() == 1);
-
-        index->mark_delete(val42, int64_t(0), txn2, {});
-        index->commit_delete(txn2, commit2);
-
-        result = index->search(compare_type::eq, val42, commit2 + 1, TRANSACTION_ID_START + 3, {});
-        REQUIRE(result.empty());
-
-        index->cleanup_versions(commit2 + 1);
-        result = index->search(compare_type::eq, val42, {});
-        REQUIRE(result.empty());
-    }
+TEST_CASE("disk_single_field_index:full_lifecycle") {
+    run_full_lifecycle_contract(hash_index_mode::on_disk);
 }
 
 TEST_CASE("index_engine:txn_methods") {

@@ -10,6 +10,7 @@
 #include <components/logical_plan/node_limit.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
+#include <components/planner/optimizer/rules/hash_join.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -26,14 +27,15 @@ using logical_plan::join_type;
 using operators::operator_type;
 
 // ----------------------------------------------------------------------------
-// Part 1 — substitution: create_plan must produce operator_hash_join_t exactly
-// when the JOIN condition is a single eq(left.key, right.key) on an
-// inner/left/right/full join, and fall back to operator_join_t otherwise.
+// Part 1 — substitution: the optimizer's rewrite_hash_joins must turn a JOIN into
+// a node_hash_join_t (lowered to operator_hash_join_t) exactly when the condition
+// is a single eq(left.key, right.key) on an inner/left/right/full join, and leave
+// it a node_join_t (lowered to operator_join_t) otherwise.
 //
-// We feed create_plan a hand-built logical join node whose ON-condition keys
-// already carry side()+path() — the exact post-validate state the real
-// SQL→logical pipeline hands to the planner (transformer sets side(),
-// validate_schema sets path()).
+// We hand-build a logical join node whose ON-condition keys already carry
+// side()+path() — the exact post-validate state the real SQL→logical pipeline
+// reaches (transformer sets side(), validate_schema sets path()) — run the
+// optimizer rule, then lower with create_plan, mirroring the dispatcher pipeline.
 // ----------------------------------------------------------------------------
 namespace {
 
@@ -62,11 +64,12 @@ TEST_CASE("integration::cpp::hash_join::substitution") {
     std::pmr::monotonic_buffer_resource arena;
     auto* res = &arena;
 
-    services::context_storage_t context(res, log_t{});
+    services::context_storage_t context(res, log_t{}, core::date::timezone_offset_t{});
     compute::function_registry_t registry(res);
 
-    // Builds a fresh join node (two raw-data children + one comparison condition)
-    // and returns the physical operator type create_plan picks for it.
+    // Builds a fresh join node (two raw-data children + one comparison condition),
+    // runs the optimizer's hash-join rewrite, lowers it with create_plan, and
+    // returns the resulting physical operator type.
     auto plan_type = [&](join_type jt, compare_type cmp, side_t ls, side_t rs) {
         auto cond = expressions::make_compare_expression(res,
                                                          cmp,
@@ -76,7 +79,9 @@ TEST_CASE("integration::cpp::hash_join::substitution") {
         join->append_child(logical_plan::make_node_raw_data(res, build_two_int_chunk(res)));
         join->append_child(logical_plan::make_node_raw_data(res, build_two_int_chunk(res)));
         join->append_expression(cond);
-        auto plan = services::planner::create_plan(context, registry, join, logical_plan::limit_t::unlimit(), nullptr);
+        auto optimized = planner::optimizer::rewrite_hash_joins(res, join);
+        auto plan =
+            services::planner::create_plan(context, registry, optimized, logical_plan::limit_t::unlimit(), nullptr);
         REQUIRE(plan);
         return plan->type();
     };
@@ -124,7 +129,9 @@ TEST_CASE("integration::cpp::hash_join::substitution") {
         join->append_child(logical_plan::make_node_raw_data(res, build_two_int_chunk(res)));
         join->append_child(logical_plan::make_node_raw_data(res, build_two_int_chunk(res)));
         join->append_expression(cond);
-        auto plan = services::planner::create_plan(context, registry, join, logical_plan::limit_t::unlimit(), nullptr);
+        auto optimized = planner::optimizer::rewrite_hash_joins(res, join);
+        auto plan =
+            services::planner::create_plan(context, registry, optimized, logical_plan::limit_t::unlimit(), nullptr);
         REQUIRE(plan);
         CHECK(plan->type() == operator_type::join);
     }

@@ -19,6 +19,7 @@
 #include "impl/create_plan_fk_check.hpp"
 #include "impl/create_plan_get_schema.hpp"
 #include "impl/create_plan_group.hpp"
+#include "impl/create_plan_hash_join.hpp"
 #include "impl/create_plan_insert.hpp"
 #include "impl/create_plan_join.hpp"
 #include "impl/create_plan_match.hpp"
@@ -68,6 +69,8 @@ namespace services::planner {
                 return impl::create_plan_update(context, node);
             case node_type::join_t:
                 return impl::create_plan_join(context, function_registry, node, std::move(limit), params);
+            case node_type::hash_join_t:
+                return impl::create_plan_hash_join(context, function_registry, node, std::move(limit), params);
             case node_type::check_constraint_t:
                 return impl::create_plan_check_constraint(context, function_registry, node, params);
             case node_type::fk_check_t:

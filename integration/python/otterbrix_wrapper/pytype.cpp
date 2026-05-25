@@ -298,7 +298,7 @@ namespace otterbrix {
     
     static complex_logical_type FromDictionary(const py::object &obj) {
     	auto dict = py::reinterpret_steal<py::dict>(obj);
-    	vector<complex_logical_type> children;
+    	std::pmr::vector<complex_logical_type> children(std::pmr::get_default_resource());
     	if (dict.size() == 0) {
     		throw std::runtime_error("Could not convert empty dictionary to a duckdb STRUCT type");
     	}

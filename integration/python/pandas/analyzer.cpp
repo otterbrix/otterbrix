@@ -160,7 +160,7 @@ static bool UpgradeType(complex_logical_type &left, const complex_logical_type &
 		if (right.type() == logical_type::STRUCT) {
 			bool valid_struct = IsStructColumnValid(left, right);
 			if (valid_struct) {
-                vector<complex_logical_type> children;
+                std::pmr::vector<complex_logical_type> children(std::pmr::get_default_resource());
 				auto child_count = right.size();
 				assert(child_count == left.size());
 
@@ -282,8 +282,8 @@ static complex_logical_type EmptyMap() {
 }
 
 //! Check if the keys match
-static bool StructKeysAreEqual(const vector<complex_logical_type> &reference,
-                               const vector<complex_logical_type> &compare) {
+static bool StructKeysAreEqual(const std::pmr::vector<complex_logical_type> &reference,
+                               const std::pmr::vector<complex_logical_type> &compare) {
 	assert(reference.size() == compare.size());
 	for (idx_t i = 0; i < reference.size(); i++) {
 		auto &ref = reference[i].alias();
@@ -352,7 +352,7 @@ complex_logical_type PandasAnalyzer::DictToMap(const PyDictionary &dict, bool &c
 
 //! Python dictionaries don't allow duplicate keys, so we don't need to check this.
 complex_logical_type PandasAnalyzer::DictToStruct(const PyDictionary &dict, bool &can_convert) {
-    vector<complex_logical_type> struct_children;
+    std::pmr::vector<complex_logical_type> struct_children(std::pmr::get_default_resource());
 
 	for (idx_t i = 0; i < dict.len; i++) {
 		auto dict_key = dict.keys.attr("__getitem__")(i);

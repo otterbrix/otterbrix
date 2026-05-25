@@ -224,7 +224,7 @@ namespace otterbrix
         {
             return logical_value_t::create_struct(r, target_type, struct_values);
         }
-        std::vector<complex_logical_type> child_types;
+        std::pmr::vector<complex_logical_type> child_types(std::pmr::get_default_resource());
         child_types.reserve(struct_values.size());
         for (idx_t i = 0; i < struct_values.size(); i++)
         {

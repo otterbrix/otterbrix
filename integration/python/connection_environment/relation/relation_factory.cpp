@@ -49,7 +49,7 @@ namespace otterbrix {
                    using T = std::decay_t<decltype(expr)>; 
                    if constexpr (std::is_same_v<T, expressions::expression_ptr>) {
                        if (expr->group() == expressions::expression_group::compare) {
-                          return make_node_match(resource, {}, expr);
+                          return make_node_match(resource, core::dbname_t{}, core::relname_t{}, expr);
                        } else if constexpr (std::is_same_v<T, types::logical_value_t> || 
                                std::is_same_v<T, expressions::key_t>) {
                            throw std::runtime_error("The method supports only condition expressions");
@@ -85,7 +85,7 @@ namespace otterbrix {
                         }
                     }, expr));
         }
-        auto sort = make_node_sort(space->dispatcher()->resource(), {}, std::move(sort_exprs));
+        auto sort = make_node_sort(space->dispatcher()->resource(), core::dbname_t{}, core::relname_t{}, std::move(sort_exprs));
 
         return make_aggregate_relation(relation, nullptr, nullptr, sort, nullptr);
 
@@ -121,14 +121,14 @@ namespace otterbrix {
                         }
                     }, expr));
         }
-        auto group = make_node_group(space->dispatcher()->resource(), {}, std::move(fields));
+        auto group = make_node_group(space->dispatcher()->resource(), core::dbname_t{}, core::relname_t{}, std::move(fields));
 
         return make_aggregate_relation(relation, group, nullptr, nullptr, nullptr);
     }
 
     shared_ptr<Relation> RelationFactory::SelectRelation(shared_ptr<Relation> relation, const vector<Expression>& exprs) {
         auto* resource = space->dispatcher()->resource();
-        auto select = make_node_select(resource, {});
+        auto select = make_node_select(resource, core::dbname_t{}, core::relname_t{});
         for (const auto& expr : exprs) {
             auto scalar = std::visit([resource](const auto& field) -> expressions::expression_ptr {
                 using T = std::decay_t<decltype(field)>;
@@ -208,7 +208,7 @@ namespace otterbrix {
                 const Relation& val = *(rel.resource);
                 auto res = RelationFactory::Execute(val);
 
-                auto aggregator = logical_plan::make_node_aggregate(resource, {"tmp", rel.name});
+                auto aggregator = logical_plan::make_node_aggregate(resource, core::dbname_t{"tmp"}, core::relname_t{rel.name});
                 aggregator->append_child(res);
                 
                 if (rel.group) {
@@ -229,7 +229,7 @@ namespace otterbrix {
             } else if constexpr (std::is_same_v<plan_type, Relation::Join>) {
                 auto left = RelationFactory::Execute(*(rel.left));
                 auto right = RelationFactory::Execute(*(rel.right));
-                auto join_node = logical_plan::make_node_join(resource, {}, rel.join_type);
+                auto join_node = logical_plan::make_node_join(resource, core::dbname_t{}, core::relname_t{}, rel.join_type);
                 join_node->append_child(left);
                 join_node->append_child(right);
                 if (rel.conditions) {
@@ -241,7 +241,7 @@ namespace otterbrix {
                 return boost::static_pointer_cast<node_t>(join_node);
             } else if constexpr (std::is_same_v<plan_type, Relation::Limit>) {
                 auto child = RelationFactory::Execute(*(rel.resource));
-                auto limit_node = logical_plan::make_node_limit(resource, {}, limit_t(rel.count));
+                auto limit_node = logical_plan::make_node_limit(resource, core::dbname_t{}, core::relname_t{}, limit_t(rel.count));
                 limit_node->append_child(child);
                 return boost::static_pointer_cast<node_t>(limit_node);
             }

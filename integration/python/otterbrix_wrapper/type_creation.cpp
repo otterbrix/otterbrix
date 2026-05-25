@@ -24,8 +24,8 @@ namespace otterbrix {
         	return make_shared_ptr<OtterBrixPyType>(array_type);
         }
 
-        static vector<complex_logical_type> GetChildList(const py::object &container) {
-        	vector<complex_logical_type> types;
+        static std::pmr::vector<complex_logical_type> GetChildList(const py::object &container) {
+        	std::pmr::vector<complex_logical_type> types(std::pmr::get_default_resource());
         	if (py::isinstance<py::list>(container)) {
         		const py::list &fields = container;
         		idx_t i = 1;

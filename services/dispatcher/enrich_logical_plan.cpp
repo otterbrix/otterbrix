@@ -17,6 +17,7 @@
 #include "plan_resolve_index.hpp"
 #include "resolve_type.hpp"
 
+#include <components/catalog/catalog_codes.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_alter_column_add.hpp>
@@ -120,7 +121,14 @@ namespace services::dispatcher {
             // with the 8-byte payload. Rebuild each column vector with the
             // table's declared type; cast_as on logical_value_t handles the
             // recursive STRUCT/ARRAY descent.
-            if (!node->children().empty() && node->children().front() &&
+            // Skip for computing tables (relkind='g'): they adopt the literal's
+            // own type and may keep several same-name columns of different types
+            // (multi-type fields). Coercing every value to one resolved type would
+            // collapse those variants (e.g. a string 'val' cast to an existing
+            // BIGINT 'val'). Storage adopts the literal type directly, so the
+            // INTEGER/BIGINT width concern below does not apply there.
+            if (md->relkind != components::catalog::relkind::computed && !node->children().empty() &&
+                node->children().front() &&
                 node->children().front()->type() == components::logical_plan::node_type::data_t) {
                 auto* dat = static_cast<components::logical_plan::node_data_t*>(node->children().front().get());
                 auto& chunk = dat->data_chunk();

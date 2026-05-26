@@ -5,6 +5,7 @@
 #include "components/index/disk_hash_single_field_index.hpp"
 #include "components/index/hash_single_field_index.hpp"
 #include "components/index/index_engine.hpp"
+#include "components/index/logical_value_binary_codec.hpp"
 #include "components/index/single_field_index.hpp"
 #include "components/tests/generaty.hpp"
 #include "services/index/disk_hash_table.hpp"
@@ -162,4 +163,123 @@ TEST_CASE("disk_single_field_index:read_only_facade_direct_ops_do_not_materializ
     index->remove(value, {});
     range = index->find(value, {});
     REQUIRE(range.first == range.second);
+}
+
+TEST_CASE("disk_single_field_index:pending_insert_delete_and_txn_state") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto index = make_hash_index(&resource, "hash_count_disk_txn_state", hash_index_mode::on_disk);
+
+    const uint64_t txn_insert = components::table::TRANSACTION_ID_START + 201;
+    const uint64_t txn_delete = components::table::TRANSACTION_ID_START + 202;
+    components::types::logical_value_t key(&resource, int64_t(50));
+
+    index->insert(key, int64_t(700), txn_insert, {});
+
+    std::vector<int64_t> pending_rows;
+    index->for_each_pending_insert(txn_insert, [&](const components::types::logical_value_t& pending_key, int64_t row_id) {
+        REQUIRE(pending_key == key);
+        pending_rows.push_back(row_id);
+    });
+    REQUIRE(pending_rows.size() == 1);
+    REQUIRE(pending_rows.front() == 700);
+
+    auto visible_own_txn =
+        index->search(components::expressions::compare_type::eq, key, txn_insert - 1, txn_insert, {});
+    REQUIRE(visible_own_txn.size() == 1);
+    REQUIRE(visible_own_txn.front() == 700);
+
+    index->mark_delete(key, 700, txn_delete, {});
+    std::vector<int64_t> pending_delete_rows;
+    index->for_each_pending_delete(txn_delete, [&](const components::types::logical_value_t& pending_key, int64_t row_id) {
+        REQUIRE(pending_key == key);
+        pending_delete_rows.push_back(row_id);
+    });
+    REQUIRE(pending_delete_rows.size() == 1);
+    REQUIRE(pending_delete_rows.front() == 700);
+
+    // Own delete transaction should not see row anymore.
+    auto hidden_for_delete_txn =
+        index->search(components::expressions::compare_type::eq, key, txn_delete - 1, txn_delete, {});
+    REQUIRE(hidden_for_delete_txn.empty());
+
+    // Commit paths clear pending maps.
+    index->commit_insert(txn_insert, 1001);
+    index->commit_delete(txn_delete, 1002);
+
+    bool seen_after_commit_insert = false;
+    index->for_each_pending_insert(txn_insert, [&](const components::types::logical_value_t&, int64_t) {
+        seen_after_commit_insert = true;
+    });
+    REQUIRE_FALSE(seen_after_commit_insert);
+
+    bool seen_after_commit_delete = false;
+    index->for_each_pending_delete(txn_delete, [&](const components::types::logical_value_t&, int64_t) {
+        seen_after_commit_delete = true;
+    });
+    REQUIRE_FALSE(seen_after_commit_delete);
+}
+
+TEST_CASE("disk_single_field_index:revert_cleanup_and_clear_memory") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto index = make_hash_index(&resource, "hash_count_disk_cleanup", hash_index_mode::on_disk);
+
+    const uint64_t txn_insert = components::table::TRANSACTION_ID_START + 301;
+    const uint64_t txn_delete = components::table::TRANSACTION_ID_START + 302;
+    components::types::logical_value_t key(&resource, int64_t(77));
+
+    index->insert(key, int64_t(900), txn_insert, {});
+    index->mark_delete(key, 900, txn_delete, {});
+
+    index->cleanup_versions(123456); // no-op branch for disk facade
+
+    index->revert_insert(txn_insert);
+    bool seen_after_revert = false;
+    index->for_each_pending_insert(txn_insert, [&](const components::types::logical_value_t&, int64_t) {
+        seen_after_revert = true;
+    });
+    REQUIRE_FALSE(seen_after_revert);
+
+    index->clean_memory_to_new_elements(1);
+
+    bool seen_after_clean_delete = false;
+    index->for_each_pending_delete(txn_delete, [&](const components::types::logical_value_t&, int64_t) {
+        seen_after_clean_delete = true;
+    });
+    REQUIRE_FALSE(seen_after_clean_delete);
+}
+
+TEST_CASE("disk_single_field_index:find_reads_disk_and_normalizes_integer_keys") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    const auto base = std::filesystem::path("/tmp/index_disk/components_hash_normalize_tests");
+    std::filesystem::create_directories(base);
+    const auto file = base / "hash_count_disk_normalize.bin";
+    std::filesystem::remove(file);
+
+    auto table = std::make_unique<services::index::disk_hash_table_t>(file);
+    auto* table_raw = table.get();
+    auto index = std::make_unique<disk_hash_single_field_index_t>(
+        &resource,
+        "hash_count_disk_normalize",
+        keys_base_storage_t{key(&resource, "count")},
+        std::move(table));
+
+    // Persist committed row with BIGINT-encoded key.
+    components::types::logical_value_t key_bigint(&resource, int64_t(42));
+    const auto encoded = codec::encode_disk_hash_key(key_bigint);
+    REQUIRE(table_raw->put(encoded, 4242, 0, 0));
+
+    // Query with SMALLINT; normalize_key should cast integer family to BIGINT and match stored key.
+    components::types::logical_value_t key_smallint(&resource, int16_t(42));
+    auto eq_rows = index->search(components::expressions::compare_type::eq, key_smallint, 0, 0, {});
+    REQUIRE(eq_rows.size() == 1);
+    REQUIRE(eq_rows.front() == 4242);
+}
+
+TEST_CASE("disk_single_field_index:lower_upper_bound_not_supported") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto index = make_hash_index(&resource, "hash_count_disk_bounds", hash_index_mode::on_disk);
+    components::types::logical_value_t key(&resource, int64_t(1));
+
+    REQUIRE_THROWS(index->lower_bound(key, {}));
+    REQUIRE_THROWS(index->upper_bound(key, {}));
 }

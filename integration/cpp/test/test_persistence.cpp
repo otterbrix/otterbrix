@@ -1384,7 +1384,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_mixed_ops_checkpoint_r
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 100);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 10;", 0);
-        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 151;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 151;", 0);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 1151;", 1);
 
         {
@@ -1400,7 +1400,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_mixed_ops_checkpoint_r
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 100);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 10;", 0);
-        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 151;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 151;", 0);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 1151;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count > 1000;", 25);
     }

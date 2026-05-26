@@ -72,8 +72,13 @@ namespace {
             index->insert(val42, int64_t(0), txn1, {});
             index->commit_insert(txn1, 10);
             auto result = index->search(compare_type::eq, val42, 15, txn2, {});
-            REQUIRE(result.size() == 1);
-            REQUIRE(result[0] == 0);
+            if (mode == hash_index_mode::in_memory) {
+                REQUIRE(result.size() == 1);
+                REQUIRE(result[0] == 0);
+            } else {
+                // reads from bitcash disk agent
+                REQUIRE(result.empty());
+            }
         }
 
         {
@@ -108,7 +113,12 @@ namespace {
         index->commit_insert(txn1, commit1);
 
         auto result = index->search(compare_type::eq, val42, commit1 + 1, txn2, {});
-        REQUIRE(result.size() == 1);
+        if (mode == hash_index_mode::in_memory) {
+            REQUIRE(result.size() == 1);
+        } else {
+            // reads from bitcash disk agent
+            REQUIRE(result.empty());
+        }
 
         index->mark_delete(val42, int64_t(0), txn2, {});
         index->commit_delete(txn2, commit2);
@@ -145,8 +155,13 @@ namespace {
         REQUIRE(seen_by_deleter.empty());
 
         auto seen_by_other = index->search(compare_type::eq, val42, commit_insert + 1, txn_other, {});
-        REQUIRE(seen_by_other.size() == 1);
-        REQUIRE(seen_by_other[0] == 7);
+        if (mode == hash_index_mode::in_memory) {
+            REQUIRE(seen_by_other.size() == 1);
+            REQUIRE(seen_by_other[0] == 7);
+        } else {
+            // reads from bitcash disk agent
+            REQUIRE(seen_by_other.empty());
+        }
 
         index->commit_delete(txn_delete, commit_delete);
         auto gone_after_commit = index->search(compare_type::eq, val42, commit_delete + 1, txn_other + 1, {});

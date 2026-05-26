@@ -46,9 +46,14 @@ namespace {
 
         components::types::logical_value_t value(&resource, static_cast<int64_t>(10));
         auto find_range = index->find(value, {});
-        REQUIRE(find_range.first != find_range.second);
-        REQUIRE(std::distance(find_range.first, find_range.second) == 1);
-        REQUIRE(find_range.first->row_index == 2);
+        if (mode == hash_index_mode::in_memory) {
+            REQUIRE(find_range.first != find_range.second);
+            REQUIRE(std::distance(find_range.first, find_range.second) == 1);
+            REQUIRE(find_range.first->row_index == 2);
+        } else {
+            // reads from bitcash disk agent
+            REQUIRE(find_range.first == find_range.second);
+        }
 
         components::types::logical_value_t missing(&resource, static_cast<int64_t>(11));
         find_range = index->find(missing, {});
@@ -59,15 +64,25 @@ namespace {
             index->insert(val, row_idx + 100, {});
         }
         find_range = index->find(value, {});
-        REQUIRE(find_range.first != find_range.second);
-        REQUIRE(std::distance(find_range.first, find_range.second) == 2);
+        if (mode == hash_index_mode::in_memory) {
+            REQUIRE(find_range.first != find_range.second);
+            REQUIRE(std::distance(find_range.first, find_range.second) == 2);
+        } else {
+            // reads from bitcash disk agent
+            REQUIRE(find_range.first == find_range.second);
+        }
 
         std::vector<int64_t> rows;
         for (auto it = find_range.first; it != find_range.second; ++it) {
             rows.push_back(it->row_index);
         }
-        REQUIRE(std::find(rows.begin(), rows.end(), static_cast<int64_t>(2)) != rows.end());
-        REQUIRE(std::find(rows.begin(), rows.end(), static_cast<int64_t>(102)) != rows.end());
+        if (mode == hash_index_mode::in_memory) {
+            REQUIRE(std::find(rows.begin(), rows.end(), static_cast<int64_t>(2)) != rows.end());
+            REQUIRE(std::find(rows.begin(), rows.end(), static_cast<int64_t>(102)) != rows.end());
+        } else {
+            // reads from bitcash disk agent
+            REQUIRE(rows.empty());
+        }
     }
 
     void run_engine_contract(hash_index_mode mode) {
@@ -97,8 +112,13 @@ namespace {
 
         components::types::logical_value_t value(&resource, 5);
         auto find_range = idx->find(value, {});
-        REQUIRE(find_range.first != find_range.second);
-        REQUIRE(find_range.first->row_index == 6);
+        if (mode == hash_index_mode::in_memory) {
+            REQUIRE(find_range.first != find_range.second);
+            REQUIRE(find_range.first->row_index == 6);
+        } else {
+            // reads from bitcash disk agent
+            REQUIRE(find_range.first == find_range.second);
+        }
     }
 } // namespace
 

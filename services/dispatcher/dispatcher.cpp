@@ -1154,6 +1154,11 @@ namespace services::dispatcher {
             co_return std::move(error);
         }
 
+        // Late logical optimization. Runs after validate_schema has stamped key
+        // side()/path(), so schema-aware rewrites are safe here. Currently rewrites
+        // eligible nested-loop joins into hash joins (node_join_t -> node_hash_join_t).
+        logic_plan = components::planner::post_validate_optimize(resource(), std::move(logic_plan));
+
         // Enrich DML node fields with catalog metadata (NOT NULL, DEFAULT, CHECK exprs).
         // enrich reads exclusively from the plan-tree idx.
         {

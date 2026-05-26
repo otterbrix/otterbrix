@@ -22,7 +22,7 @@ namespace services::index {
     class bitcask_index_disk_t final : public index_disk_t {
     public:
         static constexpr uint64_t default_flush_threshold_{1000};
-        static constexpr uint64_t default_segment_record_limit_{100};
+        static constexpr uint64_t default_segment_record_limit_{5000};
 
         bitcask_index_disk_t(const path_t& path,
                              std::pmr::memory_resource* resource,
@@ -99,6 +99,7 @@ namespace services::index {
         std::pmr::memory_resource* resource_;
         mutable core::filesystem::local_file_system_t fs_;
         std::unique_ptr<core::filesystem::file_handle_t> file_;
+        std::unique_ptr<core::filesystem::file_handle_t> txn_log_file_;
         std::unique_ptr<disk_hash_table_t> hash_index_;
         uint64_t next_timestamp_{0};
         std::atomic<uint64_t> next_segment_id_{1};

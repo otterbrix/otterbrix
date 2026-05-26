@@ -516,19 +516,21 @@ namespace services::index {
         }
         header.crc = static_cast<uint32_t>(crc);
 
-        auto wal = open_file(fs_,
-                             txn_log_file_path(),
-                             file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
-                             file_lock_type::NO_LOCK);
-        if (!wal) {
-            throw std::runtime_error("failed to open bitcask txn log");
+        if (!txn_log_file_) {
+            txn_log_file_ = open_file(fs_,
+                                      txn_log_file_path(),
+                                      file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
+                                      file_lock_type::NO_LOCK);
+            if (!txn_log_file_) {
+                throw std::runtime_error("failed to open bitcask txn log");
+            }
         }
-        wal->seek(wal->file_size());
-        wal->write(&header, sizeof(header));
+        txn_log_file_->seek(txn_log_file_->file_size());
+        txn_log_file_->write(&header, sizeof(header));
         if (!payload.empty()) {
-            wal->write(payload.data(), payload.size());
+            txn_log_file_->write(payload.data(), payload.size());
         }
-        wal->sync();
+        txn_log_file_->sync();
     }
 
     void bitcask_index_disk_t::recover_txn_log_unlocked() {
@@ -594,14 +596,16 @@ namespace services::index {
     void bitcask_index_disk_t::apply_txn_inserts(uint64_t txn_id, const std::vector<std::pair<value_t, size_t>>& values) {
         std::unique_lock lock(mutex_);
         append_txn_record_unlocked(txn_id, 1, values);
-        auto wal = open_file(fs_,
-                             txn_log_file_path(),
-                             file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
-                             file_lock_type::NO_LOCK);
-        if (!wal) {
-            throw std::runtime_error("failed to open bitcask txn log");
+        if (!txn_log_file_) {
+            txn_log_file_ = open_file(fs_,
+                                      txn_log_file_path(),
+                                      file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
+                                      file_lock_type::NO_LOCK);
+            if (!txn_log_file_) {
+                throw std::runtime_error("failed to open bitcask txn log");
+            }
         }
-        const auto applied_offset = wal->file_size();
+        const auto applied_offset = txn_log_file_->file_size();
         for (const auto& [key, row_id] : values) {
             auto rows = current_rows(key);
             if (std::find(rows.begin(), rows.end(), row_id) != rows.end()) {
@@ -618,14 +622,16 @@ namespace services::index {
     void bitcask_index_disk_t::apply_txn_deletes(uint64_t txn_id, const std::vector<std::pair<value_t, size_t>>& values) {
         std::unique_lock lock(mutex_);
         append_txn_record_unlocked(txn_id, 2, values);
-        auto wal = open_file(fs_,
-                             txn_log_file_path(),
-                             file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
-                             file_lock_type::NO_LOCK);
-        if (!wal) {
-            throw std::runtime_error("failed to open bitcask txn log");
+        if (!txn_log_file_) {
+            txn_log_file_ = open_file(fs_,
+                                      txn_log_file_path(),
+                                      file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
+                                      file_lock_type::NO_LOCK);
+            if (!txn_log_file_) {
+                throw std::runtime_error("failed to open bitcask txn log");
+            }
         }
-        const auto applied_offset = wal->file_size();
+        const auto applied_offset = txn_log_file_->file_size();
         for (const auto& [key, row_id] : values) {
             auto rows = current_rows(key);
             if (rows.empty()) {
@@ -812,7 +818,9 @@ namespace services::index {
             auto payload = serialize_payload(resource_, key, rows);
             const auto offset = merged_file->seek_position();
             write_record(*merged_file, static_cast<uint8_t>(record_kind_t::value), ++next_timestamp_, payload);
-            hash_index_->put(key_bytes_for_hash(key),
+            const auto key_bytes = key_bytes_for_hash(key);
+            erase_all_refs_for_key(key_bytes);
+            hash_index_->put(key_bytes,
                              rows.empty() ? -1 : static_cast<int64_t>(rows.back()),
                              static_cast<uint32_t>(merged_segment_id),
                              offset + sizeof(record_header_t),
@@ -845,6 +853,7 @@ namespace services::index {
             reset_flush_state();
         }
         file_.reset();
+        txn_log_file_.reset();
         hash_index_.reset();
         reset_flush_state();
         next_timestamp_ = 0;

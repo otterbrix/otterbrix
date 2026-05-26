@@ -1,9 +1,11 @@
 #include <catch2/catch.hpp>
+#include <algorithm>
 #include <filesystem>
 
 #include "components/index/disk_hash_single_field_index.hpp"
 #include "components/index/hash_single_field_index.hpp"
 #include "components/index/index_engine.hpp"
+#include "components/index/logical_value_binary_codec.hpp"
 #include "components/index/single_field_index.hpp"
 #include "services/index/disk_hash_table.hpp"
 #include <components/table/row_version_manager.hpp>
@@ -404,4 +406,106 @@ TEST_CASE("index_engine:txn_methods") {
     auto result = idx->search(compare_type::eq, val, commit1 + 1, TRANSACTION_ID_START + 2, {});
     REQUIRE(result.size() == 1);
     REQUIRE(result[0] == 0);
+}
+
+TEST_CASE("disk_single_field_index:e2e_pending_mirror_finalize_via_engine") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto engine = make_index_engine(&resource);
+
+    const auto dir = std::filesystem::path("/tmp/index_disk/components_hash_mvcc_chain_e2e");
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const auto file = dir / "idx.bin";
+    std::filesystem::remove(file);
+    auto storage = std::make_unique<services::index::disk_hash_table_t>(file);
+    auto* storage_ptr = storage.get();
+
+    auto id = make_index<disk_hash_single_field_index_t>(engine,
+                                                         "idx_disk_chain",
+                                                         {key(&resource, "val")},
+                                                         std::move(storage));
+    auto* idx = search_index(engine, id);
+    REQUIRE(idx != nullptr);
+
+    auto dummy_agent = actor_zeta::address_t(&resource, &resource);
+    set_disk_agent(engine, id, dummy_agent, dummy_agent);
+
+    const uint64_t txn_insert = TRANSACTION_ID_START + 701;
+    const uint64_t commit_insert = 1701;
+    const uint64_t other_txn = TRANSACTION_ID_START + 702;
+    components::types::logical_value_t val42(&resource, int64_t(42));
+
+    idx->insert(val42, int64_t(55), txn_insert, {});
+    auto own_before_commit = idx->search(compare_type::eq, val42, txn_insert - 1, txn_insert, {});
+    REQUIRE(own_before_commit.size() == 1);
+    REQUIRE(own_before_commit[0] == 55);
+
+    engine->for_each_pending_disk_insert(txn_insert, [&](const actor_zeta::address_t& addr, const value_t& key_v, int64_t row_id) {
+        REQUIRE(addr == dummy_agent);
+        auto encoded = codec::encode_disk_hash_key(key_v);
+        storage_ptr->append_pending_insert(txn_insert, encoded, row_id);
+    });
+
+    idx->commit_insert(txn_insert, commit_insert);
+    storage_ptr->finalize_txn(txn_insert, true, false);
+
+    auto seen_by_other = idx->search(compare_type::eq, val42, commit_insert + 1, other_txn, {});
+    REQUIRE(!seen_by_other.empty());
+    REQUIRE(std::find(seen_by_other.begin(), seen_by_other.end(), int64_t(55)) != seen_by_other.end());
+}
+
+TEST_CASE("disk_single_field_index:e2e_restart_between_pending_and_finalize") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    const auto dir = std::filesystem::path("/tmp/index_disk/components_hash_mvcc_chain_restart");
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const auto file = dir / "idx.bin";
+    std::filesystem::remove(file);
+
+    const uint64_t txn_insert = TRANSACTION_ID_START + 801;
+    const uint64_t commit_insert = 1801;
+    const uint64_t other_txn = TRANSACTION_ID_START + 802;
+
+    {
+        auto engine = make_index_engine(&resource);
+        auto storage = std::make_unique<services::index::disk_hash_table_t>(file);
+        auto* storage_ptr = storage.get();
+        auto id = make_index<disk_hash_single_field_index_t>(engine,
+                                                             "idx_disk_chain_restart",
+                                                             {key(&resource, "val")},
+                                                             std::move(storage));
+        auto* idx = search_index(engine, id);
+        REQUIRE(idx != nullptr);
+        auto dummy_agent = actor_zeta::address_t(&resource, &resource);
+        set_disk_agent(engine, id, dummy_agent, dummy_agent);
+
+        components::types::logical_value_t val42(&resource, int64_t(42));
+        idx->insert(val42, int64_t(77), txn_insert, {});
+        engine->for_each_pending_disk_insert(txn_insert, [&](const actor_zeta::address_t&, const value_t& key_v, int64_t row_id) {
+            auto encoded = codec::encode_disk_hash_key(key_v);
+            storage_ptr->append_pending_insert(txn_insert, encoded, row_id);
+        });
+        idx->commit_insert(txn_insert, commit_insert);
+    }
+
+    {
+        auto reopened_storage = services::index::disk_hash_table_t(file);
+        REQUIRE(reopened_storage.checkpoint_txn_id() == 0);
+
+        auto reopened_index = disk_hash_single_field_index_t(&resource,
+                                                             "idx_disk_chain_restart",
+                                                             {key(&resource, "val")},
+                                                             std::make_unique<services::index::disk_hash_table_t>(file));
+        components::types::logical_value_t val42(&resource, int64_t(42));
+
+        auto before_finalize = reopened_index.search(compare_type::eq, val42, commit_insert + 1, other_txn, {});
+        REQUIRE(before_finalize.empty());
+
+        reopened_storage.finalize_txn(txn_insert, true, false);
+        REQUIRE(reopened_storage.checkpoint_txn_id() == txn_insert);
+
+        auto after_finalize = reopened_index.search(compare_type::eq, val42, commit_insert + 1, other_txn, {});
+        REQUIRE(!after_finalize.empty());
+        REQUIRE(std::find(after_finalize.begin(), after_finalize.end(), int64_t(77)) != after_finalize.end());
+    }
 }

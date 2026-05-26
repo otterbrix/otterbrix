@@ -137,3 +137,29 @@ TEST_CASE("hash_single_field_index:engine") {
 TEST_CASE("disk_single_field_index:engine") {
     run_engine_contract(hash_index_mode::on_disk);
 }
+
+TEST_CASE("disk_single_field_index:read_only_facade_direct_ops_do_not_materialize_committed_state") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto index = make_hash_index(&resource, "hash_count_disk_read_only", hash_index_mode::on_disk);
+    components::types::logical_value_t value(&resource, int64_t(42));
+
+    index->insert(value, int64_t(1), {});
+    auto range = index->find(value, {});
+    REQUIRE(range.first == range.second);
+
+    const uint64_t txn_insert = components::table::TRANSACTION_ID_START + 1001;
+    const uint64_t txn_other = components::table::TRANSACTION_ID_START + 1002;
+    index->insert(value, int64_t(2), txn_insert, {});
+
+    auto own_before_commit = index->search(components::expressions::compare_type::eq, value, txn_insert - 1, txn_insert, {});
+    REQUIRE(own_before_commit.size() == 1);
+    REQUIRE(own_before_commit[0] == 2);
+
+    index->commit_insert(txn_insert, 77);
+    auto other_after_commit = index->search(components::expressions::compare_type::eq, value, 78, txn_other, {});
+    REQUIRE(other_after_commit.empty());
+
+    index->remove(value, {});
+    range = index->find(value, {});
+    REQUIRE(range.first == range.second);
+}

@@ -802,10 +802,18 @@ namespace services::index {
             throw std::runtime_error("failed to create merged bitcask data file");
         }
 
+        struct merged_ref_t {
+            std::string key_bytes;
+            int64_t row;
+            uint64_t offset;
+        };
+
         std::vector<disk_hash_table_t::value_ref_t> refs;
         hash_index_->for_each([&](const disk_hash_table_t::value_ref_t& ref) {
             refs.push_back(ref);
         });
+        std::vector<merged_ref_t> merged_refs;
+        merged_refs.reserve(refs.size());
         for (const auto& ref : refs) {
             if (ref.log_file_id >= last_active_segment_id) {
                 continue;
@@ -818,15 +826,9 @@ namespace services::index {
             auto payload = serialize_payload(resource_, key, rows);
             const auto offset = merged_file->seek_position();
             write_record(*merged_file, static_cast<uint8_t>(record_kind_t::value), ++next_timestamp_, payload);
-            const auto key_bytes = key_bytes_for_hash(key);
-            erase_all_refs_for_key(key_bytes);
-            hash_index_->put(key_bytes,
-                             rows.empty() ? -1 : static_cast<int64_t>(rows.back()),
-                             static_cast<uint32_t>(merged_segment_id),
-                             offset + sizeof(record_header_t),
-                             [this](uint32_t log_file_id, uint64_t log_offset, std::string& out_key) {
-                                 return load_full_key_for_hash_ref(log_file_id, log_offset, out_key);
-                             });
+            merged_refs.push_back(
+                merged_ref_t{key_bytes_for_hash(key), rows.empty() ? -1 : static_cast<int64_t>(rows.back()),
+                             offset + sizeof(record_header_t)});
         }
 
         merged_file->sync();
@@ -834,6 +836,18 @@ namespace services::index {
         if (!move_files(fs_, temp_path, merged_path)) {
             throw std::runtime_error("failed to publish merged segment");
         }
+
+        for (const auto& merged_ref : merged_refs) {
+            erase_all_refs_for_key(merged_ref.key_bytes);
+            hash_index_->put(merged_ref.key_bytes,
+                             merged_ref.row,
+                             static_cast<uint32_t>(merged_segment_id),
+                             merged_ref.offset,
+                             [this](uint32_t log_file_id, uint64_t log_offset, std::string& out_key) {
+                                 return load_full_key_for_hash_ref(log_file_id, log_offset, out_key);
+                             });
+        }
+
         for (const auto& segment : immutable_segments) {
             remove_file(fs_, segment.path);
         }

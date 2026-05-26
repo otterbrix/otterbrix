@@ -147,7 +147,7 @@ namespace services::index {
         header_t header_{};
         uint64_t entry_count_{0};
         bool rehash_in_progress_{false};
-        double max_load_factor_{0.85};
+        double max_load_factor_{0.75};
         std::atomic<bool> suppress_auto_rehash_{false};
         bool auto_rehash_enabled_{true};
     };

@@ -72,7 +72,8 @@ namespace components::index {
         std::unordered_map<uint64_t, std::vector<std::pair<std::string, int64_t>>> pending_inserts_;
         std::unordered_map<uint64_t, std::vector<std::pair<std::string, int64_t>>> pending_deletes_;
 
-        std::string encode_key(const value_t& key) const;
+        value_t normalize_key(const value_t& key, core::date::timezone_offset_t local_timezone) const;
+        std::string encode_key(const value_t& key, core::date::timezone_offset_t local_timezone) const;
         disk_hash_storage_t& storage_ref() const;
 
     };

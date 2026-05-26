@@ -28,8 +28,11 @@ namespace services::index {
     using core::filesystem::file_lock_type;
     using core::filesystem::open_file;
 
-    disk_hash_table_t::disk_hash_table_t(const std::filesystem::path& file_path, uint32_t bucket_count)
-        : file_path_(file_path) {
+    disk_hash_table_t::disk_hash_table_t(const std::filesystem::path& file_path,
+                                         uint32_t bucket_count,
+                                         bool auto_rehash_enabled)
+        : file_path_(file_path)
+        , auto_rehash_enabled_(auto_rehash_enabled) {
         if (bucket_count == 0) {
             throw std::runtime_error("disk_hash_table: bucket_count must be > 0");
         }
@@ -271,6 +274,9 @@ namespace services::index {
     }
 
     bool disk_hash_table_t::maybe_rehash_if_needed_unlocked(const full_key_loader_t& key_loader) {
+        if (!auto_rehash_enabled_) {
+            return false;
+        }
         if (rehash_in_progress_ || header_.bucket_count_value == 0) {
             return false;
         }

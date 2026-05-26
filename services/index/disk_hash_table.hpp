@@ -27,7 +27,8 @@ namespace services::index {
         using full_key_loader_t = components::index::disk_hash_storage_t::full_key_loader_t;
 
         explicit disk_hash_table_t(const std::filesystem::path& file_path,
-                                   uint32_t bucket_count = default_bucket_count);
+                                   uint32_t bucket_count = default_bucket_count,
+                                   bool auto_rehash_enabled = true);
         ~disk_hash_table_t();
 
         bool put(std::string_view key,
@@ -166,6 +167,7 @@ namespace services::index {
         bool rehash_in_progress_{false};
         double max_load_factor_{0.85};
         std::atomic<bool> suppress_auto_rehash_{false};
+        bool auto_rehash_enabled_{true};
     };
 
 } // namespace services::index

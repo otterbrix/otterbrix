@@ -20,8 +20,29 @@ namespace components::index {
         return *disk_table_;
     }
 
-    std::string disk_hash_single_field_index_t::encode_key(const value_t& key) const {
-        return codec::encode_disk_hash_key(key);
+    value_t
+    disk_hash_single_field_index_t::normalize_key(const value_t& key, core::date::timezone_offset_t local_timezone) const {
+        using namespace components::types;
+        switch (key.type().type()) {
+            case logical_type::TINYINT:
+            case logical_type::SMALLINT:
+            case logical_type::INTEGER:
+            case logical_type::BIGINT:
+                return key.cast_as(complex_logical_type(logical_type::BIGINT), local_timezone);
+            case logical_type::UTINYINT:
+            case logical_type::USMALLINT:
+            case logical_type::UINTEGER:
+            case logical_type::UBIGINT:
+                return key.cast_as(complex_logical_type(logical_type::UBIGINT), local_timezone);
+            default:
+                return key;
+        }
+    }
+
+    std::string
+    disk_hash_single_field_index_t::encode_key(const value_t& key, core::date::timezone_offset_t local_timezone) const {
+        auto normalized = normalize_key(key, local_timezone);
+        return codec::encode_disk_hash_key(normalized);
     }
 
     namespace {
@@ -45,7 +66,7 @@ namespace components::index {
 
     index_t::range disk_hash_single_field_index_t::find_impl(const value_t& value, core::date::timezone_offset_t local_timezone) const {
         scratch_results_.clear();
-        const auto encoded = encode_key(value);
+        const auto encoded = encode_key(value, local_timezone);
         auto values = storage_ref().get_all(encoded);
         for (const auto& v : values) {
             scratch_results_.emplace_back(v.value, 0, table::NOT_DELETED_ID);
@@ -90,15 +111,13 @@ namespace components::index {
     }
 
     void disk_hash_single_field_index_t::insert_txn_impl(value_t key, int64_t row_index, uint64_t txn_id, core::date::timezone_offset_t local_timezone) {
-        auto encoded = encode_key(key);
+        auto encoded = encode_key(key, local_timezone);
         pending_inserts_[txn_id].emplace_back(encoded, row_index);
-        storage_ref().append_pending_insert(txn_id, encoded, row_index);
     }
 
     void disk_hash_single_field_index_t::mark_delete_impl(value_t key, int64_t row_index, uint64_t txn_id, core::date::timezone_offset_t local_timezone) {
-        auto encoded = encode_key(key);
+        auto encoded = encode_key(key, local_timezone);
         pending_deletes_[txn_id].emplace_back(encoded, row_index);
-        storage_ref().append_pending_delete(txn_id, encoded, row_index);
     }
 
     void disk_hash_single_field_index_t::commit_insert_impl(uint64_t txn_id, uint64_t commit_id) {

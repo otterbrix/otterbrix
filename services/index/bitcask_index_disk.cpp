@@ -25,6 +25,25 @@ namespace services::index {
     using core::filesystem::remove_file;
 
     namespace {
+        components::types::logical_value_t
+        normalize_hash_key(const components::types::logical_value_t& key, core::date::timezone_offset_t session_tz) {
+            using namespace components::types;
+            switch (key.type().type()) {
+                case logical_type::TINYINT:
+                case logical_type::SMALLINT:
+                case logical_type::INTEGER:
+                case logical_type::BIGINT:
+                    return key.cast_as(complex_logical_type(logical_type::BIGINT), session_tz);
+                case logical_type::UTINYINT:
+                case logical_type::USMALLINT:
+                case logical_type::UINTEGER:
+                case logical_type::UBIGINT:
+                    return key.cast_as(complex_logical_type(logical_type::UBIGINT), session_tz);
+                default:
+                    return key;
+            }
+        }
+
         constexpr const char* segment_prefix = "bitcask.";
         constexpr const char* segment_suffix = ".data";
         constexpr const char* current_segment_file = "CURRENT";
@@ -155,7 +174,11 @@ namespace services::index {
         , segment_record_limit_(segment_record_limit)
         , task_executor_(std::make_unique<bitcask_task_executor_t>()) {
         initialize_storage();
-        hash_index_ = std::make_unique<disk_hash_table_t>(hash_index_file_path_);
+        // Keep file identity stable for the facade reader: rehash recreates
+        // hash_index.bin and can leave other open handles on stale inode.
+        hash_index_ = std::make_unique<disk_hash_table_t>(hash_index_file_path_,
+                                                          disk_hash_table_t::default_bucket_count,
+                                                          false);
         load_from_disk();
         open_active_segment();
     }
@@ -164,6 +187,11 @@ namespace services::index {
 
     void bitcask_index_disk_t::enqueue_task(std::function<void()> task) { task_executor_->enqueue(std::move(task)); }
 
+    void bitcask_index_disk_t::set_bulk_mode(bool enabled) {
+        std::unique_lock lock(mutex_);
+        bulk_mode_ = enabled;
+    }
+
     void bitcask_index_disk_t::initialize_storage() {
         if (!std::filesystem::exists(path_)) {
             std::filesystem::create_directories(path_);
@@ -171,8 +199,8 @@ namespace services::index {
     }
 
     std::string bitcask_index_disk_t::key_bytes_for_hash(const value_t& key) const {
-        auto payload = serialize_payload(resource_, key, row_ids_t(resource_));
-        return std::string(payload.data(), payload.data() + payload.size());
+        auto normalized = normalize_hash_key(key, core::date::timezone_offset_t{});
+        return components::index::codec::encode_disk_hash_key(normalized);
     }
 
     uint32_t bitcask_index_disk_t::segment_id_from_path(const std::filesystem::path& path) {
@@ -312,6 +340,9 @@ namespace services::index {
     }
 
     void bitcask_index_disk_t::rotate_active_segment_if_needed() {
+        if (bulk_mode_) {
+            return;
+        }
         if (active_segment_records_ >= segment_record_limit_) {
             rotate_active_segment();
         }
@@ -465,6 +496,9 @@ namespace services::index {
     }
 
     void bitcask_index_disk_t::flush_if_needed() {
+        if (bulk_mode_) {
+            return;
+        }
         if (should_flush()) {
             force_flush_unlocked();
         }

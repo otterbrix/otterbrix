@@ -47,6 +47,7 @@ namespace services::index {
         void force_flush() override;
         void load_entries(entries_t& entries) const;
         void enqueue_task(std::function<void()> task);
+        void set_bulk_mode(bool enabled);
 
     private:
         enum class record_kind_t : uint8_t
@@ -94,6 +95,7 @@ namespace services::index {
         uint64_t active_segment_id_{0};
         uint64_t active_segment_records_{0};
         uint64_t segment_record_limit_{default_segment_record_limit_};
+        bool bulk_mode_{false};
         mutable std::shared_mutex mutex_;
         std::unique_ptr<bitcask_task_executor_t> task_executor_;
     };

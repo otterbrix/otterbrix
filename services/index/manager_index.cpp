@@ -541,15 +541,27 @@ namespace services::index {
                 insert_addrs.try_emplace(id, agent_addr);
                 insert_batches[id].emplace_back(value_t(resource_, key), static_cast<size_t>(row_index));
             });
+        if (txn_id != 0) {
+            engine->for_each_pending_disk_insert(
+                0,
+                [&](const actor_zeta::address_t& agent_addr, const components::index::value_t& key, int64_t row_index) {
+                    auto id = reinterpret_cast<uintptr_t>(agent_addr.get());
+                    insert_addrs.try_emplace(id, agent_addr);
+                    insert_batches[id].emplace_back(value_t(resource_, key), static_cast<size_t>(row_index));
+                });
+        }
         for (auto& [id, batch] : insert_batches) {
             auto& addr = insert_addrs.at(id);
             auto [ns, f] =
                 actor_zeta::otterbrix::send(addr, &index_agent_disk_t::insert_many, session, std::move(batch));
             schedule_agent(addr, ns);
-            pending_void_.emplace_back(std::move(f));
+            co_await std::move(f);
         }
 
         engine->commit_insert(txn_id, commit_id);
+        if (txn_id != 0) {
+            engine->commit_insert(0, commit_id);
+        }
 
         co_return;
     }
@@ -574,15 +586,27 @@ namespace services::index {
                 remove_addrs.try_emplace(id, agent_addr);
                 remove_batches[id].emplace_back(value_t(resource_, key), static_cast<size_t>(row_index));
             });
+        if (txn_id != 0) {
+            engine->for_each_pending_disk_delete(
+                0,
+                [&](const actor_zeta::address_t& agent_addr, const components::index::value_t& key, int64_t row_index) {
+                    auto id = reinterpret_cast<uintptr_t>(agent_addr.get());
+                    remove_addrs.try_emplace(id, agent_addr);
+                    remove_batches[id].emplace_back(value_t(resource_, key), static_cast<size_t>(row_index));
+                });
+        }
         for (auto& [id, batch] : remove_batches) {
             auto& addr = remove_addrs.at(id);
             auto [ns, f] =
                 actor_zeta::otterbrix::send(addr, &index_agent_disk_t::remove_many, session, std::move(batch));
             schedule_agent(addr, ns);
-            pending_void_.emplace_back(std::move(f));
+            co_await std::move(f);
         }
 
         engine->commit_delete(txn_id, commit_id);
+        if (txn_id != 0) {
+            engine->commit_delete(0, commit_id);
+        }
 
         co_return;
     }

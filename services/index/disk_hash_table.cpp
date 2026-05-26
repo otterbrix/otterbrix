@@ -2,7 +2,6 @@
 
 #include <components/index/logical_value_binary_codec.hpp>
 
-#include <fstream>
 #include <cstring>
 #include <mutex>
 #include <stdexcept>
@@ -38,7 +37,6 @@ namespace services::index {
         }
         header_.bucket_count_value = bucket_count;
         open_or_create();
-        initialize_pending_files_if_needed();
     }
 
     disk_hash_table_t::~disk_hash_table_t() {
@@ -310,51 +308,6 @@ namespace services::index {
         if (file_) {
             file_->sync();
         }
-    }
-
-    void disk_hash_table_t::append_pending_insert(uint64_t txn_id, std::string_view key, int64_t row_id) {
-        append_pending_record('I', txn_id, key, row_id);
-    }
-
-    void disk_hash_table_t::append_pending_delete(uint64_t txn_id, std::string_view key, int64_t row_id) {
-        append_pending_record('D', txn_id, key, row_id);
-    }
-
-    void disk_hash_table_t::finalize_txn(uint64_t txn_id, bool apply_inserts, bool apply_deletes) {
-        suppress_auto_rehash_.store(true, std::memory_order_release);
-        struct reset_rehash_guard_t {
-            std::atomic<bool>& flag;
-            ~reset_rehash_guard_t() { flag.store(false, std::memory_order_release); }
-        } reset_guard{suppress_auto_rehash_};
-
-        auto records = read_pending_records();
-        std::vector<pending_record_t> remaining;
-        remaining.reserve(records.size());
-        for (const auto& rec : records) {
-            if (rec.txn_id != txn_id) {
-                remaining.push_back(rec);
-                continue;
-            }
-            if (rec.op == 'I' && apply_inserts) {
-                put(rec.key, rec.row_id, 0, 0);
-            } else if (rec.op == 'D' && apply_deletes) {
-                erase(rec.key, rec.row_id);
-            }
-        }
-        write_pending_records(remaining);
-        write_checkpoint(txn_id);
-        sync();
-    }
-
-    uint64_t disk_hash_table_t::checkpoint_txn_id() const {
-        initialize_pending_files_if_needed();
-        std::ifstream in(checkpoint_file_path());
-        uint64_t id = 0;
-        if (!in.good()) {
-            return 0;
-        }
-        in >> id;
-        return in.fail() ? 0 : id;
     }
 
     void disk_hash_table_t::open_or_create() {
@@ -661,102 +614,5 @@ namespace services::index {
         }
     }
 
-    std::filesystem::path disk_hash_table_t::pending_log_path() const {
-        return file_path_.parent_path() / "pending.log";
-    }
-
-    std::filesystem::path disk_hash_table_t::checkpoint_file_path() const {
-        return file_path_.parent_path() / "pending.checkpoint";
-    }
-
-    void disk_hash_table_t::initialize_pending_files_if_needed() const {
-        const auto pending = pending_log_path();
-        const auto checkpoint = checkpoint_file_path();
-        if (!std::filesystem::exists(pending)) {
-            std::ofstream create(pending, std::ios::binary);
-        }
-        if (!std::filesystem::exists(checkpoint)) {
-            std::ofstream out(checkpoint, std::ios::trunc);
-            out << 0;
-        }
-    }
-
-    void disk_hash_table_t::append_pending_record(char op, uint64_t txn_id, std::string_view key, int64_t row_id) {
-        initialize_pending_files_if_needed();
-        std::ofstream out(pending_log_path(), std::ios::binary | std::ios::app);
-        if (!out.good()) {
-            throw std::runtime_error("disk_hash_table: cannot append pending log");
-        }
-        const uint32_t key_len = static_cast<uint32_t>(key.size());
-        out.write(&op, sizeof(op));
-        out.write(reinterpret_cast<const char*>(&txn_id), sizeof(txn_id));
-        out.write(reinterpret_cast<const char*>(&row_id), sizeof(row_id));
-        out.write(reinterpret_cast<const char*>(&key_len), sizeof(key_len));
-        if (key_len != 0) {
-            out.write(key.data(), key_len);
-        }
-    }
-
-    std::vector<disk_hash_table_t::pending_record_t> disk_hash_table_t::read_pending_records() const {
-        initialize_pending_files_if_needed();
-        std::vector<pending_record_t> records;
-        std::ifstream in(pending_log_path(), std::ios::binary);
-        if (!in.good()) {
-            return records;
-        }
-        while (true) {
-            pending_record_t rec{};
-            uint32_t key_len = 0;
-            in.read(&rec.op, sizeof(rec.op));
-            if (!in.good()) {
-                break;
-            }
-            in.read(reinterpret_cast<char*>(&rec.txn_id), sizeof(rec.txn_id));
-            in.read(reinterpret_cast<char*>(&rec.row_id), sizeof(rec.row_id));
-            in.read(reinterpret_cast<char*>(&key_len), sizeof(key_len));
-            if (!in.good()) {
-                break;
-            }
-            rec.key.resize(key_len);
-            if (key_len != 0) {
-                in.read(rec.key.data(), key_len);
-                if (!in.good()) {
-                    break;
-                }
-            }
-            records.emplace_back(std::move(rec));
-        }
-        return records;
-    }
-
-    void disk_hash_table_t::write_pending_records(const std::vector<pending_record_t>& records) {
-        initialize_pending_files_if_needed();
-        const auto tmp_path = pending_log_path().string() + ".tmp";
-        std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
-        if (!out.good()) {
-            throw std::runtime_error("disk_hash_table: cannot rewrite pending log");
-        }
-        for (const auto& rec : records) {
-            const uint32_t key_len = static_cast<uint32_t>(rec.key.size());
-            out.write(&rec.op, sizeof(rec.op));
-            out.write(reinterpret_cast<const char*>(&rec.txn_id), sizeof(rec.txn_id));
-            out.write(reinterpret_cast<const char*>(&rec.row_id), sizeof(rec.row_id));
-            out.write(reinterpret_cast<const char*>(&key_len), sizeof(key_len));
-            if (key_len != 0) {
-                out.write(rec.key.data(), key_len);
-            }
-        }
-        out.close();
-        std::filesystem::rename(tmp_path, pending_log_path());
-    }
-
-    void disk_hash_table_t::write_checkpoint(uint64_t finalized_txn_id) {
-        initialize_pending_files_if_needed();
-        std::ofstream out(checkpoint_file_path(), std::ios::trunc);
-        if (!out.good()) {
-            throw std::runtime_error("disk_hash_table: cannot write checkpoint");
-        }
-        out << finalized_txn_id;
-    }
 
 } // namespace services::index

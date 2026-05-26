@@ -94,9 +94,13 @@ namespace services::index {
     }
 
     index_agent_disk_t::unique_future<void>
-    index_agent_disk_t::insert_many(session_id_t session, std::vector<std::pair<value_t, size_t>> values) {
-        trace(log_, "index_agent_disk_t::insert_many: {}, session: {}", values.size(), session.data());
+    index_agent_disk_t::insert_many(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values) {
+        trace(log_, "index_agent_disk_t::insert_many: {}, txn_id: {}, session: {}", values.size(), txn_id, session.data());
         auto* bitcask = dynamic_cast<bitcask_index_disk_t*>(index_disk_.get());
+        if (bitcask && txn_id != 0) {
+            bitcask->apply_txn_inserts(txn_id, values);
+            co_return;
+        }
         struct bulk_guard_t {
             bitcask_index_disk_t* ptr{nullptr};
             ~bulk_guard_t() {
@@ -125,10 +129,18 @@ namespace services::index {
     }
 
     index_agent_disk_t::unique_future<void>
-    index_agent_disk_t::remove_many(session_id_t session, std::vector<std::pair<value_t, size_t>> values) {
-        trace(log_, "index_agent_disk_t::remove_many: {}, session: {}", values.size(), session.data());
+    index_agent_disk_t::remove_many(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values) {
+        trace(log_, "index_agent_disk_t::remove_many: {}, txn_id: {}, session: {}", values.size(), txn_id, session.data());
+        auto* bitcask = dynamic_cast<bitcask_index_disk_t*>(index_disk_.get());
+        if (bitcask && txn_id != 0) {
+            bitcask->apply_txn_deletes(txn_id, values);
+            co_return;
+        }
         for (const auto& [key, row_id] : values) {
             index_disk_->remove(key, row_id);
+        }
+        if (bitcask) {
+            bitcask->force_flush();
         }
         co_return;
     }

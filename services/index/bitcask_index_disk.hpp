@@ -48,6 +48,8 @@ namespace services::index {
         void load_entries(entries_t& entries) const;
         void enqueue_task(std::function<void()> task);
         void set_bulk_mode(bool enabled);
+        void apply_txn_inserts(uint64_t txn_id, const std::vector<std::pair<value_t, size_t>>& values);
+        void apply_txn_deletes(uint64_t txn_id, const std::vector<std::pair<value_t, size_t>>& values);
 
     private:
         enum class record_kind_t : uint8_t
@@ -80,6 +82,14 @@ namespace services::index {
         void erase_all_refs_for_key(std::string_view key_bytes);
         void append_snapshot(const value_t& key, const row_ids_t& rows);
         void append_tombstone(const value_t& key);
+        void append_txn_record_unlocked(uint64_t txn_id,
+                                        uint8_t op_kind,
+                                        const std::vector<std::pair<value_t, size_t>>& values);
+        void recover_txn_log_unlocked();
+        std::filesystem::path txn_log_file_path() const;
+        std::filesystem::path txn_applied_file_path() const;
+        uint64_t read_applied_log_offset() const;
+        void write_applied_log_offset(uint64_t offset) const;
         void flush_if_needed();
         void force_flush_unlocked();
 

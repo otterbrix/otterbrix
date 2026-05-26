@@ -553,7 +553,7 @@ namespace services::index {
         for (auto& [id, batch] : insert_batches) {
             auto& addr = insert_addrs.at(id);
             auto [ns, f] =
-                actor_zeta::otterbrix::send(addr, &index_agent_disk_t::insert_many, session, std::move(batch));
+                actor_zeta::otterbrix::send(addr, &index_agent_disk_t::insert_many, session, txn_id, std::move(batch));
             schedule_agent(addr, ns);
             co_await std::move(f);
         }
@@ -598,7 +598,7 @@ namespace services::index {
         for (auto& [id, batch] : remove_batches) {
             auto& addr = remove_addrs.at(id);
             auto [ns, f] =
-                actor_zeta::otterbrix::send(addr, &index_agent_disk_t::remove_many, session, std::move(batch));
+                actor_zeta::otterbrix::send(addr, &index_agent_disk_t::remove_many, session, txn_id, std::move(batch));
             schedule_agent(addr, ns);
             co_await std::move(f);
         }

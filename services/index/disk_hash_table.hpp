@@ -46,19 +46,8 @@ namespace services::index {
         uint32_t bucket_count() const;
         double load_factor() const;
         void sync() override;
-        void append_pending_insert(uint64_t txn_id, std::string_view key, int64_t row_id) override;
-        void append_pending_delete(uint64_t txn_id, std::string_view key, int64_t row_id) override;
-        void finalize_txn(uint64_t txn_id, bool apply_inserts, bool apply_deletes) override;
-        uint64_t checkpoint_txn_id() const override;
 
     private:
-        struct pending_record_t {
-            char op{'I'}; // I=insert, D=delete
-            uint64_t txn_id{0};
-            int64_t row_id{0};
-            std::string key;
-        };
-
         struct slot_t {
             uint16_t offset{0};
             uint16_t length{0};
@@ -149,13 +138,6 @@ namespace services::index {
                                                 uint64_t log_offset) const;
         uint64_t allocate_overflow_page();
         void persist_header();
-        std::filesystem::path pending_log_path() const;
-        std::filesystem::path checkpoint_file_path() const;
-        void initialize_pending_files_if_needed() const;
-        void append_pending_record(char op, uint64_t txn_id, std::string_view key, int64_t row_id);
-        std::vector<pending_record_t> read_pending_records() const;
-        void write_pending_records(const std::vector<pending_record_t>& records);
-        void write_checkpoint(uint64_t finalized_txn_id);
         bool erase(std::string_view key, std::optional<int64_t> expected_value, const full_key_loader_t& key_loader);
 
         std::filesystem::path file_path_;

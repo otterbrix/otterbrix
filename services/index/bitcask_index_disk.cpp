@@ -48,13 +48,24 @@ namespace services::index {
         constexpr const char* segment_suffix = ".data";
         constexpr const char* current_segment_file = "CURRENT";
         constexpr const char* hash_index_file = "hash_index.bin";
+        constexpr const char* txn_log_file = "bitcask.txn.log";
+        constexpr const char* txn_applied_file = "bitcask.txn.applied";
         constexpr unsigned segment_id_width = 6;
+        constexpr uint32_t txn_magic = 0x314E5854; // TXN1
 
         struct record_header_t {
             uint32_t crc;
             uint8_t kind;
             uint64_t payload_size;
             uint64_t timestamp;
+        };
+
+        struct txn_frame_header_t {
+            uint32_t magic;
+            uint32_t crc;
+            uint64_t txn_id;
+            uint8_t op_kind; // 1=insert, 2=delete(row)
+            uint64_t payload_size;
         };
 
         std::pmr::string serialize_payload(std::pmr::memory_resource* resource,
@@ -181,6 +192,7 @@ namespace services::index {
                                                           false);
         load_from_disk();
         open_active_segment();
+        recover_txn_log_unlocked();
     }
 
     bitcask_index_disk_t::~bitcask_index_disk_t() { force_flush(); }
@@ -445,6 +457,194 @@ namespace services::index {
         const auto key_bytes = key_bytes_for_hash(key);
         erase_all_refs_for_key(key_bytes);
         ++active_segment_records_;
+    }
+
+    std::filesystem::path bitcask_index_disk_t::txn_log_file_path() const { return path_ / txn_log_file; }
+
+    std::filesystem::path bitcask_index_disk_t::txn_applied_file_path() const { return path_ / txn_applied_file; }
+
+    uint64_t bitcask_index_disk_t::read_applied_log_offset() const {
+        std::ifstream in(txn_applied_file_path());
+        uint64_t offset = 0;
+        if (!in.good()) {
+            return 0;
+        }
+        in >> offset;
+        return in.fail() ? 0 : offset;
+    }
+
+    void bitcask_index_disk_t::write_applied_log_offset(uint64_t offset) const {
+        const auto applied_path = txn_applied_file_path();
+        const auto temp_path = applied_path.string() + ".tmp";
+        {
+            std::ofstream out(temp_path, std::ios::trunc);
+            if (!out.good()) {
+                throw std::runtime_error("failed to write txn applied temp file");
+            }
+            out << offset;
+            out.flush();
+            if (!out.good()) {
+                throw std::runtime_error("failed to flush txn applied temp file");
+            }
+        }
+        std::error_code ec;
+        std::filesystem::remove(applied_path, ec);
+        std::filesystem::rename(temp_path, applied_path);
+    }
+
+    void bitcask_index_disk_t::append_txn_record_unlocked(uint64_t txn_id,
+                                                           uint8_t op_kind,
+                                                           const std::vector<std::pair<value_t, size_t>>& values) {
+        std::pmr::string payload(resource_);
+        components::index::codec::append_le<uint32_t>(payload, static_cast<uint32_t>(values.size()));
+        for (const auto& [key, row_id] : values) {
+            components::index::codec::append_logical_value(payload, key);
+            components::index::codec::append_le<uint64_t>(payload, static_cast<uint64_t>(row_id));
+        }
+
+        txn_frame_header_t header{};
+        header.magic = txn_magic;
+        header.txn_id = txn_id;
+        header.op_kind = op_kind;
+        header.payload_size = static_cast<uint64_t>(payload.size());
+
+        absl::crc32c_t crc = absl::ComputeCrc32c(
+            absl::string_view(reinterpret_cast<const char*>(&header.txn_id),
+                              sizeof(header) - sizeof(header.magic) - sizeof(header.crc)));
+        if (!payload.empty()) {
+            crc = absl::ExtendCrc32c(crc, absl::string_view(payload.data(), payload.size()));
+        }
+        header.crc = static_cast<uint32_t>(crc);
+
+        auto wal = open_file(fs_,
+                             txn_log_file_path(),
+                             file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
+                             file_lock_type::NO_LOCK);
+        if (!wal) {
+            throw std::runtime_error("failed to open bitcask txn log");
+        }
+        wal->seek(wal->file_size());
+        wal->write(&header, sizeof(header));
+        if (!payload.empty()) {
+            wal->write(payload.data(), payload.size());
+        }
+        wal->sync();
+    }
+
+    void bitcask_index_disk_t::recover_txn_log_unlocked() {
+        const auto log_path = txn_log_file_path();
+        if (!std::filesystem::exists(log_path)) {
+            return;
+        }
+
+        const uint64_t applied_offset = read_applied_log_offset();
+        std::ifstream in(log_path, std::ios::binary);
+        if (!in.good()) {
+            return;
+        }
+        in.seekg(static_cast<std::streamoff>(applied_offset), std::ios::beg);
+
+        while (true) {
+            txn_frame_header_t header{};
+            in.read(reinterpret_cast<char*>(&header), sizeof(header));
+            if (!in.good()) {
+                break;
+            }
+            if (header.magic != txn_magic) {
+                throw std::runtime_error("bitcask txn log corruption: bad magic");
+            }
+            std::pmr::string payload(resource_);
+            payload.resize(static_cast<size_t>(header.payload_size));
+            if (header.payload_size != 0) {
+                in.read(payload.data(), static_cast<std::streamsize>(header.payload_size));
+                if (!in.good()) {
+                    break; // truncated tail: ignore
+                }
+            }
+
+            absl::crc32c_t calc = absl::ComputeCrc32c(
+                absl::string_view(reinterpret_cast<const char*>(&header.txn_id),
+                                  sizeof(header) - sizeof(header.magic) - sizeof(header.crc)));
+            if (!payload.empty()) {
+                calc = absl::ExtendCrc32c(calc, absl::string_view(payload.data(), payload.size()));
+            }
+            if (static_cast<uint32_t>(calc) != header.crc) {
+                throw std::runtime_error("bitcask txn log CRC mismatch");
+            }
+
+            size_t pos = 0;
+            const auto count = components::index::codec::read_le<uint32_t>(payload, pos);
+            for (uint32_t i = 0; i < count; ++i) {
+                auto key = components::index::codec::read_logical_value(resource_, payload, pos);
+                const auto row_id = static_cast<size_t>(components::index::codec::read_le<uint64_t>(payload, pos));
+                if (header.op_kind == 1) {
+                    insert(key, row_id);
+                } else if (header.op_kind == 2) {
+                    remove(key, row_id);
+                } else {
+                    throw std::runtime_error("bitcask txn log invalid op kind");
+                }
+            }
+            force_flush_unlocked();
+            const auto frame_end_offset = static_cast<uint64_t>(in.tellg());
+            write_applied_log_offset(frame_end_offset);
+        }
+    }
+
+    void bitcask_index_disk_t::apply_txn_inserts(uint64_t txn_id, const std::vector<std::pair<value_t, size_t>>& values) {
+        std::unique_lock lock(mutex_);
+        append_txn_record_unlocked(txn_id, 1, values);
+        auto wal = open_file(fs_,
+                             txn_log_file_path(),
+                             file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
+                             file_lock_type::NO_LOCK);
+        if (!wal) {
+            throw std::runtime_error("failed to open bitcask txn log");
+        }
+        const auto applied_offset = wal->file_size();
+        for (const auto& [key, row_id] : values) {
+            auto rows = current_rows(key);
+            if (std::find(rows.begin(), rows.end(), row_id) != rows.end()) {
+                continue;
+            }
+            rows.emplace_back(row_id);
+            append_snapshot(key, rows);
+            mark_operation_dirty();
+        }
+        force_flush_unlocked();
+        write_applied_log_offset(applied_offset);
+    }
+
+    void bitcask_index_disk_t::apply_txn_deletes(uint64_t txn_id, const std::vector<std::pair<value_t, size_t>>& values) {
+        std::unique_lock lock(mutex_);
+        append_txn_record_unlocked(txn_id, 2, values);
+        auto wal = open_file(fs_,
+                             txn_log_file_path(),
+                             file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
+                             file_lock_type::NO_LOCK);
+        if (!wal) {
+            throw std::runtime_error("failed to open bitcask txn log");
+        }
+        const auto applied_offset = wal->file_size();
+        for (const auto& [key, row_id] : values) {
+            auto rows = current_rows(key);
+            if (rows.empty()) {
+                continue;
+            }
+            const auto original_size = rows.size();
+            rows.erase(std::remove(rows.begin(), rows.end(), row_id), rows.end());
+            if (rows.size() == original_size) {
+                continue;
+            }
+            if (rows.empty()) {
+                append_tombstone(key);
+            } else {
+                append_snapshot(key, rows);
+            }
+            mark_operation_dirty();
+        }
+        force_flush_unlocked();
+        write_applied_log_offset(applied_offset);
     }
 
     void bitcask_index_disk_t::insert(const value_t& key, size_t value) {

@@ -754,6 +754,79 @@ TEST_CASE("services::index::bitcask_index_disk::very_long_string_key_persists") 
     }
 }
 
+TEST_CASE("services::index::bitcask_index_disk::txn_log_recovery_replays_committed_batch") {
+    auto resource = std::pmr::synchronized_pool_resource();
+
+    std::filesystem::path path{"/tmp/index_disk/bitcask_txn_recovery"};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    {
+        auto index = bitcask_index_disk_t(path, &resource);
+        std::vector<std::pair<logical_value_t, size_t>> inserts;
+        inserts.emplace_back(logical_value_t(&resource, 1001l), 11);
+        inserts.emplace_back(logical_value_t(&resource, 1002l), 22);
+        index.apply_txn_inserts(5001, inserts);
+    }
+
+    {
+        auto index = bitcask_index_disk_t(path, &resource);
+        REQUIRE(index.find(logical_value_t(&resource, 1001l)).size() == 1);
+        REQUIRE(index.find(logical_value_t(&resource, 1001l)).front() == 11);
+        REQUIRE(index.find(logical_value_t(&resource, 1002l)).size() == 1);
+        REQUIRE(index.find(logical_value_t(&resource, 1002l)).front() == 22);
+    }
+}
+
+TEST_CASE("services::index::bitcask_index_disk::txn_log_applied_checkpoint_prevents_replay_duplicates") {
+    auto resource = std::pmr::synchronized_pool_resource();
+
+    std::filesystem::path path{"/tmp/index_disk/bitcask_txn_recovery_idempotent"};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    {
+        auto index = bitcask_index_disk_t(path, &resource);
+        std::vector<std::pair<logical_value_t, size_t>> inserts;
+        inserts.emplace_back(logical_value_t(&resource, 2001l), 77);
+        index.apply_txn_inserts(6001, inserts);
+    }
+
+    {
+        auto index = bitcask_index_disk_t(path, &resource);
+        auto rows = index.find(logical_value_t(&resource, 2001l));
+        REQUIRE(rows.size() == 1);
+        REQUIRE(rows.front() == 77);
+    }
+}
+
+TEST_CASE("services::index::bitcask_index_disk::txn_log_recovery_is_order_independent_by_txn_id") {
+    auto resource = std::pmr::synchronized_pool_resource();
+
+    std::filesystem::path path{"/tmp/index_disk/bitcask_txn_recovery_out_of_order_txn_id"};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    {
+        auto index = bitcask_index_disk_t(path, &resource);
+        std::vector<std::pair<logical_value_t, size_t>> first;
+        first.emplace_back(logical_value_t(&resource, 3001l), 1);
+        index.apply_txn_inserts(9002, first);
+
+        std::vector<std::pair<logical_value_t, size_t>> second;
+        second.emplace_back(logical_value_t(&resource, 3002l), 2);
+        index.apply_txn_inserts(9001, second); // lower txn_id, committed later
+    }
+
+    {
+        auto index = bitcask_index_disk_t(path, &resource);
+        REQUIRE(index.find(logical_value_t(&resource, 3001l)).size() == 1);
+        REQUIRE(index.find(logical_value_t(&resource, 3001l)).front() == 1);
+        REQUIRE(index.find(logical_value_t(&resource, 3002l)).size() == 1);
+        REQUIRE(index.find(logical_value_t(&resource, 3002l)).front() == 2);
+    }
+}
+
 TEST_CASE("services::index::bitcask_index_disk::max_size_t_row_id_persists") {
     auto resource = std::pmr::synchronized_pool_resource();
 

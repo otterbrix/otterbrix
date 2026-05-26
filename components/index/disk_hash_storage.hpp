@@ -33,10 +33,6 @@ namespace components::index {
         virtual bool erase(std::string_view key, int64_t value, const full_key_loader_t& key_loader = {}) = 0;
         virtual void sync() = 0;
 
-        virtual void append_pending_insert(uint64_t txn_id, std::string_view key, int64_t row_id) = 0;
-        virtual void append_pending_delete(uint64_t txn_id, std::string_view key, int64_t row_id) = 0;
-        virtual void finalize_txn(uint64_t txn_id, bool apply_inserts, bool apply_deletes) = 0;
-        virtual uint64_t checkpoint_txn_id() const = 0;
     };
 
 } // namespace components::index

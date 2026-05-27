@@ -46,8 +46,12 @@ namespace components::operators {
                 continue;
             }
             for (const auto& ck : computed_keys_) {
-                auto result_vec =
-                    evaluate_arithmetic(resource_, ck.op, ck.operands, chunk, pipeline_context->parameters);
+                auto result_vec = evaluate_arithmetic(resource_,
+                                                      ck.op,
+                                                      ck.operands,
+                                                      chunk,
+                                                      pipeline_context->parameters,
+                                                      pipeline_context->session_tz);
                 if (result_vec.has_error()) {
                     set_error(result_vec.error());
                     return;
@@ -102,8 +106,7 @@ namespace components::operators {
         int64_t offset_val = limit_.offset();
         int64_t limit_val = limit_.limit();
         uint64_t skip = offset_val > 0 ? static_cast<uint64_t>(offset_val) : 0;
-        uint64_t take = (limit_val >= 0) ? static_cast<uint64_t>(limit_val)
-                                         : std::numeric_limits<uint64_t>::max();
+        uint64_t take = (limit_val >= 0) ? static_cast<uint64_t>(limit_val) : std::numeric_limits<uint64_t>::max();
 
         chunks_vector_t out_chunks(resource_);
         vector::data_chunk_t cur(resource_, out_types, vector::DEFAULT_VECTOR_CAPACITY);
@@ -154,8 +157,7 @@ namespace components::operators {
         if (!computed_keys_.empty()) {
             for (auto& chunk : in_chunks) {
                 if (chunk.data.size() > first_computed_col) {
-                    chunk.data.erase(chunk.data.begin() + static_cast<ptrdiff_t>(first_computed_col),
-                                     chunk.data.end());
+                    chunk.data.erase(chunk.data.begin() + static_cast<ptrdiff_t>(first_computed_col), chunk.data.end());
                 }
             }
         }

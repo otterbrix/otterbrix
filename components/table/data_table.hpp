@@ -38,6 +38,11 @@ namespace components::table {
                           table_scan_state& state,
                           std::pmr::memory_resource* resource);
 
+        // Scan only committed rows via committed_version_operator. Uncommitted deletes
+        // from in-flight transactions are NOT visible. Used by resolve_* on pg_catalog.* —
+        // those reads must not observe half-applied DDLs.
+        void scan_committed(vector::data_chunk_t& result, table_scan_state& state);
+
         void fetch(vector::data_chunk_t& result,
                    const std::vector<storage_index_t>& column_ids,
                    const vector::vector_t& row_ids,

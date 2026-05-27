@@ -9,10 +9,10 @@ set( ${PROJECT_NAME}_SOURCES
         test_collection_sql.cpp
         test_index.cpp
         test_insert.cpp
-        test_disk_index.cpp
         test_wal_pool.cpp
         test_persistence.cpp
         test_sql_features.cpp
+        test_correctness_bugs.cpp
         test_production_scenarios.cpp
         test_join.cpp
         test_join_raw.cpp
@@ -20,8 +20,10 @@ set( ${PROJECT_NAME}_SOURCES
         test_udfs.cpp
         test_batch_execution.cpp
         test_arithmetic.cpp
+        test_clean_break_startup.cpp
         test_column_projection.cpp
         test_computed_schema.cpp
+        test_hash_join.cpp
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})
@@ -30,6 +32,7 @@ target_link_libraries(
         ${PROJECT_NAME} PRIVATE
 
         cpp_otterbrix
+        non_thread_scheduler
 
         otterbrix::test_generaty
         otterbrix::log

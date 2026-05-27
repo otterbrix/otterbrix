@@ -81,6 +81,10 @@ namespace components::expressions {
                 return "unary_minus";
             case scalar_type::star_expand:
                 return "star_expand";
+            case scalar_type::jsonb_expand:
+                return "jsonb_expand";
+            case scalar_type::jsonb_delete:
+                return "jsonb_delete";
             default:
                 return "invalid";
         }

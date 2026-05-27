@@ -17,6 +17,7 @@ using components::session::session_id_t;
 struct benchmark_state_t {
     wrapper_dispatcher_t* dispatcher = nullptr;
     session_id_t session;
+    bool failed = false;
 };
 
 struct benchmark_result_t {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "identifier_types.hpp"
 #include "node.hpp"
 
 namespace components::logical_plan {
@@ -27,13 +28,19 @@ namespace components::logical_plan {
     class node_limit_t final : public node_t {
     public:
         explicit node_limit_t(std::pmr::memory_resource* resource,
-                              const collection_full_name_t& collection,
+                              core::dbname_t dbname,
+                              core::relname_t relname,
                               const limit_t& limit);
 
         const limit_t& limit() const;
         void set_limit(const limit_t& limit) { limit_ = limit; }
 
+        const std::string& relname() const noexcept { return relname_; }
+        const std::string& dbname() const noexcept { return dbname_; }
+
     private:
+        std::string dbname_;
+        std::string relname_;
         limit_t limit_;
 
         hash_t hash_impl() const override;
@@ -43,7 +50,8 @@ namespace components::logical_plan {
     using node_limit_ptr = boost::intrusive_ptr<node_limit_t>;
 
     node_limit_ptr make_node_limit(std::pmr::memory_resource* resource,
-                                   const collection_full_name_t& collection,
+                                   core::dbname_t dbname,
+                                   core::relname_t relname,
                                    const limit_t& limit);
 
 } // namespace components::logical_plan

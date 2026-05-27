@@ -1,4 +1,6 @@
 #include "vector_operations.hpp"
+#include <cmath>
+#include <components/types/operations_helper.hpp>
 #include <stdexcept>
 
 namespace components::vector::vector_ops {
@@ -882,6 +884,300 @@ namespace components::vector::vector_ops {
              source_count,
              source_offset,
              target_offset);
+    }
+
+    template<typename T = void>
+    struct copy_strided_callback_t;
+
+    template<>
+    struct copy_strided_callback_t<void> {
+        template<typename T>
+        void
+        operator()(const vector_t& source, vector_t& target, uint64_t count, uint64_t stride, uint64_t offset) const {
+            if constexpr (!std::is_same_v<T, std::string_view>) {
+                auto sdata = source.data<T>();
+                auto tdata = target.data<T>();
+                auto& smask = source.validity();
+                auto& tmask = target.validity();
+                for (uint64_t i = 0; i < count; ++i) {
+                    uint64_t tpos = i * stride + offset;
+                    bool valid = smask.row_is_valid(i);
+                    tmask.set(tpos, valid);
+                    if (valid) {
+                        tdata[tpos] = sdata[i];
+                    }
+                }
+            } else {
+                assert(false && "copy_strided_target: string type not supported");
+            }
+        }
+    };
+
+    template<typename T = void>
+    struct cast_vector_callback_t;
+
+    template<>
+    struct cast_vector_callback_t<void> {
+        template<typename DstType, typename SrcType>
+        void operator()(const vector_t& source, vector_t& target, uint64_t count) const {
+            if constexpr (!std::is_same_v<SrcType, std::string_view> && !std::is_same_v<DstType, std::string_view>) {
+                auto sdata = source.data<SrcType>();
+                auto tdata = target.data<DstType>();
+                auto& smask = source.validity();
+                auto& tmask = target.validity();
+                for (uint64_t i = 0; i < count; ++i) {
+                    bool valid = smask.row_is_valid(i);
+                    tmask.set(i, valid);
+                    if (valid) {
+                        if constexpr (std::is_same_v<DstType, bool> && std::is_floating_point_v<SrcType>) {
+                            tdata[i] = (sdata[i] < SrcType{0} || sdata[i] > SrcType{0});
+                        } else if constexpr ((std::is_same_v<DstType, types::int128_t> ||
+                                              std::is_same_v<DstType,
+                                                             types::uint128_t>) &&(std::is_same_v<SrcType, bool> ||
+                                                                                   (std::is_unsigned_v<SrcType> &&
+                                                                                    sizeof(SrcType) <= 2))) {
+                            tdata[i] = static_cast<DstType>(static_cast<uint64_t>(sdata[i]));
+                        } else {
+                            tdata[i] = static_cast<DstType>(sdata[i]);
+                        }
+                    }
+                }
+            } else {
+                assert(false && "cast_vector: string type not supported");
+            }
+        }
+    };
+    void
+    copy_strided_target(const vector_t& source, vector_t& target, uint64_t count, uint64_t stride, uint64_t offset) {
+        assert(source.get_vector_type() == vector_type::FLAT);
+        assert(target.get_vector_type() == vector_type::FLAT);
+        assert(source.type().to_physical_type() == target.type().to_physical_type());
+        types::simple_physical_type_switch<copy_strided_callback_t>(source.type().to_physical_type(),
+                                                                    source,
+                                                                    target,
+                                                                    count,
+                                                                    stride,
+                                                                    offset);
+    }
+
+    vector_t cast_vector(std::pmr::memory_resource* resource,
+                         const vector_t& source,
+                         const types::complex_logical_type& target_type,
+                         uint64_t count) {
+        assert(source.get_vector_type() == vector_type::FLAT);
+        vector_t target(resource, target_type, count);
+        types::double_simple_physical_type_switch<cast_vector_callback_t>(target_type.to_physical_type(),
+                                                                          source.type().to_physical_type(),
+                                                                          source,
+                                                                          target,
+                                                                          count);
+        return target;
+    }
+
+    template<typename = void>
+    struct unary_same_type_callback_t;
+
+    template<>
+    struct unary_same_type_callback_t<void> {
+        template<typename T>
+        void operator()(const vector_t& src, vector_t& dst, uint64_t count, unary_vector_op op) const {
+            if constexpr (std::is_same_v<T, std::string_view>) {
+                assert(false && "apply_unary_vector_op: string type unsupported");
+            } else {
+                const auto* s = src.data<T>();
+                auto* d = dst.data<T>();
+                const auto& sv = src.validity();
+                auto& dv = dst.validity();
+                for (uint64_t i = 0; i < count; ++i) {
+                    const bool valid = sv.row_is_valid(i);
+                    dv.set(i, valid);
+                    if (!valid)
+                        continue;
+                    if (op == unary_vector_op::abs) {
+                        if constexpr (std::is_same_v<T, types::int128_t>) {
+                            d[i] = s[i] < T{0} ? -s[i] : s[i];
+                        } else if constexpr (std::is_same_v<T, types::uint128_t> || std::is_unsigned_v<T> ||
+                                             std::is_same_v<T, bool>) {
+                            d[i] = s[i];
+                        } else {
+                            d[i] = static_cast<T>(std::abs(s[i]));
+                        }
+                    } else { // bit_not
+                        if constexpr (std::is_same_v<T, bool>) {
+                            d[i] = !s[i];
+                        } else if constexpr (std::is_integral_v<T> || std::is_same_v<T, types::int128_t> ||
+                                             std::is_same_v<T, types::uint128_t>) {
+                            d[i] = static_cast<T>(~s[i]);
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    template<typename = void>
+    struct unary_to_double_callback_t;
+
+    template<>
+    struct unary_to_double_callback_t<void> {
+        template<typename T>
+        void operator()(const vector_t& src, vector_t& dst, uint64_t count, unary_vector_op op) const {
+            if constexpr (std::is_same_v<T, std::string_view>) {
+                assert(false && "apply_unary_vector_op: string type unsupported");
+            } else {
+                const auto* s = src.data<T>();
+                auto* d = dst.data<double>();
+                const auto& sv = src.validity();
+                auto& dv = dst.validity();
+                for (uint64_t i = 0; i < count; ++i) {
+                    const bool valid = sv.row_is_valid(i);
+                    dv.set(i, valid);
+                    if (!valid)
+                        continue;
+                    const double val = static_cast<double>(s[i]);
+                    switch (op) {
+                        case unary_vector_op::sqr_root:
+                            d[i] = std::sqrt(val);
+                            break;
+                        case unary_vector_op::cube_root:
+                            d[i] = std::cbrt(val);
+                            break;
+                        case unary_vector_op::factorial:
+                            d[i] = std::tgamma(val + 1.0);
+                            break;
+                        default:
+                            d[i] = val;
+                            break;
+                    }
+                }
+            }
+        }
+    };
+
+    vector_t apply_unary_vector_op(std::pmr::memory_resource* resource,
+                                   unary_vector_op op,
+                                   const vector_t& src,
+                                   uint64_t count) {
+        const bool to_double =
+            op == unary_vector_op::sqr_root || op == unary_vector_op::cube_root || op == unary_vector_op::factorial;
+        vector_t result(resource,
+                        to_double ? types::complex_logical_type(types::logical_type::DOUBLE) : src.type(),
+                        count);
+        if (to_double) {
+            types::simple_physical_type_switch<unary_to_double_callback_t>(src.type().to_physical_type(),
+                                                                           src,
+                                                                           result,
+                                                                           count,
+                                                                           op);
+        } else {
+            types::simple_physical_type_switch<unary_same_type_callback_t>(src.type().to_physical_type(),
+                                                                           src,
+                                                                           result,
+                                                                           count,
+                                                                           op);
+        }
+        return result;
+    }
+
+    template<typename = void>
+    struct binary_same_type_callback_t;
+
+    template<>
+    struct binary_same_type_callback_t<void> {
+        template<typename T>
+        void
+        operator()(const vector_t& lhs, const vector_t& rhs, vector_t& dst, uint64_t count, binary_vector_op op) const {
+            if constexpr (std::is_same_v<T, std::string_view> || std::is_floating_point_v<T>) {
+                assert(false && "apply_binary_vector_op: bitwise/shift unsupported for non-integer types");
+            } else {
+                const auto* l = lhs.data<T>();
+                const auto* r = rhs.data<T>();
+                auto* d = dst.data<T>();
+                const auto& lv = lhs.validity();
+                const auto& rv = rhs.validity();
+                auto& dv = dst.validity();
+                for (uint64_t i = 0; i < count; ++i) {
+                    const bool valid = lv.row_is_valid(i) && rv.row_is_valid(i);
+                    dv.set(i, valid);
+                    if (!valid)
+                        continue;
+                    if constexpr (std::is_same_v<T, bool>) {
+                        switch (op) {
+                            case binary_vector_op::bit_and:
+                                d[i] = l[i] && r[i];
+                                break;
+                            case binary_vector_op::bit_or:
+                                d[i] = l[i] || r[i];
+                                break;
+                            case binary_vector_op::bit_xor:
+                                d[i] = l[i] != r[i];
+                                break;
+                            default:
+                                d[i] = l[i];
+                                break;
+                        }
+                    } else {
+                        switch (op) {
+                            case binary_vector_op::bit_and:
+                                d[i] = static_cast<T>(l[i] & r[i]);
+                                break;
+                            case binary_vector_op::bit_or:
+                                d[i] = static_cast<T>(l[i] | r[i]);
+                                break;
+                            case binary_vector_op::bit_xor:
+                                d[i] = static_cast<T>(l[i] ^ r[i]);
+                                break;
+                            case binary_vector_op::shift_left:
+                                d[i] = static_cast<T>(l[i] << static_cast<int>(r[i]));
+                                break;
+                            case binary_vector_op::shift_right:
+                                d[i] = static_cast<T>(l[i] >> static_cast<int>(r[i]));
+                                break;
+                            default:
+                                d[i] = l[i];
+                                break;
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    vector_t apply_binary_vector_op(std::pmr::memory_resource* resource,
+                                    binary_vector_op op,
+                                    const vector_t& lhs,
+                                    const vector_t& rhs,
+                                    uint64_t count) {
+        if (op == binary_vector_op::exp) {
+            const auto dbl_type = types::complex_logical_type(types::logical_type::DOUBLE);
+            auto lhs_d = cast_vector(resource, lhs, dbl_type, count);
+            auto rhs_d = cast_vector(resource, rhs, dbl_type, count);
+            vector_t result(resource, dbl_type, count);
+            const auto* l = lhs_d.data<double>();
+            const auto* r = rhs_d.data<double>();
+            auto* d = result.data<double>();
+            const auto& lv = lhs.validity();
+            const auto& rv = rhs.validity();
+            auto& dv = result.validity();
+            for (uint64_t i = 0; i < count; ++i) {
+                const bool valid = lv.row_is_valid(i) && rv.row_is_valid(i);
+                dv.set(i, valid);
+                if (valid)
+                    d[i] = std::pow(l[i], r[i]);
+            }
+            return result;
+        }
+
+        const auto lhs_phys = lhs.type().to_physical_type();
+        std::optional<vector_t> rhs_casted;
+        const vector_t* rhs_ptr = &rhs;
+        if (lhs_phys != rhs.type().to_physical_type()) {
+            rhs_casted.emplace(cast_vector(resource, rhs, lhs.type(), count));
+            rhs_ptr = &rhs_casted.value();
+        }
+        vector_t result(resource, lhs.type(), count);
+        types::simple_physical_type_switch<binary_same_type_callback_t>(lhs_phys, lhs, *rhs_ptr, result, count, op);
+        return result;
     }
 
     void hash(vector_t& input, vector_t& result, uint64_t count) {

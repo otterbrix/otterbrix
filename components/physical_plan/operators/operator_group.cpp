@@ -268,14 +268,15 @@ namespace components::operators {
                                                           comp.op,
                                                           comp.operands,
                                                           chunk,
-                                                          pipeline_context->parameters);
+                                                          pipeline_context->parameters,
+                                                          pipeline_context->session_tz);
                     if (result_vec.has_error()) {
                         set_error(result_vec.error());
                         return;
                     } else if (result_vec.value().type().type() == types::logical_type::NA) {
-                        set_error(core::error_t(
-                            core::error_code_t::physical_plan_error,
-                            std::pmr::string{"unknown error during evaluate_arithmetic", resource_}));
+                        set_error(
+                            core::error_t(core::error_code_t::physical_plan_error,
+                                          std::pmr::string{"unknown error during evaluate_arithmetic", resource_}));
                         return;
                     }
                     result_vec.value().set_type_alias(std::string(comp.alias));
@@ -287,8 +288,7 @@ namespace components::operators {
             if (!computed_columns_.empty()) {
                 for (size_t ci = 0; ci < computed_columns_.size(); ci++) {
                     if (computed_columns_[ci].resolved_key_index != SIZE_MAX) {
-                        keys_[computed_columns_[ci].resolved_key_index].full_path.emplace_back(
-                            first_computed_col + ci);
+                        keys_[computed_columns_[ci].resolved_key_index].full_path.emplace_back(first_computed_col + ci);
                     }
                 }
             }
@@ -296,8 +296,7 @@ namespace components::operators {
             // Phase 2: Group by keys, or treat entire input as one group when there are no keys.
             if (keys_.empty()) {
                 size_t total = 0;
-                for (const auto& c : in_chunks)
-                    total += c.size();
+                for (const auto& c : in_chunks) total += c.size();
                 std::pmr::vector<row_ref_t> all_refs(resource_);
                 all_refs.reserve(total);
                 for (uint32_t ci = 0; ci < in_chunks.size(); ++ci) {
@@ -315,23 +314,26 @@ namespace components::operators {
             // Phase 3: Aggregate per group + build result chunk
             auto result = calc_aggregate_values(pipeline_context, in_chunks);
 
-            // Phase 4: Post-aggregate arithmetic (columnar)
+            // Post-aggregate arithmetic (columnar)
             size_t size_before_post = result.data.size();
             calc_post_aggregates(pipeline_context, result);
 
-            // Phase 5: Remove internal aggregate columns by position
+            // Remove internal aggregate columns by position
             if (internal_aggregate_count_ > 0) {
                 auto it_end = result.data.begin() + static_cast<std::ptrdiff_t>(size_before_post);
                 auto it_begin = it_end - static_cast<std::ptrdiff_t>(internal_aggregate_count_);
                 result.data.erase(it_begin, it_end);
             }
 
-            // Phase 6: HAVING filter (columnar)
+            // HAVING filter (columnar)
             if (having_) {
                 filter_having(pipeline_context, result);
             }
 
-            // Phase 7: Output
+            // Output. SELECT-order column reordering (formerly inline here via
+            // select_order_) is now handled by the downstream operator_select_t
+            // (PR #479 Projection lineage). Group emits columns in its internal
+            // order; the explicit SELECT operator picks/reorders them by name.
             output_ = operators::make_operator_data(in->resource(), std::move(result));
             output_ = operators::split_large_output(in->resource(), std::move(output_));
 
@@ -371,7 +373,8 @@ namespace components::operators {
                 agg_results.push_back(std::move(results));
             }
             group_keys_.push_back({});
-            auto result = build_result_chunk(1, 0, agg_results);
+            chunks_vector_t empty_in_chunks(resource_);
+            auto result = build_result_chunk(1, 0, agg_results, empty_in_chunks);
             output_ = operators::make_operator_data(resource_, std::move(result));
         } else if (!computed_columns_.empty()) {
             // Constants-only query (no FROM clause): evaluate arithmetic on a virtual single row
@@ -380,8 +383,12 @@ namespace components::operators {
             chunk.set_cardinality(1);
 
             for (auto& comp : computed_columns_) {
-                auto result_vec =
-                    evaluate_arithmetic(resource_, comp.op, comp.operands, chunk, pipeline_context->parameters);
+                auto result_vec = evaluate_arithmetic(resource_,
+                                                      comp.op,
+                                                      comp.operands,
+                                                      chunk,
+                                                      pipeline_context->parameters,
+                                                      pipeline_context->session_tz);
                 if (result_vec.has_error()) {
                     set_error(result_vec.error());
                     return;
@@ -403,7 +410,7 @@ namespace components::operators {
         bool use_fast_path = true;
         std::pmr::vector<size_t> key_col_indices(resource_);
         for (const auto& key : keys_) {
-            if (key.type != group_key_t::kind::column || key.full_path.size() > 1) {
+            if (key.type != group_key_t::kind::column || key.full_path.size() != 1) {
                 use_fast_path = false;
                 break;
             }
@@ -432,8 +439,7 @@ namespace components::operators {
                     if (it != group_index_.end()) {
                         for (size_t idx : it->second) {
                             if (keys_match(chunk, key_col_indices, row_idx, group_keys_[idx])) {
-                                row_refs_per_group_[idx].emplace_back(chunk_idx,
-                                                                      static_cast<uint32_t>(row_idx));
+                                row_refs_per_group_[idx].emplace_back(chunk_idx, static_cast<uint32_t>(row_idx));
                                 is_new = false;
                                 break;
                             }
@@ -475,8 +481,7 @@ namespace components::operators {
                     if (it != group_index_.end()) {
                         for (size_t idx : it->second) {
                             if (key_vals == group_keys_[idx]) {
-                                row_refs_per_group_[idx].emplace_back(chunk_idx,
-                                                                      static_cast<uint32_t>(row_idx));
+                                row_refs_per_group_[idx].emplace_back(chunk_idx, static_cast<uint32_t>(row_idx));
                                 is_new = false;
                                 break;
                             }
@@ -501,8 +506,7 @@ namespace components::operators {
         size_t key_count = num_groups > 0 ? group_keys_[0].size() : 0;
 
         size_t total_rows = 0;
-        for (const auto& c : in_chunks)
-            total_rows += c.size();
+        for (const auto& c : in_chunks) total_rows += c.size();
 
         // Try vectorized path: check if all aggregators are builtin with simple column args
         bool can_vectorize = num_groups > 0 && total_rows > 0;
@@ -625,15 +629,15 @@ namespace components::operators {
                 agg_results.push_back(std::move(results));
             }
 
-            return build_result_chunk(num_groups, key_count, agg_results);
+            return build_result_chunk(num_groups, key_count, agg_results, in_chunks);
         }
 
         // Fallback: gather per-group subchunk from multi-chunk source.
         return calc_aggregate_values_fallback(pipeline_context, in_chunks);
     }
 
-    vector::data_chunk_t
-    operator_group_t::calc_aggregate_values_fallback(pipeline::context_t* pipeline_context, chunks_vector_t& in_chunks) {
+    vector::data_chunk_t operator_group_t::calc_aggregate_values_fallback(pipeline::context_t* pipeline_context,
+                                                                          chunks_vector_t& in_chunks) {
         size_t num_groups = group_keys_.size();
         size_t key_count = num_groups > 0 ? group_keys_[0].size() : 0;
 
@@ -678,13 +682,9 @@ namespace components::operators {
                 }
 
                 for (size_t c = 0; c < col_count; ++c) {
-                    if (is_placeholder(src.data[c])) continue;
-                    vector::vector_ops::copy(src.data[c],
-                                             grp.data[c],
-                                             indexing,
-                                             span_len,
-                                             0,
-                                             span_start);
+                    if (is_placeholder(src.data[c]))
+                        continue;
+                    vector::vector_ops::copy(src.data[c], grp.data[c], indexing, span_len, 0, span_start);
                 }
                 vector::vector_ops::copy(src.row_ids, grp.row_ids, indexing, span_len, 0, span_start);
             }
@@ -735,18 +735,35 @@ namespace components::operators {
             agg_results.push_back(std::move(results));
         }
 
-        return build_result_chunk(num_groups, key_count, agg_results);
+        return build_result_chunk(num_groups, key_count, agg_results, in_chunks);
     }
 
     vector::data_chunk_t
     operator_group_t::build_result_chunk(size_t num_groups,
                                          size_t key_count,
-                                         std::pmr::vector<std::pmr::vector<types::logical_value_t>>& agg_results) {
-        // Build result types: key types + aggregate types
+                                         std::pmr::vector<std::pmr::vector<types::logical_value_t>>& agg_results,
+                                         const chunks_vector_t& in_chunks) {
+        // Build result types: key types + aggregate types.
+        // Source key types from the incoming chunk's column schema (stable across
+        // NULL handling), not from group_keys_[0][k] — a NULL value in the first
+        // group would otherwise set out_types[k] = logical_type::NA, and any later
+        // group with a typed key would trip vector_t::set_value's cast_as path
+        // (NA has no cast handler → assert in logical_value.cpp).
         std::pmr::vector<types::complex_logical_type> out_types(resource_);
         if (num_groups > 0) {
             for (size_t k = 0; k < key_count; k++) {
-                out_types.push_back(group_keys_[0][k].type());
+                const auto& key = keys_[k];
+                bool got = false;
+                if (key.type == group_key_t::kind::column && key.full_path.size() == 1 && !in_chunks.empty()) {
+                    const auto col_idx = key.full_path.front();
+                    if (col_idx < in_chunks.front().column_count()) {
+                        out_types.push_back(in_chunks.front().data[col_idx].type());
+                        got = true;
+                    }
+                }
+                if (!got) {
+                    out_types.push_back(group_keys_[0][k].type());
+                }
             }
         }
         for (size_t a = 0; a < values_.size(); a++) {
@@ -944,6 +961,9 @@ namespace components::operators {
         for (size_t group_idx = 0; group_idx < result.size(); group_idx++) {
             auto left_val = resolve(cmp->left(), group_idx, resolve);
             auto right_val = resolve(cmp->right(), group_idx, resolve);
+            auto promoted_type = types::promote_type(left_val.type().type(), right_val.type().type());
+            left_val = left_val.cast_as(promoted_type, pipeline_context->session_tz);
+            right_val = right_val.cast_as(promoted_type, pipeline_context->session_tz);
             auto cmp_result = left_val.compare(right_val);
             bool passes = false;
             switch (cmp->type()) {

@@ -1,13 +1,14 @@
 #include "manager_index.hpp"
 
 #include "bitcask_index_disk.hpp"
+#include "btree_index_disk.hpp"
+#include "disk_hash_table.hpp"
 
 #include <actor-zeta/spawn.hpp>
 #include <components/index/hash_single_field_index.hpp>
 #include <components/index/index_engine.hpp>
+#include <components/index/disk_hash_single_field_index.hpp>
 #include <components/index/single_field_index.hpp>
-#include <components/serialization/deserializer.hpp>
-#include <components/serialization/serializer.hpp>
 #include <core/b_plus_tree/b_plus_tree.hpp>
 #include <core/b_plus_tree/msgpack_reader/msgpack_reader.hpp>
 #include <core/executor.hpp>
@@ -64,7 +65,7 @@ namespace {
                 return value_t(r, complex_logical_type{logical_type::NA});
         }
     }
-} // anonymous namespace
+} // anonymous namespace`
 
 namespace {
     // Batched disk operation types — collect per-agent ops, send once
@@ -107,23 +108,9 @@ namespace services::index {
         , bitcask_segment_record_limit_(bitcask_segment_record_limit)
         , btree_flush_threshold_(btree_flush_threshold)
         , engines_(resource)
-        , metafile_indexes_(nullptr)
         , pending_void_(resource) {
         if (!path_db_.empty()) {
             std::filesystem::create_directories(path_db_);
-            metafile_indexes_ = open_file(fs_,
-                                          path_db_ / INDEXES_METADATA_FILENAME,
-                                          core::filesystem::file_flags::READ | core::filesystem::file_flags::WRITE |
-                                              core::filesystem::file_flags::FILE_CREATE,
-                                          core::filesystem::file_lock_type::NO_LOCK);
-        }
-    }
-
-    void manager_index_t::register_collection_sync(session_id_t /*session*/, const collection_full_name_t& name) {
-        trace(log_, "manager_index_t::register_collection_sync: {}", name.to_string());
-        auto it = engines_.find(name);
-        if (it == engines_.end()) {
-            engines_.emplace(name, components::index::make_index_engine(resource_));
         }
     }
 
@@ -189,12 +176,20 @@ namespace services::index {
                 co_await actor_zeta::dispatch(this, &manager_index_t::search, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::search_with_preferred_type>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::search_with_preferred_type, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_index_t, &manager_index_t::flush_all_indexes>: {
                 co_await actor_zeta::dispatch(this, &manager_index_t::flush_all_indexes, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_index_t, &manager_index_t::get_indexed_keys>: {
                 co_await actor_zeta::dispatch(this, &manager_index_t::get_indexed_keys, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::get_indexed_descriptions>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::get_indexed_descriptions, msg);
                 break;
             }
             default:
@@ -250,35 +245,35 @@ namespace services::index {
     // --- Collection lifecycle ---
 
     manager_index_t::unique_future<void> manager_index_t::register_collection(session_id_t /*session*/,
-                                                                              collection_full_name_t name) {
-        trace(log_, "manager_index_t::register_collection: {}", name.to_string());
+                                                                              components::catalog::oid_t table_oid) {
+        trace(log_, "manager_index_t::register_collection: oid={}", static_cast<unsigned>(table_oid));
 
-        auto it = engines_.find(name);
+        auto it = engines_.find(table_oid);
         if (it == engines_.end()) {
-            engines_.emplace(name, components::index::make_index_engine(resource_));
+            engines_.emplace(table_oid, components::index::make_index_engine(resource_));
         }
         co_return;
     }
 
     manager_index_t::unique_future<void> manager_index_t::unregister_collection(session_id_t /*session*/,
-                                                                                collection_full_name_t name) {
-        trace(log_, "manager_index_t::unregister_collection: {}", name.to_string());
+                                                                                components::catalog::oid_t table_oid) {
+        trace(log_, "manager_index_t::unregister_collection: oid={}", static_cast<unsigned>(table_oid));
 
-        engines_.erase(name);
-        remove_all_indexes_for_collection(name.collection);
+        engines_.erase(table_oid);
         co_return;
     }
 
     // --- DDL: index management ---
 
     manager_index_t::unique_future<uint32_t> manager_index_t::create_index(session_id_t /*session*/,
-                                                                           collection_full_name_t name,
+                                                                           components::catalog::oid_t table_oid,
                                                                            index_name_t index_name,
                                                                            components::index::keys_base_storage_t keys,
-                                                                           components::logical_plan::index_type type) {
-        trace(log_, "manager_index_t::create_index: {} on {}", index_name, name.to_string());
+                                                                           components::logical_plan::index_type type,
+                                                                           core::date::timezone_offset_t session_tz) {
+        trace(log_, "manager_index_t::create_index: {} on oid={}", index_name, static_cast<unsigned>(table_oid));
 
-        auto it = engines_.find(name);
+        auto it = engines_.find(table_oid);
         if (it == engines_.end()) {
             co_return components::index::INDEX_ID_UNDEFINED;
         }
@@ -297,8 +292,33 @@ namespace services::index {
                 break;
             }
             case components::logical_plan::index_type::hashed: {
-                id_index = components::index::make_index<components::index::hash_single_field_index_t>(
-                    engine, index_name, keys);
+                if (path_db_.empty()) {
+                    id_index =
+                        components::index::make_index<components::index::hash_single_field_index_t>(engine,
+                                                                                                      index_name,
+                                                                                                      keys);
+                } else {
+                    const auto base = path_db_ / std::to_string(static_cast<unsigned>(table_oid)) / index_name;
+                    std::filesystem::create_directories(base);
+                    try {
+                        id_index = components::index::make_index<components::index::disk_hash_single_field_index_t>(
+                            engine,
+                            index_name,
+                            keys,
+                            std::make_unique<services::index::disk_hash_table_t>(base / "hash_index.bin",
+                                                                                 services::index::disk_hash_table_t::default_bucket_count,
+                                                                                 true,
+                                                                                 resource_));
+                    } catch (const std::exception& e) {
+                        trace(log_,
+                              "manager_index_t::create_index: disk hash storage init failed, fallback to memory: {}",
+                              e.what());
+                        id_index = components::index::make_index<components::index::hash_single_field_index_t>(
+                            engine,
+                            index_name,
+                            keys);
+                    }
+                }
                 break;
             }
             default:
@@ -307,50 +327,42 @@ namespace services::index {
         }
 
         if (id_index != components::index::INDEX_ID_UNDEFINED) {
-            // Load index data from persistent storage
-            if (!path_db_.empty()) {
-                auto index_path = path_db_ / name.database / name.collection / index_name;
-                auto* idx = components::index::search_index(engine, keys);
-                if (idx) {
+            // Load index data from btree (persistent storage). Path layout
+            // mirrors disk-side ${path_db}/${table_oid}/${index_name}/.
+            if (!path_db_.empty() && type == components::logical_plan::index_type::single) {
+                auto btree_path = path_db_ / std::to_string(static_cast<unsigned>(table_oid)) / index_name;
+                if (std::filesystem::exists(btree_path / "metadata")) {
                     try {
-                        if (type == components::logical_plan::index_type::hashed) {
-                            auto disk_index = bitcask_index_disk_t(
-                                index_path, resource_, bitcask_flush_threshold_, bitcask_segment_record_limit_);
-                            bitcask_index_disk_t::entries_t raw(resource_);
-                            disk_index.load_entries(raw);
-                            for (auto& [key, row_id] : raw) {
-                                idx->insert(key, static_cast<int64_t>(row_id));
-                            }
-                            trace(log_, "create_index: loaded {} entries from bitcask", raw.size());
-                        } else if (std::filesystem::exists(index_path / "metadata")) {
-                            core::filesystem::local_file_system_t fs;
-                            auto db =
-                                std::make_unique<core::b_plus_tree::btree_t>(resource_, fs, index_path, item_key_getter);
-                            db->load();
+                        core::filesystem::local_file_system_t fs;
+                        auto db =
+                            std::make_unique<core::b_plus_tree::btree_t>(resource_, fs, btree_path, item_key_getter);
+                        db->load();
 
-                            if (db->size() > 0) {
-                                struct pv_entry {
-                                    components::types::physical_value key;
-                                    int64_t row_id;
-                                };
-                                std::pmr::vector<pv_entry> raw(resource_);
-                                db->full_scan<pv_entry>(&raw, [](void* data, size_t sz) -> pv_entry {
-                                    auto item = core::b_plus_tree::btree_t::item_data{
-                                        static_cast<core::b_plus_tree::data_ptr_t>(data),
-                                        static_cast<uint32_t>(sz)};
-                                    return {item_key_getter(item),
-                                            static_cast<int64_t>(
-                                                id_getter(item).value<components::types::physical_type::UINT64>())};
-                                });
+                        if (db->size() > 0) {
+                            struct pv_entry {
+                                components::types::physical_value key;
+                                int64_t row_id;
+                            };
+                            std::pmr::vector<pv_entry> raw(resource_);
+                            db->full_scan<pv_entry>(&raw, [](void* data, size_t sz) -> pv_entry {
+                                auto item = core::b_plus_tree::btree_t::item_data{
+                                    static_cast<core::b_plus_tree::data_ptr_t>(data),
+                                    static_cast<uint32_t>(sz)};
+                                return {item_key_getter(item),
+                                        static_cast<int64_t>(
+                                            id_getter(item).value<components::types::physical_type::UINT64>())};
+                            });
 
+                            auto* idx = components::index::search_index(engine, keys);
+                            if (idx) {
                                 for (auto& e : raw) {
-                                    idx->insert(reverse_convert(resource_, e.key), e.row_id);
+                                    idx->insert(reverse_convert(resource_, e.key), e.row_id, session_tz);
                                 }
                                 trace(log_, "create_index: loaded {} entries from btree", raw.size());
                             }
                         }
                     } catch (const std::exception& e) {
-                        trace(log_, "create_index: persistent load failed: {}", e.what());
+                        trace(log_, "create_index: btree load failed: {}", e.what());
                     }
                 }
             }
@@ -358,16 +370,16 @@ namespace services::index {
             // Create disk agent for persistent storage
             if (!path_db_.empty()) {
                 try {
-                    auto agent = actor_zeta::spawn<index_agent_disk_t>(
-                        resource_,
-                        path_db_,
-                        name,
-                        std::string(index_name),
-                        type,
-                        bitcask_flush_threshold_,
-                        bitcask_segment_record_limit_,
-                        btree_flush_threshold_,
-                        log_);
+                    auto agent =
+                        actor_zeta::spawn<index_agent_disk_t>(resource_,
+                                                              path_db_,
+                                                              table_oid,
+                                                              std::string(index_name),
+                                                              type,
+                                                              bitcask_index_disk_t::default_flush_threshold_,
+                                                              bitcask_index_disk_t::default_segment_record_limit_,
+                                                              btree_index_disk_t::default_flush_threshold_,
+                                                              log_);
 
                     // Link disk agent with in-memory index
                     auto* idx = components::index::search_index(engine, keys);
@@ -381,22 +393,16 @@ namespace services::index {
                     trace(log_, "manager_index_t::create_index: disk agent creation failed: {}", e.what());
                 }
             }
-
-            // Persist index metadata
-            auto node =
-                components::logical_plan::make_node_create_index(resource_, name, std::string(index_name), type);
-            node->keys() = keys;
-            write_index_to_metafile(node);
         }
 
         co_return id_index;
     }
 
     manager_index_t::unique_future<void>
-    manager_index_t::drop_index(session_id_t session, collection_full_name_t name, index_name_t index_name) {
-        trace(log_, "manager_index_t::drop_index: {} on {}", index_name, name.to_string());
+    manager_index_t::drop_index(session_id_t session, components::catalog::oid_t table_oid, index_name_t index_name) {
+        trace(log_, "manager_index_t::drop_index: {} on oid={}", index_name, static_cast<unsigned>(table_oid));
 
-        auto it = engines_.find(name);
+        auto it = engines_.find(table_oid);
         if (it == engines_.end())
             co_return;
 
@@ -422,9 +428,6 @@ namespace services::index {
             }
 
             components::index::drop_index(engine, index);
-
-            // Remove from metafile
-            remove_index_from_metafile(index_name);
         }
 
         co_return;
@@ -432,9 +435,10 @@ namespace services::index {
 
     // --- Query ---
 
-    manager_index_t::unique_future<bool>
-    manager_index_t::has_index(session_id_t /*session*/, collection_full_name_t name, index_name_t index_name) {
-        auto it = engines_.find(name);
+    manager_index_t::unique_future<bool> manager_index_t::has_index(session_id_t /*session*/,
+                                                                    components::catalog::oid_t table_oid,
+                                                                    index_name_t index_name) {
+        auto it = engines_.find(table_oid);
         if (it == engines_.end())
             co_return false;
 
@@ -445,26 +449,21 @@ namespace services::index {
 
     manager_index_t::unique_future<void>
     manager_index_t::insert_rows(execution_context_t ctx,
-                                 std::vector<components::vector::data_chunk_t> data,
+                                 components::catalog::oid_t table_oid,
+                                 std::unique_ptr<components::vector::data_chunk_t> data,
                                  uint64_t start_row_id,
                                  uint64_t count) {
-        if (count == 0)
+        if (!data || count == 0)
             co_return;
 
         auto txn_id = ctx.txn.transaction_id;
-        auto it = engines_.find(ctx.name);
+        auto it = engines_.find(table_oid);
         if (it == engines_.end())
             co_return;
 
         auto& engine = it->second;
-        uint64_t global = 0;
-        for (auto& chunk : data) {
-            for (uint64_t i = 0; i < chunk.size() && global < count; ++i, ++global) {
-                engine->insert_row(chunk, i, static_cast<int64_t>(start_row_id + global), txn_id);
-            }
-            if (global >= count) {
-                break;
-            }
+        for (uint64_t i = 0; i < count; i++) {
+            engine->insert_row(*data, i, static_cast<int64_t>(start_row_id + i), txn_id, ctx.session_tz);
         }
         // No disk mirroring — uncommitted entries don't go to disk
 
@@ -473,25 +472,20 @@ namespace services::index {
 
     manager_index_t::unique_future<void>
     manager_index_t::delete_rows(execution_context_t ctx,
-                                 std::vector<components::vector::data_chunk_t> data,
+                                 components::catalog::oid_t table_oid,
+                                 std::unique_ptr<components::vector::data_chunk_t> data,
                                  std::pmr::vector<int64_t> row_ids) {
-        if (row_ids.empty())
+        if (!data || row_ids.empty())
             co_return;
 
         auto txn_id = ctx.txn.transaction_id;
-        auto it = engines_.find(ctx.name);
+        auto it = engines_.find(table_oid);
         if (it == engines_.end())
             co_return;
 
         auto& engine = it->second;
-        size_t global = 0;
-        for (auto& chunk : data) {
-            for (uint64_t i = 0; i < chunk.size() && global < row_ids.size(); ++i, ++global) {
-                engine->mark_delete_row(chunk, i, row_ids[global], txn_id);
-            }
-            if (global >= row_ids.size()) {
-                break;
-            }
+        for (size_t i = 0; i < row_ids.size(); i++) {
+            engine->mark_delete_row(*data, i, row_ids[i], txn_id, ctx.session_tz);
         }
         // No disk mirroring — uncommitted deletes don't go to disk
 
@@ -500,40 +494,29 @@ namespace services::index {
 
     manager_index_t::unique_future<void>
     manager_index_t::update_rows(execution_context_t ctx,
-                                 std::vector<components::vector::data_chunk_t> old_data,
-                                 std::vector<components::vector::data_chunk_t> new_data,
+                                 components::catalog::oid_t table_oid,
+                                 std::unique_ptr<components::vector::data_chunk_t> old_data,
+                                 std::unique_ptr<components::vector::data_chunk_t> new_data,
                                  std::pmr::vector<int64_t> row_ids,
                                  int64_t new_start_row_id) {
-        if (row_ids.empty())
+        if (!old_data || !new_data || row_ids.empty())
             co_return;
 
         auto txn_id = ctx.txn.transaction_id;
-        auto it = engines_.find(ctx.name);
+        auto it = engines_.find(table_oid);
         if (it == engines_.end())
             co_return;
 
         auto& engine = it->second;
 
-        // Iterate both old_data and new_data in parallel with independent chunk cursors.
-        // row_ids[g] names the old row at global index g; new_start_row_id + g names the new row.
-        size_t old_ci = 0, old_ri = 0;
-        size_t new_ci = 0, new_ri = 0;
-        for (size_t g = 0; g < row_ids.size(); ++g) {
-            while (old_ci < old_data.size() && old_ri >= old_data[old_ci].size()) {
-                ++old_ci;
-                old_ri = 0;
-            }
-            while (new_ci < new_data.size() && new_ri >= new_data[new_ci].size()) {
-                ++new_ci;
-                new_ri = 0;
-            }
-            if (old_ci >= old_data.size() || new_ci >= new_data.size()) {
-                break;
-            }
-            engine->mark_delete_row(old_data[old_ci], old_ri, row_ids[g], txn_id);
-            engine->insert_row(new_data[new_ci], new_ri, new_start_row_id + static_cast<int64_t>(g), txn_id);
-            ++old_ri;
-            ++new_ri;
+        // Mark old entries as deleted
+        for (size_t i = 0; i < row_ids.size(); i++) {
+            engine->mark_delete_row(*old_data, i, row_ids[i], txn_id, ctx.session_tz);
+        }
+
+        // Insert new entries
+        for (size_t i = 0; i < row_ids.size(); i++) {
+            engine->insert_row(*new_data, i, new_start_row_id + static_cast<int64_t>(i), txn_id, ctx.session_tz);
         }
 
         co_return;
@@ -541,10 +524,11 @@ namespace services::index {
 
     // --- MVCC commit/revert/cleanup ---
 
-    manager_index_t::unique_future<void> manager_index_t::commit_insert(execution_context_t ctx, uint64_t commit_id) {
+    manager_index_t::unique_future<void>
+    manager_index_t::commit_insert(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id) {
         auto session = ctx.session;
         auto txn_id = ctx.txn.transaction_id;
-        auto it = engines_.find(ctx.name);
+        auto it = engines_.find(table_oid);
         if (it == engines_.end())
             co_return;
 
@@ -560,23 +544,36 @@ namespace services::index {
                 insert_addrs.try_emplace(id, agent_addr);
                 insert_batches[id].emplace_back(value_t(resource_, key), static_cast<size_t>(row_index));
             });
+        if (txn_id != 0) {
+            engine->for_each_pending_disk_insert(
+                0,
+                [&](const actor_zeta::address_t& agent_addr, const components::index::value_t& key, int64_t row_index) {
+                    auto id = reinterpret_cast<uintptr_t>(agent_addr.get());
+                    insert_addrs.try_emplace(id, agent_addr);
+                    insert_batches[id].emplace_back(value_t(resource_, key), static_cast<size_t>(row_index));
+                });
+        }
         for (auto& [id, batch] : insert_batches) {
             auto& addr = insert_addrs.at(id);
             auto [ns, f] =
-                actor_zeta::otterbrix::send(addr, &index_agent_disk_t::insert_many, session, std::move(batch));
+                actor_zeta::otterbrix::send(addr, &index_agent_disk_t::insert_many, session, txn_id, std::move(batch));
             schedule_agent(addr, ns);
-            pending_void_.emplace_back(std::move(f));
+            co_await std::move(f);
         }
 
         engine->commit_insert(txn_id, commit_id);
+        if (txn_id != 0) {
+            engine->commit_insert(0, commit_id);
+        }
 
         co_return;
     }
 
-    manager_index_t::unique_future<void> manager_index_t::commit_delete(execution_context_t ctx, uint64_t commit_id) {
+    manager_index_t::unique_future<void>
+    manager_index_t::commit_delete(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id) {
         auto session = ctx.session;
         auto txn_id = ctx.txn.transaction_id;
-        auto it = engines_.find(ctx.name);
+        auto it = engines_.find(table_oid);
         if (it == engines_.end())
             co_return;
 
@@ -592,22 +589,35 @@ namespace services::index {
                 remove_addrs.try_emplace(id, agent_addr);
                 remove_batches[id].emplace_back(value_t(resource_, key), static_cast<size_t>(row_index));
             });
+        if (txn_id != 0) {
+            engine->for_each_pending_disk_delete(
+                0,
+                [&](const actor_zeta::address_t& agent_addr, const components::index::value_t& key, int64_t row_index) {
+                    auto id = reinterpret_cast<uintptr_t>(agent_addr.get());
+                    remove_addrs.try_emplace(id, agent_addr);
+                    remove_batches[id].emplace_back(value_t(resource_, key), static_cast<size_t>(row_index));
+                });
+        }
         for (auto& [id, batch] : remove_batches) {
             auto& addr = remove_addrs.at(id);
             auto [ns, f] =
-                actor_zeta::otterbrix::send(addr, &index_agent_disk_t::remove_many, session, std::move(batch));
+                actor_zeta::otterbrix::send(addr, &index_agent_disk_t::remove_many, session, txn_id, std::move(batch));
             schedule_agent(addr, ns);
-            pending_void_.emplace_back(std::move(f));
+            co_await std::move(f);
         }
 
         engine->commit_delete(txn_id, commit_id);
+        if (txn_id != 0) {
+            engine->commit_delete(0, commit_id);
+        }
 
         co_return;
     }
 
-    manager_index_t::unique_future<void> manager_index_t::revert_insert(execution_context_t ctx) {
+    manager_index_t::unique_future<void> manager_index_t::revert_insert(execution_context_t ctx,
+                                                                        components::catalog::oid_t table_oid) {
         auto txn_id = ctx.txn.transaction_id;
-        auto it = engines_.find(ctx.name);
+        auto it = engines_.find(table_oid);
         if (it == engines_.end())
             co_return;
 
@@ -619,7 +629,7 @@ namespace services::index {
 
     manager_index_t::unique_future<void> manager_index_t::cleanup_all_versions(session_id_t /*session*/,
                                                                                uint64_t lowest_active) {
-        for (auto& [name, engine] : engines_) {
+        for (auto& [oid, engine] : engines_) {
             engine->cleanup_versions(lowest_active);
         }
 
@@ -627,8 +637,8 @@ namespace services::index {
     }
 
     manager_index_t::unique_future<void> manager_index_t::rebuild_indexes(session_id_t /*session*/,
-                                                                          collection_full_name_t name) {
-        auto it = engines_.find(name);
+                                                                          components::catalog::oid_t table_oid) {
+        auto it = engines_.find(table_oid);
         if (it == engines_.end())
             co_return;
 
@@ -642,9 +652,9 @@ namespace services::index {
             }
         }
 
-        // Rebuild will be triggered by executor sending scan data back
-        // (Phase 7G integration with dispatcher)
-        trace(log_, "manager_index_t::rebuild_indexes: cleared indexes for {}", name.to_string());
+        // Rebuild will be triggered by executor sending scan data to
+        // manager_index for index rebuild.
+        trace(log_, "manager_index_t::rebuild_indexes: cleared indexes for oid={}", static_cast<unsigned>(table_oid));
 
         co_return;
     }
@@ -652,16 +662,43 @@ namespace services::index {
     // --- Txn-aware Query ---
 
     manager_index_t::unique_future<std::pmr::vector<int64_t>>
+    manager_index_t::search_with_preferred_type(session_id_t /*session*/,
+                                                components::catalog::oid_t table_oid,
+                                                components::index::keys_base_storage_t keys,
+                                                components::types::logical_value_t value,
+                                                components::expressions::compare_type compare,
+                                                components::logical_plan::index_type preferred_type,
+                                                uint64_t start_time,
+                                                uint64_t txn_id,
+                                                core::date::timezone_offset_t session_tz) {
+        std::pmr::vector<int64_t> result(resource_);
+        auto it = engines_.find(table_oid);
+        if (it == engines_.end()) {
+            co_return result;
+        }
+
+        auto* index = it->second->matching(keys, preferred_type);
+        if (!index) {
+            index = components::index::search_index(it->second, keys);
+        }
+        if (!index) {
+            co_return result;
+        }
+        co_return index->search(compare, value, start_time, txn_id, session_tz);
+    }
+
+    manager_index_t::unique_future<std::pmr::vector<int64_t>>
     manager_index_t::search(session_id_t /*session*/,
-                            collection_full_name_t name,
+                            components::catalog::oid_t table_oid,
                             components::index::keys_base_storage_t keys,
                             components::types::logical_value_t value,
                             components::expressions::compare_type compare,
                             uint64_t start_time,
-                            uint64_t txn_id) {
+                            uint64_t txn_id,
+                            core::date::timezone_offset_t session_tz) {
         std::pmr::vector<int64_t> result(resource_);
 
-        auto it = engines_.find(name);
+        auto it = engines_.find(table_oid);
         if (it == engines_.end())
             co_return result;
 
@@ -669,95 +706,25 @@ namespace services::index {
         if (!index)
             co_return result;
 
-        co_return index->search(compare, value, start_time, txn_id);
+        co_return index->search(compare, value, start_time, txn_id, session_tz);
     }
 
     manager_index_t::unique_future<std::pmr::vector<components::index::keys_base_storage_t>>
-    manager_index_t::get_indexed_keys(session_id_t /*session*/, collection_full_name_t name) {
-        auto it = engines_.find(name);
+    manager_index_t::get_indexed_keys(session_id_t /*session*/, components::catalog::oid_t table_oid) {
+        auto it = engines_.find(table_oid);
         if (it == engines_.end()) {
             co_return std::pmr::vector<components::index::keys_base_storage_t>(resource_);
         }
         co_return it->second->all_indexed_keys();
     }
 
-    // --- Index metafile persistence ---
-
-    void manager_index_t::write_index_to_metafile(const components::logical_plan::node_create_index_ptr& index) {
-        if (!metafile_indexes_)
-            return;
-        components::serializer::msgpack_serializer_t serializer(resource_);
-        serializer.start_array(1);
-        index->serialize(&serializer);
-        serializer.end_array();
-        auto buf = serializer.result();
-        auto size = buf.size();
-        metafile_indexes_->write(&size, sizeof(size), metafile_indexes_->file_size());
-        metafile_indexes_->write(buf.data(), buf.size(), metafile_indexes_->file_size());
-    }
-
-    std::vector<components::logical_plan::node_create_index_ptr> manager_index_t::read_indexes_from_metafile() const {
-        std::vector<components::logical_plan::node_create_index_ptr> res;
-        if (!metafile_indexes_)
-            return res;
-
-        constexpr auto count_byte_by_size = sizeof(size_t);
-        size_t size;
-        size_t offset = 0;
-        std::unique_ptr<char[]> size_str(new char[count_byte_by_size]);
-
-        while (true) {
-            metafile_indexes_->seek(offset);
-            auto bytes_read = metafile_indexes_->read(size_str.get(), count_byte_by_size);
-            if (bytes_read == count_byte_by_size) {
-                offset += count_byte_by_size;
-                std::memcpy(&size, size_str.get(), count_byte_by_size);
-                std::pmr::string buf(resource_);
-                buf.resize(size);
-                metafile_indexes_->read(buf.data(), size, offset);
-                offset += size;
-                components::serializer::msgpack_deserializer_t deserializer(buf);
-                deserializer.advance_array(0);
-                auto index = components::logical_plan::node_create_index_t::deserialize(&deserializer);
-                deserializer.pop_array();
-                res.push_back(index);
-            } else {
-                break;
-            }
+    manager_index_t::unique_future<std::pmr::vector<components::index::index_description_t>>
+    manager_index_t::get_indexed_descriptions(session_id_t /*session*/, components::catalog::oid_t table_oid) {
+        auto it = engines_.find(table_oid);
+        if (it == engines_.end()) {
+            co_return std::pmr::vector<components::index::index_description_t>(resource_);
         }
-        return res;
-    }
-
-    void manager_index_t::remove_index_from_metafile(const index_name_t& name) {
-        if (!metafile_indexes_)
-            return;
-        auto indexes = read_indexes_from_metafile();
-        indexes.erase(std::remove_if(indexes.begin(),
-                                     indexes.end(),
-                                     [&name](const components::logical_plan::node_create_index_ptr& index) {
-                                         return index->name() == name;
-                                     }),
-                      indexes.end());
-        metafile_indexes_->truncate(0);
-        for (const auto& index : indexes) {
-            write_index_to_metafile(index);
-        }
-    }
-
-    void manager_index_t::remove_all_indexes_for_collection(const collection_name_t& collection) {
-        if (!metafile_indexes_)
-            return;
-        auto indexes = read_indexes_from_metafile();
-        indexes.erase(std::remove_if(indexes.begin(),
-                                     indexes.end(),
-                                     [&collection](const components::logical_plan::node_create_index_ptr& index) {
-                                         return index->collection_name() == collection;
-                                     }),
-                      indexes.end());
-        metafile_indexes_->truncate(0);
-        for (const auto& index : indexes) {
-            write_index_to_metafile(index);
-        }
+        co_return it->second->all_indexed_descriptions();
     }
 
     manager_index_t::unique_future<void> manager_index_t::flush_all_indexes(session_id_t session) {

@@ -10,8 +10,8 @@ namespace services::planner::impl {
     components::operators::operator_ptr create_plan_sort(const context_storage_t& context,
                                                          const components::logical_plan::node_ptr& node,
                                                          components::logical_plan::limit_t limit) {
-        auto coll_name = node->collection_full_name();
-        bool known = context.has_collection(coll_name);
+        auto table_oid = node->table_oid();
+        bool known = context.has_table_oid(table_oid);
         auto plan_resource = known ? context.resource : node->resource();
         auto sort = known ? boost::intrusive_ptr(
                                 new components::operators::operator_sort_t(context.resource, context.log.clone()))

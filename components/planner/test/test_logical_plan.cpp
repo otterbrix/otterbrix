@@ -27,11 +27,9 @@ using key = components::expressions::key_t;
 constexpr auto database_name = "database";
 constexpr auto collection_name = "collection";
 
-collection_full_name_t get_name() { return {database_name, collection_name}; }
-
 TEST_CASE("components::planner::create_database") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto plan = make_node_create_database(&resource, {database_name, {}});
+    auto plan = make_node_create_database(&resource, core::dbname_t{std::string{database_name}});
     components::planner::planner_t planner;
     auto node = planner.create_plan(&resource, plan);
     REQUIRE(node->to_string() == R"_($create_database: database)_");
@@ -39,32 +37,37 @@ TEST_CASE("components::planner::create_database") {
 
 TEST_CASE("components::planner::drop_database") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto plan = make_node_drop_database(&resource, {database_name, {}});
+    auto plan = make_node_drop_database(&resource);
     components::planner::planner_t planner;
     auto node = planner.create_plan(&resource, plan);
-    REQUIRE(node->to_string() == R"_($drop_database: database)_");
+    // drop nodes carry only OIDs; enrich is not run in this unit test
+    // harness so namespace_oid stays INVALID_OID (== 0).
+    REQUIRE(node->to_string() == R"_($drop_database: <oid:0>)_");
 }
 
 TEST_CASE("components::planner::create_collection") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto plan = make_node_create_collection(&resource, {database_name, collection_name});
+    auto plan = make_node_create_collection(&resource, core::relname_t{collection_name});
     components::planner::planner_t planner;
     auto node = planner.create_plan(&resource, plan);
-    REQUIRE(node->to_string() == R"_($create_collection: database.collection)_");
+    REQUIRE(node->to_string() == R"_($create_collection: collection)_");
 }
 
 TEST_CASE("components::planner::drop_collection") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto plan = make_node_drop_collection(&resource, {database_name, collection_name});
+    auto plan = make_node_drop_collection(&resource);
     components::planner::planner_t planner;
     auto node = planner.create_plan(&resource, plan);
-    REQUIRE(node->to_string() == R"_($drop_collection: database.collection)_");
+    // drop nodes carry only OIDs; enrich is not run in this unit test
+    // harness so table_oid stays INVALID_OID (== 0).
+    REQUIRE(node->to_string() == R"_($drop_collection: <oid:0>)_");
 }
 
 TEST_CASE("components::planner::match") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto node_match = make_node_match(&resource,
-                                      get_name(),
+                                      core::dbname_t{database_name},
+                                      core::relname_t{collection_name},
                                       make_compare_expression(&resource,
                                                               compare_type::eq,
                                                               key(&resource, "key", side_t::left),
@@ -88,7 +91,8 @@ TEST_CASE("components::planner::group") {
         agg_expr = make_aggregate_expression(&resource, "avg", key(&resource, "avg_quantity"));
         agg_expr->append_param(key(&resource, "quantity"));
         expressions.emplace_back(std::move(agg_expr));
-        auto node_group = make_node_group(&resource, get_name(), expressions);
+        auto node_group =
+            make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, expressions);
         REQUIRE(
             node_group->to_string() ==
             R"_($group: {count: "date", total: {$sum: {$multiply: ["price", "quantity"]}}, avg_quantity: {$avg: "quantity"}})_");
@@ -102,7 +106,8 @@ TEST_CASE("components::planner::group") {
         scalar_expr->append_param(core::parameter_id_t(1));
         scalar_expr->append_param(key(&resource, "count"));
         expressions.emplace_back(std::move(scalar_expr));
-        auto node_group = make_node_group(&resource, get_name(), expressions);
+        auto node_group =
+            make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, expressions);
         REQUIRE(node_group->to_string() == R"_($group: {count: "date", count_4: {$multiply: [#1, "count"]}})_");
     }
 }
@@ -112,24 +117,27 @@ TEST_CASE("components::planner::sort") {
     {
         std::vector<expression_ptr> expressions;
         expressions.emplace_back(new sort_expression_t{key(&resource, "key"), sort_order::asc});
-        auto node_sort = make_node_sort(&resource, get_name(), expressions);
+        auto node_sort =
+            make_node_sort(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, expressions);
         REQUIRE(node_sort->to_string() == R"_($sort: {key: 1})_");
     }
     {
         std::vector<expression_ptr> expressions;
         expressions.emplace_back(new sort_expression_t{key(&resource, "key1"), sort_order::asc});
         expressions.emplace_back(new sort_expression_t{key(&resource, "key2"), sort_order::desc});
-        auto node_sort = make_node_sort(&resource, get_name(), expressions);
+        auto node_sort =
+            make_node_sort(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, expressions);
         REQUIRE(node_sort->to_string() == R"_($sort: {key1: 1, key2: -1})_");
     }
 }
 
 TEST_CASE("components::planner::aggregate") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto aggregate = make_node_aggregate(&resource, {database_name, collection_name});
+    auto aggregate = make_node_aggregate(&resource, core::dbname_t{database_name}, core::relname_t{collection_name});
 
     aggregate->append_child(make_node_match(&resource,
-                                            {database_name, collection_name},
+                                            core::dbname_t{database_name},
+                                            core::relname_t{collection_name},
                                             make_compare_expression(&resource,
                                                                     compare_type::eq,
                                                                     key(&resource, "key", side_t::left),
@@ -144,13 +152,15 @@ TEST_CASE("components::planner::aggregate") {
         scalar_expr->append_param(core::parameter_id_t(1));
         scalar_expr->append_param(key(&resource, "count"));
         expressions.emplace_back(std::move(scalar_expr));
-        aggregate->append_child(make_node_group(&resource, {database_name, collection_name}, expressions));
+        aggregate->append_child(
+            make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, expressions));
     }
     {
         std::vector<expression_ptr> expressions;
         expressions.emplace_back(new sort_expression_t{key(&resource, "name"), sort_order::asc});
         expressions.emplace_back(new sort_expression_t{key(&resource, "count"), sort_order::desc});
-        aggregate->append_child(make_node_sort(&resource, {database_name, collection_name}, expressions));
+        aggregate->append_child(
+            make_node_sort(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, expressions));
     }
 
     components::planner::planner_t planner;
@@ -167,24 +177,26 @@ TEST_CASE("components::planner::insert") {
     auto resource = std::pmr::synchronized_pool_resource();
     {
         auto chunk = gen_data_chunk(0, &resource);
-        auto plan = make_node_insert(&resource, {database_name, collection_name}, std::move(chunk));
+        auto plan = make_node_insert(&resource, std::move(chunk));
         components::planner::planner_t planner;
         auto node = planner.create_plan(&resource, plan);
-        REQUIRE(node->to_string() == R"_($insert: {$raw_data: {$rows: 0}})_");
+        // insert prints OID-based identity; enrich is not run in this
+        // unit test harness so table_oid stays INVALID_OID (== 0).
+        REQUIRE(node->to_string() == R"_($insert: <oid:0> {$raw_data: {$rows: 0}})_");
     }
     {
         auto chunk = gen_data_chunk(1, &resource);
-        auto plan = make_node_insert(&resource, {database_name, collection_name}, std::move(chunk));
+        auto plan = make_node_insert(&resource, std::move(chunk));
         components::planner::planner_t planner;
         auto node = planner.create_plan(&resource, plan);
-        REQUIRE(node->to_string() == R"_($insert: {$raw_data: {$rows: 1}})_");
+        REQUIRE(node->to_string() == R"_($insert: <oid:0> {$raw_data: {$rows: 1}})_");
     }
     {
         auto chunk = gen_data_chunk(5, &resource);
-        auto plan = make_node_insert(&resource, {database_name, collection_name}, std::move(chunk));
+        auto plan = make_node_insert(&resource, std::move(chunk));
         components::planner::planner_t planner;
         auto node = planner.create_plan(&resource, plan);
-        REQUIRE(node->to_string() == R"_($insert: {$raw_data: {$rows: 5}})_");
+        REQUIRE(node->to_string() == R"_($insert: <oid:0> {$raw_data: {$rows: 5}})_");
     }
 }
 
@@ -192,17 +204,20 @@ TEST_CASE("components::planner::limit") {
     auto resource = std::pmr::synchronized_pool_resource();
     {
         auto limit = limit_t::limit_one();
-        auto node_limit = make_node_limit(&resource, get_name(), limit);
+        auto node_limit =
+            make_node_limit(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, limit);
         REQUIRE(node_limit->to_string() == R"_($limit: 1)_");
     }
     {
         auto limit = limit_t::unlimit();
-        auto node_limit = make_node_limit(&resource, get_name(), limit);
+        auto node_limit =
+            make_node_limit(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, limit);
         REQUIRE(node_limit->to_string() == R"_($limit: -1)_");
     }
     {
         auto limit = limit_t(5);
-        auto node_limit = make_node_limit(&resource, get_name(), limit);
+        auto node_limit =
+            make_node_limit(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, limit);
         REQUIRE(node_limit->to_string() == R"_($limit: 5)_");
     }
 }
@@ -210,30 +225,32 @@ TEST_CASE("components::planner::limit") {
 TEST_CASE("components::planner::delete") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto match = make_node_match(&resource,
-                                 {database_name, collection_name},
+                                 core::dbname_t{database_name},
+                                 core::relname_t{collection_name},
                                  make_compare_expression(&resource,
                                                          compare_type::eq,
                                                          key(&resource, "key", side_t::left),
                                                          core::parameter_id_t(1)));
     components::logical_plan::storage_parameters parameters{&resource};
     {
-        auto node = make_node_delete_many(&resource, {database_name, collection_name}, match);
+        auto node = make_node_delete_many(&resource, match);
         components::planner::planner_t planner;
         auto node_delete = planner.create_plan(&resource, node);
-        REQUIRE(node_delete->to_string() == R"_($delete: {$match: {"key": {$eq: #1}}, $limit: -1})_");
+        REQUIRE(node_delete->to_string() == R"_($delete: <oid:0> {$match: {"key": {$eq: #1}}, $limit: -1})_");
     }
     {
-        auto node = make_node_delete_one(&resource, {database_name, collection_name}, match);
+        auto node = make_node_delete_one(&resource, match);
         components::planner::planner_t planner;
         auto node_delete = planner.create_plan(&resource, node);
-        REQUIRE(node_delete->to_string() == R"_($delete: {$match: {"key": {$eq: #1}}, $limit: 1})_");
+        REQUIRE(node_delete->to_string() == R"_($delete: <oid:0> {$match: {"key": {$eq: #1}}, $limit: 1})_");
     }
 }
 
 TEST_CASE("components::planner::update") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto match = make_node_match(&resource,
-                                 {database_name, collection_name},
+                                 core::dbname_t{database_name},
+                                 core::relname_t{collection_name},
                                  make_compare_expression(&resource,
                                                          compare_type::eq,
                                                          key(&resource, "key", side_t::left),
@@ -244,15 +261,17 @@ TEST_CASE("components::planner::update") {
 
     components::logical_plan::storage_parameters parameters{&resource};
     {
-        auto node = make_node_update_many(&resource, {database_name, collection_name}, match, {update}, true);
+        auto node = make_node_update_many(&resource, match, {update}, true);
         components::planner::planner_t planner;
         auto node_update = planner.create_plan(&resource, node);
-        REQUIRE(node_update->to_string() == R"_($update: {$upsert: 1, $match: {"key": {$eq: #1}}, $limit: -1})_");
+        REQUIRE(node_update->to_string() ==
+                R"_($update: <oid:0> {$upsert: 1, $match: {"key": {$eq: #1}}, $limit: -1})_");
     }
     {
-        auto node = make_node_update_one(&resource, {database_name, collection_name}, match, {update}, false);
+        auto node = make_node_update_one(&resource, match, {update}, false);
         components::planner::planner_t planner;
         auto node_update = planner.create_plan(&resource, node);
-        REQUIRE(node_update->to_string() == R"_($update: {$upsert: 0, $match: {"key": {$eq: #1}}, $limit: 1})_");
+        REQUIRE(node_update->to_string() ==
+                R"_($update: <oid:0> {$upsert: 0, $match: {"key": {$eq: #1}}, $limit: 1})_");
     }
 }

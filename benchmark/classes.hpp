@@ -20,7 +20,6 @@ inline configuration::config create_config() {
     config.log.level = log_t::level::off;
     config.disk.on = on_disk;
     config.wal.on = on_wal;
-    config.wal.sync_to_disk = on_disk;
     return config;
 }
 
@@ -44,20 +43,21 @@ void init_collection(const collection_name_t& collection_name) {
     auto* dispatcher = test_spaces<on_wal, on_disk>::get().dispatcher();
     auto session = otterbrix::session_id_t();
     dispatcher->create_database(session, database_name);
-    auto types = gen_data_chunk(0, dispatcher->resource()).types();
-    dispatcher->create_collection(session, database_name, collection_name, types);
-    auto chunk = gen_data_chunk(size_collection, dispatcher->resource());
-    auto ins = make_node_insert(dispatcher->resource(), {database_name, collection_name}, std::move(chunk));
-    dispatcher->execute_plan(session, ins);
+    dispatcher->execute_sql(session,
+        fmt::format("CREATE TABLE {}.{}(count bigint, count_str string, count_double double, "
+                    "count_bool bool, count_array ubigint[5], count_decimal decimal(15,7));",
+                    database_name, collection_name));
+    dispatcher->execute_sql(session,
+        gen_data_chunk_insert_sql(database_name, collection_name, size_collection));
 }
 
 template<bool on_wal, bool on_disk>
 void create_index(const collection_name_t& collection_name) {
     auto* dispatcher = test_spaces<on_wal, on_disk>::get().dispatcher();
     auto session = otterbrix::session_id_t();
-    auto plan = make_node_create_index(dispatcher->resource(), {database_name, collection_name});
+    auto plan = make_node_create_index(dispatcher->resource());
     plan->keys().emplace_back(dispatcher->resource(), "count");
-    dispatcher->create_index(session, plan);
+    dispatcher->create_index(session, database_name, collection_name, plan);
 }
 
 template<bool on_wal, bool on_disk>
@@ -90,17 +90,19 @@ std::pair<node_aggregate_ptr, parameter_node_ptr> create_aggregate(std::pmr::mem
                                                                    compare_type compare = compare_type::eq,
                                                                    const std::string& key = {},
                                                                    T value = T()) {
-    auto aggregate = make_node_aggregate(resource, {database_name, collection_name});
+    auto aggregate = make_node_aggregate(resource, core::dbname_t{database_name}, core::relname_t{collection_name});
     auto params = make_parameter_node(resource);
     if (key.empty()) {
         params->add_parameter(core::parameter_id_t{1}, value);
         aggregate->append_child(make_node_match(resource,
-                                                {database_name, collection_name},
+                                                core::dbname_t{database_name},
+                                                core::relname_t{collection_name},
                                                 make_compare_expression(resource, compare_type::all_true)));
     } else {
         params->add_parameter(core::parameter_id_t{1}, value);
         aggregate->append_child(make_node_match(resource,
-                                                {database_name, collection_name},
+                                                core::dbname_t{database_name},
+                                                core::relname_t{collection_name},
                                                 make_compare_expression(resource,
                                                                         compare,
                                                                         components::expressions::key_t{resource, key},

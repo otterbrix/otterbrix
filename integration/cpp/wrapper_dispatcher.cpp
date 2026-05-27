@@ -5,6 +5,7 @@
 #include <components/logical_plan/node_drop_collection.hpp>
 #include <components/logical_plan/node_drop_database.hpp>
 #include <components/logical_plan/node_insert.hpp>
+#include <components/logical_plan/node_set_timezone.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transform_result.hpp>
@@ -47,13 +48,18 @@ namespace otterbrix {
 
     auto wrapper_dispatcher_t::create_database(const session_id_t& session, const database_name_t& database)
         -> cursor_t_ptr {
-        auto plan = components::logical_plan::make_node_create_database(resource(), {database, {}});
+        auto plan = components::logical_plan::make_node_create_database(resource(), core::dbname_t{database});
         return send_plan(session, plan, components::logical_plan::make_parameter_node(resource()));
     }
 
     auto wrapper_dispatcher_t::drop_database(const components::session::session_id_t& session,
                                              const database_name_t& database) -> cursor_t_ptr {
-        auto plan = components::logical_plan::make_node_drop_database(resource(), {database, {}});
+        // Drop nodes carry no names; the (db) identity travels via a
+        // sibling catalog_resolve_namespace_t wrapped in a sequence_t. Pass 1
+        // in the dispatcher resolves namespace_oid and stamps it on the drop.
+        auto drop = components::logical_plan::make_node_drop_database(resource());
+        components::logical_plan::node_ptr plan =
+            components::sql::transform::maybe_wrap_with_catalog_resolve_namespace(resource(), database, drop);
         return send_plan(session, plan, components::logical_plan::make_parameter_node(resource()));
     }
 
@@ -63,17 +69,24 @@ namespace otterbrix {
                                                  std::vector<components::table::column_definition_t> column_definitions,
                                                  std::vector<components::table::table_constraint_t> constraints)
         -> cursor_t_ptr {
-        auto plan = components::logical_plan::make_node_create_collection(resource(),
-                                                                          {database, collection},
-                                                                          std::move(column_definitions),
-                                                                          std::move(constraints));
+        auto create = components::logical_plan::make_node_create_collection(resource(),
+                                                                            core::relname_t{collection},
+                                                                            std::move(column_definitions),
+                                                                            std::move(constraints));
+        components::logical_plan::node_ptr plan =
+            components::sql::transform::maybe_wrap_with_catalog_resolve_namespace(resource(), database, create);
         return send_plan(session, plan, components::logical_plan::make_parameter_node(resource()));
     }
 
     auto wrapper_dispatcher_t::drop_collection(const components::session::session_id_t& session,
                                                const database_name_t& database,
                                                const collection_name_t& collection) -> cursor_t_ptr {
-        auto plan = components::logical_plan::make_node_drop_collection(resource(), {database, collection});
+        // Drop nodes carry no names; the (db, rel) identity travels via
+        // sibling catalog_resolve_namespace / catalog_resolve_table nodes wrapped
+        // in a sequence_t. Pass 1 stamps namespace_oid + table_oid on the drop.
+        auto drop = components::logical_plan::make_node_drop_collection(resource());
+        components::logical_plan::node_ptr plan =
+            components::sql::transform::maybe_wrap_with_catalog_resolve_table(resource(), database, collection, drop);
         return send_plan(session, plan, components::logical_plan::make_parameter_node(resource()));
     }
 
@@ -83,8 +96,8 @@ namespace otterbrix {
         trace(log_,
               "wrapper_dispatcher_t::find session: {}, database: {} collection: {} ",
               session.data(),
-              condition->collection_full_name().database,
-              condition->collection_full_name().collection);
+              static_cast<const std::string&>(condition->dbname()),
+              static_cast<const std::string&>(condition->relname()));
         return send_plan(session, std::move(condition), std::move(params));
     }
 
@@ -94,8 +107,8 @@ namespace otterbrix {
         trace(log_,
               "wrapper_dispatcher_t::find_one session: {}, database: {} collection: {} ",
               session.data(),
-              condition->collection_full_name().database,
-              condition->collection_full_name().collection);
+              static_cast<const std::string&>(condition->dbname()),
+              static_cast<const std::string&>(condition->relname()));
         return send_plan(session, condition, std::move(params));
     }
 
@@ -105,10 +118,19 @@ namespace otterbrix {
         trace(log_,
               "wrapper_dispatcher_t::delete_one session: {}, database: {} collection: {} ",
               session.data(),
-              condition->collection_full_name().database,
-              condition->collection_full_name().collection);
-        auto plan =
-            components::logical_plan::make_node_delete_one(resource(), condition->collection_full_name(), condition);
+              condition->dbname(),
+              condition->relname());
+        // Identity travels via the catalog-resolve wrap; the DML node
+        // itself carries only payload + table_oid() stamped at enrich time.
+        const std::string db = condition->dbname();
+        const std::string rel = condition->relname();
+        components::logical_plan::node_ptr del = components::logical_plan::make_node_delete_one(resource(), condition);
+        auto plan = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+            resource(),
+            db,
+            rel,
+            std::move(del),
+            components::sql::transform::constraint_resolve_kind::referencing);
         return send_plan(session, std::move(plan), std::move(params));
     }
 
@@ -118,10 +140,17 @@ namespace otterbrix {
         trace(log_,
               "wrapper_dispatcher_t::delete_many session: {}, database: {} collection: {} ",
               session.data(),
-              condition->collection_full_name().database,
-              condition->collection_full_name().collection);
-        auto plan =
-            components::logical_plan::make_node_delete_many(resource(), condition->collection_full_name(), condition);
+              condition->dbname(),
+              condition->relname());
+        const std::string db = condition->dbname();
+        const std::string rel = condition->relname();
+        components::logical_plan::node_ptr del = components::logical_plan::make_node_delete_many(resource(), condition);
+        auto plan = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+            resource(),
+            db,
+            rel,
+            std::move(del),
+            components::sql::transform::constraint_resolve_kind::referencing);
         return send_plan(session, std::move(plan), std::move(params));
     }
 
@@ -133,13 +162,18 @@ namespace otterbrix {
         trace(log_,
               "wrapper_dispatcher_t::update_one session: {}, database: {} collection: {} ",
               session.data(),
-              condition->collection_full_name().database,
-              condition->collection_full_name().collection);
-        auto plan = components::logical_plan::make_node_update_one(resource(),
-                                                                   condition->collection_full_name(),
-                                                                   condition,
-                                                                   updates,
-                                                                   upsert);
+              condition->dbname(),
+              condition->relname());
+        const std::string db = condition->dbname();
+        const std::string rel = condition->relname();
+        components::logical_plan::node_ptr upd =
+            components::logical_plan::make_node_update_one(resource(), condition, updates, upsert);
+        auto plan = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+            resource(),
+            db,
+            rel,
+            std::move(upd),
+            components::sql::transform::constraint_resolve_kind::outgoing);
         return send_plan(session, std::move(plan), std::move(params));
     }
 
@@ -151,30 +185,23 @@ namespace otterbrix {
         trace(log_,
               "wrapper_dispatcher_t::update_many session: {}, database: {} collection: {} ",
               session.data(),
-              condition->collection_full_name().database,
-              condition->collection_full_name().collection);
-        auto plan = components::logical_plan::make_node_update_many(resource(),
-                                                                    condition->collection_full_name(),
-                                                                    condition,
-                                                                    updates,
-                                                                    upsert);
+              condition->dbname(),
+              condition->relname());
+        const std::string db = condition->dbname();
+        const std::string rel = condition->relname();
+        components::logical_plan::node_ptr upd =
+            components::logical_plan::make_node_update_many(resource(), condition, updates, upsert);
+        auto plan = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+            resource(),
+            db,
+            rel,
+            std::move(upd),
+            components::sql::transform::constraint_resolve_kind::outgoing);
         return send_plan(session, std::move(plan), std::move(params));
     }
 
-    auto wrapper_dispatcher_t::size(const session_id_t& session,
-                                    const database_name_t& database,
-                                    const collection_name_t& collection) -> size_t {
-        trace(log_, "wrapper_dispatcher_t::size session: {}, collection name : {} ", session.data(), collection);
-        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
-                                                       &services::dispatcher::manager_dispatcher_t::size,
-                                                       session,
-                                                       database,
-                                                       collection);
-        return wait_future(future);
-    }
-
     auto wrapper_dispatcher_t::register_udf(const session_id_t& session, components::compute::function_ptr function)
-        -> core::error_t {
+        -> bool {
         trace(log_,
               "wrapper_dispatcher_t::register_udf session: {}, function name : {} ",
               session.data(),
@@ -183,13 +210,13 @@ namespace otterbrix {
                                                        &services::dispatcher::manager_dispatcher_t::register_udf,
                                                        session,
                                                        std::move(function));
-        return *wait_future(future);
+        return wait_future(future);
     }
 
     auto wrapper_dispatcher_t::unregister_udf(const session_id_t& session,
                                               const std::string& function_name,
                                               const std::pmr::vector<components::types::complex_logical_type>& inputs)
-        -> core::error_t {
+        -> bool {
         trace(log_,
               "wrapper_dispatcher_t::unregister_udf session: {}, function name : {} ",
               session.data(),
@@ -199,7 +226,7 @@ namespace otterbrix {
                                                        session,
                                                        function_name,
                                                        inputs);
-        return *wait_future(future);
+        return wait_future(future);
     }
 
     auto wrapper_dispatcher_t::create_index(const session_id_t& session,
@@ -209,10 +236,24 @@ namespace otterbrix {
         return send_plan(session, node, components::logical_plan::make_parameter_node(resource()));
     }
 
+    auto wrapper_dispatcher_t::create_index(const session_id_t& session,
+                                            const std::string& dbname,
+                                            const std::string& relname,
+                                            components::logical_plan::node_create_index_ptr node)
+        -> components::cursor::cursor_t_ptr {
+        trace(log_, "wrapper_dispatcher_t::create_index session: {}, index: {}", session.data(), node->name());
+        components::logical_plan::node_ptr plan =
+            components::sql::transform::maybe_wrap_with_catalog_resolve_table(resource(), dbname, relname, node);
+        return send_plan(session, plan, components::logical_plan::make_parameter_node(resource()));
+    }
+
     auto wrapper_dispatcher_t::drop_index(const session_id_t& session,
                                           components::logical_plan::node_drop_index_ptr node)
         -> components::cursor::cursor_t_ptr {
-        trace(log_, "wrapper_dispatcher_t::drop_index session: {}, index: {}", session.data(), node->name());
+        trace(log_,
+              "wrapper_dispatcher_t::drop_index session: {}, index_oid: {}",
+              session.data(),
+              static_cast<unsigned>(node->index_oid()));
         return send_plan(session, node, components::logical_plan::make_parameter_node(resource()));
     }
 
@@ -245,7 +286,6 @@ namespace otterbrix {
         if (!parse_result) {
             return make_cursor(resource(),
                                core::error_t(core::error_code_t::sql_parse_error,
-
                                              std::pmr::string{"unknown parser error", resource()}));
         }
         transformer local_transformer(resource(), query.c_str());
@@ -310,6 +350,14 @@ namespace otterbrix {
                                                        session,
                                                        ids);
         return wait_future(future);
+    }
+
+    auto wrapper_dispatcher_t::set_timezone(const session_id_t& session, std::string timezone_name) -> cursor_t_ptr {
+        std::transform(timezone_name.begin(), timezone_name.end(), timezone_name.begin(), [](unsigned char character) {
+            return static_cast<char>(std::tolower(character));
+        });
+        auto plan = components::logical_plan::make_node_set_timezone(resource(), std::move(timezone_name));
+        return send_plan(session, plan, components::logical_plan::make_parameter_node(resource()));
     }
 
     cursor_t_ptr wrapper_dispatcher_t::send_plan(const session_id_t& session,

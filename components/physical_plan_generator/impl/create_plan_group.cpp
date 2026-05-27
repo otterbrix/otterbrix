@@ -207,8 +207,8 @@ namespace services::planner::impl {
                       const components::logical_plan::node_ptr& node,
                       const components::logical_plan::storage_parameters* params) {
         boost::intrusive_ptr<components::operators::operator_group_t> group;
-        auto coll_name = node->collection_full_name();
-        bool known = context.has_collection(coll_name);
+        auto table_oid = node->table_oid();
+        bool known = context.has_table_oid(table_oid);
 
         components::expressions::expression_ptr having;
         size_t internal_aggregate_count = 0;

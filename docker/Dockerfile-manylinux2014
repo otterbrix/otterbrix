@@ -25,6 +25,7 @@ COPY ./components ./components
 COPY ./core ./core
 COPY ./services ./services
 COPY ./example ./example
+COPY ./JSONBench ./JSONBench
 COPY ./CMakeLists.txt ./CMakeLists.txt
 
 RUN cp integration/python/otterbrix/* .

@@ -34,9 +34,7 @@ TEST_CASE("integration::cpp::column_projection::plain_select") {
     }
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(
-            s,
-            "CREATE TABLE db.wide (a bigint, b bigint, c bigint, d bigint, e bigint);");
+        dispatcher->execute_sql(s, "CREATE TABLE db.wide (a bigint, b bigint, c bigint, d bigint, e bigint);");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -99,9 +97,7 @@ TEST_CASE("integration::cpp::column_projection::select_with_where") {
     }
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(
-            s,
-            "CREATE TABLE db.wide (a bigint, b bigint, c bigint, d bigint, e bigint);");
+        dispatcher->execute_sql(s, "CREATE TABLE db.wide (a bigint, b bigint, c bigint, d bigint, e bigint);");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -132,8 +128,7 @@ TEST_CASE("integration::cpp::column_projection::select_with_where") {
 
     INFO("WHERE references multiple NON-SELECT columns with AND") {
         auto s = otterbrix::session_id_t();
-        auto cur =
-            dispatcher->execute_sql(s, "SELECT a FROM db.wide WHERE b > 15 AND d < 4000 ORDER BY a ASC;");
+        auto cur = dispatcher->execute_sql(s, "SELECT a FROM db.wide WHERE b > 15 AND d < 4000 ORDER BY a ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
         REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 2);
@@ -164,9 +159,7 @@ TEST_CASE("integration::cpp::column_projection::group_by") {
     }
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(
-            s,
-            "CREATE TABLE db.events (id bigint, kind string, amount bigint, payload string);");
+        dispatcher->execute_sql(s, "CREATE TABLE db.events (id bigint, kind string, amount bigint, payload string);");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -181,7 +174,9 @@ TEST_CASE("integration::cpp::column_projection::group_by") {
 
     INFO("GROUP BY with SUM on aggregated column") {
         auto s = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(s, "SELECT kind, SUM(amount) AS total FROM db.events GROUP BY kind ORDER BY kind ASC;");
+        auto cur = dispatcher->execute_sql(
+            s,
+            "SELECT kind, SUM(amount) AS total FROM db.events GROUP BY kind ORDER BY kind ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
         // kind A: 10+20+50 = 80, kind B: 30+40 = 70
@@ -191,7 +186,8 @@ TEST_CASE("integration::cpp::column_projection::group_by") {
 
     INFO("GROUP BY with COUNT(*) only — no columns needed beyond key") {
         auto s = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(s, "SELECT kind, COUNT(*) AS n FROM db.events GROUP BY kind ORDER BY kind ASC;");
+        auto cur =
+            dispatcher->execute_sql(s, "SELECT kind, COUNT(*) AS n FROM db.events GROUP BY kind ORDER BY kind ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
         REQUIRE(cur->chunk_data().data[1].data<uint64_t>()[0] == 3);
@@ -337,29 +333,31 @@ TEST_CASE("integration::cpp::column_projection::three_table_join") {
     }
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "INSERT INTO db.cities (city, country) VALUES "
-                                   "('NYC','USA'),('SF','USA'),('London','UK');");
+        dispatcher->execute_sql(s,
+                                "INSERT INTO db.cities (city, country) VALUES "
+                                "('NYC','USA'),('SF','USA'),('London','UK');");
     }
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "INSERT INTO db.customers (cid, name, city) VALUES "
-                                   "(1,'A','NYC'),(2,'B','SF'),(3,'C','London');");
+        dispatcher->execute_sql(s,
+                                "INSERT INTO db.customers (cid, name, city) VALUES "
+                                "(1,'A','NYC'),(2,'B','SF'),(3,'C','London');");
     }
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "INSERT INTO db.orders (oid, cid, amount) VALUES "
-                                   "(10, 1, 100),(11, 1, 200),(12, 2, 300),(13, 3, 400);");
+        dispatcher->execute_sql(s,
+                                "INSERT INTO db.orders (oid, cid, amount) VALUES "
+                                "(10, 1, 100),(11, 1, 200),(12, 2, 300),(13, 3, 400);");
     }
 
     INFO("three-table chain: count per city across tables") {
         // Exercise projection through a two-level JOIN. Each aggregate level computes
         // its own projection; inner JOINs split by side.
         auto s = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(
-            s,
-            "SELECT c.city, COUNT(*) AS n FROM db.customers c "
-            "INNER JOIN db.cities ci ON c.city = ci.city "
-            "GROUP BY c.city;");
+        auto cur = dispatcher->execute_sql(s,
+                                           "SELECT c.city, COUNT(*) AS n FROM db.customers c "
+                                           "INNER JOIN db.cities ci ON c.city = ci.city "
+                                           "GROUP BY c.city;");
         REQUIRE(cur->is_success());
         // 3 cities → 3 groups, one customer per city.
         REQUIRE(cur->size() == 3);
@@ -387,8 +385,9 @@ TEST_CASE("integration::cpp::column_projection::subquery") {
     }
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "INSERT INTO db.t (a, b, c, d) VALUES "
-                                   "(1,10,100,1000),(2,20,200,2000),(3,30,300,3000);");
+        dispatcher->execute_sql(s,
+                                "INSERT INTO db.t (a, b, c, d) VALUES "
+                                "(1,10,100,1000),(2,20,200,2000),(3,30,300,3000);");
     }
 
     INFO("subquery reads only needed columns from base table") {
@@ -428,12 +427,11 @@ TEST_CASE("integration::cpp::column_projection::case_when") {
 
     INFO("CASE WHEN references column not in SELECT base — must still be read") {
         auto s = otterbrix::session_id_t();
-        auto cur =
-            dispatcher->execute_sql(s,
-                                    "SELECT name, CASE WHEN score >= 90 THEN 'A' "
-                                    "WHEN score >= 70 THEN 'B' "
-                                    "WHEN score >= 50 THEN 'C' ELSE 'F' END AS grade "
-                                    "FROM db.t ORDER BY name ASC;");
+        auto cur = dispatcher->execute_sql(s,
+                                           "SELECT name, CASE WHEN score >= 90 THEN 'A' "
+                                           "WHEN score >= 70 THEN 'B' "
+                                           "WHEN score >= 50 THEN 'C' ELSE 'F' END AS grade "
+                                           "FROM db.t ORDER BY name ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
     }

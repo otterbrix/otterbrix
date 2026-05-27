@@ -4,11 +4,12 @@
 #include <components/logical_plan/node_function.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
-
+#include <components/types/logical_value.hpp>
 
 using namespace components::expressions;
 
 namespace components::sql::transform {
+
 
     expression_ptr transformer::transform_a_expr_arithmetic(A_Expr* node,
                                                             const name_collection_t& names,
@@ -60,6 +61,13 @@ namespace components::sql::transform {
                     auto sub_op = std::string_view(strVal(sub_expr->name->lst.front().data));
                     if (is_arithmetic_operator(sub_op)) {
                         return transform_a_expr_arithmetic(sub_expr, names, params);
+                    }
+                    if (is_jsonb_nav_operator(sub_op)) {
+                        expressions::key_t k{resource_};
+                        if (!resolve_jsonb_scalar_key(sub_expr, names, k)) {
+                            return nullptr;
+                        }
+                        return k;
                     }
                 }
                 error_ = core::error_t(core::error_code_t::sql_parse_error,
@@ -138,6 +146,9 @@ namespace components::sql::transform {
                     auto col_ref = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
                     col_ref.deduce_side(names);
                     col_ref.field.set_cast_type(target_type_res.value());
+                    if (cast->variant_select) {
+                        col_ref.field.set_variant_select(true);
+                    }
                     return col_ref.field;
                 }
                 return add_param_value(node, params);
@@ -149,6 +160,13 @@ namespace components::sql::transform {
                 auto sub_expr = pg_ptr_cast<A_Expr>(node);
                 if (sub_expr->kind == AEXPR_OP) {
                     auto sub_op = std::string_view(strVal(sub_expr->name->lst.front().data));
+                    if (is_jsonb_nav_operator(sub_op)) {
+                        expressions::key_t k{resource_};
+                        if (!resolve_jsonb_scalar_key(sub_expr, names, k)) {
+                            return nullptr;
+                        }
+                        return k;
+                    }
                     if (is_arithmetic_operator(sub_op)) {
                         auto sub_stype = get_arithmetic_scalar_type(sub_op);
                         if (sub_stype == scalar_type::invalid) {
@@ -221,6 +239,7 @@ namespace components::sql::transform {
                 return nullptr;
         }
     }
+
     std::string transformer::get_str_value(Node* node) {
         switch (nodeTag(node)) {
             case T_TypeCast: {
@@ -339,7 +358,6 @@ namespace components::sql::transform {
                     } else {
                         error_ =
                             core::error_t(core::error_code_t::sql_parse_error,
-
                                           std::pmr::string{"LIKE: left side must be a column reference", resource_});
                         return nullptr;
                     }
@@ -367,10 +385,14 @@ namespace components::sql::transform {
                                                    param_id);
                 }
 
+                // JSONB key existence: '?' / '?|' / '?&'. Desugars to IS NOT NULL.
+                if (op_str == "?" || op_str == "?|" || op_str == "?&") {
+                    return transform_jsonb_exists(node, names, params, op_str);
+                }
+
                 auto comp_type = get_compare_type(op_str);
                 if (comp_type == compare_type::invalid) {
                     error_ = core::error_t(core::error_code_t::sql_parse_error,
-
                                            std::pmr::string{"invalid compare operand", resource_});
                     return nullptr;
                 }
@@ -395,11 +417,36 @@ namespace components::sql::transform {
                                     error_ = target_type_res.error();
                                     return nullptr;
                                 }
-                                auto col_ref =
-                                    columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
+                                auto col_ref = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
                                 col_ref.deduce_side(names);
                                 col_ref.field.set_cast_type(target_type_res.value());
+                                if (cast->variant_select) {
+                                    col_ref.field.set_variant_select(true);
+                                }
                                 return col_ref.field;
+                            }
+                            // '<jsonb nav chain> ::? type' in a predicate, e.g.
+                            // WHERE m -> 'a' ->> 'b' ::? bigint > 0.
+                            if (cast->arg && nodeTag(cast->arg) == T_A_Expr) {
+                                auto* sub = pg_ptr_cast<A_Expr>(cast->arg);
+                                if (sub->kind == AEXPR_OP && sub->name &&
+                                    nodeTag(sub->name->lst.front().data) == T_String &&
+                                    is_jsonb_nav_operator(strVal(sub->name->lst.front().data))) {
+                                    auto target_type_res = get_type(resource_, cast->typeName);
+                                    if (target_type_res.has_error()) {
+                                        error_ = target_type_res.error();
+                                        return nullptr;
+                                    }
+                                    expressions::key_t k{resource_};
+                                    if (!resolve_jsonb_scalar_key(sub, names, k)) {
+                                        return nullptr;
+                                    }
+                                    k.set_cast_type(target_type_res.value());
+                                    if (cast->variant_select) {
+                                        k.set_variant_select(true);
+                                    }
+                                    return k;
+                                }
                             }
                             return add_param_value(node, params);
                         }
@@ -417,10 +464,16 @@ namespace components::sql::transform {
                                 if (is_arithmetic_operator(sub_op)) {
                                     return transform_a_expr_arithmetic(sub, names, params);
                                 }
+                                if (is_jsonb_nav_operator(sub_op)) {
+                                    expressions::key_t k{resource_};
+                                    if (!resolve_jsonb_scalar_key(sub, names, k)) {
+                                        return nullptr;
+                                    }
+                                    return k;
+                                }
                             }
                             error_ = core::error_t(
                                 core::error_code_t::sql_parse_error,
-
                                 std::pmr::string{"unrecognized expression in transform_a_expr", resource_});
                             return nullptr;
                         }
@@ -460,7 +513,6 @@ namespace components::sql::transform {
                         }
                         default:
                             error_ = core::error_t(core::error_code_t::sql_parse_error,
-
                                                    std::pmr::string{"Unsupported expression", resource_});
                             return nullptr;
                     }
@@ -473,7 +525,6 @@ namespace components::sql::transform {
             case AEXPR_NOT: {
                 if (nodeTag(node->rexpr) != T_A_Expr && nodeTag(node->rexpr) != T_A_Indirection) {
                     error_ = core::error_t(core::error_code_t::sql_parse_error,
-
                                            std::pmr::string{"Unsupported expr type in transform_a_expr", resource_});
                     return nullptr;
                 }
@@ -487,7 +538,6 @@ namespace components::sql::transform {
                 } else {
                     error_ = core::error_t(
                         core::error_code_t::sql_parse_error,
-
                         std::pmr::string{"Unsupported expression: unknown expr type in transform_a_expr", resource_});
                     return nullptr;
                 }
@@ -510,7 +560,6 @@ namespace components::sql::transform {
                 if (nodeTag(node->lexpr) != T_ColumnRef && nodeTag(node->lexpr) != T_A_Indirection) {
                     error_ = core::error_t(
                         core::error_code_t::sql_parse_error,
-
                         std::pmr::string{"IN expression: left side must be a column reference", resource_});
                     return nullptr;
                 }
@@ -536,7 +585,6 @@ namespace components::sql::transform {
             default:
                 error_ = core::error_t(
                     core::error_code_t::sql_parse_error,
-
                     std::pmr::string{"Unsupported node type: " + expr_kind_to_string(node->kind), resource_});
                 return nullptr;
         }
@@ -546,16 +594,28 @@ namespace components::sql::transform {
                                                       const name_collection_t& names,
                                                       logical_plan::parameter_node_t* params) {
         std::string funcname = strVal(node->funcname->lst.front().data);
-        std::pmr::vector<param_storage> args{resource_};
+        std::pmr::vector<param_storage> args;
         args.reserve(node->args->lst.size());
+        // create_value_getter rejects keys whose side is still undefined at runtime.
+        // For unqualified column refs inside a function call in a non-JOIN query
+        // (no right table set), default the side to left so the predicate can read
+        // the value. Joins keep the original ambiguity-aware behaviour.
+        const bool no_right_side = names.right_name.empty() && names.right_alias.empty();
+        auto pin_side_to_left_if_unset = [no_right_side](expressions::key_t& field) {
+            if (no_right_side && field.side() == expressions::side_t::undefined) {
+                field.set_side(expressions::side_t::left);
+            }
+        };
         for (const auto& arg : node->args->lst) {
             if (nodeTag(arg.data) == T_ColumnRef) {
                 auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg.data), names);
                 key.deduce_side(names);
+                pin_side_to_left_if_unset(key.field);
                 args.emplace_back(std::move(key.field));
             } else if (nodeTag(arg.data) == T_A_Indirection) {
                 auto key = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(arg.data), names);
                 key.deduce_side(names);
+                pin_side_to_left_if_unset(key.field);
                 args.emplace_back(std::move(key.field));
             } else if (nodeTag(arg.data) == T_FuncCall) {
                 args.emplace_back(transform_a_expr_func(pg_ptr_cast<FuncCall>(arg.data), names, params));
@@ -585,10 +645,292 @@ namespace components::sql::transform {
         } else {
             error_ =
                 core::error_t(core::error_code_t::sql_parse_error,
-
                               std::pmr::string{"Unsupported node type: " + node_tag_to_string(node->type), resource_});
             return nullptr;
         }
+    }
+
+    bool transformer::resolve_jsonb_base(Node* lexpr,
+                                         const name_collection_t& names,
+                                         std::pmr::vector<std::pmr::string>& segments,
+                                         expressions::side_t& side) {
+        if (nodeTag(lexpr) == T_ColumnRef) {
+            auto* ref = pg_ptr_cast<ColumnRef>(lexpr);
+            auto& lst = ref->fields->lst;
+            if (lst.size() == 1 && nodeTag(lst.back().data) == T_String) {
+                std::string base_name = strVal(lst.back().data);
+                if (names.is_left_table(base_name)) {
+                    side = expressions::side_t::left; // bare table name -> document root
+                } else if (names.is_right_table(base_name)) {
+                    side = expressions::side_t::right;
+                } else {
+                    segments.emplace_back(std::pmr::string{base_name.c_str(), resource_}); // column at root
+                }
+            } else {
+                auto cr = columnref_to_field(resource_, ref, names);
+                cr.deduce_side(names);
+                side = cr.field.side();
+                for (const auto& s : cr.field.storage()) {
+                    segments.emplace_back(s);
+                }
+            }
+            return true;
+        }
+        if (nodeTag(lexpr) == T_A_Indirection) {
+            auto cr = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(lexpr), names);
+            cr.deduce_side(names);
+            side = cr.field.side();
+            for (const auto& s : cr.field.storage()) {
+                segments.emplace_back(s);
+            }
+            return true;
+        }
+        error_ = core::error_t(core::error_code_t::sql_parse_error,
+                               std::pmr::string{"unsupported base operand for jsonb operator", resource_});
+        return false;
+    }
+
+    bool transformer::collect_jsonb_path(A_Expr* node,
+                                         const name_collection_t& names,
+                                         std::pmr::vector<std::pmr::string>& segments,
+                                         expressions::side_t& side) {
+        auto op = std::string_view(strVal(node->name->lst.front().data));
+
+        // Left operand: either a deeper jsonb navigation step, or the base
+        // (table name / column) the whole chain is rooted at.
+        Node* lexpr = node->lexpr;
+        if (nodeTag(lexpr) == T_A_Expr) {
+            auto* sub = pg_ptr_cast<A_Expr>(lexpr);
+            if (sub->kind == AEXPR_OP && sub->name && nodeTag(sub->name->lst.front().data) == T_String &&
+                is_jsonb_nav_operator(strVal(sub->name->lst.front().data))) {
+                if (!collect_jsonb_path(sub, names, segments, side)) {
+                    return false;
+                }
+            } else {
+                error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                       std::pmr::string{"unsupported left operand in jsonb operator chain", resource_});
+                return false;
+            }
+        } else if (!resolve_jsonb_base(lexpr, names, segments, side)) {
+            return false;
+        }
+
+        // Right operand: the key(s) this step navigates into.
+        std::string key_str = get_str_value(node->rexpr);
+        if (has_error()) {
+            return false;
+        }
+        auto push_segment = [&](const std::string& s) {
+            // trim surrounding spaces (PG-style '{a, b}')
+            size_t b = s.find_first_not_of(' ');
+            size_t e = s.find_last_not_of(' ');
+            if (b == std::string::npos) {
+                return;
+            }
+            std::string trimmed = s.substr(b, e - b + 1);
+            segments.emplace_back(std::pmr::string{trimmed.c_str(), resource_});
+        };
+        if (jsonb_op_takes_path(op)) {
+            // '#>' / '#>>' / '#-' : a whole path. Accept PG array '{a,b}' or dotted 'a.b'.
+            std::string path = key_str;
+            if (path.size() >= 2 && path.front() == '{' && path.back() == '}') {
+                path = path.substr(1, path.size() - 2);
+                size_t start = 0;
+                while (true) {
+                    size_t comma = path.find(',', start);
+                    push_segment(path.substr(start, comma - start));
+                    if (comma == std::string::npos) {
+                        break;
+                    }
+                    start = comma + 1;
+                }
+            } else {
+                size_t start = 0;
+                while (true) {
+                    size_t dot = path.find('.', start);
+                    push_segment(path.substr(start, dot - start));
+                    if (dot == std::string::npos) {
+                        break;
+                    }
+                    start = dot + 1;
+                }
+            }
+        } else {
+            // '->' / '->>' : a single key.
+            segments.emplace_back(std::pmr::string{key_str.c_str(), resource_});
+        }
+        return true;
+    }
+
+    bool transformer::jsonb_lhs_is_table(Node* node, const name_collection_t& names) const {
+        if (!node || nodeTag(node) != T_ColumnRef) {
+            return false;
+        }
+        auto& lst = pg_ptr_cast<ColumnRef>(node)->fields->lst;
+        if (lst.size() != 1 || nodeTag(lst.back().data) != T_String) {
+            return false;
+        }
+        std::string nm = strVal(lst.back().data);
+        return names.is_left_table(nm) || names.is_right_table(nm);
+    }
+
+    bool transformer::resolve_jsonb_prefix_key(A_Expr* node,
+                                               const name_collection_t& names,
+                                               expressions::key_t& out_key) {
+        std::pmr::vector<std::pmr::string> segments(resource_);
+        expressions::side_t side = expressions::side_t::undefined;
+        if (!collect_jsonb_path(node, names, segments, side)) {
+            return false;
+        }
+        if (segments.empty()) {
+            error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                   std::pmr::string{"empty jsonb path", resource_});
+            return false;
+        }
+        std::pmr::string joined(resource_);
+        for (size_t i = 0; i < segments.size(); ++i) {
+            if (i != 0) {
+                joined += "/";
+            }
+            joined += segments[i];
+        }
+        out_key = expressions::key_t(resource_, std::move(joined), side);
+        if (out_key.side() == expressions::side_t::undefined && names.right_name.empty() &&
+            names.right_alias.empty()) {
+            out_key.set_side(expressions::side_t::left);
+        }
+        return true;
+    }
+
+    bool transformer::resolve_jsonb_scalar_key(A_Expr* node,
+                                               const name_collection_t& names,
+                                               expressions::key_t& out_key) {
+        auto op = std::string_view(strVal(node->name->lst.front().data));
+        if (!jsonb_nav_returns_scalar(op)) {
+            // '->' / '#>' return jsonb (a sub-table) — only valid in a relation
+            // position (FROM/JOIN), not as a scalar in SELECT/WHERE.
+            error_ = core::error_t(
+                core::error_code_t::sql_parse_error,
+                std::pmr::string{"jsonb operator '" + std::string(op) +
+                                     "' returns a table and cannot be used as a scalar value; "
+                                     "terminate the chain with '->>' or '#>>'",
+                                 resource_});
+            return false;
+        }
+        std::pmr::vector<std::pmr::string> segments(resource_);
+        expressions::side_t side = expressions::side_t::undefined;
+        if (!collect_jsonb_path(node, names, segments, side)) {
+            return false;
+        }
+        if (segments.empty()) {
+            error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                   std::pmr::string{"empty jsonb path", resource_});
+            return false;
+        }
+        std::pmr::string joined(resource_);
+        for (size_t i = 0; i < segments.size(); ++i) {
+            if (i != 0) {
+                joined += "/";
+            }
+            joined += segments[i];
+        }
+        out_key = expressions::key_t(resource_, std::move(joined), side);
+        // Single-table queries leave side undefined; pin to left so the value
+        // getter can read it (mirrors transform_a_expr_func).
+        if (out_key.side() == expressions::side_t::undefined && names.right_name.empty() &&
+            names.right_alias.empty()) {
+            out_key.set_side(expressions::side_t::left);
+        }
+        return true;
+    }
+
+    expression_ptr transformer::transform_jsonb_exists(A_Expr* node,
+                                                       const name_collection_t& names,
+                                                       logical_plan::parameter_node_t* params,
+                                                       std::string_view op) {
+        // Left operand: document (table root) or a navigation prefix.
+        std::pmr::vector<std::pmr::string> prefix(resource_);
+        expressions::side_t side = expressions::side_t::undefined;
+        Node* lexpr = node->lexpr;
+        if (nodeTag(lexpr) == T_A_Expr) {
+            auto* sub = pg_ptr_cast<A_Expr>(lexpr);
+            if (sub->kind == AEXPR_OP && sub->name && nodeTag(sub->name->lst.front().data) == T_String &&
+                is_jsonb_nav_operator(strVal(sub->name->lst.front().data))) {
+                if (!collect_jsonb_path(sub, names, prefix, side)) {
+                    return nullptr;
+                }
+            } else {
+                error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                       std::pmr::string{"unsupported left operand for jsonb '?'", resource_});
+                return nullptr;
+            }
+        } else if (!resolve_jsonb_base(lexpr, names, prefix, side)) {
+            return nullptr;
+        }
+
+        // Right operand: a single key ('?') or a text array '{x,y}' ('?|','?&').
+        std::string rhs = get_str_value(node->rexpr);
+        if (has_error()) {
+            return nullptr;
+        }
+        std::pmr::vector<std::pmr::string> keys(resource_);
+        auto push_key = [&](const std::string& raw) {
+            size_t b = raw.find_first_not_of(" \"");
+            size_t e = raw.find_last_not_of(" \"");
+            if (b == std::string::npos) {
+                return;
+            }
+            keys.emplace_back(std::pmr::string{raw.substr(b, e - b + 1).c_str(), resource_});
+        };
+        if (op == "?") {
+            keys.emplace_back(std::pmr::string{rhs.c_str(), resource_});
+        } else {
+            std::string body = rhs;
+            if (body.size() >= 2 && body.front() == '{' && body.back() == '}') {
+                body = body.substr(1, body.size() - 2);
+            }
+            size_t start = 0;
+            while (true) {
+                size_t comma = body.find(',', start);
+                push_key(body.substr(start, comma - start));
+                if (comma == std::string::npos) {
+                    break;
+                }
+                start = comma + 1;
+            }
+        }
+
+        if (keys.empty()) {
+            // '?&' over no keys is vacuously true; '?|' over no keys is false.
+            return make_compare_expression(params->parameters().resource(),
+                                           op == "?&" ? compare_type::all_true : compare_type::all_false);
+        }
+
+        expressions::side_t use_side = side;
+        if (use_side == expressions::side_t::undefined && names.right_name.empty() && names.right_alias.empty()) {
+            use_side = expressions::side_t::left;
+        }
+        auto build_exists = [&](const std::pmr::string& k) -> compare_expression_ptr {
+            std::pmr::string joined(resource_);
+            for (const auto& seg : prefix) {
+                joined += seg;
+                joined += "/";
+            }
+            joined += k;
+            expressions::key_t key(resource_, std::move(joined), use_side);
+            auto dummy = params->add_parameter(
+                types::logical_value_t(resource_, types::complex_logical_type{types::logical_type::NA}));
+            return make_compare_expression(params->parameters().resource(), compare_type::is_not_null, key, dummy);
+        };
+        if (keys.size() == 1) {
+            return build_exists(keys[0]);
+        }
+        auto combined = make_compare_union_expression(params->parameters().resource(),
+                                                      op == "?&" ? compare_type::union_and : compare_type::union_or);
+        for (const auto& k : keys) {
+            combined->append_child(build_exists(k));
+        }
+        return combined;
     }
 
     logical_plan::node_ptr transformer::transform_function(RangeFunction& node,
@@ -603,7 +945,7 @@ namespace components::sql::transform {
                                                            const name_collection_t& names,
                                                            logical_plan::parameter_node_t* params) {
         std::string funcname = strVal(node.funcname->lst.front().data);
-        std::pmr::vector<param_storage> args{resource_};
+        std::pmr::vector<param_storage> args;
         args.reserve(node.args->lst.size());
         for (const auto& arg : node.args->lst) {
             if (nodeTag(arg.data) == T_ColumnRef) {
@@ -651,7 +993,6 @@ namespace components::sql::transform {
                     expr->append_param(condition);
                 } else {
                     error_ = core::error_t(core::error_code_t::sql_parse_error,
-
                                            std::pmr::string{"Unsupported WHEN condition type", resource_});
                     return nullptr;
                 }
@@ -716,14 +1057,15 @@ namespace components::sql::transform {
                 auto sub = pg_ptr_cast<A_Expr>(node);
                 if (sub->kind == AEXPR_OP) {
                     auto sub_op = std::string_view(strVal(sub->name->lst.front().data));
-                    if (is_arithmetic_operator(sub_op)) {
-                        auto stype = get_arithmetic_scalar_type(sub_op);
-                        if (stype == scalar_type::invalid) {
-                            error_ = core::error_t(core::error_code_t::sql_parse_error,
-
-                                                   std::pmr::string{"invalid arithmetics operand", resource_});
+                    if (is_jsonb_nav_operator(sub_op)) {
+                        expressions::key_t k{resource_};
+                        if (!resolve_jsonb_scalar_key(sub, names, k)) {
                             return nullptr;
                         }
+                        return k;
+                    }
+                    if (is_arithmetic_operator(sub_op)) {
+                        auto stype = get_arithmetic_scalar_type(sub_op);
                         auto expr = make_scalar_expression(resource_, stype);
                         if (sub->lexpr) {
                             expr->append_param(resolve_having_operand(sub->lexpr, names, params, group));
@@ -755,7 +1097,6 @@ namespace components::sql::transform {
                     auto comp_type = get_compare_type(op_str);
                     if (comp_type == compare_type::invalid) {
                         error_ = core::error_t(core::error_code_t::sql_parse_error,
-
                                                std::pmr::string{"invalid comparison operand", resource_});
                         return nullptr;
                     }
@@ -773,7 +1114,6 @@ namespace components::sql::transform {
             }
         }
         error_ = core::error_t(core::error_code_t::sql_parse_error,
-
                                std::pmr::string{"Unsupported expression in HAVING clause", resource_});
         return nullptr;
     }
@@ -783,7 +1123,6 @@ namespace components::sql::transform {
                                                     logical_plan::parameter_node_t* params) {
         if (nodeTag(node->arg) != T_ColumnRef && nodeTag(node->arg) != T_A_Indirection) {
             error_ = core::error_t(core::error_code_t::sql_parse_error,
-
                                    std::pmr::string{"IS NULL: argument must be a column reference", resource_});
             return nullptr;
         }

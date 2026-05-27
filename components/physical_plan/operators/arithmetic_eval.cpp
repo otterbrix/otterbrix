@@ -28,7 +28,8 @@ namespace components::operators {
                                                                  vector::data_chunk_t& chunk,
                                                                  const logical_plan::storage_parameters& params,
                                                                  std::pmr::memory_resource* resource,
-                                                                 std::deque<vector::vector_t>& temp_vecs) {
+                                                                 std::deque<vector::vector_t>& temp_vecs,
+                                                                 core::date::timezone_offset_t session_tz) {
             resolved_operand result;
             if (std::holds_alternative<expressions::key_t>(param)) {
                 const auto& key = std::get<expressions::key_t>(param);
@@ -51,7 +52,7 @@ namespace components::operators {
                     auto* scalar_expr = static_cast<const expressions::scalar_expression_t*>(expr_ptr.get());
 
                     if (scalar_expr->type() == expressions::scalar_type::case_expr) {
-                        auto computed = evaluate_case_expr(resource, scalar_expr->params(), chunk, params);
+                        auto computed = evaluate_case_expr(resource, scalar_expr->params(), chunk, params, session_tz);
                         temp_vecs.emplace_back(std::move(computed));
                         result.vec = &temp_vecs.back();
                         return result;
@@ -63,7 +64,7 @@ namespace components::operators {
                             throw std::logic_error("Unary minus requires 1 operand");
                         }
                         std::deque<vector::vector_t> sub_temps;
-                        auto inner_op = resolve_operand(operands[0], chunk, params, resource, sub_temps);
+                        auto inner_op = resolve_operand(operands[0], chunk, params, resource, sub_temps, session_tz);
                         if (inner_op.has_error()) {
                             return inner_op;
                         }
@@ -75,14 +76,10 @@ namespace components::operators {
                         if (inner_op.value().vec) {
                             computed = vector::compute_unary_neg(resource, *inner_op.value().vec, count);
                         } else {
-                            auto neg_val =
-                                types::logical_value_t::subtract(types::logical_value_t(resource, int64_t(0)),
-                                                                 *inner_op.value().scalar);
                             uint64_t out_count = count > 0 ? count : 1;
-                            computed = vector::vector_t(resource, neg_val.type(), out_count);
-                            for (uint64_t i = 0; i < out_count; i++) {
-                                computed.set_value(i, neg_val);
-                            }
+                            vector::vector_t scalar_vec(resource, *inner_op.value().scalar, out_count);
+                            scalar_vec.flatten(out_count);
+                            computed = vector::compute_unary_neg(resource, scalar_vec, out_count);
                         }
                         for (auto& t : sub_temps) {
                             temp_vecs.emplace_back(std::move(t));
@@ -99,11 +96,11 @@ namespace components::operators {
                     }
 
                     std::deque<vector::vector_t> sub_temps;
-                    auto left_op = resolve_operand(operands[0], chunk, params, resource, sub_temps);
+                    auto left_op = resolve_operand(operands[0], chunk, params, resource, sub_temps, session_tz);
                     if (left_op.has_error()) {
                         return left_op;
                     }
-                    auto right_op = resolve_operand(operands[1], chunk, params, resource, sub_temps);
+                    auto right_op = resolve_operand(operands[1], chunk, params, resource, sub_temps, session_tz);
                     if (right_op.has_error()) {
                         return right_op;
                     }
@@ -131,32 +128,10 @@ namespace components::operators {
                     } else {
                         auto lval = *left_op.value().scalar;
                         auto rval = *right_op.value().scalar;
-                        types::logical_value_t result_val(resource,
-                                                          types::complex_logical_type{types::logical_type::NA});
-                        switch (scalar_expr->type()) {
-                            case expressions::scalar_type::add:
-                                result_val = types::logical_value_t::sum(lval, rval);
-                                break;
-                            case expressions::scalar_type::subtract:
-                                result_val = types::logical_value_t::subtract(lval, rval);
-                                break;
-                            case expressions::scalar_type::multiply:
-                                result_val = types::logical_value_t::mult(lval, rval);
-                                break;
-                            case expressions::scalar_type::divide:
-                                result_val = types::logical_value_t::divide(lval, rval);
-                                break;
-                            case expressions::scalar_type::mod:
-                                result_val = types::logical_value_t::modulus(lval, rval);
-                                break;
-                            default:
-                                break;
-                        }
                         uint64_t out_count = count > 0 ? count : 1;
-                        computed = vector::vector_t(resource, result_val.type(), out_count);
-                        for (uint64_t i = 0; i < out_count; i++) {
-                            computed.set_value(i, result_val);
-                        }
+                        vector::vector_t left_vec(resource, lval, out_count);
+                        left_vec.flatten(out_count);
+                        computed = vector::compute_vector_scalar_arithmetic(resource, op, left_vec, rval, out_count);
                     }
                     for (auto& t : sub_temps) {
                         temp_vecs.emplace_back(std::move(t));
@@ -173,7 +148,8 @@ namespace components::operators {
                                                  const expressions::param_storage& param,
                                                  const vector::data_chunk_t& chunk,
                                                  const logical_plan::storage_parameters& params,
-                                                 size_t row_idx) {
+                                                 size_t row_idx,
+                                                 core::date::timezone_offset_t session_tz) {
             if (std::holds_alternative<expressions::key_t>(param)) {
                 auto& key = std::get<expressions::key_t>(param);
                 assert(!key.path().empty() && "key path must be resolved before execution");
@@ -198,13 +174,18 @@ namespace components::operators {
                             auto& cond_param = ops[w * 2];
                             if (std::holds_alternative<expressions::expression_ptr>(cond_param)) {
                                 auto& cond_expr = std::get<expressions::expression_ptr>(cond_param);
-                                if (evaluate_row_condition(resource, cond_expr, chunk, params, row_idx)) {
-                                    return resolve_row_value(resource, ops[w * 2 + 1], chunk, params, row_idx);
+                                if (evaluate_row_condition(resource, cond_expr, chunk, params, row_idx, session_tz)) {
+                                    return resolve_row_value(resource,
+                                                             ops[w * 2 + 1],
+                                                             chunk,
+                                                             params,
+                                                             row_idx,
+                                                             session_tz);
                                 }
                             }
                         }
                         if (has_default) {
-                            return resolve_row_value(resource, ops.back(), chunk, params, row_idx);
+                            return resolve_row_value(resource, ops.back(), chunk, params, row_idx, session_tz);
                         }
                         return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
                     }
@@ -213,15 +194,16 @@ namespace components::operators {
                         if (scalar->params().empty()) {
                             throw std::logic_error("CASE: unary minus requires 1 operand");
                         }
-                        auto inner = resolve_row_value(resource, scalar->params()[0], chunk, params, row_idx);
+                        auto inner =
+                            resolve_row_value(resource, scalar->params()[0], chunk, params, row_idx, session_tz);
                         return types::logical_value_t::subtract(types::logical_value_t(resource, int64_t(0)), inner);
                     }
                     // Arithmetic sub-expression
                     if (scalar->params().size() < 2) {
                         throw std::logic_error("CASE: arithmetic sub-expression requires 2 operands");
                     }
-                    auto l = resolve_row_value(resource, scalar->params()[0], chunk, params, row_idx);
-                    auto r = resolve_row_value(resource, scalar->params()[1], chunk, params, row_idx);
+                    auto l = resolve_row_value(resource, scalar->params()[0], chunk, params, row_idx, session_tz);
+                    auto r = resolve_row_value(resource, scalar->params()[1], chunk, params, row_idx, session_tz);
                     switch (scalar->type()) {
                         case expressions::scalar_type::add:
                             return types::logical_value_t::sum(l, r);
@@ -245,7 +227,8 @@ namespace components::operators {
                                     const expressions::expression_ptr& condition,
                                     const vector::data_chunk_t& chunk,
                                     const logical_plan::storage_parameters& params,
-                                    size_t row_idx) {
+                                    size_t row_idx,
+                                    core::date::timezone_offset_t session_tz) {
             if (condition->group() != expressions::expression_group::compare)
                 return false;
             auto* cmp = static_cast<const expressions::compare_expression_t*>(condition.get());
@@ -253,7 +236,7 @@ namespace components::operators {
             if (cmp->is_union()) {
                 bool is_and = (cmp->type() == expressions::compare_type::union_and);
                 for (auto& child : cmp->children()) {
-                    bool child_result = evaluate_row_condition(resource, child, chunk, params, row_idx);
+                    bool child_result = evaluate_row_condition(resource, child, chunk, params, row_idx, session_tz);
                     if (is_and && !child_result)
                         return false;
                     if (!is_and && child_result)
@@ -262,8 +245,19 @@ namespace components::operators {
                 return is_and;
             }
 
-            auto left_val = resolve_row_value(resource, cmp->left(), chunk, params, row_idx);
-            auto right_val = resolve_row_value(resource, cmp->right(), chunk, params, row_idx);
+            auto left_val = resolve_row_value(resource, cmp->left(), chunk, params, row_idx, session_tz);
+            auto right_val = resolve_row_value(resource, cmp->right(), chunk, params, row_idx, session_tz);
+            if (left_val.type() != right_val.type()) {
+                auto cast_right = right_val.cast_as(left_val.type(), session_tz);
+                if (!cast_right.is_null()) {
+                    right_val = std::move(cast_right);
+                } else {
+                    auto cast_left = left_val.cast_as(right_val.type(), session_tz);
+                    if (!cast_left.is_null()) {
+                        left_val = std::move(cast_left);
+                    }
+                }
+            }
             auto cmp_result = left_val.compare(right_val);
             switch (cmp->type()) {
                 case expressions::compare_type::gt:
@@ -286,7 +280,8 @@ namespace components::operators {
         vector::vector_t evaluate_case_expr(std::pmr::memory_resource* resource,
                                             const std::pmr::vector<expressions::param_storage>& operands,
                                             vector::data_chunk_t& chunk,
-                                            const logical_plan::storage_parameters& params) {
+                                            const logical_plan::storage_parameters& params,
+                                            core::date::timezone_offset_t session_tz) {
             uint64_t count = chunk.size();
             bool has_default = (operands.size() % 2 == 1);
             size_t num_whens = operands.size() / 2;
@@ -295,11 +290,21 @@ namespace components::operators {
             types::complex_logical_type result_type(types::logical_type::NA);
             if (count > 0) {
                 // Try first THEN result
-                auto val = resolve_row_value(resource, operands[1], chunk, params, 0);
+                auto val = resolve_row_value(resource, operands[1], chunk, params, 0, session_tz);
                 result_type = val.type();
             }
 
             vector::vector_t output(resource, result_type, count);
+
+            auto coerce_to_result = [&](types::logical_value_t val) -> types::logical_value_t {
+                if (!val.is_null() && val.type() != result_type) {
+                    auto casted = val.cast_as(result_type, session_tz);
+                    if (!casted.is_null()) {
+                        return casted;
+                    }
+                }
+                return val;
+            };
 
             for (uint64_t i = 0; i < count; i++) {
                 bool matched = false;
@@ -307,8 +312,9 @@ namespace components::operators {
                     auto& cond_param = operands[w * 2];
                     if (std::holds_alternative<expressions::expression_ptr>(cond_param)) {
                         auto& cond_expr = std::get<expressions::expression_ptr>(cond_param);
-                        if (evaluate_row_condition(resource, cond_expr, chunk, params, i)) {
-                            auto val = resolve_row_value(resource, operands[w * 2 + 1], chunk, params, i);
+                        if (evaluate_row_condition(resource, cond_expr, chunk, params, i, session_tz)) {
+                            auto val = coerce_to_result(
+                                resolve_row_value(resource, operands[w * 2 + 1], chunk, params, i, session_tz));
                             output.set_value(i, val);
                             matched = true;
                             break;
@@ -316,8 +322,11 @@ namespace components::operators {
                     }
                 }
                 if (!matched && has_default) {
-                    auto val = resolve_row_value(resource, operands.back(), chunk, params, i);
+                    auto val =
+                        coerce_to_result(resolve_row_value(resource, operands.back(), chunk, params, i, session_tz));
                     output.set_value(i, val);
+                } else if (!matched) {
+                    output.set_null(i, true);
                 }
             }
             return output;
@@ -331,9 +340,10 @@ namespace components::operators {
                         expressions::scalar_type op,
                         const std::pmr::vector<expressions::param_storage>& operands,
                         vector::data_chunk_t& chunk,
-                        const logical_plan::storage_parameters& params) {
+                        const logical_plan::storage_parameters& params,
+                        core::date::timezone_offset_t session_tz) {
         if (op == expressions::scalar_type::case_expr) {
-            return detail::evaluate_case_expr(resource, operands, chunk, params);
+            return detail::evaluate_case_expr(resource, operands, chunk, params, session_tz);
         }
 
         if (op == expressions::scalar_type::unary_minus) {
@@ -343,7 +353,7 @@ namespace components::operators {
                                      std::pmr::string{"unary minus requires 1 operand", resource});
             }
             std::deque<vector::vector_t> temp_vecs;
-            auto operand_res = detail::resolve_operand(operands[0], chunk, params, resource, temp_vecs);
+            auto operand_res = detail::resolve_operand(operands[0], chunk, params, resource, temp_vecs, session_tz);
             if (operand_res.has_error()) {
                 return operand_res.convert_error<vector::vector_t>();
             }
@@ -351,14 +361,10 @@ namespace components::operators {
             if (operand_res.value().vec) {
                 return vector::compute_unary_neg(resource, *operand_res.value().vec, count);
             } else {
-                auto neg_val = types::logical_value_t::subtract(types::logical_value_t(resource, int64_t(0)),
-                                                                *operand_res.value().scalar);
                 uint64_t out_count = count > 0 ? count : 1;
-                vector::vector_t output(resource, neg_val.type(), out_count);
-                for (uint64_t i = 0; i < out_count; i++) {
-                    output.set_value(i, neg_val);
-                }
-                return output;
+                vector::vector_t scalar_vec(resource, *operand_res.value().scalar, out_count);
+                scalar_vec.flatten(out_count);
+                return vector::compute_unary_neg(resource, scalar_vec, out_count);
             }
         }
 
@@ -370,11 +376,11 @@ namespace components::operators {
 
         std::deque<vector::vector_t> temp_vecs;
 
-        auto left_op = detail::resolve_operand(operands[0], chunk, params, resource, temp_vecs);
+        auto left_op = detail::resolve_operand(operands[0], chunk, params, resource, temp_vecs, session_tz);
         if (left_op.has_error()) {
             return left_op.convert_error<vector::vector_t>();
         }
-        auto right_op = detail::resolve_operand(operands[1], chunk, params, resource, temp_vecs);
+        auto right_op = detail::resolve_operand(operands[1], chunk, params, resource, temp_vecs, session_tz);
         if (right_op.has_error()) {
             return right_op.convert_error<vector::vector_t>();
         }
@@ -419,32 +425,10 @@ namespace components::operators {
                                          std::pmr::string{"division by zero", resource});
                 }
             }
-            types::logical_value_t result_val(resource, types::complex_logical_type{types::logical_type::NA});
-            switch (op) {
-                case expressions::scalar_type::add:
-                    result_val = types::logical_value_t::sum(lval, rval);
-                    break;
-                case expressions::scalar_type::subtract:
-                    result_val = types::logical_value_t::subtract(lval, rval);
-                    break;
-                case expressions::scalar_type::multiply:
-                    result_val = types::logical_value_t::mult(lval, rval);
-                    break;
-                case expressions::scalar_type::divide:
-                    result_val = types::logical_value_t::divide(lval, rval);
-                    break;
-                case expressions::scalar_type::mod:
-                    result_val = types::logical_value_t::modulus(lval, rval);
-                    break;
-                default:
-                    break;
-            }
             uint64_t out_count = count > 0 ? count : 1;
-            vector::vector_t output(resource, result_val.type(), out_count);
-            for (uint64_t i = 0; i < out_count; i++) {
-                output.set_value(i, result_val);
-            }
-            return output;
+            vector::vector_t left_vec(resource, lval, out_count);
+            left_vec.flatten(out_count);
+            return vector::compute_vector_scalar_arithmetic(resource, arith_op, left_vec, rval, out_count);
         }
     }
 

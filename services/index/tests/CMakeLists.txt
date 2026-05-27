@@ -6,6 +6,7 @@ set(${PROJECT_NAME}_SOURCES
     main.cpp
     test_index_disk.cpp
     test_bitcask_index_disk.cpp
+    test_disk_hash_table.cpp
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})

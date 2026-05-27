@@ -2,7 +2,6 @@
 
 #include <core/result_wrapper.hpp>
 
-#include <components/base/collection_full_name.hpp>
 #include <components/expressions/forward.hpp>
 #include <components/expressions/key.hpp>
 #include <components/logical_plan/node_join.hpp>
@@ -12,6 +11,8 @@
 #include <components/table/constraint.hpp>
 #include <components/types/types.hpp>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace components::sql::transform {
     template<class T>
@@ -40,21 +41,53 @@ namespace components::sql::transform {
 
     std::pmr::string indices_to_str(std::pmr::memory_resource* resource, A_Indices* indices);
 
-    inline collection_full_name_t rangevar_to_collection(RangeVar* table) {
-        return {construct(table->uid),
-                construct(table->catalogname),
-                construct(table->schemaname),
-                construct(table->relname)};
+    // Role-named DTO produced by the transformer when reading a RangeVar
+    // (table reference) out of the parser AST. Carries each of the four name
+    // components a SQL parser may attach to a qualified table reference:
+    // optional catalog (database), optional schema, the relation (table) name,
+    // and an optional uid. dbname picker logic (catalog with schema as
+    // fallback) is applied at construction so callers see a single role-named
+    // field.
+    struct qualified_name {
+        std::string dbname;
+        std::string relname;
+        std::string schemaname;
+        std::string uuid;
+
+        bool empty() const noexcept { return dbname.empty() && relname.empty() && schemaname.empty() && uuid.empty(); }
+    };
+
+    inline qualified_name rangevar_to_qualified_name(RangeVar* table) {
+        std::string dbname = construct(table->catalogname);
+        std::string schema = construct(table->schemaname);
+        std::string rel = construct(table->relname);
+        std::string uuid = construct(table->uid);
+        // The parser produces several RangeVar shapes:
+        //   `tbl`            -> catalogname="", schemaname=""
+        //   `db.tbl`         -> catalogname=db, schemaname=""
+        //   `schema.tbl`     -> catalogname="", schemaname=schema
+        //                       (from makeRangeVarFromAnyName: ALTER/RENAME paths)
+        //   `db.schema.tbl`  -> catalogname=db, schemaname=schema
+        //   `uid.db.schema.tbl` -> uid=uid, catalogname=db, schemaname=schema
+        // Pre-10.E callers ran the picker `cfn.database.empty() ? cfn.schema :
+        // cfn.database` at every use site while keeping cfn.schema unchanged.
+        // Mirror that here: pick dbname once, but leave schemaname intact so
+        // factories that consume both fields (create_collection, create_index,
+        // drop_collection, drop_index) keep the original parser-display schema.
+        if (dbname.empty()) {
+            dbname = schema;
+        }
+        return {std::move(dbname), std::move(rel), std::move(schema), std::move(uuid)};
     }
 
     struct name_collection_t {
-        collection_full_name_t left_name;
+        qualified_name left_name;
         std::string left_alias;
-        collection_full_name_t right_name;
+        qualified_name right_name;
         std::string right_alias;
 
         // Additional aliases that belong to the left scope but came in through a nested join.
-        std::vector<collection_full_name_t> extra_left_names;
+        std::vector<qualified_name> extra_left_names;
         std::vector<std::string> extra_left_aliases;
 
         bool is_left_table(const std::string& name) const;
@@ -131,10 +164,12 @@ namespace components::sql::transform {
             {"double", types::logical_type::DOUBLE},
             {"tinyint", types::logical_type::TINYINT},
             {"hugeint", types::logical_type::HUGEINT},
-            {"timestamp_sec", types::logical_type::TIMESTAMP_SEC},
-            {"timestamp_ms", types::logical_type::TIMESTAMP_MS},
-            {"timestamp_us", types::logical_type::TIMESTAMP_US},
-            {"timestamp_ns", types::logical_type::TIMESTAMP_NS},
+            {"date", types::logical_type::DATE},
+            {"time", types::logical_type::TIME},
+            {"timetz", types::logical_type::TIME_TZ},
+            {"timestamp", types::logical_type::TIMESTAMP},
+            {"timestamptz", types::logical_type::TIMESTAMP_TZ},
+            {"interval", types::logical_type::INTERVAL},
             {"blob", types::logical_type::BLOB},
             {"utinyint", types::logical_type::UTINYINT},
             {"usmallint", types::logical_type::USMALLINT},
@@ -172,15 +207,34 @@ namespace components::sql::transform {
         return expressions::scalar_type::invalid;
     }
 
+    // --- JSONB operators -------------------------------------------------
+    // Path-navigation jsonb operators. On a computing table (relkind='g')
+    // nested fields are flattened into a single column whose name is the
+    // path joined by '/', so navigation reduces to building that joined key.
+    //   ->  /  #>   return jsonb  -> a (sub)table (relation position only)
+    //   ->> / #>>   return text   -> a typed scalar value (SELECT/WHERE)
+    // '#>'/'#>>' take a whole path on the right ('{a,b}' or dotted 'a.b').
+    bool is_jsonb_nav_operator(std::string_view op);
+
+    // True for the scalar (text-returning) variants usable in SELECT/WHERE.
+    bool jsonb_nav_returns_scalar(std::string_view op);
+
+    // True for operators whose right operand is a whole path ('{a,b}' / 'a.b'),
+    // not a single key — '#>', '#>>' (navigation) and '#-' (delete by path).
+    bool jsonb_op_takes_path(std::string_view op);
+
     std::string node_tag_to_string(NodeTag type);
     std::string expr_kind_to_string(A_Expr_Kind type);
     std::string like_to_regex(const std::string& pattern);
 
+    // Deparse a CHECK constraint raw expression node back to SQL text.
+    // Handles: column refs, integer/float/string constants, comparison operators,
+    // AND/OR/NOT, IS NULL / IS NOT NULL. Returns "" for unsupported node types.
+    core::result_wrapper_t<std::string> deparse_check_expr(std::pmr::memory_resource* resource, Node* node);
+
     core::result_wrapper_t<types::complex_logical_type> get_type(std::pmr::memory_resource* resource, TypeName* type);
-    core::result_wrapper_t<std::vector<types::complex_logical_type>> get_types(std::pmr::memory_resource* resource,
-                                                                               PGList& list);
-    core::result_wrapper_t<std::pmr::vector<types::complex_logical_type>>
-    get_types_pmr(std::pmr::memory_resource* resource, PGList& list);
+    core::result_wrapper_t<std::pmr::vector<types::complex_logical_type>> get_types(std::pmr::memory_resource* resource,
+                                                                                    PGList& list);
 
     core::result_wrapper_t<types::logical_value_t> get_value(std::pmr::memory_resource* resource, Node* node);
     core::result_wrapper_t<types::logical_value_t> get_array(std::pmr::memory_resource* resource, PGList* list);
@@ -191,6 +245,53 @@ namespace components::sql::transform {
 
     core::result_wrapper_t<std::vector<table::column_definition_t>>
     get_column_definitions(std::pmr::memory_resource* resource, PGList& table_elts);
-    std::vector<table::table_constraint_t> extract_table_constraints(PGList& table_elts);
+    core::result_wrapper_t<std::vector<table::table_constraint_t>>
+    extract_table_constraints(std::pmr::memory_resource* resource, PGList& table_elts);
+
+    // Transformer catalog-resolve emission.
+    //
+    // The transformer wraps a main DML/DDL `node_ptr` in
+    // `sequence_t(catalog_resolve_*_t..., main_node)` so the planner can
+    // treat catalog resolution as a first-class pipeline dependency.
+
+    // Wrap `main_node` (an INSERT/SELECT/UPDATE/DELETE-style consumer that
+    // targets a specific (dbname, relname)) in
+    //   sequence_t(catalog_resolve_namespace_t, catalog_resolve_table_t,
+    //              [catalog_resolve_constraint_t,] main_node)
+    // Empty dbname/relname skips the corresponding resolve node. When
+    // `with_constraints` is set, a catalog_resolve_constraint_t with the
+    // matching direction is appended right after the resolve_table (used for
+    // INSERT/UPDATE → outgoing, DELETE → referencing).
+    enum class constraint_resolve_kind
+    {
+        none,
+        outgoing,
+        referencing
+    };
+
+    logical_plan::node_ptr
+    maybe_wrap_with_catalog_resolve_table(std::pmr::memory_resource* resource,
+                                          const std::string& dbname,
+                                          const std::string& relname,
+                                          logical_plan::node_ptr main_node,
+                                          constraint_resolve_kind with_constraints = constraint_resolve_kind::none);
+
+    // Wrap `main_node` (a database-scoped DDL — CREATE DATABASE, DROP DATABASE,
+    // CREATE TYPE, etc.) in
+    //   sequence_t(catalog_resolve_namespace_t, main_node)
+    // when the toggle is enabled.
+    logical_plan::node_ptr maybe_wrap_with_catalog_resolve_namespace(std::pmr::memory_resource* resource,
+                                                                     const std::string& dbname,
+                                                                     logical_plan::node_ptr main_node);
+
+    // Multi-target wrap: prepends a catalog_resolve_namespace for every distinct
+    // dbname in `targets`, then a catalog_resolve_table for each (dbname,
+    // relname) pair. Used by DDL transformers that touch multiple tables in a
+    // single statement (CREATE CONSTRAINT FK with ref_table, DROP INDEX with
+    // parent table + index name).
+    logical_plan::node_ptr
+    maybe_wrap_with_catalog_resolve_tables(std::pmr::memory_resource* resource,
+                                           std::vector<std::pair<std::string, std::string>> targets,
+                                           logical_plan::node_ptr main_node);
 
 } // namespace components::sql::transform

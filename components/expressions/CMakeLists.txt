@@ -23,7 +23,6 @@ target_link_libraries(
         otterbrix_${PROJECT_NAME} PRIVATE
         otterbrix::compute
         otterbrix::vector
-        otterbrix::serialization
 
         absl::int128
         Boost::boost

@@ -37,7 +37,8 @@ namespace components::sql::transform {
     } // namespace
 
     logical_plan::node_ptr transformer::transform_create_view(ViewStmt& node) {
-        auto name = rangevar_to_collection(node.view);
+        auto qn = rangevar_to_qualified_name(node.view);
+        const std::string db_for_resolve = qn.dbname;
 
         std::string query_sql;
         if (raw_sql_) {
@@ -46,7 +47,10 @@ namespace components::sql::transform {
             query_sql = "SELECT *";
         }
 
-        return logical_plan::make_node_create_view(resource_, name, std::move(query_sql));
+        auto v = logical_plan::make_node_create_view(resource_,
+                                                     core::viewname_t{std::move(qn.relname)},
+                                                     core::query_sql_t{std::move(query_sql)});
+        return maybe_wrap_with_catalog_resolve_namespace(resource_, db_for_resolve, std::move(v));
     }
 
 } // namespace components::sql::transform

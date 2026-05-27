@@ -2,18 +2,29 @@
 
 #include "node.hpp"
 
+#include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/results/ddl_result.hpp>
+
 namespace components::logical_plan {
 
     class node_drop_macro_t final : public node_t {
     public:
-        explicit node_drop_macro_t(std::pmr::memory_resource* resource, const collection_full_name_t& name);
+        explicit node_drop_macro_t(std::pmr::memory_resource* resource);
+
+        components::catalog::oid_t relation_oid() const noexcept { return relation_oid_; }
+        void set_relation_oid(components::catalog::oid_t oid) noexcept { relation_oid_ = oid; }
+
+        components::catalog::drop_behavior_t behavior() const noexcept { return behavior_; }
 
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
+
+        components::catalog::oid_t relation_oid_{components::catalog::INVALID_OID};
+        components::catalog::drop_behavior_t behavior_{components::catalog::drop_behavior_t::cascade_};
     };
 
     using node_drop_macro_ptr = boost::intrusive_ptr<node_drop_macro_t>;
-    node_drop_macro_ptr make_node_drop_macro(std::pmr::memory_resource* resource, const collection_full_name_t& name);
+    node_drop_macro_ptr make_node_drop_macro(std::pmr::memory_resource* resource);
 
 } // namespace components::logical_plan

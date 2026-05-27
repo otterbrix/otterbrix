@@ -5,6 +5,7 @@
 #include <actor-zeta/detail/future.hpp>
 
 #include <components/base/collection_full_name.hpp>
+#include <components/catalog/catalog_codes.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/index/forward.hpp>
@@ -25,54 +26,75 @@ namespace services::index {
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
 
-        // Collection lifecycle
-        unique_future<void> register_collection(session_id_t session, collection_full_name_t name);
-        unique_future<void> unregister_collection(session_id_t session, collection_full_name_t name);
+        // Collection lifecycle (oid-keyed)
+        unique_future<void> register_collection(session_id_t session, components::catalog::oid_t table_oid);
+        unique_future<void> unregister_collection(session_id_t session, components::catalog::oid_t table_oid);
 
         // DML: txn-aware bulk index operations
         unique_future<void> insert_rows(execution_context_t ctx,
-                                        std::vector<components::vector::data_chunk_t> data,
+                                        components::catalog::oid_t table_oid,
+                                        std::unique_ptr<components::vector::data_chunk_t> data,
                                         uint64_t start_row_id,
                                         uint64_t count);
         unique_future<void> delete_rows(execution_context_t ctx,
-                                        std::vector<components::vector::data_chunk_t> data,
+                                        components::catalog::oid_t table_oid,
+                                        std::unique_ptr<components::vector::data_chunk_t> data,
                                         std::pmr::vector<int64_t> row_ids);
         unique_future<void> update_rows(execution_context_t ctx,
-                                        std::vector<components::vector::data_chunk_t> old_data,
-                                        std::vector<components::vector::data_chunk_t> new_data,
+                                        components::catalog::oid_t table_oid,
+                                        std::unique_ptr<components::vector::data_chunk_t> old_data,
+                                        std::unique_ptr<components::vector::data_chunk_t> new_data,
                                         std::pmr::vector<int64_t> row_ids,
                                         int64_t new_start_row_id);
 
         // MVCC commit/revert/cleanup
-        unique_future<void> commit_insert(execution_context_t ctx, uint64_t commit_id);
-        unique_future<void> commit_delete(execution_context_t ctx, uint64_t commit_id);
-        unique_future<void> revert_insert(execution_context_t ctx);
+        unique_future<void>
+        commit_insert(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id);
+        unique_future<void>
+        commit_delete(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id);
+        unique_future<void> revert_insert(execution_context_t ctx, components::catalog::oid_t table_oid);
         unique_future<void> cleanup_all_versions(session_id_t session, uint64_t lowest_active);
-        unique_future<void> rebuild_indexes(session_id_t session, collection_full_name_t name);
+        unique_future<void> rebuild_indexes(session_id_t session, components::catalog::oid_t table_oid);
 
         // DDL: index management
         unique_future<uint32_t> create_index(session_id_t session,
-                                             collection_full_name_t name,
+                                             components::catalog::oid_t table_oid,
                                              index_name_t index_name,
                                              components::index::keys_base_storage_t keys,
-                                             components::logical_plan::index_type type);
-        unique_future<void> drop_index(session_id_t session, collection_full_name_t name, index_name_t index_name);
+                                             components::logical_plan::index_type type,
+                                             core::date::timezone_offset_t session_tz);
+        unique_future<void>
+        drop_index(session_id_t session, components::catalog::oid_t table_oid, index_name_t index_name);
 
         // Query (txn-aware)
         unique_future<std::pmr::vector<int64_t>> search(session_id_t session,
-                                                        collection_full_name_t name,
+                                                        components::catalog::oid_t table_oid,
                                                         components::index::keys_base_storage_t keys,
                                                         components::types::logical_value_t value,
                                                         components::expressions::compare_type compare,
                                                         uint64_t start_time,
-                                                        uint64_t txn_id);
+                                                        uint64_t txn_id,
+                                                        core::date::timezone_offset_t session_tz);
+        // Query (txn-aware)
+        unique_future<std::pmr::vector<int64_t>> search_with_preferred_type(session_id_t session,
+                                                        components::catalog::oid_t table_oid,
+                                                        components::index::keys_base_storage_t keys,
+                                                        components::types::logical_value_t value,
+                                                        components::expressions::compare_type compare,
+                                                        components::logical_plan::index_type preferred_index_type,
+                                                        uint64_t start_time,
+                                                        uint64_t txn_id,
+                                                        core::date::timezone_offset_t session_tz);
 
-        unique_future<bool> has_index(session_id_t session, collection_full_name_t name, index_name_t index_name);
+        unique_future<bool>
+        has_index(session_id_t session, components::catalog::oid_t table_oid, index_name_t index_name);
 
         unique_future<void> flush_all_indexes(session_id_t session);
 
         unique_future<std::pmr::vector<components::index::keys_base_storage_t>>
-        get_indexed_keys(session_id_t session, collection_full_name_t name);
+        get_indexed_keys(session_id_t session, components::catalog::oid_t table_oid);
+        unique_future<std::pmr::vector<components::index::index_description_t>>
+        get_indexed_descriptions(session_id_t session, components::catalog::oid_t table_oid);
 
         using dispatch_traits = actor_zeta::dispatch_traits<&index_contract::register_collection,
                                                             &index_contract::unregister_collection,
@@ -87,9 +109,11 @@ namespace services::index {
                                                             &index_contract::create_index,
                                                             &index_contract::drop_index,
                                                             &index_contract::search,
+                                                            &index_contract::search_with_preferred_type,
                                                             &index_contract::has_index,
                                                             &index_contract::flush_all_indexes,
-                                                            &index_contract::get_indexed_keys>;
+                                                            &index_contract::get_indexed_keys,
+                                                            &index_contract::get_indexed_descriptions>;
 
         index_contract() = delete;
     };

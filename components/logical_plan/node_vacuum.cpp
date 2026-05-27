@@ -3,7 +3,7 @@
 namespace components::logical_plan {
 
     node_vacuum_t::node_vacuum_t(std::pmr::memory_resource* resource)
-        : node_t(resource, node_type::vacuum_t, collection_full_name_t{}) {}
+        : node_t(resource, node_type::vacuum_t) {}
 
     hash_t node_vacuum_t::hash_impl() const { return 0; }
 

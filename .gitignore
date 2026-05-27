@@ -428,5 +428,7 @@ build
 *.txt.user
 benchmark/data/
 
-# Local Rust integration: absolute paths to otterbrix-dist (see .cargo/config.toml)
+# Local Rust integration
 integration/rust/.cargo/
+
+CMakeUserPresets.json

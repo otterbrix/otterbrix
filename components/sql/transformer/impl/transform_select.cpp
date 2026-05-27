@@ -1,3 +1,5 @@
+#include <unordered_set>
+
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
@@ -12,7 +14,6 @@
 #include <components/sql/parser/pg_functions.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
-
 
 using namespace components::expressions;
 
@@ -33,8 +34,8 @@ namespace components::sql::transform {
                     names.extra_left_aliases.push_back(alias);
                 }
             };
-            auto carry_name = [&](const collection_full_name_t& nm) {
-                if (!nm.collection.empty()) {
+            auto carry_name = [&](const qualified_name& nm) {
+                if (!nm.relname.empty()) {
                     names.extra_left_names.push_back(nm);
                 }
             };
@@ -57,13 +58,20 @@ namespace components::sql::transform {
                                        std::pmr::string{"invalid join type", resource_});
                 return;
             }
-            node_join = logical_plan::make_node_join(resource, {database_name_t(), collection_name_t()}, j_type);
+            node_join = logical_plan::make_node_join(resource, core::dbname_t{}, core::relname_t{}, j_type);
             node_join->append_child(prev);
             if (nodeTag(join->rarg) == T_RangeVar) {
                 auto table_r = pg_ptr_cast<RangeVar>(join->rarg);
-                sub_query_names.right_name = rangevar_to_collection(table_r);
+                sub_query_names.right_name = rangevar_to_qualified_name(table_r);
                 sub_query_names.right_alias = construct_alias(table_r->alias);
-                node_join->append_child(logical_plan::make_node_aggregate(resource, sub_query_names.right_name));
+                auto agg_r = logical_plan::make_node_aggregate(resource,
+                                                               core::uid_t{sub_query_names.right_name.uuid},
+                                                               core::dbname_t{sub_query_names.right_name.dbname},
+                                                               core::relname_t{sub_query_names.right_name.relname});
+                if (!sub_query_names.right_alias.empty()) {
+                    agg_r->set_result_alias(sub_query_names.right_alias);
+                }
+                node_join->append_child(std::move(agg_r));
             } else if (nodeTag(join->rarg) == T_RangeFunction) {
                 auto func = pg_ptr_cast<RangeFunction>(join->rarg);
                 node_join->append_child(transform_function(*func, sub_query_names, params));
@@ -74,7 +82,7 @@ namespace components::sql::transform {
             // bamboo end
             auto table_l = pg_ptr_cast<RangeVar>(join->larg);
             assert(!node_join);
-            names.left_name = rangevar_to_collection(table_l);
+            names.left_name = rangevar_to_qualified_name(table_l);
             names.left_alias = construct_alias(table_l->alias);
             auto j_type = jointype_to_ql(join);
             if (j_type == logical_plan::join_type::invalid) {
@@ -82,13 +90,27 @@ namespace components::sql::transform {
                                        std::pmr::string{"invalid join type", resource_});
                 return;
             }
-            node_join = logical_plan::make_node_join(resource, {}, j_type);
-            node_join->append_child(logical_plan::make_node_aggregate(resource, names.left_name));
+            node_join = logical_plan::make_node_join(resource, core::dbname_t{}, core::relname_t{}, j_type);
+            auto agg_l = logical_plan::make_node_aggregate(resource,
+                                                           core::uid_t{names.left_name.uuid},
+                                                           core::dbname_t{names.left_name.dbname},
+                                                           core::relname_t{names.left_name.relname});
+            if (!names.left_alias.empty()) {
+                agg_l->set_result_alias(names.left_alias);
+            }
+            node_join->append_child(std::move(agg_l));
             if (nodeTag(join->rarg) == T_RangeVar) {
                 auto table_r = pg_ptr_cast<RangeVar>(join->rarg);
-                names.right_name = rangevar_to_collection(table_r);
+                names.right_name = rangevar_to_qualified_name(table_r);
                 names.right_alias = construct_alias(table_r->alias);
-                node_join->append_child(logical_plan::make_node_aggregate(resource, names.right_name));
+                auto agg_r = logical_plan::make_node_aggregate(resource,
+                                                               core::uid_t{names.right_name.uuid},
+                                                               core::dbname_t{names.right_name.dbname},
+                                                               core::relname_t{names.right_name.relname});
+                if (!names.right_alias.empty()) {
+                    agg_r->set_result_alias(names.right_alias);
+                }
+                node_join->append_child(std::move(agg_r));
             } else if (nodeTag(join->rarg) == T_RangeFunction) {
                 auto func = pg_ptr_cast<RangeFunction>(join->rarg);
                 node_join->append_child(transform_function(*func, names, params));
@@ -101,13 +123,20 @@ namespace components::sql::transform {
                                        std::pmr::string{"invalid join type", resource_});
                 return;
             }
-            node_join = logical_plan::make_node_join(resource, {database_name_t(), collection_name_t()}, j_type);
+            node_join = logical_plan::make_node_join(resource, core::dbname_t{}, core::relname_t{}, j_type);
             node_join->append_child(transform_function(*pg_ptr_cast<RangeFunction>(join->larg), names, params));
             if (nodeTag(join->rarg) == T_RangeVar) {
                 auto table_r = pg_ptr_cast<RangeVar>(join->rarg);
-                names.right_name = rangevar_to_collection(table_r);
+                names.right_name = rangevar_to_qualified_name(table_r);
                 names.right_alias = construct_alias(table_r->alias);
-                node_join->append_child(logical_plan::make_node_aggregate(resource, names.right_name));
+                auto agg_r = logical_plan::make_node_aggregate(resource,
+                                                               core::uid_t{names.right_name.uuid},
+                                                               core::dbname_t{names.right_name.dbname},
+                                                               core::relname_t{names.right_name.relname});
+                if (!names.right_alias.empty()) {
+                    agg_r->set_result_alias(names.right_alias);
+                }
+                node_join->append_child(std::move(agg_r));
             } else if (nodeTag(join->rarg) == T_RangeFunction) {
                 auto func = pg_ptr_cast<RangeFunction>(join->rarg);
                 node_join->append_child(transform_function(*func, names, params));
@@ -142,17 +171,19 @@ namespace components::sql::transform {
     }
 
     logical_plan::node_ptr transformer::transform_select(SelectStmt& node, logical_plan::parameter_node_t* params) {
-        if (node.op == SETOP_UNION) {
-            error_ = core::error_t(core::error_code_t::unimplemented_yet,
-                                   std::pmr::string{"Select with union is not supported yet", resource_});
-            return nullptr;
-        } else if (node.op == SETOP_INTERSECT) {
-            error_ = core::error_t(core::error_code_t::unimplemented_yet,
-                                   std::pmr::string{"Select with intersect is not supported yet", resource_});
-            return nullptr;
-        } else if (node.op == SETOP_EXCEPT) {
-            error_ = core::error_t(core::error_code_t::unimplemented_yet,
-                                   std::pmr::string{"Select with except is not supported yet", resource_});
+        // Set operations (UNION / INTERSECT / EXCEPT) are not yet wired
+        // through the transformer. For a SETOP_* node, node.targetList is
+        // null (the column projection lives on the larg / rarg children),
+        // so the for-loop below would dereference null and SIGSEGV. Bail
+        // out cleanly until proper set-operation lowering lands.
+        // dynamic_schema_union sits on this path; lldb pinned the crash to
+        // node.targetList->lst at line 137 here.
+        if (node.op != SETOP_NONE || node.targetList == nullptr) {
+            error_ = core::error_t(
+                core::error_code_t::unimplemented_yet,
+                std::pmr::string{
+                    "SELECT set operations (UNION / INTERSECT / EXCEPT) are not yet supported by the SQL transformer",
+                    resource_});
             return nullptr;
         }
         logical_plan::node_aggregate_ptr agg = nullptr;
@@ -160,27 +191,80 @@ namespace components::sql::transform {
         name_collection_t names;
 
         if (node.fromClause && !node.fromClause->lst.empty()) {
+            // SQL-89 comma-join: `FROM a, b [, c ...] WHERE a.x = b.y` arrives as
+            // a fromClause->lst with multiple top-level entries. libpg_query does
+            // NOT synthesize a FromExpr / JoinExpr in that case — each table is a
+            // bare T_RangeVar (or T_RangeFunction / T_RangeSubselect) sibling.
+            //
+            // The downstream pipeline only knows how to consume a single join
+            // root, so we synthesize a left-deep JoinExpr tree here with
+            // jointype=JOIN_INNER and quals=NULL on every link. jointype_to_ql
+            // promotes (JOIN_INNER, quals=NULL) -> join_type::cross, which
+            // produces the cross-product. Inner-join semantics are recovered by
+            // the user's WHERE clause, which the existing transform path lowers
+            // into a sibling match_t on the aggregate root; that match_t
+            // evaluates against the post-join merged chunk (operator_match feeds
+            // the same chunk in as both left and right), so column refs resolve
+            // through the join's merged schema regardless of side_t.
+            //
+            // The synthesized tree mutates `node.fromClause->lst.front()` so the
+            // existing T_JoinExpr branch below picks it up unchanged.
+            if (node.fromClause->lst.size() > 1) {
+                // Synth parser-AST nodes — consumed within this function by
+                // join_dfs which builds independent logical_plan nodes. Live in
+                // a transient arena (upstream=resource_) so they don't outlive
+                // their scope on the session resource.
+                std::pmr::monotonic_buffer_resource transient(resource_);
+                auto* resource = &transient; // makeNode macro reads `resource_` / `resource`
+                auto it = node.fromClause->lst.begin();
+                Node* acc = pg_ptr_cast<Node>(it->data);
+                ++it;
+                for (; it != node.fromClause->lst.end(); ++it) {
+                    auto* rhs = pg_ptr_cast<Node>(it->data);
+                    JoinExpr* synth = makeNode(resource, JoinExpr);
+                    synth->jointype = JOIN_INNER;
+                    synth->isNatural = false;
+                    synth->larg = acc;
+                    synth->rarg = rhs;
+                    synth->usingClause = nullptr;
+                    synth->quals = nullptr; // cross — WHERE supplies the predicate
+                    synth->alias = nullptr;
+                    synth->rtindex = 0;
+                    acc = reinterpret_cast<Node*>(synth);
+                }
+                // Replace the original multi-entry fromClause with a single
+                // top-level JoinExpr so the dispatch below sees T_JoinExpr.
+                node.fromClause->lst.clear();
+                node.fromClause->lst.push_back({acc});
+            }
+
             // has from
             auto from_first = node.fromClause->lst.front().data;
             if (nodeTag(from_first) == T_RangeVar) {
                 // from table_name
                 auto table = pg_ptr_cast<RangeVar>(from_first);
-                names.left_name = rangevar_to_collection(table);
+                names.left_name = rangevar_to_qualified_name(table);
                 names.left_alias = construct_alias(table->alias);
-                agg = logical_plan::make_node_aggregate(resource_, names.left_name);
+                agg = logical_plan::make_node_aggregate(resource_,
+                                                        core::uid_t{names.left_name.uuid},
+                                                        core::dbname_t{names.left_name.dbname},
+                                                        core::relname_t{names.left_name.relname});
+                if (!names.left_alias.empty()) {
+                    agg->set_result_alias(names.left_alias);
+                }
             } else if (nodeTag(from_first) == T_JoinExpr) {
                 // from table_1 join table_2 on cond
-                agg = logical_plan::make_node_aggregate(resource_, {});
+                agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
                 join_dfs(resource_, pg_ptr_cast<JoinExpr>(from_first), join, names, params);
                 agg->append_child(join);
             } else if (nodeTag(from_first) == T_RangeFunction) {
-                agg = logical_plan::make_node_aggregate(resource_, {});
+                agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
                 auto range_func = *pg_ptr_cast<RangeFunction>(from_first);
                 names.left_alias = construct_alias(range_func.alias);
                 agg->append_child(transform_function(range_func, names, params));
             } else if (nodeTag(from_first) == T_RangeSubselect) {
                 auto* sub_select = pg_ptr_cast<RangeSubselect>(from_first);
-                agg = logical_plan::make_node_aggregate(resource_, {});
+                agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
                 agg->append_child(transform_select(*pg_ptr_cast<SelectStmt>(sub_select->subquery), params));
 
                 if (sub_select->alias) {
@@ -208,7 +292,7 @@ namespace components::sql::transform {
                 return nullptr;
             }
         } else {
-            agg = logical_plan::make_node_aggregate(resource_, {});
+            agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
         }
         if (node.valuesLists) {
             vector::data_chunk_t chunk(resource_, {}, node.valuesLists->lst.size());
@@ -236,8 +320,10 @@ namespace components::sql::transform {
             return logical_plan::make_node_raw_data(resource_, std::move(chunk));
         }
 
-        auto group = logical_plan::make_node_group(resource_, agg->collection_full_name());
-        auto select_node = logical_plan::make_node_select(resource_, agg->collection_full_name());
+        auto group =
+            logical_plan::make_node_group(resource_, core::dbname_t{agg->dbname()}, core::relname_t{agg->relname()});
+        auto select_node =
+            logical_plan::make_node_select(resource_, core::dbname_t{agg->dbname()}, core::relname_t{agg->relname()});
 
         // fields — collect SELECT expressions into select_node.
         // Star expressions (*) are skipped; an empty select_node means passthrough (SELECT *).
@@ -316,21 +402,25 @@ namespace components::sql::transform {
                         has_non_star = true;
                         {
                             auto col = columnref_to_field(resource_, col_ref, names);
-                            // Table-qualified wildcard (table.*) where the prefix is a recognized
-                            // table alias → star_expand. Struct field wildcards (struct_col.*)
-                            // have an unrecognized prefix (col.table is empty) → get_field.
                             if (nodeTag(col_ref->fields->lst.back().data) == T_A_Star && !col.table.empty()) {
-                                select_node->append_expression(make_scalar_expression(resource_,
-                                                                                      scalar_type::star_expand,
-                                                                                      expressions::key_t{resource_}));
+                                // Carry the table qualifier so validator can expand t.x.* by result_alias.
+                                std::pmr::vector<std::pmr::string> star_path{resource_};
+                                star_path.emplace_back(std::pmr::string{col.table, resource_});
+                                star_path.emplace_back(std::pmr::string{"*", resource_});
+                                select_node->append_expression(
+                                    make_scalar_expression(resource_,
+                                                           scalar_type::star_expand,
+                                                           expressions::key_t{std::move(star_path)}));
                                 break;
                             }
                             if (res->name) {
-                                select_node->append_expression(
-                                    make_scalar_expression(resource_,
-                                                           scalar_type::get_field,
-                                                           expressions::key_t{resource_, res->name},
-                                                           col.field));
+                                // Carry side forward so validate_key doesn't fall back to LEFT on same_schema JOIN.
+                                expressions::key_t out_key{resource_, res->name};
+                                out_key.set_side(col.field.side());
+                                select_node->append_expression(make_scalar_expression(resource_,
+                                                                                      scalar_type::get_field,
+                                                                                      std::move(out_key),
+                                                                                      col.field));
                             } else {
                                 select_node->append_expression(
                                     make_scalar_expression(resource_, scalar_type::get_field, col.field));
@@ -356,18 +446,51 @@ namespace components::sql::transform {
                                 error_ = target_type_res.error();
                                 break;
                             }
-                            auto col_ref =
-                                columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
+                            auto col_ref = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
                             auto field_name = std::string(col_ref.field.storage().back());
                             col_ref.field.set_cast_type(target_type_res.value());
+                            if (cast->variant_select) {
+                                col_ref.field.set_variant_select(true);
+                            }
                             std::string alias = res->name ? res->name : field_name;
                             has_non_star = true;
-                            select_node->append_expression(
-                                make_scalar_expression(resource_,
-                                                       scalar_type::get_field,
-                                                       expressions::key_t{resource_, alias},
-                                                       std::move(col_ref.field)));
+                            select_node->append_expression(make_scalar_expression(resource_,
+                                                                                  scalar_type::get_field,
+                                                                                  expressions::key_t{resource_, alias},
+                                                                                  std::move(col_ref.field)));
                             break;
+                        }
+                        // '<jsonb nav chain> ::? type' — e.g. `m -> 'a' ->> 'b' ::? string`.
+                        // Resolve the chain to its flattened key, then attach the
+                        // type so find_types picks the matching multi-type variant.
+                        if (cast->arg && nodeTag(cast->arg) == T_A_Expr) {
+                            auto* sub = pg_ptr_cast<A_Expr>(cast->arg);
+                            if (sub->kind == AEXPR_OP && sub->name &&
+                                nodeTag(sub->name->lst.front().data) == T_String &&
+                                is_jsonb_nav_operator(strVal(sub->name->lst.front().data))) {
+                                auto target_type_res = get_type(resource_, cast->typeName);
+                                if (target_type_res.has_error()) {
+                                    error_ = target_type_res.error();
+                                    break;
+                                }
+                                expressions::key_t field_key{resource_};
+                                if (!resolve_jsonb_scalar_key(sub, names, field_key)) {
+                                    return nullptr;
+                                }
+                                field_key.set_cast_type(target_type_res.value());
+                                if (cast->variant_select) {
+                                    field_key.set_variant_select(true);
+                                }
+                                std::string alias = res->name ? res->name
+                                                              : std::string(field_key.storage().back());
+                                has_non_star = true;
+                                select_node->append_expression(
+                                    make_scalar_expression(resource_,
+                                                           scalar_type::get_field,
+                                                           expressions::key_t{resource_, alias},
+                                                           std::move(field_key)));
+                                break;
+                            }
                         }
                         [[fallthrough]];
                     }
@@ -385,10 +508,56 @@ namespace components::sql::transform {
                         auto a_expr = pg_ptr_cast<A_Expr>(res->val);
                         if (a_expr->kind == AEXPR_OP) {
                             auto op_str = std::string_view(strVal(a_expr->name->lst.front().data));
+                            // JSONB delete: '#-' always; '-' only when the left side is
+                            // the table itself (document root) — otherwise it is plain
+                            // arithmetic subtraction. a_expr->lexpr is null for unary
+                            // minus ('-x'), so guard before probing it.
+                            if (op_str == "#-" ||
+                                (op_str == "-" && a_expr->lexpr && jsonb_lhs_is_table(a_expr->lexpr, names))) {
+                                has_non_star = true;
+                                expressions::key_t prefix_key{resource_};
+                                if (!resolve_jsonb_prefix_key(a_expr, names, prefix_key)) {
+                                    return nullptr;
+                                }
+                                select_node->append_expression(
+                                    make_scalar_expression(resource_, scalar_type::jsonb_delete, prefix_key));
+                                break;
+                            }
                             if (is_arithmetic_operator(op_str)) {
                                 has_non_star = true;
                                 logical_plan::node_ptr sel_node = select_node;
                                 transform_select_a_expr(a_expr, res->name, names, params, sel_node);
+                                break;
+                            }
+                            if (is_jsonb_nav_operator(op_str)) {
+                                has_non_star = true;
+                                if (jsonb_nav_returns_scalar(op_str)) {
+                                    // Scalar jsonb navigation (->> / #>>) collapses to a
+                                    // get_field on the flattened slash-joined column key.
+                                    expressions::key_t field_key{resource_};
+                                    if (!resolve_jsonb_scalar_key(a_expr, names, field_key)) {
+                                        return nullptr;
+                                    }
+                                    if (res->name) {
+                                        select_node->append_expression(
+                                            make_scalar_expression(resource_,
+                                                                   scalar_type::get_field,
+                                                                   expressions::key_t{resource_, res->name},
+                                                                   field_key));
+                                    } else {
+                                        select_node->append_expression(
+                                            make_scalar_expression(resource_, scalar_type::get_field, field_key));
+                                    }
+                                } else {
+                                    // Table-valued navigation (-> / #>): expand the subtree
+                                    // under the prefix into its (rerooted) columns.
+                                    expressions::key_t prefix_key{resource_};
+                                    if (!resolve_jsonb_prefix_key(a_expr, names, prefix_key)) {
+                                        return nullptr;
+                                    }
+                                    select_node->append_expression(
+                                        make_scalar_expression(resource_, scalar_type::jsonb_expand, prefix_key));
+                                }
                                 break;
                             }
                         }
@@ -426,9 +595,17 @@ namespace components::sql::transform {
                                         resource_});
                                 return nullptr;
                             } else if (nodeTag(indirection->arg) == T_ColumnRef) {
-                                path.emplace_back(
-                                    pmrStrVal(pg_ptr_cast<ColumnRef>(indirection->arg)->fields->lst.back().data,
-                                              resource_));
+                                auto* cref = pg_ptr_cast<ColumnRef>(indirection->arg);
+                                // (table_alias.struct_col).* needs schema-aware struct expansion;
+                                // not supported — surface explicitly instead of silent miswiring.
+                                if (cref->fields->lst.size() > 1 && !path.empty() && path.front() == "*") {
+                                    error_ = core::error_t(
+                                        core::error_code_t::unimplemented_yet,
+                                        std::pmr::string{"struct field wildcard (alias.struct).* not supported",
+                                                         resource_});
+                                    return nullptr;
+                                }
+                                path.emplace_back(pmrStrVal(cref->fields->lst.back().data, resource_));
                                 break;
                             } else {
                                 error_ = core::error_t(
@@ -490,11 +667,13 @@ namespace components::sql::transform {
                 }
             }
 
-            // If select_node holds exactly one star_expand (pure SELECT *), treat as passthrough.
+            // If select_node holds exactly one bare star_expand (pure SELECT *), treat as passthrough.
+            // Qualified star (SELECT t.x.*) carries an alias key and must reach the validator's
+            // pre-expand loop to be filtered by result_alias.
             auto& sel_exprs = select_node->expressions();
             if (sel_exprs.size() == 1 && sel_exprs[0]->group() == expression_group::scalar) {
                 auto* s = static_cast<const scalar_expression_t*>(sel_exprs[0].get());
-                if (s->type() == scalar_type::star_expand) {
+                if (s->type() == scalar_type::star_expand && s->key().storage().empty()) {
                     sel_exprs.clear();
                     has_non_star = false;
                 }
@@ -512,7 +691,10 @@ namespace components::sql::transform {
                 expr = transform_a_expr(pg_ptr_cast<A_Expr>(node.whereClause), names, params);
             }
             if (expr) {
-                agg->append_child(logical_plan::make_node_match(resource_, agg->collection_full_name(), expr));
+                agg->append_child(logical_plan::make_node_match(resource_,
+                                                                core::dbname_t{agg->dbname()},
+                                                                core::relname_t{agg->relname()},
+                                                                expr));
             }
         }
 
@@ -583,7 +765,8 @@ namespace components::sql::transform {
         if (!group->expressions().empty()) {
             if (having_expr) {
                 auto final_group = logical_plan::make_node_group(resource_,
-                                                                 agg->collection_full_name(),
+                                                                 core::dbname_t{agg->dbname()},
+                                                                 core::relname_t{agg->relname()},
                                                                  group->expressions(),
                                                                  std::move(having_expr));
                 agg->append_child(final_group);
@@ -644,7 +827,10 @@ namespace components::sql::transform {
                     return nullptr;
                 }
             }
-            agg->append_child(logical_plan::make_node_sort(resource_, agg->collection_full_name(), sort_exprs));
+            agg->append_child(logical_plan::make_node_sort(resource_,
+                                                           core::dbname_t{agg->dbname()},
+                                                           core::relname_t{agg->relname()},
+                                                           sort_exprs));
         }
 
         // Append select_node as a child of agg (only if there are actual SELECT columns — not pure star)
@@ -665,7 +851,7 @@ namespace components::sql::transform {
                         auto* value = &(pg_ptr_cast<A_Const>(node.limitCount)->val);
                         switch (nodeTag(value)) {
                             case T_Null:
-                                break;
+                                break; // LIMIT ALL — keep unlimit_
                             case T_Integer:
                                 limit_val = intVal(value);
                                 break;
@@ -697,7 +883,7 @@ namespace components::sql::transform {
                         auto* value = &(pg_ptr_cast<A_Const>(node.limitOffset)->val);
                         switch (nodeTag(value)) {
                             case T_Null:
-                                break;
+                                break; // OFFSET NULL — treat as 0
                             case T_Integer:
                                 offset_val = intVal(value);
                                 break;

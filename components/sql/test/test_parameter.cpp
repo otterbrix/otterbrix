@@ -24,15 +24,22 @@ using vec = std::vector<v>;
         }                                                                                                              \
     }
 
+// Transformer now wraps SELECT/UPDATE in sequence_t(resolve_*..., consumer);
+// descend to the consumer when inspecting its rendered form.
 #define TEST_PARAMS(RESULT, BIND)                                                                                      \
     {                                                                                                                  \
         for (auto i = 0ul; i < BIND.size(); ++i) {                                                                     \
             binder.bind(i + 1, BIND.at(i));                                                                            \
         }                                                                                                              \
-        auto result = binder.finalize();                                                                               \
-        REQUIRE(!result.has_error());                                                                                  \
-        auto node = result.value().node;                                                                               \
-        auto agg = result.value().params;                                                                              \
+        auto result = ([](auto _w) {                                                                                   \
+            REQUIRE_FALSE(_w.has_error());                                                                             \
+            return _w.value();                                                                                         \
+        }(binder.finalize()));                                                                                         \
+        auto node = result.node;                                                                                       \
+        if (node->type() == components::logical_plan::node_type::sequence_t) {                                         \
+            node = node->children().back();                                                                            \
+        }                                                                                                              \
+        auto agg = result.params;                                                                                      \
         REQUIRE(node->to_string() == RESULT);                                                                          \
         REQUIRE(agg->parameters().parameters.size() == BIND.size());                                                   \
         for (auto i = 0ul; i < BIND.size(); ++i) {                                                                     \
@@ -47,17 +54,20 @@ using vec = std::vector<v>;
         for (auto i = 0ul; i < BIND.size(); ++i) {                                                                     \
             binder.bind(i + 1, BIND.at(i));                                                                            \
         }                                                                                                              \
-        auto result = binder.finalize();                                                                               \
-        REQUIRE(!result.has_error());                                                                                  \
-        auto node = result.value().node;                                                                               \
-        auto agg = result.value().params;                                                                              \
+        auto result = ([](auto _w) {                                                                                   \
+            REQUIRE_FALSE(_w.has_error());                                                                             \
+            return _w.value();                                                                                         \
+        }(binder.finalize()));                                                                                         \
+        auto node = result.node;                                                                                       \
+        if (node->type() == components::logical_plan::node_type::sequence_t) {                                         \
+            node = node->children().back();                                                                            \
+        }                                                                                                              \
+        auto agg = result.params;                                                                                      \
         REQUIRE(node->to_string() == RESULT);                                                                          \
         REQUIRE(agg->parameters().parameters.size() == BIND.size());                                                   \
         for (auto i = 0ul; i < BIND.size(); ++i) {                                                                     \
             REQUIRE(agg->parameter(core::parameter_id_t(uint16_t(i))) == BIND.at(i));                                  \
         }                                                                                                              \
-        REQUIRE(node->database_name() == "testdatabase");                                                              \
-        REQUIRE(node->collection_name() == "testcollection");                                                          \
     }
 
 TEST_CASE("components::sql::select_bind") {
@@ -91,7 +101,7 @@ TEST_CASE("components::sql::update_bind") {
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
 
         TEST_SIMPLE_UPDATE(R"_(UPDATE TestDatabase.TestCollection SET count = $1 WHERE id = $2;)_",
-                           R"_($update: {$upsert: 0, $match: {"id": {$eq: #1}}, $limit: -1})_",
+                           R"_($update: <oid:0> {$upsert: 0, $match: {"id": {$eq: #1}}, $limit: -1})_",
                            vec({v(&resource, 999l), v(&resource, 1l)}),
                            f);
     }
@@ -104,7 +114,7 @@ TEST_CASE("components::sql::update_bind") {
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{1});
 
         TEST_SIMPLE_UPDATE(R"_(UPDATE TestDatabase.TestCollection SET name = $1, flag = $2 WHERE "count" > $3;)_",
-                           R"_($update: {$upsert: 0, $match: {"count": {$gt: #2}}, $limit: -1})_",
+                           R"_($update: <oid:0> {$upsert: 0, $match: {"count": {$gt: #2}}, $limit: -1})_",
                            vec({v(&resource, std::string("ok")), v(&resource, true), v(&resource, 100l)}),
                            f);
     }
@@ -119,7 +129,7 @@ TEST_CASE("components::sql::update_bind") {
         f.back()->left() = std::move(calculate);
 
         TEST_SIMPLE_UPDATE(R"_(UPDATE TestDatabase.TestCollection SET rating = rating + $1 WHERE flag = $2;)_",
-                           R"_($update: {$upsert: 0, $match: {"flag": {$eq: #1}}, $limit: -1})_",
+                           R"_($update: <oid:0> {$upsert: 0, $match: {"flag": {$eq: #1}}, $limit: -1})_",
                            vec({v(&resource, 5l), v(&resource, true)}),
                            f);
     }
@@ -136,11 +146,14 @@ TEST_CASE("components::sql::insert_bind") {
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
         binder.bind(1, v(&resource, 42l));
         binder.bind(2, v(&resource, std::string("inserted")));
-        auto result = binder.finalize();
-        REQUIRE(!result.has_error());
-        auto node = result.value().node;
-        REQUIRE(node->database_name() == "testdatabase");
-        REQUIRE(node->collection_name() == "testcollection");
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(binder.finalize()));
+        auto node = result.node;
+        if (node->type() == components::logical_plan::node_type::sequence_t) {
+            node = node->children().back();
+        }
 
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
@@ -158,15 +171,20 @@ TEST_CASE("components::sql::insert_bind") {
         binder.bind(1, v(&resource, 123l));
         REQUIRE(binder.all_bound() == true);
 
-        auto result = binder.finalize();
-        REQUIRE(!result.has_error());
-        auto node = result.value().node;
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(binder.finalize()));
+        auto node = result.node;
+        if (node->type() == components::logical_plan::node_type::sequence_t) {
+            node = node->children().back();
+        }
 
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
         REQUIRE(chunk.size() == 1);
-        REQUIRE(chunk.value(0, 0) == v(&resource, 123));
-        REQUIRE(chunk.value(1, 0) == v(&resource, 123));
+        REQUIRE(chunk.value(0, 0) == v(&resource, 123l));
+        REQUIRE(chunk.value(1, 0) == v(&resource, 123l));
     }
 
     SECTION("insert multi-bind") {
@@ -174,27 +192,29 @@ TEST_CASE("components::sql::insert_bind") {
                                           "INSERT INTO TestDatabase.TestCollection (id, name, count) VALUES "
                                           "($1, $2, $3), ($4, $5, $6);"));
         auto binder = transformer.transform(pg_cell_to_node_cast(select));
-        auto result = binder.bind(1, v(&resource, 1ul))
-                          .bind(2, v(&resource, "Name1"))
-                          .bind(3, v(&resource, 10ul))
-                          .bind(4, v(&resource, 2ul))
-                          .bind(5, v(&resource, "Name2"))
-                          .bind(6, v(&resource, 20ul))
-                          .finalize();
-        REQUIRE(!result.has_error());
-        auto node = result.value().node;
-
+        auto _wrap = binder.bind(1, v(&resource, 1ul))
+                         .bind(2, v(&resource, "Name1"))
+                         .bind(3, v(&resource, 10ul))
+                         .bind(4, v(&resource, 2ul))
+                         .bind(5, v(&resource, "Name2"))
+                         .bind(6, v(&resource, 20ul))
+                         .finalize();
+        REQUIRE_FALSE(_wrap.has_error());
+        auto result = _wrap.value();
+        auto node = result.node;
+        if (node->type() == components::logical_plan::node_type::sequence_t) {
+            node = node->children().back();
+        }
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
-        REQUIRE(node->collection_name() == "testcollection");
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
         REQUIRE(chunk.size() == 2);
-        REQUIRE(chunk.value(0, 0) == v(&resource, 1));
+        REQUIRE(chunk.value(0, 0) == v(&resource, 1ul));
         REQUIRE(chunk.value(1, 0) == v(&resource, "Name1"));
-        REQUIRE(chunk.value(2, 0) == v(&resource, 10));
-        REQUIRE(chunk.value(0, 1) == v(&resource, 2));
+        REQUIRE(chunk.value(2, 0) == v(&resource, 10ul));
+        REQUIRE(chunk.value(0, 1) == v(&resource, 2ul));
         REQUIRE(chunk.value(1, 1) == v(&resource, "Name2"));
-        REQUIRE(chunk.value(2, 1) == v(&resource, 20));
+        REQUIRE(chunk.value(2, 1) == v(&resource, 20ul));
     }
 }
 
@@ -310,9 +330,11 @@ TEST_CASE("components::sql::transform_result") {
         auto binder = transformer.transform(pg_cell_to_node_cast(select));
 
         binder.bind(1, v(&resource, "doc"));
-        auto result = binder.finalize();
-        REQUIRE(!result.has_error());
-        auto agg = result.value().params;
+        auto agg = ([](auto _w) {
+                       REQUIRE_FALSE(_w.has_error());
+                       return _w.value();
+                   }(binder.finalize()))
+                       .params;
         REQUIRE(agg->parameter(core::parameter_id_t(uint16_t(0))) == v(&resource, "doc"));
 
         binder.bind(1, v(&resource, 100l)).finalize();
@@ -324,10 +346,14 @@ TEST_CASE("components::sql::transform_result") {
         auto stmt = linitial(raw_parser(&arena_resource, query));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
         binder.bind(1, v(&resource, 123l)).bind(2, v(&resource, false));
-
-        auto result = binder.finalize();
-        REQUIRE(!result.has_error());
-        auto node = result.value().node;
+        auto node = ([](auto _w) {
+                        REQUIRE_FALSE(_w.has_error());
+                        return _w.value();
+                    }(binder.finalize()))
+                        .node;
+        if (node->type() == components::logical_plan::node_type::sequence_t) {
+            node = node->children().back();
+        }
 
         const auto& keys = reinterpret_cast<logical_plan::node_insert_ptr&>(node)->key_translation();
         binder.bind(1, v(&resource, true)).bind(2, v(&resource, std::string("doc 10"))).finalize();

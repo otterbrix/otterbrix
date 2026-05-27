@@ -1,5 +1,7 @@
 #include "operator.hpp"
 
+#include "resolved_table_metadata.hpp"
+
 namespace components::operators {
 
     bool is_success(const operator_t::ptr& op) { return !op || op->is_executed(); }
@@ -139,6 +141,10 @@ namespace components::operators {
     void operator_t::on_prepare_impl() {}
 
     actor_zeta::unique_future<void> operator_t::await_async_and_resume(pipeline::context_t* /*ctx*/) { co_return; }
+
+    void operator_t::accept_resolved_metadata(resolved_table_metadata_t /*metadata*/) {
+        // Default: drop on the floor. DML operators override to capture it.
+    }
 
     read_only_operator_t::read_only_operator_t(std::pmr::memory_resource* resource, log_t log, operator_type type)
         : operator_t(resource, std::move(log), type) {}

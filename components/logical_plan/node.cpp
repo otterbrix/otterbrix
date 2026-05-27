@@ -1,26 +1,16 @@
 #include "node.hpp"
 
-#include "node_delete.hpp"
-#include "node_update.hpp"
-
 #include <algorithm>
 #include <boost/container_hash/hash.hpp>
 
 namespace components::logical_plan {
 
-    node_t::node_t(std::pmr::memory_resource* resource, node_type type, const collection_full_name_t& collection)
+    node_t::node_t(std::pmr::memory_resource* resource, node_type type)
         : type_(type)
-        , collection_(collection)
         , children_(resource)
         , expressions_(resource) {}
 
     node_type node_t::type() const { return type_; }
-
-    const collection_full_name_t& node_t::collection_full_name() const { return collection_; }
-
-    const database_name_t& node_t::database_name() const { return collection_.database; }
-
-    const collection_name_t& node_t::collection_name() const { return collection_.collection; }
 
     const std::string& node_t::result_alias() const { return result_alias_; }
 
@@ -47,17 +37,19 @@ namespace components::logical_plan {
         std::copy(expressions.begin(), expressions.end(), std::back_inserter(expressions_));
     }
 
-    std::unordered_set<collection_full_name_t, collection_name_hash> node_t::collection_dependencies() {
-        std::unordered_set<collection_full_name_t, collection_name_hash> dependencies{collection_full_name()};
-        if (type_ == node_type::update_t) {
-            dependencies.insert(reinterpret_cast<node_update_t*>(this)->collection_from());
-        } else if (type_ == node_type::delete_t) {
-            dependencies.insert(reinterpret_cast<node_delete_t*>(this)->collection_from());
+    std::unordered_set<components::catalog::oid_t> node_t::table_oid_dependencies() {
+        std::unordered_set<components::catalog::oid_t> dependencies;
+        table_oid_dependencies_(dependencies);
+        return dependencies;
+    }
+
+    void node_t::table_oid_dependencies_(std::unordered_set<components::catalog::oid_t>& upper) {
+        if (table_oid_ != components::catalog::INVALID_OID) {
+            upper.insert(table_oid_);
         }
         for (const auto& child : children_) {
-            child->collection_dependencies_(dependencies);
+            child->table_oid_dependencies_(upper);
         }
-        return dependencies;
     }
 
     hash_t node_t::hash() const {
@@ -72,8 +64,6 @@ namespace components::logical_plan {
         });
         return hash_;
     }
-
-    void node_t::serialize(serializer::msgpack_serializer_t* serializer) const { return serialize_impl(serializer); }
 
     std::string node_t::to_string() const { return to_string_impl(); }
 
@@ -99,18 +89,5 @@ namespace components::logical_plan {
     }
 
     bool node_t::operator!=(const node_t& rhs) const { return !operator==(rhs); }
-
-    void node_t::collection_dependencies_(
-        std::unordered_set<collection_full_name_t, collection_name_hash>& upper_dependencies) {
-        upper_dependencies.insert(collection_full_name());
-        if (type_ == node_type::update_t) {
-            upper_dependencies.insert(reinterpret_cast<node_update_t*>(this)->collection_from());
-        } else if (type_ == node_type::delete_t) {
-            upper_dependencies.insert(reinterpret_cast<node_delete_t*>(this)->collection_from());
-        }
-        for (const auto& child : children_) {
-            child->collection_dependencies_(upper_dependencies);
-        }
-    }
 
 } // namespace components::logical_plan

@@ -5,9 +5,9 @@
 #include "index.hpp"
 
 #include <cassert>
-#include <unordered_map>
 #include <memory_resource>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace components::index {
@@ -17,6 +17,9 @@ namespace components::index {
     class disk_hash_single_field_index_t final : public index_t {
     public:
         using result_storage_t = std::pmr::vector<index_value_t>;
+        using pending_row_t = std::pair<std::pmr::string, int64_t>;
+        using pending_rows_t = std::pmr::vector<pending_row_t>;
+        using pending_txn_map_t = std::pmr::unordered_map<uint64_t, pending_rows_t>;
         using const_iterator = result_storage_t::const_iterator;
 
         disk_hash_single_field_index_t(std::pmr::memory_resource* resource,
@@ -69,8 +72,8 @@ namespace components::index {
 
         std::unique_ptr<disk_hash_storage_t> disk_table_;
         mutable result_storage_t scratch_results_;
-        std::unordered_map<uint64_t, std::vector<std::pair<std::string, int64_t>>> pending_inserts_;
-        std::unordered_map<uint64_t, std::vector<std::pair<std::string, int64_t>>> pending_deletes_;
+        pending_txn_map_t pending_inserts_;
+        pending_txn_map_t pending_deletes_;
 
         value_t normalize_key(const value_t& key, core::date::timezone_offset_t local_timezone) const;
         std::string encode_key(const value_t& key, core::date::timezone_offset_t local_timezone) const;

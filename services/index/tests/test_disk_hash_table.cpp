@@ -12,10 +12,11 @@ namespace {
 } // namespace
 
 TEST_CASE("services::index::disk_hash_table::put_get_erase_roundtrip") {
+    auto resource = std::pmr::synchronized_pool_resource();
     const auto path = mk_path("disk_hash_table_roundtrip.data");
     std::filesystem::remove(path);
 
-    disk_hash_table_t table(path, 64);
+    disk_hash_table_t table(path, 64, true, &resource);
     REQUIRE(table.put("alpha", 10, 1, 100));
     REQUIRE(table.put("beta", 20, 1, 200));
 
@@ -35,18 +36,19 @@ TEST_CASE("services::index::disk_hash_table::put_get_erase_roundtrip") {
 }
 
 TEST_CASE("services::index::disk_hash_table::persist_reopen") {
+    auto resource = std::pmr::synchronized_pool_resource();
     const auto path = mk_path("disk_hash_table_persist.data");
     std::filesystem::remove(path);
 
     {
-        disk_hash_table_t table(path, 32);
+        disk_hash_table_t table(path, 32, true, &resource);
         REQUIRE(table.put("k1", 111, 2, 1234));
         REQUIRE(table.put("k2", 222, 2, 5678));
         table.sync();
     }
 
     {
-        disk_hash_table_t reopened(path, 32);
+        disk_hash_table_t reopened(path, 32, true, &resource);
         auto v1 = reopened.get("k1");
         REQUIRE(v1.has_value());
         REQUIRE(v1->value == 111);
@@ -59,10 +61,11 @@ TEST_CASE("services::index::disk_hash_table::persist_reopen") {
 }
 
 TEST_CASE("services::index::disk_hash_table::multiple_values_per_key") {
+    auto resource = std::pmr::synchronized_pool_resource();
     const auto path = mk_path("disk_hash_table_multi_values.data");
     std::filesystem::remove(path);
 
-    disk_hash_table_t table(path, 32);
+    disk_hash_table_t table(path, 32, true, &resource);
     REQUIRE(table.put("dup", 10, 1, 100));
     REQUIRE(table.put("dup", 20, 2, 200));
     REQUIRE(table.put("dup", 10, 3, 300));
@@ -72,13 +75,14 @@ TEST_CASE("services::index::disk_hash_table::multiple_values_per_key") {
 }
 
 TEST_CASE("services::index::disk_hash_table::long_key_prefix_and_loader") {
+    auto resource = std::pmr::synchronized_pool_resource();
     const auto path = mk_path("disk_hash_table_long_key.data");
     std::filesystem::remove(path);
 
     const std::string long_key(200, 'x');
     const std::string other_key = long_key + "y";
 
-    disk_hash_table_t table(path, 8);
+    disk_hash_table_t table(path, 8, true, &resource);
     REQUIRE(table.put(long_key, 777, 7, 700));
 
     auto with_loader = table.get(long_key, [&](uint32_t file_id, uint64_t offset, std::string& out) {
@@ -98,10 +102,11 @@ TEST_CASE("services::index::disk_hash_table::long_key_prefix_and_loader") {
 }
 
 TEST_CASE("services::index::disk_hash_table::rehash_preserves_entries") {
+    auto resource = std::pmr::synchronized_pool_resource();
     const auto path = mk_path("disk_hash_table_rehash.data");
     std::filesystem::remove(path);
 
-    disk_hash_table_t table(path, 4);
+    disk_hash_table_t table(path, 4, true, &resource);
     REQUIRE(table.bucket_count() == 4);
 
     for (int i = 0; i < 300; ++i) {
@@ -121,13 +126,14 @@ TEST_CASE("services::index::disk_hash_table::rehash_preserves_entries") {
 }
 
 TEST_CASE("services::index::disk_hash_table::rehash_truncated_keys_requires_loader") {
+    auto resource = std::pmr::synchronized_pool_resource();
     const auto path = mk_path("disk_hash_table_rehash_truncated.data");
     std::filesystem::remove(path);
 
     const std::string key1(200, 'a');
     const std::string key2 = std::string(199, 'a') + "b";
 
-    disk_hash_table_t table(path, 4);
+    disk_hash_table_t table(path, 4, true, &resource);
     REQUIRE(table.put(key1, 11, 5, 500));
     REQUIRE(table.put(key2, 22, 6, 600));
 
@@ -147,10 +153,11 @@ TEST_CASE("services::index::disk_hash_table::rehash_truncated_keys_requires_load
 }
 
 TEST_CASE("services::index::disk_hash_table::auto_rehash_by_load_factor") {
+    auto resource = std::pmr::synchronized_pool_resource();
     const auto path = mk_path("disk_hash_table_auto_rehash.data");
     std::filesystem::remove(path);
 
-    disk_hash_table_t table(path, 4);
+    disk_hash_table_t table(path, 4, true, &resource);
     const auto initial_buckets = table.bucket_count();
     REQUIRE(initial_buckets == 4);
 

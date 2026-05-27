@@ -11,7 +11,9 @@ namespace components::index {
                                                                    std::unique_ptr<disk_hash_storage_t> storage)
         : index_t(resource, logical_plan::index_type::hashed, std::move(name), keys)
         , disk_table_(std::move(storage))
-        , scratch_results_(resource) {}
+        , scratch_results_(resource)
+        , pending_inserts_(resource)
+        , pending_deletes_(resource) {}
 
     disk_hash_single_field_index_t::~disk_hash_single_field_index_t() = default;
 
@@ -53,16 +55,9 @@ namespace components::index {
         }
     } // namespace
 
-    auto disk_hash_single_field_index_t::insert_impl(value_t key, index_value_t value, core::date::timezone_offset_t local_timezone) -> void {
-        (void) key;
-        (void) value;
-        (void) local_timezone;
-    }
+    auto disk_hash_single_field_index_t::insert_impl(value_t, index_value_t, core::date::timezone_offset_t) -> void {}
 
-    auto disk_hash_single_field_index_t::remove_impl(value_t key, core::date::timezone_offset_t local_timezone) -> void {
-        (void) key;
-        (void) local_timezone;
-    }
+    auto disk_hash_single_field_index_t::remove_impl(value_t, core::date::timezone_offset_t) -> void {}
 
     index_t::range disk_hash_single_field_index_t::find_impl(const value_t& value, core::date::timezone_offset_t local_timezone) const {
         scratch_results_.clear();
@@ -94,11 +89,11 @@ namespace components::index {
         return {iterator(new impl_t(scratch_results_.cbegin())), iterator(new impl_t(scratch_results_.cend()))};
     }
 
-    index_t::range disk_hash_single_field_index_t::lower_bound_impl(const value_t&, core::date::timezone_offset_t local_timezone) const {
+    index_t::range disk_hash_single_field_index_t::lower_bound_impl(const value_t&, core::date::timezone_offset_t) const {
         throw "not supported"; // hash index has no ordering
     }
 
-    index_t::range disk_hash_single_field_index_t::upper_bound_impl(const value_t&, core::date::timezone_offset_t local_timezone) const {
+    index_t::range disk_hash_single_field_index_t::upper_bound_impl(const value_t&, core::date::timezone_offset_t) const {
         throw "not supported"; // hash index has no ordering
     }
 
@@ -120,13 +115,11 @@ namespace components::index {
         pending_deletes_[txn_id].emplace_back(encoded, row_index);
     }
 
-    void disk_hash_single_field_index_t::commit_insert_impl(uint64_t txn_id, uint64_t commit_id) {
-        (void) commit_id;
+    void disk_hash_single_field_index_t::commit_insert_impl(uint64_t txn_id, uint64_t) {
         pending_inserts_.erase(txn_id);
     }
 
-    void disk_hash_single_field_index_t::commit_delete_impl(uint64_t txn_id, uint64_t commit_id) {
-        (void) commit_id;
+    void disk_hash_single_field_index_t::commit_delete_impl(uint64_t txn_id, uint64_t) {
         pending_deletes_.erase(txn_id);
     }
 
@@ -134,9 +127,7 @@ namespace components::index {
         pending_inserts_.erase(txn_id);
     }
 
-    void disk_hash_single_field_index_t::cleanup_versions_impl(uint64_t lowest_active) {
-        (void) lowest_active;
-    }
+    void disk_hash_single_field_index_t::cleanup_versions_impl(uint64_t) {}
 
     void disk_hash_single_field_index_t::for_each_pending_insert_impl(
         uint64_t txn_id,

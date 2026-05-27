@@ -305,7 +305,10 @@ namespace services::index {
                             engine,
                             index_name,
                             keys,
-                            std::make_unique<services::index::disk_hash_table_t>(base / "hash_index.bin"));
+                            std::make_unique<services::index::disk_hash_table_t>(base / "hash_index.bin",
+                                                                                 services::index::disk_hash_table_t::default_bucket_count,
+                                                                                 true,
+                                                                                 resource_));
                     } catch (const std::exception& e) {
                         trace(log_,
                               "manager_index_t::create_index: disk hash storage init failed, fallback to memory: {}",

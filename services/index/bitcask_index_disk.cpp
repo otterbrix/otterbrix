@@ -189,7 +189,8 @@ namespace services::index {
         // hash_index.bin and can leave other open handles on stale inode.
         hash_index_ = std::make_unique<disk_hash_table_t>(hash_index_file_path_,
                                                           disk_hash_table_t::default_bucket_count,
-                                                          false);
+                                                          false,
+                                                          resource_);
         load_from_disk();
         open_active_segment();
         recover_txn_log_unlocked();

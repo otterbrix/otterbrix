@@ -29,9 +29,14 @@ namespace services::index {
 
     disk_hash_table_t::disk_hash_table_t(const std::filesystem::path& file_path,
                                          uint32_t bucket_count,
-                                         bool auto_rehash_enabled)
+                                         bool auto_rehash_enabled,
+                                         std::pmr::memory_resource* memory_resource)
         : file_path_(file_path)
-        , auto_rehash_enabled_(auto_rehash_enabled) {
+        , auto_rehash_enabled_(auto_rehash_enabled)
+        , memory_resource_(memory_resource) {
+        if (!memory_resource) {
+            throw std::runtime_error("disk_hash_table: resource required");
+        }
         if (bucket_count == 0) {
             throw std::runtime_error("disk_hash_table: bucket_count must be > 0");
         }
@@ -63,7 +68,8 @@ namespace services::index {
         const uint32_t bucket_id = bucket_id_for_key(key);
         uint64_t page_id = bucket_primary_page_id(bucket_id);
 
-        std::vector<uint8_t> page(page_size);
+        byte_buffer_t page(memory_resource_);
+        page.resize(page_size);
         while (true) {
             read_page(page_id, page);
             bool changed = false;
@@ -103,9 +109,10 @@ namespace services::index {
         std::shared_lock lock(mutex_);
         const uint32_t key_hash = hash_key(key);
         uint64_t page_id = bucket_primary_page_id(bucket_id_for_key(key));
-        std::vector<value_ref_t> values;
+        std::pmr::vector<value_ref_t> values(memory_resource_);
 
-        std::vector<uint8_t> page(page_size);
+        byte_buffer_t page(memory_resource_);
+        page.resize(page_size);
         while (page_id != 0) {
             read_page(page_id, page);
             const auto cnt = page_count(page);
@@ -123,7 +130,7 @@ namespace services::index {
             }
             page_id = page_overflow(page);
         }
-        return values;
+        return {values.begin(), values.end()};
     }
 
     bool disk_hash_table_t::erase(std::string_view key, const full_key_loader_t& key_loader) {
@@ -140,7 +147,8 @@ namespace services::index {
         std::unique_lock lock(mutex_);
         const uint32_t key_hash = hash_key(key);
         uint64_t page_id = bucket_primary_page_id(bucket_id_for_key(key));
-        std::vector<uint8_t> page(page_size);
+        byte_buffer_t page(memory_resource_);
+        page.resize(page_size);
         while (page_id != 0) {
             read_page(page_id, page);
             bool erased = false;
@@ -160,7 +168,8 @@ namespace services::index {
 
     void disk_hash_table_t::for_each(const std::function<void(const value_ref_t&)>& cb) const {
         std::shared_lock lock(mutex_);
-        std::vector<uint8_t> page(page_size);
+        byte_buffer_t page(memory_resource_);
+        page.resize(page_size);
         for (uint32_t bucket = 0; bucket < header_.bucket_count_value; ++bucket) {
             uint64_t page_id = bucket_primary_page_id(bucket);
             while (page_id != 0) {
@@ -213,14 +222,15 @@ namespace services::index {
             ~reset_flag_t() { flag = false; }
         } reset{rehash_in_progress_};
         struct entry_t {
-            std::string key;
+            std::pmr::string key;
             int64_t value{0};
             uint32_t log_file_id{0};
             uint64_t log_offset{0};
         };
-        std::vector<entry_t> entries;
+        std::pmr::vector<entry_t> entries(memory_resource_);
 
-        std::vector<uint8_t> page(page_size);
+        byte_buffer_t page(memory_resource_);
+        page.resize(page_size);
         for (uint32_t bucket = 0; bucket < header_.bucket_count_value; ++bucket) {
             uint64_t page_id = bucket_primary_page_id(bucket);
             while (page_id != 0) {
@@ -232,7 +242,7 @@ namespace services::index {
                         continue;
                     }
                     const auto decoded = decode_entry(page, slot);
-                    entry_t e{};
+                    entry_t e{std::pmr::string(memory_resource_), 0, 0, 0};
                     e.value = decoded.value;
                     e.log_file_id = decoded.log_file_id;
                     e.log_offset = decoded.log_offset;
@@ -331,7 +341,8 @@ namespace services::index {
         header_.next_overflow_page = 1 + header_.bucket_count_value;
 
         persist_header();
-        std::vector<uint8_t> page(page_size);
+        byte_buffer_t page(memory_resource_);
+        page.resize(page_size);
         for (uint32_t i = 0; i < header_.bucket_count_value; ++i) {
             init_empty_page(page);
             write_page(bucket_primary_page_id(i), page);
@@ -341,7 +352,8 @@ namespace services::index {
     }
 
     void disk_hash_table_t::load_existing_file() {
-        std::vector<uint8_t> hdr(page_size, 0);
+        byte_buffer_t hdr(memory_resource_);
+        hdr.resize(page_size, 0);
         if (!file_->read(hdr.data(), page_size, 0)) {
             throw std::runtime_error("disk_hash_table: failed to read header page");
         }
@@ -379,7 +391,8 @@ namespace services::index {
 
     uint64_t disk_hash_table_t::count_entries_unlocked() const {
         uint64_t count = 0;
-        std::vector<uint8_t> page(page_size);
+        byte_buffer_t page(memory_resource_);
+        page.resize(page_size);
         for (uint32_t bucket = 0; bucket < header_.bucket_count_value; ++bucket) {
             uint64_t page_id = bucket_primary_page_id(bucket);
             while (page_id != 0) {
@@ -397,7 +410,7 @@ namespace services::index {
         return count;
     }
 
-    void disk_hash_table_t::read_page(uint64_t page_id, std::vector<uint8_t>& page) const {
+    void disk_hash_table_t::read_page(uint64_t page_id, byte_buffer_t& page) const {
         if (page.size() != page_size) {
             page.resize(page_size);
         }
@@ -410,7 +423,7 @@ namespace services::index {
         }
     }
 
-    void disk_hash_table_t::write_page(uint64_t page_id, const std::vector<uint8_t>& page) {
+    void disk_hash_table_t::write_page(uint64_t page_id, const byte_buffer_t& page) {
         if (page.size() != page_size) {
             throw std::runtime_error("disk_hash_table: invalid page size");
         }
@@ -419,38 +432,38 @@ namespace services::index {
         }
     }
 
-    void disk_hash_table_t::init_empty_page(std::vector<uint8_t>& page) const {
+    void disk_hash_table_t::init_empty_page(byte_buffer_t& page) const {
         page.assign(page_size, 0);
         set_page_count(page, 0);
         set_page_free_offset(page, page_header_size);
         set_page_overflow(page, 0);
     }
 
-    uint16_t disk_hash_table_t::page_count(const std::vector<uint8_t>& page) const {
+    uint16_t disk_hash_table_t::page_count(const byte_buffer_t& page) const {
         return codec::read_le_ptr<uint16_t>(page.data());
     }
 
-    uint16_t disk_hash_table_t::page_free_offset(const std::vector<uint8_t>& page) const {
+    uint16_t disk_hash_table_t::page_free_offset(const byte_buffer_t& page) const {
         return codec::read_le_ptr<uint16_t>(page.data() + 2);
     }
 
-    uint64_t disk_hash_table_t::page_overflow(const std::vector<uint8_t>& page) const {
+    uint64_t disk_hash_table_t::page_overflow(const byte_buffer_t& page) const {
         return codec::read_le_ptr<uint64_t>(page.data() + 4);
     }
 
-    void disk_hash_table_t::set_page_count(std::vector<uint8_t>& page, uint16_t v) const {
+    void disk_hash_table_t::set_page_count(byte_buffer_t& page, uint16_t v) const {
         codec::write_le_ptr<uint16_t>(page.data(), v);
     }
 
-    void disk_hash_table_t::set_page_free_offset(std::vector<uint8_t>& page, uint16_t v) const {
+    void disk_hash_table_t::set_page_free_offset(byte_buffer_t& page, uint16_t v) const {
         codec::write_le_ptr<uint16_t>(page.data() + 2, v);
     }
 
-    void disk_hash_table_t::set_page_overflow(std::vector<uint8_t>& page, uint64_t v) const {
+    void disk_hash_table_t::set_page_overflow(byte_buffer_t& page, uint64_t v) const {
         codec::write_le_ptr<uint64_t>(page.data() + 4, v);
     }
 
-    disk_hash_table_t::slot_t disk_hash_table_t::read_slot(const std::vector<uint8_t>& page, uint16_t slot_index) const {
+    disk_hash_table_t::slot_t disk_hash_table_t::read_slot(const byte_buffer_t& page, uint16_t slot_index) const {
         const auto off = slot_dir_offset(slot_index);
         slot_t s{};
         s.offset = codec::read_le_ptr<uint16_t>(page.data() + off);
@@ -460,7 +473,7 @@ namespace services::index {
         return s;
     }
 
-    void disk_hash_table_t::write_slot(std::vector<uint8_t>& page, uint16_t slot_index, const slot_t& slot) const {
+    void disk_hash_table_t::write_slot(byte_buffer_t& page, uint16_t slot_index, const slot_t& slot) const {
         const auto off = slot_dir_offset(slot_index);
         codec::write_le_ptr<uint16_t>(page.data() + off, slot.offset);
         codec::write_le_ptr<uint16_t>(page.data() + off + 2, slot.length);
@@ -473,7 +486,7 @@ namespace services::index {
         return static_cast<uint16_t>(static_cast<uint32_t>(page_size) - static_cast<uint32_t>(slot_size) * idx);
     }
 
-    disk_hash_table_t::decoded_entry_t disk_hash_table_t::decode_entry(const std::vector<uint8_t>& page, const slot_t& slot) const {
+    disk_hash_table_t::decoded_entry_t disk_hash_table_t::decode_entry(const byte_buffer_t& page, const slot_t& slot) const {
         if (slot.offset + slot.length > page_size || slot.length < (2 + 4 + 1 + 8 + 4 + 8)) {
             throw std::runtime_error("disk_hash_table: invalid entry slot");
         }
@@ -514,7 +527,7 @@ namespace services::index {
         return full == query_key;
     }
 
-    bool disk_hash_table_t::try_insert_in_page(std::vector<uint8_t>& page,
+    bool disk_hash_table_t::try_insert_in_page(byte_buffer_t& page,
                                                std::string_view key,
                                                uint32_t key_hash,
                                                int64_t value,
@@ -545,7 +558,7 @@ namespace services::index {
         return true;
     }
 
-    bool disk_hash_table_t::try_erase_in_page(std::vector<uint8_t>& page,
+    bool disk_hash_table_t::try_erase_in_page(byte_buffer_t& page,
                                               std::string_view key,
                                               uint32_t key_hash,
                                               std::optional<int64_t> expected_value,
@@ -572,16 +585,15 @@ namespace services::index {
         return false;
     }
 
-    std::vector<uint8_t> disk_hash_table_t::make_entry_payload(std::string_view key,
-                                                                int64_t value,
-                                                                uint32_t log_file_id,
-                                                                uint64_t log_offset) const {
+    disk_hash_table_t::byte_buffer_t
+    disk_hash_table_t::make_entry_payload(std::string_view key, int64_t value, uint32_t log_file_id, uint64_t log_offset) const {
         const bool truncated = key.size() > inline_key_limit;
         const uint16_t stored_len =
             static_cast<uint16_t>(truncated ? std::min<size_t>(truncated_prefix_len, key.size()) : key.size());
         const uint32_t full_len = static_cast<uint32_t>(std::min<size_t>(key.size(), UINT32_MAX));
         const size_t total = 2 + 4 + 1 + stored_len + 8 + 4 + 8;
-        std::vector<uint8_t> payload(total);
+        byte_buffer_t payload(memory_resource_);
+        payload.resize(total);
         codec::write_le_ptr<uint16_t>(payload.data(), stored_len);
         codec::write_le_ptr<uint32_t>(payload.data() + 2, full_len);
         payload[6] = truncated ? entry_flag_truncated : 0;
@@ -597,7 +609,8 @@ namespace services::index {
 
     uint64_t disk_hash_table_t::allocate_overflow_page() {
         const uint64_t page_id = header_.next_overflow_page++;
-        std::vector<uint8_t> page(page_size);
+        byte_buffer_t page(memory_resource_);
+        page.resize(page_size);
         init_empty_page(page);
         write_page(page_id, page);
         persist_header();
@@ -605,7 +618,8 @@ namespace services::index {
     }
 
     void disk_hash_table_t::persist_header() {
-        std::vector<uint8_t> hdr(page_size, 0);
+        byte_buffer_t hdr(memory_resource_);
+        hdr.resize(page_size, 0);
         codec::write_le_ptr<uint32_t>(hdr.data() + 12, header_.page_size_value);
         codec::write_le_ptr<uint32_t>(hdr.data() + 16, header_.bucket_count_value);
         codec::write_le_ptr<uint64_t>(hdr.data() + 20, header_.next_overflow_page);

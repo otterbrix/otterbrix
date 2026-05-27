@@ -33,7 +33,10 @@ namespace {
             resource,
             name,
             keys_base_storage_t{key(resource, "val")},
-            std::make_unique<services::index::disk_hash_table_t>(file));
+            std::make_unique<services::index::disk_hash_table_t>(file,
+                                                                 services::index::disk_hash_table_t::default_bucket_count,
+                                                                 true,
+                                                                 resource));
     }
 
     void run_txn_insert_search_contract(hash_index_mode mode) {

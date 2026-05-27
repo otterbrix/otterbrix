@@ -2,10 +2,12 @@
 
 #include "bitcask_index_disk.hpp"
 #include "btree_index_disk.hpp"
+#include "disk_hash_table.hpp"
 
 #include <actor-zeta/spawn.hpp>
 #include <components/index/hash_single_field_index.hpp>
 #include <components/index/index_engine.hpp>
+#include <components/index/disk_hash_single_field_index.hpp>
 #include <components/index/single_field_index.hpp>
 #include <core/b_plus_tree/b_plus_tree.hpp>
 #include <core/b_plus_tree/msgpack_reader/msgpack_reader.hpp>
@@ -63,7 +65,7 @@ namespace {
                 return value_t(r, complex_logical_type{logical_type::NA});
         }
     }
-} // anonymous namespace
+} // anonymous namespace`
 
 namespace {
     // Batched disk operation types — collect per-agent ops, send once
@@ -290,9 +292,33 @@ namespace services::index {
                 break;
             }
             case components::logical_plan::index_type::hashed: {
-                id_index = components::index::make_index<components::index::hash_single_field_index_t>(engine,
-                                                                                                       index_name,
-                                                                                                       keys);
+                if (path_db_.empty()) {
+                    id_index =
+                        components::index::make_index<components::index::hash_single_field_index_t>(engine,
+                                                                                                      index_name,
+                                                                                                      keys);
+                } else {
+                    const auto base = path_db_ / std::to_string(static_cast<unsigned>(table_oid)) / index_name;
+                    std::filesystem::create_directories(base);
+                    try {
+                        id_index = components::index::make_index<components::index::disk_hash_single_field_index_t>(
+                            engine,
+                            index_name,
+                            keys,
+                            std::make_unique<services::index::disk_hash_table_t>(base / "hash_index.bin",
+                                                                                 services::index::disk_hash_table_t::default_bucket_count,
+                                                                                 true,
+                                                                                 resource_));
+                    } catch (const std::exception& e) {
+                        trace(log_,
+                              "manager_index_t::create_index: disk hash storage init failed, fallback to memory: {}",
+                              e.what());
+                        id_index = components::index::make_index<components::index::hash_single_field_index_t>(
+                            engine,
+                            index_name,
+                            keys);
+                    }
+                }
                 break;
             }
             default:
@@ -303,7 +329,7 @@ namespace services::index {
         if (id_index != components::index::INDEX_ID_UNDEFINED) {
             // Load index data from btree (persistent storage). Path layout
             // mirrors disk-side ${path_db}/${table_oid}/${index_name}/.
-            if (!path_db_.empty()) {
+            if (!path_db_.empty() && type == components::logical_plan::index_type::single) {
                 auto btree_path = path_db_ / std::to_string(static_cast<unsigned>(table_oid)) / index_name;
                 if (std::filesystem::exists(btree_path / "metadata")) {
                     try {
@@ -518,15 +544,27 @@ namespace services::index {
                 insert_addrs.try_emplace(id, agent_addr);
                 insert_batches[id].emplace_back(value_t(resource_, key), static_cast<size_t>(row_index));
             });
+        if (txn_id != 0) {
+            engine->for_each_pending_disk_insert(
+                0,
+                [&](const actor_zeta::address_t& agent_addr, const components::index::value_t& key, int64_t row_index) {
+                    auto id = reinterpret_cast<uintptr_t>(agent_addr.get());
+                    insert_addrs.try_emplace(id, agent_addr);
+                    insert_batches[id].emplace_back(value_t(resource_, key), static_cast<size_t>(row_index));
+                });
+        }
         for (auto& [id, batch] : insert_batches) {
             auto& addr = insert_addrs.at(id);
             auto [ns, f] =
-                actor_zeta::otterbrix::send(addr, &index_agent_disk_t::insert_many, session, std::move(batch));
+                actor_zeta::otterbrix::send(addr, &index_agent_disk_t::insert_many, session, txn_id, std::move(batch));
             schedule_agent(addr, ns);
-            pending_void_.emplace_back(std::move(f));
+            co_await std::move(f);
         }
 
         engine->commit_insert(txn_id, commit_id);
+        if (txn_id != 0) {
+            engine->commit_insert(0, commit_id);
+        }
 
         co_return;
     }
@@ -551,15 +589,27 @@ namespace services::index {
                 remove_addrs.try_emplace(id, agent_addr);
                 remove_batches[id].emplace_back(value_t(resource_, key), static_cast<size_t>(row_index));
             });
+        if (txn_id != 0) {
+            engine->for_each_pending_disk_delete(
+                0,
+                [&](const actor_zeta::address_t& agent_addr, const components::index::value_t& key, int64_t row_index) {
+                    auto id = reinterpret_cast<uintptr_t>(agent_addr.get());
+                    remove_addrs.try_emplace(id, agent_addr);
+                    remove_batches[id].emplace_back(value_t(resource_, key), static_cast<size_t>(row_index));
+                });
+        }
         for (auto& [id, batch] : remove_batches) {
             auto& addr = remove_addrs.at(id);
             auto [ns, f] =
-                actor_zeta::otterbrix::send(addr, &index_agent_disk_t::remove_many, session, std::move(batch));
+                actor_zeta::otterbrix::send(addr, &index_agent_disk_t::remove_many, session, txn_id, std::move(batch));
             schedule_agent(addr, ns);
-            pending_void_.emplace_back(std::move(f));
+            co_await std::move(f);
         }
 
         engine->commit_delete(txn_id, commit_id);
+        if (txn_id != 0) {
+            engine->commit_delete(0, commit_id);
+        }
 
         co_return;
     }

@@ -46,7 +46,7 @@ jobs:
           cmake .. -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_toolchain.cmake \
             -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON
-          cmake --build . --target otterbrix -- -j "$(nproc)"
+          cmake --build . --target c_otterbrix -- -j "$(nproc)"
 
       - name: Run Rust checks (fmt, clippy, doc, tests)
         run: ./scripts/CI/run-rust-checks.sh

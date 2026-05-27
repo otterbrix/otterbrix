@@ -53,6 +53,7 @@
 #include <components/logical_plan/node_refresh_matview.hpp>
 #include <components/logical_plan/node_sort.hpp>
 #include <components/logical_plan/node_update.hpp>
+#include <services/index/manager_index.hpp>
 
 #include <limits>
 #include <queue>
@@ -622,6 +623,8 @@ namespace services::dispatcher {
                                                 components::logical_plan::node_ptr root,
                                                 actor_zeta::address_t disk_address,
                                                 components::execution_context_t ctx,
+                                                actor_zeta::address_t index_address,
+                                                services::context_storage_t* collections_ctx,
                                                 const enrich_resolve_idx_t* idx) {
         using namespace components::logical_plan;
         if (!root)
@@ -636,7 +639,22 @@ namespace services::dispatcher {
             // from their sibling catalog_resolve_* nodes inside each sequence_t
             // before the per-node enrich cases run.
             stamp_oids_from_resolves(root.get());
-            co_await enrich_plan(resource, root, disk_address, ctx, &local_idx);
+            co_await enrich_plan(resource, root, disk_address, ctx, index_address, collections_ctx, &local_idx);
+
+            if (collections_ctx && index_address != actor_zeta::address_t::empty_address()) {
+                auto table_oid = root->table_oid();
+                if (table_oid == components::catalog::INVALID_OID && !root->children().empty() && root->children().front()) {
+                    table_oid = root->children().front()->table_oid();
+                }
+                if (table_oid != components::catalog::INVALID_OID) {
+                    auto [_ik, ikf] =
+                        actor_zeta::send(index_address, &index::manager_index_t::get_indexed_keys, ctx.session, table_oid);
+                    collections_ctx->indexed_keys = co_await std::move(ikf);
+                    auto [_id, idf] =
+                        actor_zeta::send(index_address, &index::manager_index_t::get_indexed_descriptions, ctx.session, table_oid);
+                    collections_ctx->indexed_descriptions = co_await std::move(idf);
+                }
+            }
             co_return;
         }
         // Stamp table_oid for any SELECT-side consumer that still carries
@@ -914,7 +932,7 @@ namespace services::dispatcher {
         for (auto& child : root->children()) {
             if (!child)
                 continue;
-            co_await enrich_plan(resource, child, disk_address, ctx, idx);
+            co_await enrich_plan(resource, child, disk_address, ctx, index_address, collections_ctx, idx);
         }
     }
 

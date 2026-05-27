@@ -647,10 +647,13 @@ namespace services::dispatcher {
                         continue;
                     }
                     auto [_ik, ikf] =
-                        actor_zeta::send(index_address, &index::manager_index_t::get_indexed_keys, session, tbl_oid);
+                        actor_zeta::send(index_address, &index::manager_index_t::get_indexed_keys, ctx.session, tbl_oid);
                     collections_ctx->indexed_keys = co_await std::move(ikf);
                     auto [_id, idf] =
-                        actor_zeta::send(index_address, &index::manager_index_t::get_indexed_descriptions, ctx.session, table_oid);
+                        actor_zeta::send(index_address,
+                                         &index::manager_index_t::get_indexed_descriptions,
+                                         ctx.session,
+                                         tbl_oid);
                     collections_ctx->indexed_descriptions = co_await std::move(idf);
                 }
             }

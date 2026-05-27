@@ -642,13 +642,12 @@ namespace services::dispatcher {
             co_await enrich_plan(resource, root, disk_address, ctx, index_address, collections_ctx, &local_idx);
 
             if (collections_ctx && index_address != actor_zeta::address_t::empty_address()) {
-                auto table_oid = root->table_oid();
-                if (table_oid == components::catalog::INVALID_OID && !root->children().empty() && root->children().front()) {
-                    table_oid = root->children().front()->table_oid();
-                }
-                if (table_oid != components::catalog::INVALID_OID) {
+                for (auto tbl_oid : root->table_oid_dependencies()) {
+                    if (tbl_oid == components::catalog::INVALID_OID) {
+                        continue;
+                    }
                     auto [_ik, ikf] =
-                        actor_zeta::send(index_address, &index::manager_index_t::get_indexed_keys, ctx.session, table_oid);
+                        actor_zeta::send(index_address, &index::manager_index_t::get_indexed_keys, session, tbl_oid);
                     collections_ctx->indexed_keys = co_await std::move(ikf);
                     auto [_id, idf] =
                         actor_zeta::send(index_address, &index::manager_index_t::get_indexed_descriptions, ctx.session, table_oid);

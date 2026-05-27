@@ -253,9 +253,11 @@ namespace services::index {
                         if (!key_loader) {
                             throw std::runtime_error("disk_hash_table: rehash requires key loader for truncated keys");
                         }
-                        if (!key_loader(decoded.log_file_id, decoded.log_offset, e.key)) {
+                        std::string full_key;
+                        if (!key_loader(decoded.log_file_id, decoded.log_offset, full_key)) {
                             throw std::runtime_error("disk_hash_table: rehash key loader failed");
                         }
+                        e.key.assign(full_key.data(), full_key.size());
                     }
                     entries.emplace_back(std::move(e));
                 }

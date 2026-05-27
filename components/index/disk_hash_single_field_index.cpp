@@ -48,7 +48,7 @@ namespace components::index {
     }
 
     namespace {
-        components::types::logical_value_t decode_key(std::pmr::memory_resource* resource, const std::string& encoded) {
+        components::types::logical_value_t decode_key(std::pmr::memory_resource* resource, std::string_view encoded) {
             std::pmr::string payload(encoded.data(), encoded.size(), resource);
             size_t pos = 0;
             return codec::read_logical_value(resource, payload, pos);
@@ -68,14 +68,14 @@ namespace components::index {
         }
         for (const auto& [txn_id, rows] : pending_inserts_) {
             for (const auto& [pending_key, row_id] : rows) {
-                if (pending_key == encoded) {
+                if (std::string_view(pending_key) == std::string_view(encoded)) {
                     scratch_results_.emplace_back(row_id, txn_id, table::NOT_DELETED_ID);
                 }
             }
         }
         for (const auto& [txn_id, rows] : pending_deletes_) {
             for (const auto& [pending_key, row_id] : rows) {
-                if (pending_key != encoded) {
+                if (std::string_view(pending_key) != std::string_view(encoded)) {
                     continue;
                 }
                 for (auto& entry : scratch_results_) {
@@ -107,12 +107,12 @@ namespace components::index {
 
     void disk_hash_single_field_index_t::insert_txn_impl(value_t key, int64_t row_index, uint64_t txn_id, core::date::timezone_offset_t local_timezone) {
         auto encoded = encode_key(key, local_timezone);
-        pending_inserts_[txn_id].emplace_back(encoded, row_index);
+        pending_inserts_[txn_id].emplace_back(std::pmr::string(encoded.data(), encoded.size(), resource()), row_index);
     }
 
     void disk_hash_single_field_index_t::mark_delete_impl(value_t key, int64_t row_index, uint64_t txn_id, core::date::timezone_offset_t local_timezone) {
         auto encoded = encode_key(key, local_timezone);
-        pending_deletes_[txn_id].emplace_back(encoded, row_index);
+        pending_deletes_[txn_id].emplace_back(std::pmr::string(encoded.data(), encoded.size(), resource()), row_index);
     }
 
     void disk_hash_single_field_index_t::commit_insert_impl(uint64_t txn_id, uint64_t) {

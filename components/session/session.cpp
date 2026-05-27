@@ -13,6 +13,10 @@ namespace components::session {
         return data_ == other.data_ && counter_ == other.counter_;
     }
 
+    bool session_id_t::operator==(const session_id_t& other) {
+        return data_ == other.data_ && counter_ == other.counter_;
+    }
+
     bool session_id_t::operator<(const session_id_t& other) const {
         return data_ < other.data_ || (data_ == other.data_ && counter_ < other.counter_);
     }

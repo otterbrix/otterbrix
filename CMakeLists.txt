@@ -1,5 +1,12 @@
 cmake_minimum_required(VERSION 3.22...3.31 FATAL_ERROR)
 
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
+    message(FATAL_ERROR
+            "In-source builds are not allowed. "
+            "Configure with a separate build directory, for example: "
+            "cmake -S . -B build")
+endif()
+
 set_property(GLOBAL PROPERTY GLOBAL_DEPENDS_NO_CYCLES TRUE)
 
 set(CMAKE_PROJECT_VERSION_MAJOR 1)
@@ -23,13 +30,12 @@ message(STATUS "ARCH : ${CMAKE_SYSTEM_NAME}")
 
 #set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DBOOST_ASIO_HAS_MOVE -DEXCEPTIONS_DISABLE=OFF " CACHE STRING "compile flags" FORCE)
 
-option(DEV_MODE "developer mode" OFF)
+option(DEV_MODE "developer mode" ON)
 option(ENABLE_ASAN "address sanitizer" OFF)
 option(ENABLE_TSAN "thread sanitizer" OFF)
 option(ENABLE_UBSAN "undefined behavior sanitizer" OFF)
-option(ENABLE_WERROR "treat warnings as errors" OFF)
 option(EXAMPLE "Example" OFF)
-option(ALLOW_BENCHMARK "Allow benchmark" OFF)
+option(ALLOW_BENCHMARK "Allow benchmark" ON)
 option(BUILD_PYTHON "Build Python bindings" OFF)
 option(CONAN_EXPERIMENTAL_INCLUDE "CONAN EXPERIMENT INCLUDE" ON)
 
@@ -59,12 +65,12 @@ endif()
 # We do not use -Werror flag with sanitizers for the following reasons:
 # 1) Sanitizers force us to build absl locally, which does contains warnings
 # 2) Incomplete support of macOS makes development too cumbersome with -Werror enabled
-#set(USE_Werror "$<NOT:$<OR:$<BOOL:${APPLE}>,$<BOOL:${ENABLE_ASAN}>,$<BOOL:${ENABLE_UBSAN}>>>")
+set(USE_Werror "$<NOT:$<OR:$<BOOL:${APPLE}>,$<BOOL:${ENABLE_ASAN}>,$<BOOL:${ENABLE_UBSAN}>>>")
 
 if ((CMAKE_CXX_COMPILER_ID MATCHES "GNU") OR (CMAKE_CXX_COMPILER_ID MATCHES "Clang"))
     add_compile_options(
 
-            #$<${USE_Werror}:-Werror>
+            $<${USE_Werror}:-Werror>
 
             -Wall
             -Wextra
@@ -84,11 +90,7 @@ if ((CMAKE_CXX_COMPILER_ID MATCHES "GNU") OR (CMAKE_CXX_COMPILER_ID MATCHES "Cla
             -Wsign-promo
     )
 elseif (CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
-    if(ENABLE_WERROR)
-        add_compile_options(/W4 /WX)
-    else()
-        add_compile_options(/W4)
-    endif()
+    add_compile_options(/W4 /WX)
 endif ()
 
 # configuration

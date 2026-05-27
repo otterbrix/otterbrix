@@ -64,7 +64,7 @@ async fn decoding_null_into_non_optional_yields_column_decode_error() -> Result<
         .execute(&mut t.conn)
         .await?;
 
-    let row = sqlx::query::<Otterbrix>("SELECT v FROM app.n WHERE k = 2;")
+    let row = sqlx::query::<Otterbrix>("SELECT * FROM app.n WHERE k = 2;")
         .fetch_one(&mut t.conn)
         .await?;
     let res: Result<i64, _> = row.try_get("v");

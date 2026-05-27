@@ -23,14 +23,14 @@ cd "$BUILD_DIR"
 
 [[ -f conanfile.py ]] || cp ../conanfile.py .
 
-if [[ ! -d "$BUILD_TYPE/generators" ]]; then
+if [[ ! -d "build/$BUILD_TYPE/generators" ]]; then
     conan install . --build missing \
         -s "build_type=$BUILD_TYPE" \
         -s compiler.cppstd=20
 fi
 
 cmake .. -G Ninja \
-    -DCMAKE_TOOLCHAIN_FILE="./$BUILD_TYPE/generators/conan_toolchain.cmake" \
+    -DCMAKE_TOOLCHAIN_FILE="./build/$BUILD_TYPE/generators/conan_toolchain.cmake" \
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
     -DDEV_MODE=ON
 # Only the C facade (libotterbrix.so) is needed by the Rust crates; building

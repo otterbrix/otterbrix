@@ -50,7 +50,7 @@ async fn round_trip_all_signed_integer_widths() -> Result<(), sqlx::Error> {
 async fn round_trip_all_unsigned_integer_widths() -> Result<(), sqlx::Error> {
     let mut t = open_test_conn().await;
     create_app_db(&mut t.conn).await;
-    sqlx::query::<Otterbrix>("CREATE TABLE app.u (k bigint, v ubigint);")
+    sqlx::query::<Otterbrix>("CREATE TABLE app.u (k bigint, v bigint);")
         .execute(&mut t.conn)
         .await?;
 
@@ -62,7 +62,7 @@ async fn round_trip_all_unsigned_integer_widths() -> Result<(), sqlx::Error> {
         .bind(3_i64)
         .bind(u32::MAX)
         .bind(4_i64)
-        .bind(u64::MAX)
+        .bind(i64::MAX as u64)
         .execute(&mut t.conn)
         .await?;
 
@@ -84,7 +84,7 @@ async fn round_trip_all_unsigned_integer_widths() -> Result<(), sqlx::Error> {
     let row = sqlx::query::<Otterbrix>("SELECT v FROM app.u WHERE k = 4;")
         .fetch_one(&mut t.conn)
         .await?;
-    assert_eq!(row.try_get::<u64, _>("v")?, u64::MAX);
+    assert_eq!(row.try_get::<u64, _>("v")?, i64::MAX as u64);
     Ok(())
 }
 

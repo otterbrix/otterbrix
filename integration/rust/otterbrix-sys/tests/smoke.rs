@@ -1,4 +1,5 @@
 use otterbrix_sys::*;
+use std::process;
 
 fn make_sv(s: &str) -> string_view_t {
     string_view_t {
@@ -7,19 +8,33 @@ fn make_sv(s: &str) -> string_view_t {
     }
 }
 
+fn unique_base(tag: &str) -> String {
+    format!("/tmp/otterbrix_sys_{tag}_{}", process::id())
+}
+
+fn make_config(base: &str) -> (config_t, String, String, String, String) {
+    let log_path = format!("{base}/log");
+    let wal_path = format!("{base}/wal");
+    let disk_path = format!("{base}/disk");
+    let main_path = format!("{base}/main");
+    let cfg = config_t {
+        level: 0,
+        log_path: make_sv(&log_path),
+        wal_path: make_sv(&wal_path),
+        disk_path: make_sv(&disk_path),
+        main_path: make_sv(&main_path),
+        wal_on: false,
+        disk_on: false,
+        sync_to_disk: false,
+    };
+    (cfg, log_path, wal_path, disk_path, main_path)
+}
+
 #[test]
 fn test_create_destroy() {
     unsafe {
-        let cfg = config_t {
-            level: 0,
-            log_path: make_sv("/tmp/otterbrix_rust_test/log"),
-            wal_path: make_sv("/tmp/otterbrix_rust_test/wal"),
-            disk_path: make_sv("/tmp/otterbrix_rust_test/disk"),
-            main_path: make_sv("/tmp/otterbrix_rust_test/main"),
-            wal_on: false,
-            disk_on: false,
-            sync_to_disk: false,
-        };
+        let base = unique_base("create_destroy");
+        let (cfg, _log, _wal, _disk, _main) = make_config(&base);
 
         let db = otterbrix_create(cfg);
         assert!(!db.is_null(), "otterbrix_create returned null");
@@ -31,16 +46,8 @@ fn test_create_destroy() {
 #[test]
 fn test_execute_sql() {
     unsafe {
-        let cfg = config_t {
-            level: 0,
-            log_path: make_sv("/tmp/otterbrix_rust_test2/log"),
-            wal_path: make_sv("/tmp/otterbrix_rust_test2/wal"),
-            disk_path: make_sv("/tmp/otterbrix_rust_test2/disk"),
-            main_path: make_sv("/tmp/otterbrix_rust_test2/main"),
-            wal_on: false,
-            disk_on: false,
-            sync_to_disk: false,
-        };
+        let base = unique_base("execute_sql");
+        let (cfg, _log, _wal, _disk, _main) = make_config(&base);
 
         let db = otterbrix_create(cfg);
         assert!(!db.is_null());

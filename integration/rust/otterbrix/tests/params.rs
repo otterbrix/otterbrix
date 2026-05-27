@@ -7,6 +7,33 @@ fn p(index: i32, value: SqlParamValue<'_>) -> SqlParam<'_> {
 }
 
 #[test]
+fn insert_uint64_param_into_bigint_or_schema_free_column() {
+    let db = common::open_test_db();
+    db.create_database("db").unwrap();
+
+    db.create_collection("db", "u").unwrap();
+    db.execute_with_params(
+        "INSERT INTO db.u (k, v) VALUES ($1, $2);",
+        &[
+            p(1, SqlParamValue::Int64(1)),
+            p(2, SqlParamValue::UInt64(u64::MAX)),
+        ],
+    )
+    .unwrap();
+
+    db.execute("CREATE TABLE db.s (k bigint, v bigint);")
+        .unwrap();
+    db.execute_with_params(
+        "INSERT INTO db.s (k, v) VALUES ($1, $2);",
+        &[
+            p(1, SqlParamValue::Int64(1)),
+            p(2, SqlParamValue::UInt64(u8::MAX as u64)),
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
 fn insert_with_dollar_params() {
     let db = common::open_test_db();
     db.create_database("db").unwrap();

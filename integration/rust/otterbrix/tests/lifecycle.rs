@@ -1,6 +1,7 @@
 mod common;
 
 use otterbrix::{Config, Database};
+use std::process;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static BUILDER_TEST_ID: AtomicUsize = AtomicUsize::new(0);
@@ -19,7 +20,7 @@ fn open_multiple_instances() {
 #[test]
 fn open_with_config_builder() {
     let id = BUILDER_TEST_ID.fetch_add(1, Ordering::SeqCst);
-    let base = format!("/tmp/otterbrix_safe_builder_{id}");
+    let base = format!("/tmp/otterbrix_safe_builder_{}_{id}", process::id());
     let config = Config::builder()
         .log_path(format!("{base}/log"))
         .wal_path(format!("{base}/wal"))
@@ -35,7 +36,7 @@ fn open_with_config_builder() {
 #[test]
 fn open_with_explicit_log_level() {
     let id = BUILDER_TEST_ID.fetch_add(1, Ordering::SeqCst);
-    let base = format!("/tmp/otterbrix_safe_level_{id}");
+    let base = format!("/tmp/otterbrix_safe_level_{}_{id}", process::id());
     let config = Config::builder()
         .level(2)
         .log_path(format!("{base}/log"))

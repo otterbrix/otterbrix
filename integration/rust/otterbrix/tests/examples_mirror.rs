@@ -11,6 +11,7 @@
 //!
 //! **If you change one of these examples, update the matching test below.**
 
+use std::process;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use otterbrix::{Config, Database, SqlParam, SqlParamValue};
@@ -19,7 +20,10 @@ static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn unique_dir(tag: &str) -> String {
     let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-    format!("/tmp/otterbrix_examples_mirror_{tag}_{id}")
+    format!(
+        "/tmp/otterbrix_examples_mirror_{tag}_{}_{id}",
+        process::id()
+    )
 }
 
 #[test]

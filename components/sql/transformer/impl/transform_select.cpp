@@ -910,7 +910,8 @@ namespace components::sql::transform {
             }
 
             auto limit_node = logical_plan::make_node_limit(resource_,
-                                                            agg->collection_full_name(),
+                                                            core::dbname_t{agg->dbname()},
+                                                            core::relname_t{agg->relname()},
                                                             logical_plan::limit_t(limit_val, offset_val));
             if (limit_param || offset_param) {
                 deferred_limits_.push_back(deferred_limit_t{limit_node.get(), limit_param, offset_param});

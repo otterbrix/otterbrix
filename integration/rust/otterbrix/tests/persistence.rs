@@ -1,3 +1,4 @@
+use std::process;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use otterbrix::{Config, Database, SqlParam, SqlParamValue};
@@ -6,7 +7,7 @@ static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn fresh_persistent_dir() -> String {
     let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = format!("/tmp/otterbrix_persistence_test_{id}");
+    let dir = format!("/tmp/otterbrix_persistence_test_{}_{id}", process::id());
     let _ = std::fs::remove_dir_all(&dir);
     dir
 }

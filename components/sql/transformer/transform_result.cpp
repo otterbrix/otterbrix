@@ -11,7 +11,6 @@
 namespace components::sql::transform {
 
     namespace {
-    namespace {
         std::optional<int64_t> try_value_to_int64(const types::logical_value_t& value) {
             if (value.is_null()) {
                 return std::nullopt;

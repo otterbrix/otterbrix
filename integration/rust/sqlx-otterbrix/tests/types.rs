@@ -91,7 +91,7 @@ async fn round_trip_unsigned_integers() -> Result<(), sqlx::Error> {
     let mut t = open_test_conn().await;
     create_app_db(&mut t.conn).await;
 
-    sqlx::query::<Otterbrix>("CREATE TABLE app.uints (k bigint, v ubigint);")
+    sqlx::query::<Otterbrix>("CREATE TABLE app.uints (k bigint, v bigint);")
         .execute(&mut t.conn)
         .await?;
 
@@ -99,7 +99,7 @@ async fn round_trip_unsigned_integers() -> Result<(), sqlx::Error> {
         .bind(1_i64)
         .bind(0_u64)
         .bind(2_i64)
-        .bind(u64::MAX)
+        .bind(i64::MAX as u64)
         .bind(3_i64)
         .bind(42_u32)
         .execute(&mut t.conn)
@@ -109,7 +109,7 @@ async fn round_trip_unsigned_integers() -> Result<(), sqlx::Error> {
         .bind(2_i64)
         .fetch_one(&mut t.conn)
         .await?;
-    assert_eq!(row.try_get::<u64, _>("v")?, u64::MAX);
+    assert_eq!(row.try_get::<u64, _>("v")?, i64::MAX as u64);
 
     let row = sqlx::query::<Otterbrix>("SELECT v FROM app.uints WHERE k = ?")
         .bind(3_i64)
@@ -242,7 +242,7 @@ async fn option_decodes_null_as_none_and_value_as_some() -> Result<(), sqlx::Err
     let some: Option<i64> = row.try_get("v")?;
     assert_eq!(some, Some(7));
 
-    let row = sqlx::query::<Otterbrix>("SELECT v FROM app.opt WHERE k = ?")
+    let row = sqlx::query::<Otterbrix>("SELECT * FROM app.opt WHERE k = ?")
         .bind(2_i64)
         .fetch_one(&mut t.conn)
         .await?;

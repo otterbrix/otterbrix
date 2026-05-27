@@ -153,6 +153,11 @@ fn cursor_or_error<'db>(ptr: otterbrix_sys::cursor_ptr) -> Result<Cursor<'db>> {
     if unsafe { otterbrix_sys::cursor_is_error(ptr) } {
         let err = unsafe { otterbrix_sys::cursor_get_error(ptr) };
         let message = unsafe { string_from_c(err.message) };
+        let message = if message.is_empty() {
+            format!("error code {}", err.code)
+        } else {
+            message
+        };
         unsafe { otterbrix_sys::release_cursor(ptr) };
         return Err(Error::Query {
             code: err.code,

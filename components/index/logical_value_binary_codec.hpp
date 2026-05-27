@@ -43,9 +43,58 @@ namespace components::index::codec {
         std::memcpy(p, &v, sizeof(T));
     }
 
+    template<typename AppendFn>
+    inline void append_decimal_payload(AppendFn&& append, const logical_value_t& key) {
+        const auto* decimal = reinterpret_cast<const components::types::decimal_logical_type_extension*>(
+            key.type().extension());
+        append(decimal->width());
+        append(decimal->scale());
+        switch (decimal->stored_as()) {
+            case physical_type_t::INT16:
+                append(key.value<int16_t>());
+                break;
+            case physical_type_t::INT32:
+                append(key.value<int32_t>());
+                break;
+            case physical_type_t::INT64:
+                append(key.value<int64_t>());
+                break;
+            case physical_type_t::INT128:
+                append(key.value<components::types::int128_t>());
+                break;
+            default:
+                throw std::runtime_error("logical value codec: unsupported DECIMAL physical storage");
+        }
+    }
+
+    template<typename ReadFn>
+    inline logical_value_t read_decimal_payload(std::pmr::memory_resource* resource, ReadFn&& read) {
+        const auto width = read.template operator()<uint8_t>();
+        const auto scale = read.template operator()<uint8_t>();
+        const auto decimal_type = components::types::complex_logical_type::create_decimal(width, scale);
+        switch (decimal_type.to_physical_type()) {
+            case physical_type_t::INT16:
+                return logical_value_t::create_decimal(resource, decimal_type, read.template operator()<int16_t>());
+            case physical_type_t::INT32:
+                return logical_value_t::create_decimal(resource, decimal_type, read.template operator()<int32_t>());
+            case physical_type_t::INT64:
+                return logical_value_t::create_decimal(resource, decimal_type, read.template operator()<int64_t>());
+            case physical_type_t::INT128:
+                return logical_value_t::create_decimal(resource,
+                                                       decimal_type,
+                                                       read.template operator()<components::types::int128_t>());
+            default:
+                throw std::runtime_error("logical value codec: unsupported DECIMAL physical storage during decode");
+        }
+    }
+
     inline void append_logical_value(std::pmr::string& out, const logical_value_t& key) {
         const auto logical = key.type().type();
         append_le<uint8_t>(out, static_cast<uint8_t>(logical));
+        if (logical == logical_type_t::DECIMAL) {
+            append_decimal_payload([&out]<typename T>(T v) { append_le<T>(out, v); }, key);
+            return;
+        }
 
         switch (key.type().to_physical_type()) {
             case physical_type_t::NA:
@@ -96,6 +145,9 @@ namespace components::index::codec {
 
     inline logical_value_t read_logical_value(std::pmr::memory_resource* resource, const std::pmr::string& in, size_t& pos) {
         const auto logical = static_cast<logical_type_t>(read_le<uint8_t>(in, pos));
+        if (logical == logical_type_t::DECIMAL) {
+            return read_decimal_payload(resource, [&in, &pos]<typename T>() { return read_le<T>(in, pos); });
+        }
         const auto physical = components::types::to_physical_type(logical);
 
         switch (physical) {
@@ -152,8 +204,6 @@ namespace components::index::codec {
                         return logical_value_t(resource, core::date::timestamp_t{core::date::microseconds{v}});
                     case logical_type_t::TIMESTAMP_TZ:
                         return logical_value_t(resource, core::date::timestamptz_t{core::date::microseconds{v}});
-                    case logical_type_t::DECIMAL:
-                        return logical_value_t::create_numeric(resource, components::types::complex_logical_type{logical}, v);
                     default:
                         throw std::runtime_error("logical value codec: unsupported INT64 logical key type during decode");
                 }
@@ -206,6 +256,10 @@ namespace components::index::codec {
 
         const auto logical = key.type().type();
         append_le_std(static_cast<uint8_t>(logical), out);
+        if (logical == logical_type_t::DECIMAL) {
+            append_decimal_payload([&out, &append_le_std]<typename T>(T v) { append_le_std(v, out); }, key);
+            return out;
+        }
 
         switch (key.type().to_physical_type()) {
             case physical_type_t::NA:

@@ -13,7 +13,7 @@ static const database_name_t database_name = "testdatabase";
         auto session = otterbrix::session_id_t();                                                                      \
         auto cur = dispatcher->execute_sql(session, QUERY);                                                            \
         REQUIRE(cur->is_success());                                                                                    \
-        REQUIRE(cur->size() == COUNT);                                                                                 \
+        REQUIRE(cur->size() == static_cast<std::size_t>(COUNT));                                                      \
     } while (false)
 
 TEST_CASE("integration::cpp::test_persistence::wal_recovery_mixed_batch") {

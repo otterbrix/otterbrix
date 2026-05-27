@@ -761,19 +761,19 @@ namespace services::index {
         return res;
     }
 
-    void bitcask_index_disk_t::lower_bound(const value_t& value, result& res) const {
+    void bitcask_index_disk_t::lower_bound(const value_t& /*value*/, result& /*res*/) const {
         throw "not supported"; // not supported
     }
 
-    bitcask_index_disk_t::result bitcask_index_disk_t::lower_bound(const value_t& value) const {
+    bitcask_index_disk_t::result bitcask_index_disk_t::lower_bound(const value_t& /*value*/) const {
         throw "not supported"; // not supported
     }
 
-    void bitcask_index_disk_t::upper_bound(const value_t& value, result& res) const {
+    void bitcask_index_disk_t::upper_bound(const value_t& /*value*/, result& /*res*/) const {
         throw "not supported"; // not supported
     }
 
-    bitcask_index_disk_t::result bitcask_index_disk_t::upper_bound(const value_t& value) const {
+    bitcask_index_disk_t::result bitcask_index_disk_t::upper_bound(const value_t& /*value*/) const {
         throw "not supported"; // not supported
     }
 

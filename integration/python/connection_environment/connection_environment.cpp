@@ -4,6 +4,7 @@
 #include <components/configuration/configuration.hpp>
 #include <integration/cpp/otterbrix.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
+#include <components/logical_plan/node_catalog_resolve_namespace.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
@@ -85,10 +86,37 @@ namespace otterbrix {
         auto plan = std::move(view.node);
         auto cursor = space->dispatcher()->execute_plan(session, plan, std::move(view.params));
 
-        if (cursor->is_success() && plan->type() == logical_plan::node_type::create_collection_t) {
-            auto cc = boost::static_pointer_cast<logical_plan::node_create_collection_t>(plan);
-            auto& collections = GetCollections();
-            collections.insert("tmp." + cc->relname());
+        if (cursor->is_success()) {
+            // A CREATE TABLE plan is no longer a bare create_collection node: the
+            // namespace-routing transform wraps it in a sequence alongside a
+            // catalog_resolve_namespace node carrying the target database name.
+            // Walk the plan to find the created collection and its database so
+            // listTables() reports the table under the database it was created in
+            // (falling back to "tmp" for unqualified creates).
+            const logical_plan::node_create_collection_t* created = nullptr;
+            std::string dbname;
+            std::function<void(const logical_plan::node_ptr&)> scan =
+                [&](const logical_plan::node_ptr& n) {
+                    if (!n) {
+                        return;
+                    }
+                    if (n->type() == logical_plan::node_type::create_collection_t) {
+                        created = static_cast<const logical_plan::node_create_collection_t*>(n.get());
+                    } else if (n->type() == logical_plan::node_type::catalog_resolve_namespace_t) {
+                        dbname = static_cast<const logical_plan::node_catalog_resolve_namespace_t*>(n.get())->dbname();
+                    }
+                    for (const auto& child : n->children()) {
+                        scan(child);
+                    }
+                };
+            scan(plan);
+            if (created) {
+                if (dbname.empty()) {
+                    dbname = "tmp";
+                }
+                auto& collections = GetCollections();
+                collections.insert(dbname + "." + created->relname());
+            }
         }
 
         return cursor;

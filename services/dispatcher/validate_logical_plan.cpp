@@ -119,31 +119,36 @@ namespace services::dispatcher {
             size_t key_order;
         };
 
-        // JOIN merge: keep both same-named columns when they come from different
-        // tables; only drop entries that are truly identical (same alias AND same result_alias).
+        // JOIN merge: физический вывод join — это левые колонки, за которыми
+        // идут ВСЕ правые, поэтому здесь сохраняются все колонки, чтобы позиции
+        // в объединённой схеме совпадали с раскладкой чанка (пути к колонкам
+        // позиционные). Колонка, дублирующая по имени+result_alias уже
+        // сохранённую, остаётся, но помечается shadowed — она держит свой
+        // физический слот, но исключена из разрешения по имени, поэтому ссылка
+        // по имени разрешается в выжившую (левую) колонку. Это реализует
+        // коалесценцию ключа SQL USING/NATURAL JOIN, сохраняя корректные
+        // индексы остальных правых колонок.
         named_schema merge_schemas(std::pmr::memory_resource* resource, named_schema lhs, named_schema rhs) {
             named_schema merged(resource);
-            for (auto&& type : lhs) {
-                auto it = std::find_if(merged.begin(), merged.end(), [&type](const auto& t) {
-                    return t.type.alias() == type.type.alias() && t.result_alias == type.result_alias;
+            auto duplicates_kept = [&merged](const type_from_t& type) {
+                return std::any_of(merged.begin(), merged.end(), [&type](const auto& t) {
+                    return !t.shadowed && t.type.alias() == type.type.alias() &&
+                           t.result_alias == type.result_alias;
                 });
-                if (it == merged.end()) {
-                    if (type.side == side_t::undefined) {
-                        type.side = side_t::left;
-                    }
-                    merged.emplace_back(std::move(type));
+            };
+            for (auto&& type : lhs) {
+                type.shadowed = duplicates_kept(type);
+                if (type.side == side_t::undefined) {
+                    type.side = side_t::left;
                 }
+                merged.emplace_back(std::move(type));
             }
             for (auto&& type : rhs) {
-                auto it = std::find_if(merged.begin(), merged.end(), [&type](const auto& t) {
-                    return t.type.alias() == type.type.alias() && t.result_alias == type.result_alias;
-                });
-                if (it == merged.end()) {
-                    if (type.side == side_t::undefined) {
-                        type.side = side_t::right;
-                    }
-                    merged.emplace_back(std::move(type));
+                type.shadowed = duplicates_kept(type);
+                if (type.side == side_t::undefined) {
+                    type.side = side_t::right;
                 }
+                merged.emplace_back(std::move(type));
             }
             return merged;
         }
@@ -155,6 +160,11 @@ namespace services::dispatcher {
             type_paths result{resource};
             if (key.storage().at(0) == "*") {
                 for (size_t i = 0; i < schema.size(); i++) {
+                    // Shadowed-колонки (например, ключ JOIN, продублированный
+                    // справа) держат свой физический слот, но не раскрываются '*'.
+                    if (schema[i].shadowed) {
+                        continue;
+                    }
                     result.emplace_back(type_path_t{column_path{{i}, resource}, schema[i].type});
                 }
                 return result;
@@ -168,6 +178,12 @@ namespace services::dispatcher {
             // Also we store number of keys used to get there and path
             std::pmr::list<type_match_t> matches(resource);
             for (size_t i = 0; i < schema.size(); i++) {
+                // Shadowed-колонка (ключ JOIN, продублированный справа) не
+                // разрешается по имени: ссылка по имени проваливается в
+                // выжившую (левую) колонку — это коалесценция ключа USING.
+                if (schema[i].shadowed) {
+                    continue;
+                }
                 if (truncated_key.storage().size() > 1 &&
                     core::pmr::operator==(schema[i].result_alias, truncated_key.storage().at(0)) &&
                     core::pmr::operator==(schema[i].type.alias(), truncated_key.storage().at(1))) {
@@ -1291,6 +1307,13 @@ namespace services::dispatcher {
                         // Duplicate names across JOIN'd tables are legitimate (PostgreSQL semantics).
                         std::set<std::pair<std::string, std::string>> seen_pairs;
                         for (const auto& col : incoming_schema) {
+                            // Shadowed-колонка — это коалесцированный дубликат ключа
+                            // JOIN: она держит свой физический слот, но не является
+                            // отдельной именованной колонкой, поэтому не считается
+                            // неоднозначным дубликатом здесь.
+                            if (col.shadowed) {
+                                continue;
+                            }
                             auto pair = std::make_pair(col.result_alias, std::string(col.type.alias()));
                             if (!seen_pairs.insert(pair).second) {
                                 return core::error_t(

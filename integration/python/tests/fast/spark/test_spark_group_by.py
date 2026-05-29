@@ -149,18 +149,21 @@ class TestDataFrameGroupBy(object):
         assert sums == {"a": 10, "b": 20, "c": 30}
 
     def test_group_by_null_in_key(self, spark):
-        # NULL group keys arise from a left join with non-matching rows;
-        # createDataFrame does not accept None directly.
+        # A left join preserves every left row, so the join key "k" keeps the
+        # left value even for non-matching rows (k=99). Only non-key right-side
+        # columns become NULL — the grouping key itself is never NULL here.
         left = spark.createDataFrame([(1, 10), (2, 99), (3, 10)], ["id", "k"])
         right = spark.createDataFrame([(10, 100)], ["k", "val"])
         joined = left.join(right, "k", "left")
         counts = {r.k: r[1] for r in joined.groupBy("k").count().collect()}
-        assert counts == {10: 2, None: 1}
+        assert counts == {10: 2, 99: 1}
 
     def test_group_by_aggregate_over_nulls(self, spark):
-        # k=99 has no match, so its joined `val` is NULL for the whole group.
+        # k=99 has no match, so its joined `val` is NULL for the whole group;
+        # summing an all-NULL group yields NULL. The group key stays 99 (the
+        # left value is preserved by the left join).
         left = spark.createDataFrame([(1, 10), (2, 99), (3, 10)], ["id", "k"])
         right = spark.createDataFrame([(10, 100)], ["k", "val"])
         joined = left.join(right, "k", "left")
         sums = {r.k: r[1] for r in joined.groupBy("k").sum("val").collect()}
-        assert sums == {10: 200, None: None}
+        assert sums == {10: 200, 99: None}

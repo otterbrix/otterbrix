@@ -466,6 +466,17 @@ namespace components::planner::optimizer {
                     collect_subtree_columns(join->children()[0], left_cols);
                     collect_subtree_columns(join->children()[1], right_cols);
 
+                    // A predicate may only be pushed below the side of an outer join that
+                    // is row-preserving; pushing onto the null-supplying side is invalid
+                    // (the synthesised NULL rows are emitted regardless of the filter and
+                    // would leak past it). Left join preserves the left side, right join
+                    // the right side, full join neither; inner/cross preserve both.
+                    const auto jt = join->type();
+                    const bool can_push_left =
+                        jt == join_type::inner || jt == join_type::cross || jt == join_type::left;
+                    const bool can_push_right =
+                        jt == join_type::inner || jt == join_type::cross || jt == join_type::right;
+
                     auto conjuncts = split_conjuncts(match_child->expressions()[0]);
                     std::vector<expression_ptr> left_bucket, right_bucket, residual;
                     for (const auto& conj : conjuncts) {
@@ -476,9 +487,9 @@ namespace components::planner::optimizer {
                         bool in_right = !cols.empty() &&
                             std::includes(right_cols.begin(), right_cols.end(),
                                           cols.begin(), cols.end());
-                        if (in_left && !in_right) {
+                        if (in_left && !in_right && can_push_left) {
                             left_bucket.push_back(conj);
-                        } else if (in_right && !in_left) {
+                        } else if (in_right && !in_left && can_push_right) {
                             right_bucket.push_back(conj);
                         } else {
                             residual.push_back(conj);

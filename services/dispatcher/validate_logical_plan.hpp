@@ -28,6 +28,13 @@ namespace services::dispatcher {
         std::string result_alias;
         components::types::complex_logical_type type;
         components::expressions::side_t side = components::expressions::side_t::undefined;
+        // При JOIN склеиваются левые + ВСЕ правые колонки; одноимённая колонка
+        // с правой стороны сохраняется (чтобы позиции в схеме совпадали с
+        // физическим выводом join), но помечается shadowed: она занимает свой
+        // слот, но недоступна по имени — ссылка по имени разрешается в
+        // выжившую (левую) колонку. Это повторяет коалесценцию ключа
+        // SQL USING/NATURAL JOIN.
+        bool shadowed = false;
     };
     struct type_path_t {
         column_path path;

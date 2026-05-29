@@ -275,50 +275,23 @@ class DataFrame:
         if len(cols) == 1 and isinstance(cols[0], list):
             cols = cols[0]
 
-        def _parse_expr_str(expr_str):
-            """Parse Expression string like 'col: 1' or 'col: -1' into (name, direction).
-            Returns (name, 1) for ascending, (name, -1) for descending, (name, 0) for no direction."""
-            if expr_str.endswith(': 1'):
-                return expr_str[:-3], 1
-            elif expr_str.endswith(': -1'):
-                return expr_str[:-4], -1
-            return expr_str, 0
-
         columns = []
-        col_names = []
-        # 1=asc, -1=desc, 0=unspecified
-        explicit_dirs = []
         for c in cols:
             _c = c
             if isinstance(c, str):
-                col_names.append(c)
-                explicit_dirs.append(0)
                 _c = col(c)
             elif isinstance(c, int) and not isinstance(c, bool):
                 # ordinal is 1-based
                 if c > 0:
                     _c = self[c - 1]
-                    col_names.append(str(_c.expr))
-                    explicit_dirs.append(0)
                 # negative ordinal means sort by desc
                 elif c < 0:
-                    _c = self[-c - 1]
-                    col_names.append(str(_c.expr))
-                    explicit_dirs.append(-1)
-                    _c = _c.desc()
+                    _c = self[-c - 1].desc()
                 else:
                     raise PySparkIndexError(
                         error_class="ZERO_INDEX",
                         message_parameters={},
                     )
-            elif isinstance(c, Column):
-                name, direction = _parse_expr_str(str(c.expr))
-                col_names.append(name)
-                explicit_dirs.append(direction)
-            else:
-                name, direction = _parse_expr_str(str(c))
-                col_names.append(name)
-                explicit_dirs.append(direction)
             columns.append(_c)
 
         ascending = kwargs.get("ascending", True)
@@ -326,28 +299,16 @@ class DataFrame:
         if isinstance(ascending, (bool, int)):
             if not ascending:
                 columns = [c.desc() for c in columns]
-            base_asc = bool(ascending)
         elif isinstance(ascending, list):
             columns = [c if asc else c.desc() for asc, c in zip(ascending, columns)]
-            base_asc = None  # per-column
         else:
             raise PySparkTypeError(
                 error_class="NOT_BOOL_OR_LIST",
                 message_parameters={"arg_name": "ascending", "arg_type": type(ascending).__name__},
             )
 
-        asc_flags = []
-        for i, d in enumerate(explicit_dirs):
-            if d != 0:
-                # respect explicit .asc() or .desc()
-                asc_flags.append(d == 1)
-            elif base_asc is not None:
-                asc_flags.append(base_asc)
-            else:
-                asc_flags.append(bool(ascending[i]))
-
-        sort_keys = list(zip(col_names, asc_flags))
-
+        # Direction (asc/desc) is carried inside each sort expression, so we just
+        # forward the resolved expressions to the C++ engine.
         resolved = []
         for c in columns:
             if isinstance(c, Column):

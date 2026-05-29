@@ -17,9 +17,6 @@ namespace otterbrix {
 
 using components::vector::vector_t;
 
-// Copy into the vector's owned buffer instead of aliasing numpy memory via set_data:
-// the previous zero-copy made data_ point at numpy storage while buffer_ held an unused
-// allocation, and left the vector dangling if the source py::array was released first.
 template <class T>
 void ScanNumpyColumn(py::array &numpy_col, idx_t stride, idx_t offset, vector_t &out, idx_t count) {
 	auto src_ptr = static_cast<const T*>(numpy_col.data());

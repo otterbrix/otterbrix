@@ -4,7 +4,7 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/compute/function.hpp>
 #include <components/context/pg_catalog_swap.hpp>
-#include <components/logical_plan/node.hpp>
+#include <components/logical_plan/execution_plan.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -28,12 +28,32 @@ namespace components::table {
 namespace services::collection::executor {
 
     struct execute_result_t {
+        explicit execute_result_t(std::pmr::memory_resource* resource)
+            : updates(resource)
+            , pg_catalog_appends(resource)
+            , pg_catalog_delete_tables(resource) {}
+
+        execute_result_t(std::pmr::memory_resource* resource, components::cursor::cursor_t_ptr cursor)
+            : cursor(std::move(cursor))
+            , updates(resource)
+            , pg_catalog_appends(resource)
+            , pg_catalog_delete_tables(resource) {}
+
+        execute_result_t(components::cursor::cursor_t_ptr cursor,
+                         components::operators::operator_write_data_t::updated_types_map_t updates,
+                         std::pmr::vector<components::pg_catalog_append_range_t> pg_catalog_appends,
+                         std::pmr::set<components::catalog::oid_t> pg_catalog_delete_tables)
+            : cursor(std::move(cursor))
+            , updates(std::move(updates))
+            , pg_catalog_appends(std::move(pg_catalog_appends))
+            , pg_catalog_delete_tables(std::move(pg_catalog_delete_tables)) {}
+            
         components::cursor::cursor_t_ptr cursor;
-        components::operators::operator_write_data_t::updated_types_map_t updates{};
+        components::operators::operator_write_data_t::updated_types_map_t updates;
         // pg_catalog ranges/tables collected during this execute_plan call.
         // Dispatcher merges these into transaction_t when txn_id != 0.
-        std::vector<components::pg_catalog_append_range_t> pg_catalog_appends{};
-        std::set<components::catalog::oid_t> pg_catalog_delete_tables{};
+        std::pmr::vector<components::pg_catalog_append_range_t> pg_catalog_appends;
+        std::pmr::set<components::catalog::oid_t> pg_catalog_delete_tables;
     };
 
     using function_result_t = core::result_wrapper_t<components::compute::function_uid>;
@@ -57,6 +77,11 @@ namespace services::collection::executor {
     // dml_* fields below so execute_plan can drive storage_commit_append /
     // storage_commit_delete uniformly.
     struct sub_plan_result_t {
+        explicit sub_plan_result_t(std::pmr::memory_resource* resource)
+            : updates(resource)
+            , pg_catalog_appends(resource)
+            , pg_catalog_delete_tables(resource) {}
+
         components::cursor::cursor_t_ptr cursor;
         components::operators::operator_write_data_t::updated_types_map_t updates;
         int64_t dml_append_row_start{0};
@@ -65,10 +90,9 @@ namespace services::collection::executor {
         components::catalog::oid_t dml_table_oid{components::catalog::INVALID_OID};
 
         // pg_catalog swap-info drained from each pipeline::context_t inside
-        // execute_sub_plan_. execute_plan moves these into the outer
-        // execute_result_t so the dispatcher can push them onto transaction_t.
-        std::vector<components::pg_catalog_append_range_t> pg_catalog_appends;
-        std::set<components::catalog::oid_t> pg_catalog_delete_tables;
+        // execute_sub_plan_. execute_plan moves these into execute_result_t.
+        std::pmr::vector<components::pg_catalog_append_range_t> pg_catalog_appends;
+        std::pmr::set<components::catalog::oid_t> pg_catalog_delete_tables;
     };
 
     class executor_t final : public actor_zeta::basic_actor<executor_t> {
@@ -86,8 +110,7 @@ namespace services::collection::executor {
         ~executor_t() = default;
 
         unique_future<execute_result_t> execute_plan(components::session::session_id_t session,
-                                                     components::logical_plan::node_ptr logical_plan,
-                                                     components::logical_plan::storage_parameters parameters,
+                                                     components::logical_plan::execution_plan_t plan,
                                                      services::context_storage_t context_storage,
                                                      components::table::transaction_data txn);
 
@@ -101,7 +124,7 @@ namespace services::collection::executor {
 
     private:
         plan_t traverse_plan_(components::operators::operator_ptr&& plan,
-                              components::logical_plan::storage_parameters&& parameters,
+                              const components::logical_plan::storage_parameters& parameters,
                               services::context_storage_t&& context_storage);
 
         unique_future<sub_plan_result_t> execute_sub_plan_(components::session::session_id_t session,

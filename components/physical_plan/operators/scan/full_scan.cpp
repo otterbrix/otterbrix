@@ -87,6 +87,37 @@ namespace components::operators {
                 }
                 return std::unique_ptr<table::table_filter_t>(std::move(filter));
             }
+            case expressions::compare_type::any:
+            case expressions::compare_type::all: {
+                const auto& path = std::get<expressions::key_t>(expression->left()).path();
+                auto param_id = std::get<core::parameter_id_t>(expression->right());
+                std::pmr::vector<uint64_t> indices(path.begin(), path.end(), path.get_allocator().resource());
+                if (parameters->parameters.find(param_id) == parameters->parameters.end()) {
+                    return core::error_t{
+                        core::error_code_t::invalid_parameter,
+                        std::pmr::string{"parameter not found in expression to filter conversion", resource}};
+                }
+                auto inner_op = expression->inner_op();
+                if (inner_op == expressions::compare_type::invalid) {
+                    inner_op = expressions::compare_type::eq;
+                }
+                const auto& col_type = types[indices[0]];
+                const auto& arr = parameters->parameters.at(param_id).children();
+                const bool is_any = expression->type() == expressions::compare_type::any;
+                auto filter = is_any
+                                  ? std::unique_ptr<table::conjunction_filter_t>(std::make_unique<table::conjunction_or_filter_t>())
+                                  : std::unique_ptr<table::conjunction_filter_t>(std::make_unique<table::conjunction_and_filter_t>());
+                filter->child_filters.reserve(arr.size());
+                for (const auto& val : arr) {
+                    auto coerced = val.type() == col_type ? val : val.cast_as(col_type, session_tz);
+                    if (coerced.is_null()) {
+                        continue;
+                    }
+                    filter->child_filters.emplace_back(
+                        std::make_unique<table::constant_filter_t>(inner_op, coerced, indices));
+                }
+                return filter;
+            }
             case expressions::compare_type::invalid:
                 return core::error_t{
                     core::error_code_t::physical_plan_error,
@@ -99,6 +130,7 @@ namespace components::operators {
                     std::make_unique<table::is_null_filter_t>(expression->type(), std::move(indices)));
             }
             default: {
+                assert(std::holds_alternative<expressions::key_t>(expression->left()));
                 const auto& path = std::get<expressions::key_t>(expression->left()).path();
                 auto id = std::get<core::parameter_id_t>(expression->right());
                 std::pmr::vector<uint64_t> indices(path.begin(), path.end(), path.get_allocator().resource());
@@ -177,6 +209,27 @@ namespace components::operators {
             co_return;
         }
 
+        // Short-circuit: null parameter in a scalar comparison — SQL NULL semantics.
+        // col OP NULL → always false → return empty immediately.
+        // col OP ALL(empty) is vacuously true → skip filter, scan all rows.
+        // Excludes is_null/is_not_null which use a dummy null parameter on the right.
+        bool null_param_skip_filter = false;
+        if (expression_ && !expression_->is_union() &&
+            expression_->type() != expressions::compare_type::is_null &&
+            expression_->type() != expressions::compare_type::is_not_null &&
+            std::holds_alternative<core::parameter_id_t>(expression_->right())) {
+            auto pid = std::get<core::parameter_id_t>(expression_->right());
+            auto it = ctx->parameters.parameters.find(pid);
+            if (it != ctx->parameters.parameters.end() && it->second.is_null()) {
+                if (expression_->type() != expressions::compare_type::all) {
+                    output_ = make_operator_data(resource_, std::pmr::vector<types::complex_logical_type>{resource_});
+                    mark_executed();
+                    co_return;
+                }
+                null_param_skip_filter = true;
+            }
+        }
+
         // Get types to build filter
         auto [_t, tf] = actor_zeta::send(ctx->disk_address,
                                          &services::disk::manager_disk_t::storage_types,
@@ -185,13 +238,16 @@ namespace components::operators {
         auto types = co_await std::move(tf);
 
         // Build filter from expression
-        auto filter_result = transform_predicate(resource_, expression_, types, &ctx->parameters, ctx->session_tz);
-        if (filter_result.has_error()) {
-            set_error(filter_result.error());
-            mark_failed();
-            co_return;
+        std::unique_ptr<table::table_filter_t> filter;
+        if (!null_param_skip_filter) {
+            auto filter_result = transform_predicate(resource_, expression_, types, &ctx->parameters, ctx->session_tz);
+            if (filter_result.has_error()) {
+                set_error(filter_result.error());
+                mark_failed();
+                co_return;
+            }
+            filter = std::move(filter_result.value());
         }
-        auto filter = std::move(filter_result.value());
 
         // Scan from storage — batched + projected (PR #477+#483).
         int64_t offset_val = limit_.offset();

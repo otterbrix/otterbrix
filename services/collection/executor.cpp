@@ -9,23 +9,11 @@
 #include <services/wal/manager_wal_replicate.hpp>
 #include <services/wal/wal_sync_mode.hpp>
 
-#include <components/logical_plan/forward.hpp>
-#include <components/logical_plan/node_alter_table.hpp>
-#include <components/logical_plan/node_catalog_resolve_function.hpp>
-#include <components/logical_plan/node_catalog_resolve_namespace.hpp>
-#include <components/logical_plan/node_catalog_resolve_table.hpp>
-#include <components/logical_plan/node_catalog_resolve_type.hpp>
-#include <components/logical_plan/node_create_collection.hpp>
-#include <components/logical_plan/node_create_constraint.hpp>
-#include <components/logical_plan/node_create_macro.hpp>
-#include <components/logical_plan/node_create_sequence.hpp>
-#include <components/logical_plan/node_create_type.hpp>
-#include <components/logical_plan/node_create_view.hpp>
-#include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/param_storage.hpp>
 // operator_{insert,delete,update}.hpp no longer included — the
 // static_cast'd intercept_dml_io_ branches now live in each operator's
 // await_async_and_resume so the executor only sees the base operator_t.
+
 #include <components/physical_plan/operators/predicates/predicate.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
 #include <core/executor.hpp>
@@ -105,7 +93,7 @@ namespace services::collection::executor {
                    services::context_storage_t&& context_storage,
                    components::logical_plan::limit_t limit)
         : sub_plans(std::move(sub_plans))
-        , parameters(parameters)
+        , parameters(std::move(parameters))
         , context_storage_(context_storage)
         , limit(limit) {}
 
@@ -158,252 +146,294 @@ namespace services::collection::executor {
 
     executor_t::unique_future<execute_result_t>
     executor_t::execute_plan(components::session::session_id_t session,
-                             components::logical_plan::node_ptr logical_plan,
-                             components::logical_plan::storage_parameters parameters,
+                             components::logical_plan::execution_plan_t plan,
                              services::context_storage_t context_storage,
                              components::table::transaction_data txn) {
         trace(log_, "executor::execute_plan, session: {}", session.data());
 
         using namespace components::logical_plan;
+        // take parameters to make them mutable
+        auto parameters = plan.parameters->take_parameters();
 
-        // CREATE INDEX / DROP INDEX are now lowered by the planner into
-        // sequence_t(primitive_write/delete × N, create_index_t/drop_index_t)
-        // and run through the standard physical-plan pipeline (see
-        // components/physical_plan_generator/impl/create_plan_sequence.cpp).
-        // No special-case branches required here.
+        auto find_limit = [](const node_ptr& lp) {
+            auto limit = limit_t::unlimit();
+            auto* node = lp.get();
+            if (node && node->type() == node_type::sequence_t) {
+                auto is_resolve = [](node_type t) {
+                    return t == node_type::catalog_resolve_namespace_t ||
+                           t == node_type::catalog_resolve_table_t ||
+                           t == node_type::catalog_resolve_type_t ||
+                           t == node_type::catalog_resolve_function_t ||
+                           t == node_type::catalog_resolve_constraint_t;
+                };
+                for (const auto& child : node->children()) {
+                    if (child && !is_resolve(child->type())) {
+                        node = child.get();
+                        break;
+                    }
+                }
+            }
+            for (const auto& child : node->children()) {
+                if (child->type() == node_type::limit_t) {
+                    limit = static_cast<node_limit_t*>(child.get())->limit();
+                }
+            }
+            return limit;
+        };
 
-        // Determine if this is a DML operation.
-        // find_effective_dml_type unwraps planner-added constraint wrapper nodes so
-        // that is_dml is correct even when the plan is wrapped by check_constraint etc.
-        const auto effective_type = find_effective_dml_type(logical_plan);
-        bool is_dml = (effective_type == node_type::insert_t || effective_type == node_type::update_t ||
-                       effective_type == node_type::delete_t);
+        // Execute sub-queries first (non-DML, front-to-back).
+        // Dispatcher guarantees sub_queries[0..N-2] are non-DML.
+        for (size_t i = 0; i + 1 < plan.sub_queries.size(); ++i) {
+            auto& logical_plan = plan.sub_queries[i];
 
-        // Step 1: Begin transaction for DML (executor owns full lifecycle)
-        // Direct call to txn_manager_ avoids static_cast to dispatcher and bypasses actor mutex.
-        // Safe: txn methods only touch txn_manager_ (own mutex) + are synchronous.
-        components::table::transaction_data txn_data = txn;
-        if (is_dml) {
-            txn_data = txn_manager_->begin_transaction(session).data();
-            trace(log_, "executor::execute_plan: began txn {}", txn_data.transaction_id);
-        }
-
-        // With the transformer wrap, logical_plan may be
-        // sequence_t(catalog_resolve_*, ..., <consumer>). The limit_t node
-        // lives as a child of the consumer, not on the wrapping sequence_t.
-        // Search via find_effective_dml_type first (already understands
-        // resolve prefix), then fall back to iterating the raw children for
-        // non-DML plans.
-        auto limit = components::logical_plan::limit_t::unlimit();
-        auto* limit_lookup_node = logical_plan.get();
-        if (limit_lookup_node && limit_lookup_node->type() == components::logical_plan::node_type::sequence_t) {
-            // Find first non-resolve child as the limit-carrying consumer.
-            auto is_catalog_resolve = [](components::logical_plan::node_type t) {
-                return t == components::logical_plan::node_type::catalog_resolve_namespace_t ||
-                       t == components::logical_plan::node_type::catalog_resolve_table_t ||
-                       t == components::logical_plan::node_type::catalog_resolve_type_t ||
-                       t == components::logical_plan::node_type::catalog_resolve_function_t ||
-                       t == components::logical_plan::node_type::catalog_resolve_constraint_t;
-            };
-            for (const auto& c : limit_lookup_node->children()) {
-                if (c && !is_catalog_resolve(c->type())) {
-                    limit_lookup_node = c.get();
-                    break;
+            const auto limit = find_limit(logical_plan);
+            auto physical_plan =
+                planner::create_plan(context_storage, function_registry_, logical_plan, limit, &parameters);
+            if (!physical_plan) {
+                co_return execute_result_t{resource(),
+                                           make_cursor(resource(),
+                                                       core::error_t(core::error_code_t::create_physical_plan_error,
+                                                                     std::pmr::string{"invalid query plan", resource()}))};
+            }
+            physical_plan->set_as_root();
+            auto plan_data = traverse_plan_(std::move(physical_plan), parameters, std::move(context_storage));
+            plan_data.limit = limit;
+            auto result = co_await execute_sub_plan_(session, std::move(plan_data), txn);
+            if (result.cursor->is_error()) {
+                co_return execute_result_t{resource(), std::move(result.cursor)};
+            } else {
+                const auto& mapping = plan.sub_query_results[i];
+                auto compacted_res = mapping.compacter(result.cursor->chunk_data());
+                if (compacted_res.has_error()) {
+                    result.cursor = make_cursor(resource(), compacted_res.error());
+                } else {
+                    parameters.parameters.insert_or_assign(mapping.id, std::move(compacted_res.value()));
                 }
             }
         }
-        for (const auto& child : limit_lookup_node->children()) {
-            if (child->type() == components::logical_plan::node_type::limit_t) {
-                limit = static_cast<components::logical_plan::node_limit_t*>(child.get())->limit();
-            }
-        }
 
-        components::operators::operator_ptr plan =
-            planner::create_plan(context_storage, function_registry_, logical_plan, limit, &parameters);
+        // Execute main query (sub_queries.back()) — the only entry that may be DML.
+        {
+            auto& logical_plan = plan.sub_queries.back();
 
-        if (!plan) {
+            // CREATE INDEX / DROP INDEX are now lowered by the planner into
+            // sequence_t(primitive_write/delete × N, create_index_t/drop_index_t)
+            // and run through the standard physical-plan pipeline (see
+            // components/physical_plan_generator/impl/create_plan_sequence.cpp).
+            // No special-case branches required here.
+
+            // Determine if this is a DML operation.
+            // find_effective_dml_type unwraps planner-added constraint wrapper nodes so
+            // that is_dml is correct even when the plan is wrapped by check_constraint etc.
+            const auto effective_type = find_effective_dml_type(logical_plan);
+            const bool is_dml = (effective_type == node_type::insert_t || effective_type == node_type::update_t ||
+                                  effective_type == node_type::delete_t);
+
+            // Step 1: Begin transaction for DML (executor owns full lifecycle)
+            // Direct call to txn_manager_ avoids static_cast to dispatcher and bypasses actor mutex.
+            // Safe: txn methods only touch txn_manager_ (own mutex) + are synchronous.
+            components::table::transaction_data txn_data = txn;
             if (is_dml) {
-                txn_manager_->abort(session);
+                txn_data = txn_manager_->begin_transaction(session).data();
+                trace(log_, "executor::execute_plan: began txn {}", txn_data.transaction_id);
             }
-            co_return execute_result_t{make_cursor(resource(),
-                                                   core::error_t(core::error_code_t::create_physical_plan_error,
-                                                                 std::pmr::string{"invalid query plan", resource()}))};
-        }
 
-        plan->set_as_root();
-
-        auto plan_data = traverse_plan_(std::move(plan), std::move(parameters), std::move(context_storage));
-        plan_data.limit = limit;
-
-        // Step 2: Execute physical plan
-        auto result = co_await execute_sub_plan_(session, std::move(plan_data), txn_data);
-
-        if (is_dml && result.cursor->is_success()) {
-            // CHECK constraint enforcement is now handled by operator_check_constraint_t
-            // (planner-inserted into the physical plan). No post-execution disk round-trip needed.
-
-            // WAL physical_{insert,update,delete} writes live in each DML
-            // operator's await_async_and_resume so each DML operator is
-            // self-contained (storage_append + WAL + index mirror happen
-            // together inside the operator coroutine, before mark_executed).
-            // The flush future is pushed onto pipeline_context.pending_disk_futures
-            // and awaited by execute_sub_plan_, ordering guarantees stay identical.
-
-            // Step 4: Commit transaction
-            uint64_t commit_id = txn_manager_->commit(session);
-            trace(log_, "executor::execute_plan: committed txn {}, commit_id {}", txn_data.transaction_id, commit_id);
-
-            // Step 5: Commit side-effects on storage and index.
-            // Routing is by table_oid only — never read cfn from
-            // logical_plan, since wrappers (sequence_t etc.) have no cfn and
-            // would shadow the inner DML node's identity. result.dml_table_oid
-            // is stamped by the inner DML operator; it identifies the
-            // storage/index target unambiguously.
-            if (result.dml_append_row_count > 0 && commit_id > 0) {
-                components::execution_context_t ctx{session,
-                                                    txn_data,
-                                                    context_storage.session_timezone,
-                                                    result.dml_table_oid};
-                auto [_ca, caf] = actor_zeta::send(disk_address_,
-                                                   &disk::manager_disk_t::storage_commit_append,
-                                                   ctx,
-                                                   result.dml_table_oid,
-                                                   commit_id,
-                                                   result.dml_append_row_start,
-                                                   result.dml_append_row_count);
-                co_await std::move(caf);
-                if (index_address_ != actor_zeta::address_t::empty_address()) {
-                    auto [_ci, cif] = actor_zeta::send(index_address_,
-                                                       &index::manager_index_t::commit_insert,
-                                                       ctx,
-                                                       result.dml_table_oid,
-                                                       commit_id);
-                    co_await std::move(cif);
+            const auto limit = find_limit(logical_plan);
+            auto physical_plan =
+                planner::create_plan(context_storage, function_registry_, logical_plan, limit, &parameters);
+            if (!physical_plan) {
+                if (is_dml) {
+                    txn_manager_->abort(session);
                 }
+                co_return execute_result_t{resource(),
+                                           make_cursor(resource(),
+                                                       core::error_t(core::error_code_t::create_physical_plan_error,
+                                                                     std::pmr::string{"invalid query plan", resource()}))};
             }
-            if (result.dml_delete_txn_id != 0 && commit_id > 0) {
-                components::execution_context_t del_ctx{session,
+            physical_plan->set_as_root();
+            auto plan_data = traverse_plan_(std::move(physical_plan), parameters, std::move(context_storage));
+            plan_data.limit = limit;
+
+            // Step 2: Execute physical plan
+            auto result = co_await execute_sub_plan_(session, std::move(plan_data), txn_data);
+
+            if (is_dml && result.cursor->is_success()) {
+                // CHECK constraint enforcement is now handled by operator_check_constraint_t
+                // (planner-inserted into the physical plan). No post-execution disk round-trip needed.
+
+                // WAL physical_{insert,update,delete} writes live in each DML
+                // operator's await_async_and_resume so each DML operator is
+                // self-contained (storage_append + WAL + index mirror happen
+                // together inside the operator coroutine, before mark_executed).
+                // The flush future is pushed onto pipeline_context.pending_disk_futures
+                // and awaited by execute_sub_plan_, ordering guarantees stay identical.
+
+                // Step 4: Commit transaction
+                uint64_t commit_id = txn_manager_->commit(session);
+                trace(log_, "executor::execute_plan: committed txn {}, commit_id {}", txn_data.transaction_id, commit_id);
+
+                // Step 5: Commit side-effects on storage and index.
+                // Routing is by table_oid only — never read cfn from
+                // logical_plan, since wrappers (sequence_t etc.) have no cfn and
+                // would shadow the inner DML node's identity. result.dml_table_oid
+                // is stamped by the inner DML operator; it identifies the
+                // storage/index target unambiguously.
+                if (result.dml_append_row_count > 0 && commit_id > 0) {
+                    components::execution_context_t ctx{session,
                                                         txn_data,
                                                         context_storage.session_timezone,
                                                         result.dml_table_oid};
-                auto [_cd, cdf] = actor_zeta::send(disk_address_,
-                                                   &disk::manager_disk_t::storage_commit_delete,
-                                                   del_ctx,
-                                                   result.dml_table_oid,
-                                                   commit_id);
-                co_await std::move(cdf);
-                if (index_address_ != actor_zeta::address_t::empty_address()) {
-                    auto [_cdi, cdif] = actor_zeta::send(index_address_,
-                                                         &index::manager_index_t::commit_delete,
-                                                         del_ctx,
-                                                         result.dml_table_oid,
-                                                         commit_id);
-                    co_await std::move(cdif);
+                    auto [_ca, caf] = actor_zeta::send(disk_address_,
+                                                       &disk::manager_disk_t::storage_commit_append,
+                                                       ctx,
+                                                       result.dml_table_oid,
+                                                       commit_id,
+                                                       result.dml_append_row_start,
+                                                       result.dml_append_row_count);
+                    co_await std::move(caf);
+                    if (index_address_ != actor_zeta::address_t::empty_address()) {
+                        auto [_ci, cif] = actor_zeta::send(index_address_,
+                                                           &index::manager_index_t::commit_insert,
+                                                           ctx,
+                                                           result.dml_table_oid,
+                                                           commit_id);
+                        co_await std::move(cif);
+                    }
                 }
-                // Fire-and-forget auto-GC check
-                auto lowest = txn_manager_->lowest_active_start_time();
-                auto [gc_sched, gc_fut] =
-                    actor_zeta::send(disk_address_, &disk::manager_disk_t::maybe_cleanup, del_ctx, lowest);
-                pending_void_.push_back(std::move(gc_fut));
-            }
+                if (result.dml_delete_txn_id != 0 && commit_id > 0) {
+                    components::execution_context_t del_ctx{session,
+                                                            txn_data,
+                                                            context_storage.session_timezone,
+                                                            result.dml_table_oid};
+                    auto [_cd, cdf] = actor_zeta::send(disk_address_,
+                                                       &disk::manager_disk_t::storage_commit_delete,
+                                                       del_ctx,
+                                                       result.dml_table_oid,
+                                                       commit_id);
+                    co_await std::move(cdf);
+                    if (index_address_ != actor_zeta::address_t::empty_address()) {
+                        auto [_cdi, cdif] = actor_zeta::send(index_address_,
+                                                             &index::manager_index_t::commit_delete,
+                                                             del_ctx,
+                                                             result.dml_table_oid,
+                                                             commit_id);
+                        co_await std::move(cdif);
+                    }
+                    // Fire-and-forget auto-GC check
+                    auto lowest = txn_manager_->lowest_active_start_time();
+                    auto [gc_sched, gc_fut] =
+                        actor_zeta::send(disk_address_, &disk::manager_disk_t::maybe_cleanup, del_ctx, lowest);
+                    pending_void_.push_back(std::move(gc_fut));
+                }
 
-            // Flip MVCC tags for pg_catalog rows written during this DML
-            // fragment (e.g. pg_computed_column appends produced by
-            // operator_computed_field_register_t). Same txn; same commit_id;
-            // swap inline so the rows become visible to the next reader
-            // without dispatcher round-trips. Without this block the catalog
-            // rows would carry insert_id == txn_id and be permanently
-            // invisible (since txn_manager has already removed the active
-            // txn entry by the time of return).
-            if (commit_id > 0) {
+                // Flip MVCC tags for pg_catalog rows written during this DML
+                // fragment (e.g. pg_computed_column appends produced by
+                // operator_computed_field_register_t). Same txn; same commit_id;
+                // swap inline so the rows become visible to the next reader
+                // without dispatcher round-trips. Without this block the catalog
+                // rows would carry insert_id == txn_id and be permanently
+                // invisible (since txn_manager has already removed the active
+                // txn entry by the time of return).
+                if (commit_id > 0) {
+                    if (!result.pg_catalog_appends.empty()) {
+                        components::execution_context_t pgc_ctx{session, txn_data, {}};
+                        std::vector<components::pg_catalog_append_range_t> appends_tmp(
+                            std::make_move_iterator(result.pg_catalog_appends.begin()),
+                            std::make_move_iterator(result.pg_catalog_appends.end()));
+                        result.pg_catalog_appends.clear();
+                        auto [_pa, paf] = actor_zeta::send(disk_address_,
+                                                           &disk::manager_disk_t::storage_commit_appends,
+                                                           pgc_ctx,
+                                                           commit_id,
+                                                           std::move(appends_tmp));
+                        co_await std::move(paf);
+                    }
+                    if (!result.pg_catalog_delete_tables.empty()) {
+                        components::execution_context_t pgc_ctx{session, txn_data, {}};
+                        std::set<components::catalog::oid_t> deletes_tmp(
+                            result.pg_catalog_delete_tables.begin(),
+                            result.pg_catalog_delete_tables.end());
+                        result.pg_catalog_delete_tables.clear();
+                        auto [_pd, pdf] = actor_zeta::send(disk_address_,
+                                                           &disk::manager_disk_t::storage_commit_deletes,
+                                                           pgc_ctx,
+                                                           commit_id,
+                                                           std::move(deletes_tmp));
+                        co_await std::move(pdf);
+                    }
+                }
+
+                // Step 6: WAL COMMIT marker
+                if (wal_address_ != actor_zeta::address_t::empty_address()) {
+                    // WAL workers keyed by database_oid. Single-worker model uses
+                    // main_database for all DML; multi-database routing follows
+                    // once CREATE DATABASE allocates per-namespace workers.
+                    constexpr auto db_oid = components::catalog::well_known_oid::main_database;
+                    auto [_wc, wcf] = actor_zeta::send(wal_address_,
+                                                       &wal::manager_wal_replicate_t::commit_txn,
+                                                       session,
+                                                       txn_data.transaction_id,
+                                                       wal::wal_sync_mode::NORMAL,
+                                                       db_oid);
+                    co_await std::move(wcf);
+                }
+
+                co_return execute_result_t{std::move(result.cursor),
+                                           std::move(result.updates),
+                                           std::move(result.pg_catalog_appends),
+                                           std::move(result.pg_catalog_delete_tables)};
+
+            } else if (is_dml && result.cursor->is_error()) {
+                // Abort path
+                trace(log_, "executor::execute_plan: DML error, aborting txn");
+                // Oid-only routing on abort path; same rationale as commit path.
+                if (result.dml_append_row_count > 0) {
+                    components::execution_context_t abort_ctx{session,
+                                                              txn_data,
+                                                              context_storage.session_timezone,
+                                                              result.dml_table_oid};
+                    auto [_ra, raf] = actor_zeta::send(disk_address_,
+                                                       &disk::manager_disk_t::storage_revert_append,
+                                                       abort_ctx,
+                                                       result.dml_table_oid,
+                                                       result.dml_append_row_start,
+                                                       result.dml_append_row_count);
+                    co_await std::move(raf);
+                    if (index_address_ != actor_zeta::address_t::empty_address()) {
+                        auto [_ri, rif] = actor_zeta::send(index_address_,
+                                                           &index::manager_index_t::revert_insert,
+                                                           abort_ctx,
+                                                           result.dml_table_oid);
+                        co_await std::move(rif);
+                    }
+                }
+                // Revert pg_catalog appends written in this fragment before
+                // aborting the txn (otherwise the rows linger with
+                // insert_id = txn_id and are unreachable). delete_tables
+                // tombstones with delete_id = txn_id are reverted by storage's
+                // abort path on txn_manager_->abort.
                 if (!result.pg_catalog_appends.empty()) {
                     components::execution_context_t pgc_ctx{session, txn_data, {}};
-                    auto [_pa, paf] = actor_zeta::send(disk_address_,
-                                                       &disk::manager_disk_t::storage_commit_appends,
-                                                       pgc_ctx,
-                                                       commit_id,
-                                                       std::move(result.pg_catalog_appends));
-                    co_await std::move(paf);
+                    std::vector<components::pg_catalog_append_range_t> appends_tmp(
+                        std::make_move_iterator(result.pg_catalog_appends.begin()),
+                        std::make_move_iterator(result.pg_catalog_appends.end()));
                     result.pg_catalog_appends.clear();
-                }
-                if (!result.pg_catalog_delete_tables.empty()) {
-                    components::execution_context_t pgc_ctx{session, txn_data, {}};
-                    auto [_pd, pdf] = actor_zeta::send(disk_address_,
-                                                       &disk::manager_disk_t::storage_commit_deletes,
+                    auto [_pa, paf] = actor_zeta::send(disk_address_,
+                                                       &disk::manager_disk_t::storage_revert_appends,
                                                        pgc_ctx,
-                                                       commit_id,
-                                                       std::move(result.pg_catalog_delete_tables));
-                    co_await std::move(pdf);
-                    result.pg_catalog_delete_tables.clear();
+                                                       std::move(appends_tmp));
+                    co_await std::move(paf);
                 }
+                result.pg_catalog_delete_tables.clear();
+                txn_manager_->abort(session);
+                co_return execute_result_t{resource(), std::move(result.cursor)};
+            } else {
+                co_return execute_result_t{std::move(result.cursor),
+                                           std::move(result.updates),
+                                           std::move(result.pg_catalog_appends),
+                                           std::move(result.pg_catalog_delete_tables)};
             }
-
-            // Step 6: WAL COMMIT marker
-            if (wal_address_ != actor_zeta::address_t::empty_address()) {
-                // WAL workers keyed by database_oid. Single-worker model uses
-                // main_database for all DML; multi-database routing follows
-                // once CREATE DATABASE allocates per-namespace workers.
-                constexpr auto db_oid = components::catalog::well_known_oid::main_database;
-                auto [_wc, wcf] = actor_zeta::send(wal_address_,
-                                                   &wal::manager_wal_replicate_t::commit_txn,
-                                                   session,
-                                                   txn_data.transaction_id,
-                                                   wal::wal_sync_mode::NORMAL,
-                                                   db_oid);
-                co_await std::move(wcf);
-            }
-
-            co_return execute_result_t{std::move(result.cursor),
-                                       std::move(result.updates),
-                                       std::move(result.pg_catalog_appends),
-                                       std::move(result.pg_catalog_delete_tables)};
-
-        } else if (is_dml && result.cursor->is_error()) {
-            // Abort path
-            trace(log_, "executor::execute_plan: DML error, aborting txn");
-            // Oid-only routing on abort path; same rationale as commit path.
-            if (result.dml_append_row_count > 0) {
-                components::execution_context_t abort_ctx{session,
-                                                          txn_data,
-                                                          context_storage.session_timezone,
-                                                          result.dml_table_oid};
-                auto [_ra, raf] = actor_zeta::send(disk_address_,
-                                                   &disk::manager_disk_t::storage_revert_append,
-                                                   abort_ctx,
-                                                   result.dml_table_oid,
-                                                   result.dml_append_row_start,
-                                                   result.dml_append_row_count);
-                co_await std::move(raf);
-                if (index_address_ != actor_zeta::address_t::empty_address()) {
-                    auto [_ri, rif] = actor_zeta::send(index_address_,
-                                                       &index::manager_index_t::revert_insert,
-                                                       abort_ctx,
-                                                       result.dml_table_oid);
-                    co_await std::move(rif);
-                }
-            }
-            // Revert pg_catalog appends written in this fragment before
-            // aborting the txn (otherwise the rows linger with
-            // insert_id = txn_id and are unreachable). delete_tables
-            // tombstones with delete_id = txn_id are reverted by storage's
-            // abort path on txn_manager_->abort.
-            if (!result.pg_catalog_appends.empty()) {
-                components::execution_context_t pgc_ctx{session, txn_data, {}};
-                auto [_pa, paf] = actor_zeta::send(disk_address_,
-                                                   &disk::manager_disk_t::storage_revert_appends,
-                                                   pgc_ctx,
-                                                   std::move(result.pg_catalog_appends));
-                co_await std::move(paf);
-                result.pg_catalog_appends.clear();
-            }
-            result.pg_catalog_delete_tables.clear();
-            txn_manager_->abort(session);
         }
-
-        co_return execute_result_t{std::move(result.cursor),
-                                   std::move(result.updates),
-                                   std::move(result.pg_catalog_appends),
-                                   std::move(result.pg_catalog_delete_tables)};
     }
 
     executor_t::unique_future<std::unique_ptr<function_result_t>>
@@ -416,7 +446,7 @@ namespace services::collection::executor {
     }
 
     plan_t executor_t::traverse_plan_(components::operators::operator_ptr&& plan,
-                                      components::logical_plan::storage_parameters&& parameters,
+                                      const components::logical_plan::storage_parameters& parameters,
                                       services::context_storage_t&& context_storage) {
         std::stack<components::operators::operator_ptr> look_up;
         std::stack<components::operators::operator_ptr> sub_plans;
@@ -448,7 +478,7 @@ namespace services::collection::executor {
                                   components::table::transaction_data txn) {
         cursor_t_ptr cursor;
         components::operators::operator_write_data_t::updated_types_map_t accumulated_updates(resource());
-        sub_plan_result_t result_tracking;
+        sub_plan_result_t result_tracking{resource()};
 
         while (!plan_data.sub_plans.empty()) {
             auto plan = plan_data.sub_plans.top();

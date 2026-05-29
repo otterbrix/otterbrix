@@ -23,7 +23,7 @@
 #include <components/compute/function.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/log/log.hpp>
-#include <components/logical_plan/node.hpp>
+#include <components/logical_plan/execution_plan.hpp>
 #include <components/physical_plan/operators/operator_write_data.hpp>
 #include <components/session/session.hpp>
 #include <components/table/transaction_manager.hpp>
@@ -71,8 +71,7 @@ namespace services::dispatcher {
 
         unique_future<components::cursor::cursor_t_ptr>
         execute_plan(components::session::session_id_t session,
-                     components::logical_plan::node_ptr plan,
-                     components::logical_plan::parameter_node_ptr params);
+                     components::logical_plan::execution_plan_t plan);
         unique_future<components::cursor::cursor_t_ptr>
         get_schema(components::session::session_id_t session,
                    std::pmr::vector<std::pair<database_name_t, collection_name_t>> ids);
@@ -134,8 +133,7 @@ namespace services::dispatcher {
 
         unique_future<services::collection::executor::execute_result_t>
         execute_plan_impl(components::session::session_id_t session,
-                          components::logical_plan::node_ptr logical_plan,
-                          components::logical_plan::storage_parameters parameters,
+                          components::logical_plan::execution_plan_t plan,
                           components::table::transaction_data txn);
 
         actor_zeta::behavior_t current_behavior_;

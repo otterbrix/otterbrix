@@ -780,6 +780,8 @@ namespace services::dispatcher {
                     }
                     break;
                 }
+                case compare_type::any:
+                case compare_type::all:
                 case compare_type::is_null:
                 case compare_type::is_not_null: {
                     if (std::holds_alternative<components::expressions::key_t>(expr->left())) {
@@ -974,7 +976,7 @@ namespace services::dispatcher {
                                  core::date::timezone_offset_t session_tz) {
         impl::plan_resolve_index_t local_idx;
         if (idx == nullptr) {
-            impl::gather_plan_resolve_index(logical_plan, local_idx);
+            impl::gather_plan_resolve_index(logical_plan, &local_idx);
             if (!local_idx.empty()) {
                 idx = &local_idx;
             }
@@ -1183,7 +1185,7 @@ namespace services::dispatcher {
         // index so internal callers still get plan-tree lookups.
         impl::plan_resolve_index_t local_idx;
         if (idx == nullptr) {
-            impl::gather_plan_resolve_index(node, local_idx);
+            impl::gather_plan_resolve_index(node, &local_idx);
             if (!local_idx.empty()) {
                 idx = &local_idx;
             }

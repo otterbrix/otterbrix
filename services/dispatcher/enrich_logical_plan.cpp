@@ -779,7 +779,7 @@ namespace services::dispatcher {
                 // a small plan_resolve_index_t locally from the same root tree so
                 // UDT columns get resolved without thread_local state.
                 impl::plan_resolve_index_t local_plan_idx;
-                impl::gather_plan_resolve_index(root.get(), local_plan_idx);
+                impl::gather_plan_resolve_index(root.get(), &local_plan_idx);
                 resolve_column_definitions(node->column_definitions(), &local_plan_idx);
                 break;
             }

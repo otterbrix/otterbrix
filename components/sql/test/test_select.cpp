@@ -19,11 +19,11 @@ using vec = std::vector<v>;
             auto _wrap = transformer.transform(pg_cell_to_node_cast(select)).finalize();                               \
             REQUIRE(!_wrap.has_error());                                                                               \
             auto result = _wrap.value();                                                                               \
-            auto node = result.node;                                                                                   \
+            auto node = result.sub_queries.back();                                                                                   \
             if (node->type() == components::logical_plan::node_type::sequence_t) {                                     \
                 node = node->children().back();                                                                        \
             }                                                                                                          \
-            auto agg = result.params;                                                                                  \
+            auto agg = result.parameters;                                                                                  \
             REQUIRE(node->to_string() == RESULT);                                                                      \
             REQUIRE(agg->parameters().parameters.size() == PARAMS.size());                                             \
             for (auto i = 0ul; i < PARAMS.size(); ++i) {                                                               \
@@ -299,4 +299,14 @@ TEST_CASE("components::sql::select_from_fields") {
         R"_($aggregate: {$select: {number, size: {$constant: #0}, title: {$constant: #1}, )_"
         R"_(on: {$constant: #2}, off: {$constant: #3}}})_",
         vec({v(&resource, 10l), v(&resource, "title"), v(&resource, true), v(&resource, false)}));
+}
+
+TEST_CASE("components::sql::select_with_subquery") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE col1 IN (SELECT col2 FROM TestDatabase2.TestCollection2);)_",
+                       R"_($aggregate: {$match: {"col1": {$any: #0}}})_",
+                       vec({v(&resource, nullptr)}));
 }

@@ -71,7 +71,7 @@ namespace services::dispatcher::impl {
     // Walk plan tree once; collect every node_catalog_resolve_*_t leaf
     // and populate the index. Leaves whose oid is still INVALID_OID
     // (Pass 1 did not stamp them — name did not resolve) are skipped.
-    inline void gather_plan_resolve_index(components::logical_plan::node_t* root, plan_resolve_index_t& out) {
+    inline void gather_plan_resolve_index(components::logical_plan::node_t* root, plan_resolve_index_t* out) {
         using namespace components::logical_plan;
         if (!root)
             return;
@@ -84,27 +84,27 @@ namespace services::dispatcher::impl {
                 case node_type::catalog_resolve_namespace_t: {
                     auto* rn = static_cast<node_catalog_resolve_namespace_t*>(n);
                     if (rn->namespace_oid() != components::catalog::INVALID_OID) {
-                        out.ns_by_dbname[rn->dbname()] = rn->namespace_oid();
+                        out->ns_by_dbname[rn->dbname()] = rn->namespace_oid();
                     }
                     break;
                 }
                 case node_type::catalog_resolve_table_t: {
                     auto* rt = static_cast<node_catalog_resolve_table_t*>(n);
                     if (rt->namespace_oid() != components::catalog::INVALID_OID) {
-                        out.ns_by_dbname[rt->dbname()] = rt->namespace_oid();
+                        out->ns_by_dbname[rt->dbname()] = rt->namespace_oid();
                         std::string key;
                         key.reserve(rt->dbname().size() + 1 + rt->relname().size());
                         key.append(rt->dbname()).push_back('|');
                         key.append(rt->relname());
-                        out.tbl_ns_by_qname[key] = rt->namespace_oid();
+                        out->tbl_ns_by_qname[key] = rt->namespace_oid();
                         // Stamp table metadata pointer so validate /
                         // dispatcher can read columns + relkind from the
                         // plan-tree idx.
                         if (rt->resolved_metadata().has_value()) {
                             const auto* md_ptr = &rt->resolved_metadata().value();
-                            out.tbl_md_by_qname[std::move(key)] = md_ptr;
+                            out->tbl_md_by_qname[std::move(key)] = md_ptr;
                             if (rt->table_oid() != components::catalog::INVALID_OID) {
-                                out.tbl_md_by_oid[rt->table_oid()] = md_ptr;
+                                out->tbl_md_by_oid[rt->table_oid()] = md_ptr;
                             }
                         }
                     }
@@ -117,9 +117,9 @@ namespace services::dispatcher::impl {
                         key.reserve(tr->dbname().size() + 1 + tr->type_name().size());
                         key.append(tr->dbname()).push_back('|');
                         key.append(tr->type_name());
-                        out.type_oid_by_qname[key] = tr->type_oid();
+                        out->type_oid_by_qname[key] = tr->type_oid();
                         if (tr->resolved_metadata().has_value()) {
-                            out.type_md_by_qname[std::move(key)] = &tr->resolved_metadata().value();
+                            out->type_md_by_qname[std::move(key)] = &tr->resolved_metadata().value();
                         }
                     }
                     break;
@@ -131,7 +131,7 @@ namespace services::dispatcher::impl {
                         key.reserve(fr->dbname().size() + 1 + fr->function_name().size());
                         key.append(fr->dbname()).push_back('|');
                         key.append(fr->function_name());
-                        out.fn_oid_by_qname[std::move(key)] = fr->function_oid();
+                        out->fn_oid_by_qname[std::move(key)] = fr->function_oid();
                     }
                     break;
                 }
@@ -145,10 +145,10 @@ namespace services::dispatcher::impl {
                     }
                     using direction_t = node_catalog_resolve_constraint_t::direction_t;
                     if (cr->direction() == direction_t::outgoing) {
-                        out.outgoing_fks_by_oid[md->table_oid] = cr->fks();
-                        out.check_exprs_by_oid[md->table_oid] = cr->check_exprs();
+                        out->outgoing_fks_by_oid[md->table_oid] = cr->fks();
+                        out->check_exprs_by_oid[md->table_oid] = cr->check_exprs();
                     } else {
-                        out.referencing_fks_by_oid[md->table_oid] = cr->fks();
+                        out->referencing_fks_by_oid[md->table_oid] = cr->fks();
                     }
                     break;
                 }

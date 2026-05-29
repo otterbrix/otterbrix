@@ -23,6 +23,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_clean_break_startup.cpp
         test_column_projection.cpp
         test_computed_schema.cpp
+        test_subqueries.cpp
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})

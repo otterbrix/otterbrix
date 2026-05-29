@@ -16,11 +16,11 @@ using namespace components::sql::transform;
             REQUIRE_FALSE(_w.has_error());                                                                             \
             return _w.value();                                                                                         \
         }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));                                            \
-        auto node = result.node;                                                                                       \
+        auto node = result.sub_queries.back();                                                                                       \
         if (node->type() == components::logical_plan::node_type::sequence_t) {                                         \
             node = node->children().back();                                                                            \
         }                                                                                                              \
-        auto agg = result.params;                                                                                      \
+        auto agg = result.parameters;                                                                                      \
         REQUIRE(node->type() == components::logical_plan::node_type::delete_t);                                        \
         REQUIRE(node->to_string() == RESULT);                                                                          \
         REQUIRE(agg->parameters().parameters.size() == PARAMS.size());                                                 \

@@ -300,8 +300,8 @@ namespace services::dispatcher {
             //            aggregate(t, ...)). The dispatcher will run Pass 1
             //            on this sub_plan's resolves before validate_schema.
             out.had_expansion = true;
-            out.expanded_plan = std::move(tr.value().node);
-            out.expanded_params = std::move(tr.value().params);
+            out.expanded_plan = std::move(tr.value().sub_queries.back());
+            out.expanded_params = std::move(tr.value().parameters);
             return out;
         }
 
@@ -309,10 +309,140 @@ namespace services::dispatcher {
         // (i.e. need a fresh Pass 1 round). Operates on direct children of
         // sequence_t roots; sub-plan splicing places them at the front so a
         // shallow scan suffices.
-        std::vector<components::logical_plan::node_ptr>
-        extract_unresolved_resolves(components::logical_plan::node_t* root) {
+        bool is_ddl_node_type(components::logical_plan::node_type t) {
+            using nt = components::logical_plan::node_type;
+            switch (t) {
+                case nt::insert_t:
+                case nt::update_t:
+                case nt::delete_t:
+                case nt::aggregate_t:
+                case nt::join_t:
+                    return false;
+                default:
+                    return true;
+            }
+        }
+
+        // Inject missing catalog_resolve_namespace_t / catalog_resolve_table_t
+        // siblings into sq_root for every (db, rel) pair referenced in the plan
+        // tree that is not already covered by an existing resolve child.
+        void inject_catalog_resolve_wrap(std::pmr::memory_resource* resource, components::logical_plan::node_ptr& sq_root) {
             using namespace components::logical_plan;
-            std::vector<node_ptr> out;
+            std::pmr::set<std::string> existing_dbs{resource};
+            std::pmr::set<std::pair<std::string, std::string>> existing_tbls{resource};
+            if (sq_root->type() == node_type::sequence_t) {
+                for (const auto& c : sq_root->children()) {
+                    if (!c)
+                        continue;
+                    if (c->type() == node_type::catalog_resolve_namespace_t) {
+                        existing_dbs.insert(
+                            static_cast<const node_catalog_resolve_namespace_t*>(c.get())->dbname());
+                    } else if (c->type() == node_type::catalog_resolve_table_t) {
+                        auto* r = static_cast<const node_catalog_resolve_table_t*>(c.get());
+                        existing_tbls.insert({r->dbname(), r->relname()});
+                        existing_dbs.insert(r->dbname());
+                    }
+                }
+            }
+            std::pmr::set<std::string> wrap_dbs{resource};
+            std::pmr::set<std::pair<std::string, std::string>> wrap_tbls{resource};
+            auto add_dbrel = [&](std::string db, std::string rel) {
+                if (db.empty())
+                    return;
+                wrap_dbs.insert(db);
+                if (!rel.empty())
+                    wrap_tbls.insert({std::move(db), std::move(rel)});
+            };
+            std::pmr::vector<const node_t*> stack{resource};
+            stack.push_back(sq_root.get());
+            while (!stack.empty()) {
+                const node_t* n = stack.back();
+                stack.pop_back();
+                if (!n)
+                    continue;
+                switch (n->type()) {
+                    case node_type::insert_t:
+                    case node_type::update_t:
+                    case node_type::delete_t:
+                        break;
+                    case node_type::aggregate_t: {
+                        auto* d = static_cast<const node_aggregate_t*>(n);
+                        add_dbrel(static_cast<const std::string&>(d->dbname()),
+                                  static_cast<const std::string&>(d->relname()));
+                        break;
+                    }
+                    case node_type::join_t: {
+                        auto* d = static_cast<const node_join_t*>(n);
+                        add_dbrel(static_cast<const std::string&>(d->dbname()),
+                                  static_cast<const std::string&>(d->relname()));
+                        break;
+                    }
+                    case node_type::create_database_t: {
+                        auto* d = static_cast<const node_create_database_t*>(n);
+                        if (!d->dbname().empty())
+                            wrap_dbs.insert(d->dbname());
+                        break;
+                    }
+                    default:
+                        break;
+                }
+                for (const auto& c : n->children())
+                    stack.push_back(c.get());
+            }
+            for (const auto& db : existing_dbs)
+                wrap_dbs.erase(db);
+            for (const auto& tbl : existing_tbls)
+                wrap_tbls.erase(tbl);
+            if (wrap_dbs.empty() && wrap_tbls.empty())
+                return;
+            std::pmr::vector<node_ptr> new_resolves{resource};
+            std::pmr::set<std::string> resolved_dbs{existing_dbs.begin(), existing_dbs.end(), resource};
+            for (const auto& db : wrap_dbs) {
+                if (resolved_dbs.insert(db).second)
+                    new_resolves.push_back(make_node_catalog_resolve_namespace(resource, core::dbname_t{db}));
+            }
+            for (const auto& [db, rel] : wrap_tbls) {
+                if (resolved_dbs.insert(db).second)
+                    new_resolves.push_back(make_node_catalog_resolve_namespace(resource, core::dbname_t{db}));
+                new_resolves.push_back(
+                    make_node_catalog_resolve_table(resource, core::dbname_t{db}, core::relname_t{rel}));
+            }
+            auto is_resolve_node = [](node_type t) {
+                return t == node_type::catalog_resolve_namespace_t ||
+                       t == node_type::catalog_resolve_table_t ||
+                       t == node_type::catalog_resolve_type_t ||
+                       t == node_type::catalog_resolve_function_t ||
+                       t == node_type::catalog_resolve_constraint_t;
+            };
+            if (sq_root->type() == node_type::sequence_t) {
+                auto& kids = sq_root->children();
+                std::pmr::vector<node_ptr> merged{resource};
+                merged.reserve(kids.size() + new_resolves.size());
+                std::size_t split = 0;
+                while (split < kids.size() && kids[split] && is_resolve_node(kids[split]->type())) {
+                    merged.push_back(std::move(kids[split]));
+                    ++split;
+                }
+                for (auto& r : new_resolves)
+                    merged.push_back(std::move(r));
+                for (; split < kids.size(); ++split)
+                    merged.push_back(std::move(kids[split]));
+                kids.clear();
+                for (auto& m : merged)
+                    kids.push_back(std::move(m));
+            } else {
+                auto seq = boost::intrusive_ptr<node_t>(new node_sequence_t(resource));
+                for (auto& r : new_resolves)
+                    seq->append_child(std::move(r));
+                seq->append_child(std::move(sq_root));
+                sq_root = seq;
+            }
+        }
+
+        std::pmr::vector<components::logical_plan::node_ptr>
+        extract_unresolved_resolves(std::pmr::memory_resource* resource, components::logical_plan::node_t* root) {
+            using namespace components::logical_plan;
+            std::pmr::vector<node_ptr> out{resource};
             if (!root || root->type() != node_type::sequence_t) {
                 return out;
             }
@@ -446,12 +576,36 @@ namespace services::dispatcher {
 
     manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr>
     manager_dispatcher_t::execute_plan(components::session::session_id_t session,
-                                       node_ptr plan,
-                                       parameter_node_ptr params) {
-        trace(log_, "manager_dispatcher_t::execute_plan session: {}, {}", session.data(), plan->to_string());
+                                       execution_plan_t plan) {
+        trace(log_, "manager_dispatcher_t::execute_plan session: {}, sub_queries: {}", session.data(), plan.sub_queries.size());
+        assert(!plan.sub_queries.empty());
 
         auto params_for_wal = make_parameter_node(resource());
-        params_for_wal->set_parameters(params->parameters());
+        params_for_wal->set_parameters(plan.parameters->parameters());
+
+        if (plan.sub_queries.size() > 1) {
+            for (const auto& sq : plan.sub_queries) {
+                if (is_ddl_node_type(effective_root_type(sq.get()))) {
+                    co_return make_cursor(
+                        resource(),
+                        core::error_t{core::error_code_t::sql_parse_error,
+                                      std::pmr::string{"DDL statement must be the only query in a batch",
+                                                       resource()}});
+                }
+            }
+            // SQL standard: DML is not permitted in sub-queries.
+            for (std::size_t qi = 0; qi + 1 < plan.sub_queries.size(); ++qi) {
+                const auto sq_type = effective_root_type(plan.sub_queries[qi].get());
+                if (sq_type == node_type::insert_t || sq_type == node_type::update_t ||
+                    sq_type == node_type::delete_t) {
+                    co_return make_cursor(
+                        resource(),
+                        core::error_t{core::error_code_t::sql_parse_error,
+                                      std::pmr::string{"DML statement is not allowed in a sub-query",
+                                                       resource()}});
+                }
+            }
+        }
 
         // All catalog reads go through the plan-tree resolve idx (validate /
         // enrich / DDL paths). The collections_ map is maintained incrementally by
@@ -467,7 +621,7 @@ namespace services::dispatcher {
         // plans effective_root_type() is identity (n->type()), so this is a no-op for
         // existing DDL flows (planner wraps are applied AFTER this line — see notes
         // inside the helper).
-        const auto original_type = effective_root_type(plan.get());
+        const auto original_type = effective_root_type(plan.sub_queries.back().get());
         // Capture the drop target before the planner rewrites it into a
         // node_dynamic_cascade_delete_t (which carries only OIDs, not names).
         // Used after successful execution to clean up the in-memory collections_
@@ -477,235 +631,60 @@ namespace services::dispatcher {
         std::string drop_target_database;
         qualified_name_t drop_target_collection;
         if (original_type == node_type::drop_database_t) {
-            auto names = drop_target_names_from_resolves(plan.get());
+            auto names = drop_target_names_from_resolves(plan.sub_queries.back().get());
             drop_target_database = std::move(names.first);
         } else if (original_type == node_type::drop_collection_t) {
-            auto names = drop_target_names_from_resolves(plan.get());
+            auto names = drop_target_names_from_resolves(plan.sub_queries.back().get());
             drop_target_collection = qualified_name_t{names.first, names.second};
         }
-        auto logic_plan = std::move(plan);
-        // Optimizer: constant folding, etc.
-        logic_plan = components::planner::optimize(resource(), logic_plan, params.get());
-
-        // Wrap the plan with catalog_resolve_namespace + catalog_resolve_table
-        // for every (db, rel) pair found in the tree. Validate/enrich consume
-        // OIDs through the plan-tree idx; the SQL transformer only emits
-        // resolves for the outermost target (e.g. INSERT FROM SELECT wraps
-        // CopyTestCollection but not the SELECT source TestCollection), so we
-        // need to top-up missing tables here. For direct-API callers
-        // (wrapper_dispatcher::execute_plan, find, etc.) this builds the full
-        // wrap from scratch. Existing resolves in sequence_t already cover
-        // their (db, rel) tuples — set-based dedup avoids re-emitting them.
-        {
-            // Collect resolves that already exist in the plan tree so we don't
-            // re-emit them. Operates on the immediate front children of
-            // sequence_t (where the transformer puts its resolves); a deeper
-            // walk is unnecessary because Pass 1 only consumes front-children.
-            std::set<std::string> existing_dbs;
-            std::set<std::pair<std::string, std::string>> existing_tbls;
-            if (logic_plan->type() == node_type::sequence_t) {
-                for (const auto& c : logic_plan->children()) {
-                    if (!c)
-                        continue;
-                    if (c->type() == node_type::catalog_resolve_namespace_t) {
-                        auto* r = static_cast<const node_catalog_resolve_namespace_t*>(c.get());
-                        existing_dbs.insert(r->dbname());
-                    } else if (c->type() == node_type::catalog_resolve_table_t) {
-                        auto* r = static_cast<const node_catalog_resolve_table_t*>(c.get());
-                        existing_tbls.insert({r->dbname(), r->relname()});
-                        existing_dbs.insert(r->dbname());
-                    }
-                }
-            }
-            std::set<std::string> wrap_dbs;
-            std::set<std::pair<std::string, std::string>> wrap_tbls;
-            auto add_dbrel = [&](std::string db, std::string rel) {
-                if (db.empty())
-                    return;
-                wrap_dbs.insert(db);
-                if (!rel.empty()) {
-                    wrap_tbls.insert({std::move(db), std::move(rel)});
-                }
-            };
-            // Iterative pre-order walk (no recursion → no std::function).
-            std::vector<const node_t*> stack;
-            stack.push_back(logic_plan.get());
-            while (!stack.empty()) {
-                const node_t* n = stack.back();
-                stack.pop_back();
-                if (!n)
-                    continue;
-                switch (n->type()) {
-                    // DML consumers no longer carry (db, rel) — names
-                    // for collection-set tracking come from the sibling
-                    // resolve_table inside the wrapping sequence_t (the
-                    // catalog_resolve_table_t branch below picks them up).
-                    case node_type::insert_t:
-                    case node_type::update_t:
-                    case node_type::delete_t:
-                        break;
-                    case node_type::aggregate_t: {
-                        auto* d = static_cast<const node_aggregate_t*>(n);
-                        add_dbrel(static_cast<const std::string&>(d->dbname()),
-                                  static_cast<const std::string&>(d->relname()));
-                        break;
-                    }
-                    case node_type::match_t: {
-                        auto* d = static_cast<const node_match_t*>(n);
-                        add_dbrel(static_cast<const std::string&>(d->dbname()),
-                                  static_cast<const std::string&>(d->relname()));
-                        break;
-                    }
-                    case node_type::join_t: {
-                        auto* d = static_cast<const node_join_t*>(n);
-                        add_dbrel(static_cast<const std::string&>(d->dbname()),
-                                  static_cast<const std::string&>(d->relname()));
-                        break;
-                    }
-                    case node_type::create_database_t: {
-                        auto* d = static_cast<const node_create_database_t*>(n);
-                        if (!d->dbname().empty())
-                            wrap_dbs.insert(d->dbname());
-                        break;
-                    }
-                    // create_collection_t / create_index_t no longer
-                    // carry parent dbname/relname; the transformer always wraps
-                    // them with sibling catalog_resolve_namespace / resolve_table
-                    // so wrap_dbs/wrap_tbls is already populated from
-                    // existing_dbs/existing_tbls above.
-                    // drop_database_t / drop_collection_t / drop_index_t
-                    // no longer carry names; the transformer always wraps them
-                    // with sibling catalog_resolve_* nodes so wrap_dbs/wrap_tbls
-                    // already has the (db, rel) covered.
-                    default:
-                        break;
-                }
-                for (const auto& c : n->children()) stack.push_back(c.get());
-            }
-            // Drop resolves already present so we don't duplicate them.
-            for (const auto& db : existing_dbs) wrap_dbs.erase(db);
-            for (const auto& t : existing_tbls) wrap_tbls.erase(t);
-            if (!wrap_dbs.empty() || !wrap_tbls.empty()) {
-                // Collect new resolves to prepend.
-                std::vector<components::logical_plan::node_ptr> new_resolves;
-                std::set<std::string> resolved_dbs = existing_dbs;
-                for (const auto& db : wrap_dbs) {
-                    if (resolved_dbs.insert(db).second) {
-                        new_resolves.push_back(
-                            components::logical_plan::make_node_catalog_resolve_namespace(resource(),
-                                                                                          core::dbname_t{db}));
-                    }
-                }
-                for (const auto& [db, rel] : wrap_tbls) {
-                    if (resolved_dbs.insert(db).second) {
-                        new_resolves.push_back(
-                            components::logical_plan::make_node_catalog_resolve_namespace(resource(),
-                                                                                          core::dbname_t{db}));
-                    }
-                    new_resolves.push_back(
-                        components::logical_plan::make_node_catalog_resolve_table(resource(),
-                                                                                  core::dbname_t{db},
-                                                                                  core::relname_t{rel}));
-                }
-                if (logic_plan->type() == node_type::sequence_t) {
-                    // Splice new resolves AFTER existing leading resolve_*
-                    // siblings but BEFORE the consumer node. Order matters:
-                    // stamp_oids_from_resolves picks the FIRST resolve_table
-                    // as the DML target — preserving original-target priority
-                    // means walker-added scan resolves don't shadow it.
-                    auto is_resolve_local = [](node_type t) {
-                        return t == node_type::catalog_resolve_namespace_t || t == node_type::catalog_resolve_table_t ||
-                               t == node_type::catalog_resolve_type_t || t == node_type::catalog_resolve_function_t ||
-                               t == node_type::catalog_resolve_constraint_t;
-                    };
-                    auto& kids = logic_plan->children();
-                    std::vector<components::logical_plan::node_ptr> merged;
-                    merged.reserve(kids.size() + new_resolves.size());
-                    std::size_t split = 0;
-                    while (split < kids.size() && kids[split] && is_resolve_local(kids[split]->type())) {
-                        merged.push_back(std::move(kids[split]));
-                        ++split;
-                    }
-                    for (auto& r : new_resolves) merged.push_back(std::move(r));
-                    for (; split < kids.size(); ++split) {
-                        merged.push_back(std::move(kids[split]));
-                    }
-                    kids.clear();
-                    for (auto& m : merged) kids.push_back(std::move(m));
-                } else {
-                    auto seq = boost::intrusive_ptr<components::logical_plan::node_t>(
-                        new components::logical_plan::node_sequence_t(resource()));
-                    for (auto& r : new_resolves) seq->append_child(std::move(r));
-                    seq->append_child(std::move(logic_plan));
-                    logic_plan = seq;
-                }
-            }
+        auto logic_plan = std::move(plan.sub_queries.back());
+        // Optimizer + catalog resolve wrap injection for every sub_query.
+        // sub_queries.back() lives in logic_plan; the rest are processed first so
+        // all plans are ready before the batched Pass 1 below.
+        for (std::size_t qi = 0; qi + 1 < plan.sub_queries.size(); ++qi) {
+            plan.sub_queries[qi] =
+                components::planner::optimize(resource(), plan.sub_queries[qi], plan.parameters.get());
+            inject_catalog_resolve_wrap(resource(), plan.sub_queries[qi]);
         }
+        logic_plan = components::planner::optimize(resource(), logic_plan, plan.parameters.get());
+        inject_catalog_resolve_wrap(resource(), logic_plan);
 
-        // Pass 1 — execute catalog_resolve_*_t front children
-        // of the transformer's sequence_t wrap BEFORE validate. The
-        // operator_resolve_*_t back-pointer constructor stamps
-        // namespace_oid / table_oid on the corresponding logical nodes;
-        // subsequent validate (via plan_resolve_index_t threaded through
-        // explicitly) and enrich (via enrich_resolve_idx_t) read OIDs
-        // from the plan tree.
-        //
-        // The wrap shape is sequence_t(catalog_resolve_*, ..., <consumer>)
-        // and emission is unconditional in the transformer (toggle removed
-        // 2026-05-13 after all four root causes were diagnosed and fixed).
-        // For plans that aren't sequence_t (or whose first child isn't a
-        // catalog_resolve_*), the block short-circuits with no behavioural
-        // change.
-        if (logic_plan->type() == node_type::sequence_t) {
-            auto& kids = logic_plan->children();
+        // Pass 1 — execute all catalog_resolve_*_t front children from every
+        // sub_query in one combined sequence_t. operator_resolve_*_t carries a
+        // raw back-pointer to its logical node, so OIDs stamped here become
+        // immediately visible in the original plan trees of both logic_plan and
+        // plan.sub_queries[1..N-1]. One async round-trip resolves all tables.
+        {
             auto is_resolve = [](node_type t) {
-                return t == node_type::catalog_resolve_namespace_t || t == node_type::catalog_resolve_table_t ||
-                       t == node_type::catalog_resolve_type_t || t == node_type::catalog_resolve_function_t ||
+                return t == node_type::catalog_resolve_namespace_t ||
+                       t == node_type::catalog_resolve_table_t ||
+                       t == node_type::catalog_resolve_type_t ||
+                       t == node_type::catalog_resolve_function_t ||
                        t == node_type::catalog_resolve_constraint_t;
             };
-            std::size_t resolve_count = 0;
-            while (resolve_count < kids.size() && kids[resolve_count] && is_resolve(kids[resolve_count]->type())) {
-                ++resolve_count;
-            }
-            if (resolve_count > 0) {
-                // begin_transaction is idempotent per session (returns the
-                // existing active txn or starts one); the later
-                // begin_transaction at line ~1031 reuses this same txn.
-                // Required because operator_resolve_*_t reads pg_catalog
-                // tables (pg_class, pg_namespace, ...) which need MVCC
-                // visibility against the active txn.
+            auto collect_resolves = [&](node_ptr& root,
+                                        boost::intrusive_ptr<node_t>& dest) {
+                if (!root || root->type() != node_type::sequence_t)
+                    return;
+                auto& kids = root->children();
+                for (std::size_t i = 0; i < kids.size() && kids[i] && is_resolve(kids[i]->type()); ++i)
+                    dest->append_child(kids[i]);
+            };
+            auto pass1_root = boost::intrusive_ptr<node_t>(new node_sequence_t(resource()));
+            collect_resolves(logic_plan, pass1_root);
+            for (std::size_t qi = 0; qi + 1 < plan.sub_queries.size(); ++qi)
+                collect_resolves(plan.sub_queries[qi], pass1_root);
+            if (!pass1_root->children().empty()) {
                 auto pass1_txn = txn_manager_.begin_transaction(session).data();
-                // Build the Pass 1 sub-plan as a sequence_t containing the
-                // resolve front children. operator_resolve_*_t carries a
-                // raw pointer to the logical node — those are the SAME
-                // node objects shared with the parent's sequence_t, so
-                // OIDs stamped during Pass 1 become visible to the parent
-                // plan's validate/enrich pass that follows.
-                auto pass1_root = boost::intrusive_ptr<components::logical_plan::node_t>(
-                    new components::logical_plan::node_sequence_t(resource()));
-                for (std::size_t i = 0; i < resolve_count; ++i) {
-                    pass1_root->append_child(kids[i]);
-                }
                 auto pass1_params = make_parameter_node(resource());
-                auto pass1_result =
-                    co_await execute_plan_impl(session, pass1_root, pass1_params->take_parameters(), pass1_txn);
+                auto pass1_result = co_await execute_plan_impl(
+                    session, execution_plan_t{resource(), pass1_root, pass1_params}, pass1_txn);
                 if (pass1_result.cursor->is_error()) {
-                    trace(log_,
-                          "manager_dispatcher_t::execute_plan: Pass 1 "
-                          "resolve failed: {}",
+                    trace(log_, "manager_dispatcher_t::execute_plan: Pass 1 resolve failed: {}",
                           pass1_result.cursor->get_error().what);
                     co_return std::move(pass1_result.cursor);
                 }
-                // Propagate the established txn into ctx so validate /
-                // enrich reads (which still take `ctx`) see the same MVCC
-                // snapshot the resolves saw.
                 ctx = components::execution_context_t{session, pass1_txn, ctx.session_tz, ctx.table_oid};
-                // Note: resolves stay in plan tree so validate/enrich's
-                // gather walks find them. create_plan_sequence skips
-                // catalog_resolve_*_t children when building the executor's
-                // left-chain (they have already run in Pass 1; putting
-                // them in operator_insert.left_ would corrupt insert's
-                // data input — see create_plan_sequence.cpp note).
             }
         }
         // Pass 1 stamps OIDs on resolve_* siblings via back-pointer
@@ -717,7 +696,34 @@ namespace services::dispatcher {
         // below read ns_oid / table metadata via Pass 1 stamps. The pointer
         // is threaded explicitly into every helper (no thread_local).
         impl::plan_resolve_index_t dispatcher_idx;
-        impl::gather_plan_resolve_index(logic_plan.get(), dispatcher_idx);
+        impl::gather_plan_resolve_index(logic_plan.get(), &dispatcher_idx);
+
+        // Post-Pass-1: stamp OIDs, validate, enrich, and run the DML
+        // constraint planner for every sub_query beyond the first.
+        // These are guaranteed non-DDL (guard above). Executed sequentially
+        // so each enrich sees the MVCC snapshot established by Pass 1.
+        // TODO: validate schema between subqueries
+        for (std::size_t qi = 0; qi + 1 < plan.sub_queries.size(); ++qi) {
+            auto& sq = plan.sub_queries[qi];
+            stamp_oids_from_resolves(sq.get());
+            impl::plan_resolve_index_t sq_idx;
+            impl::gather_plan_resolve_index(sq.get(), &sq_idx);
+
+            auto vt_err = validate_types(resource(), &sq_idx, sq.get(), session_tz(session));
+            if (vt_err.contains_error()) {
+                co_return make_cursor(resource(), vt_err);
+            }
+            auto schema_res = validate_schema(resource(), &sq_idx, sq.get(), plan.parameters->parameters());
+            if (schema_res.has_error()) {
+                co_return make_cursor(resource(), schema_res.error());
+            }
+            {
+                auto ef = enrich_plan(resource(), sq, disk_address_, ctx);
+                co_await std::move(ef);
+            }
+            components::planner::planner_t sq_planner;
+            sq = sq_planner.create_plan(resource(), std::move(sq));
+        }
 
         // === Phase 1.5: SELECT-time view expansion ===
         // After Pass 1 stamps resolved_metadata.view_sql on catalog_resolve_table_t
@@ -745,12 +751,12 @@ namespace services::dispatcher {
                 // passthrough SELECT * with no own constants).
                 if (exp.expanded_params) {
                     for (const auto& [pid, val] : exp.expanded_params->parameters().parameters) {
-                        params->add_parameter(pid, val);
+                        plan.parameters->add_parameter(pid, val);
                     }
                 }
 
                 // === Phase 1.6: Pass 1 on sub-plan's fresh resolves ===
-                auto fresh = extract_unresolved_resolves(logic_plan.get());
+                auto fresh = extract_unresolved_resolves(resource(), logic_plan.get());
                 if (!fresh.empty()) {
                     auto pass2_root = boost::intrusive_ptr<components::logical_plan::node_t>(
                         new components::logical_plan::node_sequence_t(resource()));
@@ -759,7 +765,7 @@ namespace services::dispatcher {
                     }
                     auto pass2_params = make_parameter_node(resource());
                     auto pass2_result =
-                        co_await execute_plan_impl(session, pass2_root, pass2_params->take_parameters(), ctx.txn);
+                        co_await execute_plan_impl(session, execution_plan_t{resource(), pass2_root, pass2_params}, ctx.txn);
                     if (pass2_result.cursor->is_error()) {
                         trace(log_,
                               "manager_dispatcher_t::execute_plan: view sub-plan Pass 1 "
@@ -772,7 +778,7 @@ namespace services::dispatcher {
                 // === Phase 1.7: rebuild idx for re-validate ===
                 stamp_oids_from_resolves(logic_plan.get());
                 dispatcher_idx = impl::plan_resolve_index_t{};
-                impl::gather_plan_resolve_index(logic_plan.get(), dispatcher_idx);
+                impl::gather_plan_resolve_index(logic_plan.get(), &dispatcher_idx);
             }
         }
         // Build table_id from the plan's role-named accessors. Each derived
@@ -1141,7 +1147,7 @@ namespace services::dispatcher {
                     error = make_cursor(resource(), vt_err);
                 } else {
                     auto schema_res =
-                        validate_schema(resource(), &dispatcher_idx, logic_plan.get(), params->parameters());
+                        validate_schema(resource(), &dispatcher_idx, logic_plan.get(), plan.parameters->parameters());
                     if (schema_res.has_error()) {
                         error = make_cursor(resource(), schema_res.error());
                     }
@@ -1435,7 +1441,7 @@ namespace services::dispatcher {
             }
         }
 
-        collection::executor::execute_result_t exec_result;
+        collection::executor::execute_result_t exec_result{resource()};
         // Route execution by the effective consumer type;
         // see comments above the validate switch.
         switch (original_type) {
@@ -1453,14 +1459,16 @@ namespace services::dispatcher {
                 // already-rewritten case (logic_plan is sequence_t) — the
                 // latter must run through the executor like every other DDL.
                 if (logic_plan->type() == node_type::alter_table_t) {
-                    exec_result = {make_cursor(resource()), {}, {}, {}};
+                    exec_result.cursor = make_cursor(resource());
                 } else {
-                    exec_result = co_await execute_plan_impl(session, logic_plan, params->take_parameters(), txn_data);
+                    plan.sub_queries.back() = logic_plan;
+                    exec_result = co_await execute_plan_impl(session, std::move(plan), txn_data);
                 }
                 break;
             }
             default:
-                exec_result = co_await execute_plan_impl(session, logic_plan, params->take_parameters(), txn_data);
+                plan.sub_queries.back() = logic_plan;
+                exec_result = co_await execute_plan_impl(session, std::move(plan), txn_data);
                 break;
         }
 
@@ -1853,9 +1861,9 @@ namespace services::dispatcher {
 
     manager_dispatcher_t::unique_future<collection::executor::execute_result_t>
     manager_dispatcher_t::execute_plan_impl(components::session::session_id_t session,
-                                            node_ptr logical_plan,
-                                            storage_parameters parameters,
+                                            execution_plan_t plan,
                                             components::table::transaction_data txn) {
+        auto& logical_plan = plan.sub_queries.back();
         trace(log_,
               "manager_dispatcher_t:execute_plan_impl: node_type: {}, table_oid: {}, session: {}",
               components::logical_plan::to_string(logical_plan->type()),
@@ -1867,10 +1875,13 @@ namespace services::dispatcher {
         // for it). Walk the plan, collect every table_oid stamped by enrich,
         // and forward the set to the executor. Wrapper / parser-window / DDL
         // nodes contribute INVALID_OID and are filtered.
-        auto dependency_oids = logical_plan->table_oid_dependencies();
         context_storage_t collections_context_storage(resource(), log_.clone(), session_tz(session));
-        for (auto oid : dependency_oids) {
-            collections_context_storage.known_oids.insert(oid);
+        // Collect table OIDs from all sub_queries, not just the main query.
+        // Sub-queries may scan tables different from the main query's table.
+        for (const auto& sq : plan.sub_queries) {
+            for (auto oid : sq->table_oid_dependencies()) {
+                collections_context_storage.known_oids.insert(oid);
+            }
         }
         // Forward resolve_table metadata (relkind + live columns)
         // so plan generators can build transfer_scan with the right
@@ -1880,7 +1891,9 @@ namespace services::dispatcher {
         // dispatcher_idx isn't visible).
         {
             impl::plan_resolve_index_t local_idx;
-            impl::gather_plan_resolve_index(logical_plan.get(), local_idx);
+            for (const auto& sq : plan.sub_queries) {
+                impl::gather_plan_resolve_index(sq.get(), &local_idx);
+            }
             for (const auto& [oid, md_ptr] : local_idx.tbl_md_by_oid) {
                 collections_context_storage.table_metadata[oid] = md_ptr;
             }
@@ -1896,7 +1909,7 @@ namespace services::dispatcher {
                 collections_context_storage.indexed_keys = co_await std::move(ikf);
             }
         }
-        collections_context_storage.parameters = &parameters;
+        collections_context_storage.parameters = &plan.parameters->parameters();
 
         assert(!executors_.empty());
         // Oid-only pool routing. For wrapper nodes (sequence_t etc.)
@@ -1915,8 +1928,7 @@ namespace services::dispatcher {
         auto [needs_sched, future] = actor_zeta::otterbrix::send(executor_addresses_[pool_idx],
                                                                  &collection::executor::executor_t::execute_plan,
                                                                  session,
-                                                                 logical_plan,
-                                                                 parameters,
+                                                                 std::move(plan),
                                                                  std::move(collections_context_storage),
                                                                  txn);
         if (needs_sched && executors_[pool_idx]) {

@@ -35,11 +35,11 @@ using vec = std::vector<v>;
             REQUIRE_FALSE(_w.has_error());                                                                             \
             return _w.value();                                                                                         \
         }(binder.finalize()));                                                                                         \
-        auto node = result.node;                                                                                       \
+        auto node = result.sub_queries.back();                                                                                       \
         if (node->type() == components::logical_plan::node_type::sequence_t) {                                         \
             node = node->children().back();                                                                            \
         }                                                                                                              \
-        auto agg = result.params;                                                                                      \
+        auto agg = result.parameters;                                                                                      \
         REQUIRE(node->to_string() == RESULT);                                                                          \
         REQUIRE(agg->parameters().parameters.size() == BIND.size());                                                   \
         for (auto i = 0ul; i < BIND.size(); ++i) {                                                                     \
@@ -58,11 +58,11 @@ using vec = std::vector<v>;
             REQUIRE_FALSE(_w.has_error());                                                                             \
             return _w.value();                                                                                         \
         }(binder.finalize()));                                                                                         \
-        auto node = result.node;                                                                                       \
+        auto node = result.sub_queries.back();                                                                                       \
         if (node->type() == components::logical_plan::node_type::sequence_t) {                                         \
             node = node->children().back();                                                                            \
         }                                                                                                              \
-        auto agg = result.params;                                                                                      \
+        auto agg = result.parameters;                                                                                      \
         REQUIRE(node->to_string() == RESULT);                                                                          \
         REQUIRE(agg->parameters().parameters.size() == BIND.size());                                                   \
         for (auto i = 0ul; i < BIND.size(); ++i) {                                                                     \
@@ -150,7 +150,7 @@ TEST_CASE("components::sql::insert_bind") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(binder.finalize()));
-        auto node = result.node;
+        auto node = result.sub_queries.back();
         if (node->type() == components::logical_plan::node_type::sequence_t) {
             node = node->children().back();
         }
@@ -175,7 +175,7 @@ TEST_CASE("components::sql::insert_bind") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(binder.finalize()));
-        auto node = result.node;
+        auto node = result.sub_queries.back();
         if (node->type() == components::logical_plan::node_type::sequence_t) {
             node = node->children().back();
         }
@@ -201,7 +201,7 @@ TEST_CASE("components::sql::insert_bind") {
                          .finalize();
         REQUIRE_FALSE(_wrap.has_error());
         auto result = _wrap.value();
-        auto node = result.node;
+        auto node = result.sub_queries.back();
         if (node->type() == components::logical_plan::node_type::sequence_t) {
             node = node->children().back();
         }
@@ -260,7 +260,7 @@ TEST_CASE("components::sql::transform_result") {
                        REQUIRE_FALSE(_w.has_error());
                        return _w.value();
                    }(binder.finalize()))
-                       .params;
+                       .parameters;
         REQUIRE(agg->parameter(core::parameter_id_t(uint16_t(0))) == v(&resource, "doc"));
 
         binder.bind(1, v(&resource, 100l)).finalize();
@@ -276,7 +276,7 @@ TEST_CASE("components::sql::transform_result") {
                         REQUIRE_FALSE(_w.has_error());
                         return _w.value();
                     }(binder.finalize()))
-                        .node;
+                        .sub_queries.back();
         if (node->type() == components::logical_plan::node_type::sequence_t) {
             node = node->children().back();
         }

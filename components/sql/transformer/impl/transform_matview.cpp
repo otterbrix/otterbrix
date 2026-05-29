@@ -34,7 +34,7 @@ namespace components::sql::transform {
     } // namespace
 
     logical_plan::node_ptr transformer::transform_create_matview(CreateTableAsStmt& cs,
-                                                                 logical_plan::parameter_node_t* params) {
+                                                                 logical_plan::execution_plan_t* plan) {
         if (!cs.query || cs.query->type != T_SelectStmt) {
             error_ = core::error_t(core::error_code_t::sql_parse_error,
                                    std::pmr::string{"CREATE MATERIALIZED VIEW requires a SELECT body", resource_});
@@ -52,7 +52,7 @@ namespace components::sql::transform {
         // 2. Body plan — transform_select returns the consumer aggregate (NOT
         // wrapped with catalog_resolve_*). We hoist the source resolves below
         // so Pass 1 stamps source metadata visible to the planner.
-        auto body_aggregate = transform_select(pg_cast<SelectStmt>(*cs.query), params);
+        auto body_aggregate = transform_select(pg_cast<SelectStmt>(*cs.query), plan);
         if (!body_aggregate || has_error()) {
             return nullptr;
         }

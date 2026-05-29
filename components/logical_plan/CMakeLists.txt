@@ -2,6 +2,7 @@ project(logical_plan CXX)
 
 set(SOURCE_${PROJECT_NAME}
         forward.cpp
+        execution_plan.cpp
         node.cpp
         node_aggregate.cpp
         node_alter_column_add.cpp

@@ -402,7 +402,18 @@ static bool ConvertDecimal(NumpyAppendData &append_data) {
     auto* decimal_extension = static_cast<decimal_logical_type_extension*>(decimal_type.extension());
 	auto dec_scale = decimal_extension->scale();
 	double division = pow(10, dec_scale);
-	return ConvertDecimalInternal<int64_t>(append_data, division);
+	switch (decimal_extension->stored_as()) {
+	case physical_type::INT16:
+		return ConvertDecimalInternal<int16_t>(append_data, division);
+	case physical_type::INT32:
+		return ConvertDecimalInternal<int32_t>(append_data, division);
+	case physical_type::INT64:
+		return ConvertDecimalInternal<int64_t>(append_data, division);
+	case physical_type::INT128:
+		return ConvertDecimalInternal<int128_t>(append_data, division);
+	default:
+		throw std::runtime_error("unsupported decimal storage type in ConvertDecimal");
+	}
 }
 
 ArrayWrapper::ArrayWrapper(const complex_logical_type &type, bool pandas)
@@ -519,6 +530,11 @@ void ArrayWrapper::Append(idx_t current_offset, vector_t &input, idx_t source_si
 	case logical_type::UUID:
 		may_have_null = ConvertColumn<absl::int128, PyObject *, otterbrix_py_convert::UUIDConvert>(append_data);
 		break;
+
+	case logical_type::ENUM:
+	case logical_type::UNION:
+		throw std::runtime_error("type not yet supported for numpy conversion: " +
+		                         to_string(static_cast<int>(input.type().type())));
 
 	default:
 		throw std::runtime_error("Unsupported type "+to_string(static_cast<int>(input.type().type())));

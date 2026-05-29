@@ -21,47 +21,7 @@ using components::types::complex_logical_type;
 
 namespace otterbrix
 {
-    using components::types::int128_t;
-    using components::types::uint128_t;
-
     logical_value_t TransformListValue(py::handle ele);
-
-    template <typename T>
-    static T parse_python_integer_string(const std::string& s)
-    {
-        T result = 0;
-        size_t i = 0;
-        bool negative = false;
-        if constexpr (std::is_same_v<T, int128_t>)
-        {
-            if (!s.empty() && s[0] == '-')
-            {
-                negative = true;
-                i = 1;
-            }
-            else if (!s.empty() && s[0] == '+')
-            {
-                i = 1;
-            }
-        }
-        for (; i < s.size(); ++i)
-        {
-            const char c = s[i];
-            if (c < '0' || c > '9')
-            {
-                throw std::runtime_error("Failed to parse Python integer string: " + s);
-            }
-            result = result * 10 + static_cast<int>(c - '0');
-        }
-        if constexpr (std::is_same_v<T, int128_t>)
-        {
-            return negative ? -result : result;
-        }
-        else
-        {
-            return result;
-        }
-    }
 
     static void promote_element_type(complex_logical_type& acc, const complex_logical_type& observed)
     {
@@ -552,14 +512,9 @@ namespace otterbrix
                 res = logical_value_t(std::pmr::get_default_resource(), uint64_t(value));
                 return true;
             case logical_type::UHUGEINT:
-                res = logical_value_t(std::pmr::get_default_resource(),
-                                      parse_python_integer_string<uint128_t>(numeric_string));
-                return true;
             case logical_type::HUGEINT:
             default:
-                res = logical_value_t(std::pmr::get_default_resource(),
-                                      parse_python_integer_string<int128_t>(numeric_string));
-                return true;
+                throw std::runtime_error("OtterBrix has no a logical_value_t constructor for hugeint/uhugeint");
             }
         }
         else if (overflow == 1)
@@ -572,18 +527,6 @@ namespace otterbrix
             if (PyErr_Occurred())
             {
                 PyErr_Clear();
-                if (target_type.type() == logical_type::HUGEINT)
-                {
-                    res = logical_value_t(std::pmr::get_default_resource(),
-                                          parse_python_integer_string<int128_t>(numeric_string));
-                    return true;
-                }
-                if (target_type.type() == logical_type::UHUGEINT)
-                {
-                    res = logical_value_t(std::pmr::get_default_resource(),
-                                          parse_python_integer_string<uint128_t>(numeric_string));
-                    return true;
-                }
                 return TryTransformPythonIntegerToDouble(res, ele);
             }
             else
@@ -606,8 +549,7 @@ namespace otterbrix
             return TrySniffPythonNumeric(res, value);
         case logical_type::HUGEINT:
             {
-                res = logical_value_t(std::pmr::get_default_resource(), int128_t(value));
-                return true;
+                throw std::runtime_error("OtterBrix has no a logical_value_t constructor for hugeint/uhugeint");
             }
         case logical_type::UHUGEINT:
             {
@@ -615,8 +557,7 @@ namespace otterbrix
                 {
                     return false;
                 }
-                res = logical_value_t(std::pmr::get_default_resource(), uint128_t(value));
-                return true;
+                throw std::runtime_error("OtterBrix has no a logical_value_t constructor for hugeint/uhugeint");
             }
         case logical_type::BIGINT:
             {

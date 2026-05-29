@@ -55,15 +55,9 @@ namespace otterbrix {
     }
 
     shared_ptr<Relation> ConnectionEnvironment::RelationFromQuery(const string& query) {
-        // parse sql, transform to AST
         using namespace components::sql::transform;
-
-        // call parser with explicit memory arena, normalize with linitial to get the root ast element for transform
         std::pmr::monotonic_buffer_resource parser_arena(space->dispatcher()->resource());
         auto parse_result = linitial(raw_parser(&parser_arena, query.c_str()));
-        // parse sql result
-
-        // convert ast to logical plan
         sql::transform::transformer transformer(space->dispatcher()->resource());
         auto result = transformer.transform(sql::transform::pg_cell_to_node_cast(parse_result)).finalize();
 

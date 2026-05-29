@@ -94,14 +94,18 @@ namespace otterbrix {
                 if (scalar_expr->params().size() > 1) {
                     return column_definition_t(name, type);
                 }
-                if (!scalar_expr->key().is_null()) {
-                    name = scalar_expr->key().as_string();
-                }
-
                 if (scalar_expr->params().size() == 1) {
                     auto param_name = find_param_name(scalar_expr->params().front());
+                    // Name comes from the alias (key) when present, otherwise fall
+                    // back to the underlying column name so unaliased projections
+                    // keep a real name instead of error_str.
+                    name = scalar_expr->key().is_null() ? param_name.first
+                                                        : scalar_expr->key().as_string();
                     type = find_type(param_name.first, initial);
                 } else {
+                    if (!scalar_expr->key().is_null()) {
+                        name = scalar_expr->key().as_string();
+                    }
                     type = find_type(name, initial);
                 }
 
@@ -124,12 +128,6 @@ namespace otterbrix {
             auto right = join.right->GetColumns();
             result.reserve(left.size() + right.size());
 
-            // operator_join_t emits left columns followed by all right columns —
-            // no USING-style dedup at the engine level. The reported schema must
-            // mirror the actual chunk layout, otherwise Fetchall's per-column-index
-            // reads desynchronise from the chunk and crash on type mismatch
-            // (e.g. reading a numeric chunk slot under a string column's declared
-            // type segfaults inside py::str(val.value<const std::string&>())).
             for (const auto& col : left) {
                 result.emplace_back(col.name(), col.type());
             }
@@ -144,14 +142,11 @@ namespace otterbrix {
         }
 
         vector<column_definition_t> operator()(const Relation::Aggregate& aggregate) {
-            // define types
             auto initial = aggregate.resource->GetColumns();
             vector<column_definition_t> result;
             auto group = aggregate.group;
             auto select = aggregate.select;
 
-            // Pure projection (select-only): output schema is exactly the SELECT exprs,
-            // independent of upstream group state.
             if (select && !group) {
                 const auto& exprs = select->expressions();
                 result.reserve(exprs.size());

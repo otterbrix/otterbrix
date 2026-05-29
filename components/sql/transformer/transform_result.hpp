@@ -1,16 +1,26 @@
 #pragma once
 
+#include <optional>
+#include <vector>
+
 #include <core/result_wrapper.hpp>
 
 #include <components/expressions/key.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_data.hpp>
+#include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/param_storage.hpp>
 
 namespace components::sql::transform {
     struct result_view {
         logical_plan::node_ptr node;
         logical_plan::parameter_node_ptr params;
+    };
+
+    struct deferred_limit_t {
+        logical_plan::node_limit_t* node{nullptr};
+        std::optional<core::parameter_id_t> limit_param;
+        std::optional<core::parameter_id_t> offset_param;
     };
 
     class transform_result {
@@ -25,7 +35,8 @@ namespace components::sql::transform {
                          logical_plan::parameter_node_ptr&& params,
                          parameter_map_t&& param_map,
                          insert_map_t&& param_insert_map,
-                         insert_rows_t&& param_insert_rows);
+                         insert_rows_t&& param_insert_rows,
+                         std::vector<deferred_limit_t> deferred_limits = {});
         transform_result(std::pmr::memory_resource* resource, core::error_t&& error);
         transform_result(const transform_result&) = delete;
         transform_result& operator=(const transform_result&) = delete;
@@ -62,6 +73,7 @@ namespace components::sql::transform {
         parameter_map_t param_map_;
         insert_map_t param_insert_map_;
         insert_rows_t param_insert_rows_;
+        std::vector<deferred_limit_t> deferred_limits_;
 
         logical_plan::storage_parameters taken_params_;
         std::pmr::unordered_map<size_t, bool> bound_flags_;

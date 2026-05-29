@@ -17,6 +17,7 @@ namespace configuration {
     struct config_wal final {
         std::filesystem::path path{std::filesystem::current_path() / "wal"};
         bool on{true};
+        bool sync_to_disk{true};
         uint32_t page_size{4096};
         std::size_t max_segment_size{4 * 1024 * 1024}; // 4 MB per segment
         // WAL_AUTO_CHECKPOINT_THRESHOLD_BYTES: trigger checkpoint_all when cumulative WAL

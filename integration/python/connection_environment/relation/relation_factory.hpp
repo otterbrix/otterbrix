@@ -51,6 +51,7 @@ namespace otterbrix {
 
 
         shared_ptr<Relation> CreateFromSelect(components::logical_plan::node_ptr plan);
+        shared_ptr<Relation> CreateFromTable(core::dbname_t database, core::relname_t collection);
         shared_ptr<Relation> CreateDFRelation(unique_ptr<components::tableref::TableRef> tableref);
 
         components::logical_plan::node_ptr Execute(const Relation& rel);

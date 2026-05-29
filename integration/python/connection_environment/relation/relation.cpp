@@ -124,24 +124,17 @@ namespace otterbrix {
             auto right = join.right->GetColumns();
             result.reserve(left.size() + right.size());
 
+            // operator_join_t emits left columns followed by all right columns —
+            // no USING-style dedup at the engine level. The reported schema must
+            // mirror the actual chunk layout, otherwise Fetchall's per-column-index
+            // reads desynchronise from the chunk and crash on type mismatch
+            // (e.g. reading a numeric chunk slot under a string column's declared
+            // type segfaults inside py::str(val.value<const std::string&>())).
             for (const auto& col : left) {
                 result.emplace_back(col.name(), col.type());
             }
-            // Match operator_join_t output schema: right-side columns whose name
-            // already appears on the left are collapsed into the existing slot
-            // (USING-style dedup). Reading past the engine's actual chunk size
-            // would segfault in fetchall.
             for (const auto& col : right) {
-                bool duplicate = false;
-                for (const auto& existing : result) {
-                    if (existing.name() == col.name()) {
-                        duplicate = true;
-                        break;
-                    }
-                }
-                if (!duplicate) {
-                    result.emplace_back(col.name(), col.type());
-                }
+                result.emplace_back(col.name(), col.type());
             }
             return result;
         }

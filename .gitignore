@@ -284,3 +284,6 @@ _skbuild/
 
 # Local verification build tree
 build-verify/
+
+.diffs
+test_dynamic_schema/*

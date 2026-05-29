@@ -92,8 +92,6 @@ namespace otterbrix {
         auto cursor = space->dispatcher()->execute_plan(session, plan, std::move(view.params));
 
         if (cursor->is_success() && plan->type() == logical_plan::node_type::create_collection_t) {
-            // node_create_collection_t no longer carries the database name (routing is by namespace_oid);
-            // ConnectionEnvironment always operates against the "tmp" database (see constructor).
             auto cc = boost::static_pointer_cast<logical_plan::node_create_collection_t>(plan);
             auto& collections = GetCollections();
             collections.insert("tmp." + cc->relname());

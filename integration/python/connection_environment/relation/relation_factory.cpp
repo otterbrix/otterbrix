@@ -193,6 +193,10 @@ namespace otterbrix {
         return nullptr;
     }
 
+    shared_ptr<Relation> RelationFactory::CreateFromTable(core::dbname_t /*database*/, core::relname_t /*collection*/) {
+        return nullptr;
+    }
+
     // should be protected because don\'t send external data
     shared_ptr<Relation> RelationFactory::CreateDFRelation(unique_ptr<components::tableref::TableRef> ref) {
         auto external_dependency = ref->external_dependency;

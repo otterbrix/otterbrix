@@ -751,13 +751,13 @@ namespace components::sql::transform {
     // Resolve a HAVING operand: FuncCall → find matching aggregate alias in group
     param_storage transformer::resolve_having_operand(Node* node,
                                                       const name_collection_t& names,
-                                                      logical_plan::parameter_node_t* params,
+                                                      logical_plan::execution_plan_t* plan,
                                                       const logical_plan::node_ptr& group) {
         switch (nodeTag(node)) {
             case T_FuncCall: {
                 auto func = pg_ptr_cast<FuncCall>(node);
                 auto funcname = std::string{strVal(linitial(func->funcname))};
-                // Find matching aggregate in group expressions
+                // Find matching aggregate already registered by SELECT
                 for (const auto& expr : group->expressions()) {
                     if (expr->group() == expression_group::aggregate) {
                         auto* agg = static_cast<const aggregate_expression_t*>(expr.get());
@@ -766,8 +766,30 @@ namespace components::sql::transform {
                         }
                     }
                 }
-                // Not found — use function name as alias
-                return expressions::key_t{resource_, funcname};
+                // Not in SELECT — add to group so operator_group_t computes it for HAVING
+                // (mirrors PostgreSQL: aggregates in HAVING need not appear in SELECT).
+                std::pmr::vector<param_storage> args(resource_);
+                if (func->args) {
+                    for (const auto& arg : func->args->lst) {
+                        auto* arg_node = pg_ptr_cast<Node>(arg.data);
+                        if (nodeTag(arg_node) == T_ColumnRef) {
+                            auto col = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg_node), names);
+                            col.deduce_side(names);
+                            args.emplace_back(std::move(col.field));
+                        } else {
+                            args.emplace_back(add_param_value(arg_node, plan->parameters.get()));
+                        }
+                    }
+                }
+                std::string alias = "__having_" + funcname + "_" + std::to_string(aggregate_counter_++);
+                auto agg_expr = make_aggregate_expression(resource_,
+                                                          funcname,
+                                                          expressions::key_t{resource_, alias});
+                for (auto& arg : args) {
+                    agg_expr->append_param(arg);
+                }
+                group->append_expression(agg_expr);
+                return expressions::key_t{resource_, alias};
             }
             case T_ColumnRef: {
                 auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node), names);
@@ -777,7 +799,7 @@ namespace components::sql::transform {
             case T_A_Const:
             case T_ParamRef:
             case T_TypeCast:
-                return add_param_value(node, params);
+                return add_param_value(node, plan->parameters.get());
             case T_A_Expr: {
                 auto sub = pg_ptr_cast<A_Expr>(node);
                 if (sub->kind == AEXPR_OP) {
@@ -786,26 +808,34 @@ namespace components::sql::transform {
                         auto stype = get_arithmetic_scalar_type(sub_op);
                         auto expr = make_scalar_expression(resource_, stype);
                         if (sub->lexpr) {
-                            expr->append_param(resolve_having_operand(sub->lexpr, names, params, group));
-                            expr->append_param(resolve_having_operand(sub->rexpr, names, params, group));
+                            expr->append_param(resolve_having_operand(sub->lexpr, names, plan, group));
+                            expr->append_param(resolve_having_operand(sub->rexpr, names, plan, group));
                         } else {
                             // Unary minus: proper unary operator with single operand
                             expr = make_scalar_expression(resource_, scalar_type::unary_minus);
-                            expr->append_param(resolve_having_operand(sub->rexpr, names, params, group));
+                            expr->append_param(resolve_having_operand(sub->rexpr, names, plan, group));
                         }
                         return expr;
                     }
                 }
-                return add_param_value(node, params);
+                return add_param_value(node, plan->parameters.get());
+            }
+            case T_SubLink: {
+                auto param_id = plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
+                // Transform before appending so nested sub_queries/sub_query_results come first.
+                auto sub_node = transform(*pg_ptr_cast<SubLink>(node)->subselect, plan);
+                plan->sub_query_results.emplace_back(&vector::compact_to_single_value, param_id);
+                plan->sub_queries.emplace_back(std::move(sub_node));
+                return param_id;
             }
             default:
-                return add_param_value(node, params);
+                return add_param_value(node, plan->parameters.get());
         }
     }
 
     expression_ptr transformer::transform_having_expr(Node* node,
                                                       const name_collection_t& names,
-                                                      logical_plan::parameter_node_t* params,
+                                                      logical_plan::execution_plan_t* plan,
                                                       const logical_plan::node_ptr& group) {
         if (nodeTag(node) == T_A_Expr) {
             auto a_expr = pg_ptr_cast<A_Expr>(node);
@@ -818,16 +848,16 @@ namespace components::sql::transform {
                                                std::pmr::string{"invalid comparison operand", resource_});
                         return nullptr;
                     }
-                    auto left = resolve_having_operand(a_expr->lexpr, names, params, group);
-                    auto right = resolve_having_operand(a_expr->rexpr, names, params, group);
+                    auto left = resolve_having_operand(a_expr->lexpr, names, plan, group);
+                    auto right = resolve_having_operand(a_expr->rexpr, names, plan, group);
                     return make_compare_expression(resource_, comp_type, left, right);
                 }
             } else if (a_expr->kind == AEXPR_AND || a_expr->kind == AEXPR_OR) {
                 auto expr = make_compare_union_expression(resource_,
                                                           a_expr->kind == AEXPR_AND ? compare_type::union_and
                                                                                     : compare_type::union_or);
-                expr->append_child(transform_having_expr(a_expr->lexpr, names, params, group));
-                expr->append_child(transform_having_expr(a_expr->rexpr, names, params, group));
+                expr->append_child(transform_having_expr(a_expr->lexpr, names, plan, group));
+                expr->append_child(transform_having_expr(a_expr->rexpr, names, plan, group));
                 return expr;
             }
         }

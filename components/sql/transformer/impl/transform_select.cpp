@@ -680,7 +680,7 @@ namespace components::sql::transform {
         // Having is parsed after aggregates are routed to group so resolve_having_operand can find them.
         expression_ptr having_expr;
         if (node.havingClause) {
-            having_expr = transform_having_expr(node.havingClause, names, plan->parameters.get(), group);
+            having_expr = transform_having_expr(node.havingClause, names, plan, group);
         }
 
         if (!group->expressions().empty()) {

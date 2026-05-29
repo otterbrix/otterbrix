@@ -398,11 +398,11 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
 }
 
 // ---------------------------------------------------------------------------
-// Subqueries in JOIN and in HAVING
+// Subqueries in JOIN
 // ---------------------------------------------------------------------------
 
-TEST_CASE("integration::cpp::test_subqueries::join_and_having") {
-    auto config = test_create_config("/tmp/test_subqueries/join_and_having");
+TEST_CASE("integration::cpp::test_subqueries::join") {
+    auto config = test_create_config("/tmp/test_subqueries/join");
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -463,6 +463,21 @@ TEST_CASE("integration::cpp::test_subqueries::join_and_having") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 10);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Subqueries in HAVING
+// ---------------------------------------------------------------------------
+
+TEST_CASE("integration::cpp::test_subqueries::having") {
+    auto config = test_create_config("/tmp/test_subqueries/having");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup") { setup_subquery_db(dispatcher); }
 
     INFO("subquery in HAVING comparing to overall average") {
         // Departments whose average salary exceeds the overall average (65200)
@@ -492,9 +507,9 @@ TEST_CASE("integration::cpp::test_subqueries::join_and_having") {
     }
 
     INFO("subquery in HAVING comparing to specific department budget") {
-        // Departments whose total payroll exceeds the budget of Engineering (100000)
-        // dept1 total=170000>100k ✓, dept2=115000>100k ✓, dept3=85000 ✗,
-        // dept4=135000>100k ✓, dept5=147000>100k ✓ → 4
+        // Departments whose total payroll exceeds the budget of HR (30000)
+        // dept1 total=170000>30k ✓, dept2=115000>30k ✓, dept3=85000>30k ✓,
+        // dept4=135000>30k ✓, dept5=147000>30k ✓ → all 5
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
             "SELECT dept_id, SUM(salary) AS total_payroll "

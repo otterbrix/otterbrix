@@ -112,7 +112,7 @@ namespace components::sql::transform {
         // HAVING clause: resolve aggregate references to aliases from group node
         expressions::expression_ptr transform_having_expr(Node* node,
                                                           const name_collection_t& names,
-                                                          logical_plan::parameter_node_t* params,
+                                                          logical_plan::execution_plan_t* plan,
                                                           const logical_plan::node_ptr& group);
 
         // Handle T_CaseExpr in SELECT target list
@@ -132,7 +132,7 @@ namespace components::sql::transform {
         // Resolve a HAVING operand: FuncCall → aggregate alias key
         expressions::param_storage resolve_having_operand(Node* node,
                                                           const name_collection_t& names,
-                                                          logical_plan::parameter_node_t* params,
+                                                          logical_plan::execution_plan_t* plan,
                                                           const logical_plan::node_ptr& group);
 
         expressions::expression_ptr transform_a_indirection(A_Indirection* node,

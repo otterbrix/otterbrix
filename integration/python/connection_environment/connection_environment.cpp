@@ -87,12 +87,7 @@ namespace otterbrix {
         auto cursor = space->dispatcher()->execute_plan(session, plan, std::move(view.params));
 
         if (cursor->is_success()) {
-            // A CREATE TABLE plan is no longer a bare create_collection node: the
-            // namespace-routing transform wraps it in a sequence alongside a
-            // catalog_resolve_namespace node carrying the target database name.
-            // Walk the plan to find the created collection and its database so
-            // listTables() reports the table under the database it was created in
-            // (falling back to "tmp" for unqualified creates).
+            // План CREATE TABLE теперь не голый узел create_collection: namespace-routing оборачивает его в последовательность с узлом catalog_resolve_namespace, несущим имя целевой БД; обходим план, находим созданную коллекцию и её БД, чтобы listTables() показывал таблицу под той БД, где она создана. Для запросов без явной БД используем PostgreSQL-дефолт — namespace "public" (тот же дефолт, что и в search path движка), а не рабочую БД слоя "tmp".
             const logical_plan::node_create_collection_t* created = nullptr;
             std::string dbname;
             std::function<void(const logical_plan::node_ptr&)> scan =
@@ -112,7 +107,7 @@ namespace otterbrix {
             scan(plan);
             if (created) {
                 if (dbname.empty()) {
-                    dbname = "tmp";
+                    dbname = "public";
                 }
                 auto& collections = GetCollections();
                 collections.insert(dbname + "." + created->relname());

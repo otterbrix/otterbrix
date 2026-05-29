@@ -1,8 +1,28 @@
 // Reference-trace tests for the predicate pushdown optimizer (planner::optimize).
 // Each test builds a known input logical plan, runs optimize(), and asserts the
 // exact shape of the resulting node tree — verifying the transformation itself,
-// not just the final query result. Covers all four pushdown variants:
-// filter through projection (select), through sort, through join, through group by.
+// not just the final query result.
+//
+// Coverage: filter pushdown through a projection (select), a sort, a join, and a
+// group by; splitting an AND-conjunction across join branches and through a
+// group by; flattening a nested conjunction before classification; plus the cost
+// guard that vetoes a pushdown beneath a narrowing projection.
+//
+// Diagram notation in the per-test comments: `aggregate[c0, c1, ...]`. The
+// aggregate node here is NOT a SQL GROUP BY — it is the generic pipeline
+// container, where child[0] is the data source and child[1..] are operations
+// applied in order. `select(...)` projects, `match(pred)` filters, `sort(...)`
+// orders, `group(...)` aggregates, and `?` is a bound parameter. So
+// `aggregate[data, select(a), match(a > ?)]` reads "scan data, project a, then
+// filter a > ?".
+//
+// Assertion convention: the input is always `outer = aggregate[ source, match ]`,
+// where `source` is the subtree the filter targets (named `inner` or `join` in
+// each test). On a fully successful push the optimizer moves `match` into
+// `source` and drops the now-redundant `outer`, so the new root IS `source`
+// (REQUIRE(out == inner) / REQUIRE(out == join)). When the push is rejected — or
+// only part of a conjunction descends and a residual filter must remain above —
+// `outer` is returned unchanged (REQUIRE(out == outer)).
 
 #include <catch2/catch.hpp>
 #include <components/expressions/aggregate_expression.hpp>
@@ -27,6 +47,7 @@ using id_par = core::parameter_id_t;
 static const core::dbname_t db{"db"};
 static const core::relname_t rel{"t"};
 
+// Builds a data node whose schema is exactly `col_names`, every column BIGINT.
 static node_data_ptr make_data(std::pmr::memory_resource* r,
                                 std::initializer_list<const char*> col_names) {
     std::pmr::vector<components::types::complex_logical_type> types(r);

@@ -41,10 +41,8 @@ class SparkSession:
         return DataFrame(self.conn.from_df(data), self)
 
     def _createDataFrameFromPandas(self, data: "PandasDataFrame", types, names) -> DataFrame:
-        # Apply the declared schema by coercing pandas dtypes before handing
-        # the frame to conn.from_df. The engine has no value-cast operator
-        # (::TYPE is a path-selection hint, not a conversion), so this is the
-        # only place an explicit schema can actually change column types.
+        # Convert pandas dtypes to the declared schema before handing the frame to conn.from_df
+        # The engine doesn't cast values itself, so this is the only place a declared schema can change column types
         if names or types:
             data = data.copy()
         if names:
@@ -99,10 +97,9 @@ class SparkSession:
                 "pandas is required to create a DataFrame from non-pandas data"
             )
 
-        # Non-pandas inputs are coerced to pandas: SQL VALUES requires an alias and
-        # segfaults when one is supplied, and conn.from_object crashes on dict/list
-        # inputs, so conn.from_df is the only reliable path. forward_names is None
-        # for the coerced case because pandas.DataFrame already applied columns=names.
+        # Non-pandas inputs are converted to pandas: 
+        # SQL VALUES segfaults
+        # conn.from_object crashes on dict/list inputs
         if isinstance(data, pandas.DataFrame):
             pandas_df = data
             forward_names = names

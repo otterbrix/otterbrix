@@ -1416,6 +1416,34 @@ namespace services::dispatcher {
                             }
                         }
                     }
+                    if (node_select) {
+                        named_schema result_schema(resource);
+                        for (const auto& expr : node_select->expressions()) {
+                            if (expr->group() != expression_group::scalar) {
+                                continue;
+                            }
+                            const auto* scalar_expr =
+                                reinterpret_cast<const scalar_expression_t*>(expr.get());
+                            if (scalar_expr->type() == scalar_type::get_field) {
+                                const auto& key =
+                                    scalar_expr->params().empty()
+                                        ? scalar_expr->key()
+                                        : std::get<components::expressions::key_t>(
+                                              scalar_expr->params().front());
+                                if (!key.path().empty() && key.path().front() < incoming_schema.size()) {
+                                    result_schema.push_back(incoming_schema[key.path().front()]);
+                                }
+                            } else {
+                                complex_logical_type unknown_type(components::types::logical_type::UNKNOWN);
+                                if (!scalar_expr->key().is_null()) {
+                                    unknown_type.set_alias(scalar_expr->key().as_string());
+                                }
+                                result_schema.push_back(
+                                    type_from_t{node->result_alias(), std::move(unknown_type)});
+                            }
+                        }
+                        return result_schema;
+                    }
                     return incoming_schema;
                 } else {
                     // Pre-expand UDT .* expressions into individual child fields

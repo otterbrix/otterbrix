@@ -307,8 +307,6 @@ class DataFrame:
                 message_parameters={"arg_name": "ascending", "arg_type": type(ascending).__name__},
             )
 
-        # Direction (asc/desc) is carried inside each sort expression, so we just
-        # forward the resolved expressions to the C++ engine.
         resolved = []
         for c in columns:
             if isinstance(c, Column):
@@ -392,13 +390,10 @@ class DataFrame:
                 message_parameters={"arg_name": "condition", "arg_type": type(condition).__name__},
             )
 
-        # Route through C++ engine
         if isinstance(condition, Column):
             new_relation = self.relation.filter(condition.expr)
             return DataFrame(new_relation, self.session, optimize=self._optimize)
 
-        # String condition fallback — C++ PyRelation.Filter() does not accept strings,
-        # so we convert to a Column expression first
         raise RuntimeError(
             f"String filter conditions are not supported via C++ engine. "
             f"Use Column expressions instead: df.filter(col('x') > 5)"
@@ -419,7 +414,6 @@ class DataFrame:
                 cols.expr if isinstance(cols, Column) else ColumnExpression(cols, SparkContext._active_spark_context)
             ]
 
-        # Route through C++ engine
         rel = self.relation.select(*projections)
         return DataFrame(rel, self.session, optimize=self._optimize)
 
@@ -556,15 +550,10 @@ class DataFrame:
 
         sc = SparkContext._active_spark_context
 
-        # Route through C++ engine
         if on is not None:
             assert isinstance(on, list)
             all_strings = all(isinstance(x, str) for x in on)
             if all_strings:
-                # Build C++ equality condition from string column names.
-                # Qualify each side with side="left"/"right" so the engine's
-                # validator does not see the unqualified key as ambiguous
-                # (both schemas have the same column name in equi-join).
                 cond_expr = None
                 for key in on:
                     eq = ColumnExpression(key, sc, "left").__eq__(
@@ -572,7 +561,6 @@ class DataFrame:
                     cond_expr = eq if cond_expr is None else cond_expr.__and__(eq)
                 new_relation = self.relation.join(other.relation, cond_expr, join_type)
             else:
-                # Build condition expression from Column objects
                 cond_exprs = []
                 for x in on:
                     if isinstance(x, Column):
@@ -630,7 +618,6 @@ class DataFrame:
         | 16|  Bob|    85|
         +---+-----+------+
         """
-        # Route through C++ engine
         new_relation = self.relation.cross(other.relation)
         return DataFrame(new_relation, self.session, optimize=self._optimize)
 

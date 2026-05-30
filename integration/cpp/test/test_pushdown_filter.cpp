@@ -1,28 +1,6 @@
-// Reference-trace tests for the predicate pushdown optimizer (planner::optimize).
-// Each test builds a known input logical plan, runs optimize(), and asserts the
-// exact shape of the resulting node tree — verifying the transformation itself,
-// not just the final query result.
-//
-// Coverage: filter pushdown through a projection (select), a sort, a join, and a
-// group by; splitting an AND-conjunction across join branches and through a
-// group by; flattening a nested conjunction before classification; plus the cost
-// guard that vetoes a pushdown beneath a narrowing projection.
-//
-// Diagram notation in the per-test comments: `aggregate[c0, c1, ...]`. The
-// aggregate node here is NOT a SQL GROUP BY — it is the generic pipeline
-// container, where child[0] is the data source and child[1..] are operations
-// applied in order. `select(...)` projects, `match(pred)` filters, `sort(...)`
-// orders, `group(...)` aggregates, and `?` is a bound parameter. So
-// `aggregate[data, select(a), match(a > ?)]` reads "scan data, project a, then
-// filter a > ?".
-//
-// Assertion convention: the input is always `outer = aggregate[ source, match ]`,
-// where `source` is the subtree the filter targets (named `inner` or `join` in
-// each test). On a fully successful push the optimizer moves `match` into
-// `source` and drops the now-redundant `outer`, so the new root IS `source`
-// (REQUIRE(out == inner) / REQUIRE(out == join)). When the push is rejected — or
-// only part of a conjunction descends and a residual filter must remain above —
-// `outer` is returned unchanged (REQUIRE(out == outer)).
+// Filter-pushdown tests for planner::optimize
+// build a plan, optimize it, then
+// check the shape of the resulting node tree
 
 #include <catch2/catch.hpp>
 #include <components/expressions/aggregate_expression.hpp>
@@ -47,22 +25,22 @@ using id_par = core::parameter_id_t;
 static const core::dbname_t db{"db"};
 static const core::relname_t rel{"t"};
 
-// Builds a data node whose schema is exactly `col_names`, every column BIGINT.
+// data node with all BIGINT columns
 static node_data_ptr make_data(std::pmr::memory_resource* r,
                                 std::initializer_list<const char*> col_names) {
     std::pmr::vector<components::types::complex_logical_type> types(r);
     for (const char* name : col_names) {
         types.emplace_back(components::types::logical_type::BIGINT, name);
     }
-    // The optimizer reads only the schema, so a minimal 1-row chunk suffices.
+    // optimizer only looks at the schema, so one row is enough
     auto chunk = gen_data_chunk(/*size=*/1, /*start=*/0, types, r);
     return make_node_raw_data(r, std::move(chunk));
 }
 
 // --- Filter through projection ----------------------------------------------
 
-// in:  aggregate[ aggregate[data, select(a)], match(a > ?) ]
-// out: aggregate[ data, select(a), match(a > ?) ]  -- filter pushed under the identity projection
+// select a, b (both columns unchanged)
+// filter a > ?: pushed down
 TEST_CASE("logical_plan::pushdown_filter_under_identity_select") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto data = make_data(&resource, {"a", "b"});
@@ -88,8 +66,8 @@ TEST_CASE("logical_plan::pushdown_filter_under_identity_select") {
     REQUIRE(inner->children()[2]->type() == node_type::match_t);
 }
 
-// A renaming projection (select outputs "x" aliased from "a") does not let the
-// filter on "x" move below it: "x" does not exist in the pre-projection schema.
+// select a as x (renames a)
+// filter x > ?: not pushed (x has no matching input column)
 TEST_CASE("logical_plan::pushdown_filter_skips_renamed_select_output") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto data = make_data(&resource, {"a", "b"});
@@ -116,8 +94,8 @@ TEST_CASE("logical_plan::pushdown_filter_skips_renamed_select_output") {
 
 // --- Filter through sort ----------------------------------------------------
 
-// in:  aggregate[ aggregate[data, sort(b)], match(a > ?) ]
-// out: aggregate[ data, sort(b), match(a > ?) ]  -- filter swapped below the sort
+// sort by b
+// filter a > ?: pushed down (sort preserves rows)
 TEST_CASE("logical_plan::pushdown_filter_under_sort") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto data = make_data(&resource, {"a", "b"});
@@ -145,9 +123,8 @@ TEST_CASE("logical_plan::pushdown_filter_under_sort") {
 
 // --- Filter through join ----------------------------------------------------
 
-// in:  aggregate[ join[ data(a,b), data(c,d) ], match(a > ?) ]
-// out: join[ aggregate[ data(a,b), match(a > ?) ], data(c,d) ]
-// The predicate touches only left-side columns, so it descends into the left branch.
+// inner join of (a, b) and (c, d)
+// filter a > ?: pushed into the left branch (left columns only)
 TEST_CASE("logical_plan::pushdown_filter_into_join_branch") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto left_data = make_data(&resource, {"a", "b"});
@@ -176,8 +153,8 @@ TEST_CASE("logical_plan::pushdown_filter_into_join_branch") {
     REQUIRE(pushed->children()[1]->type() == node_type::match_t);
 }
 
-// A predicate referencing columns from both join sides cannot descend into
-// either branch and must stay above the join.
+// inner join of (a, b) and (c, d)
+// filter a == c: not pushed (references both sides)
 TEST_CASE("logical_plan::pushdown_filter_skips_join_predicate_on_both_sides") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto left_data = make_data(&resource, {"a", "b"});
@@ -208,9 +185,8 @@ TEST_CASE("logical_plan::pushdown_filter_skips_join_predicate_on_both_sides") {
 
 // --- Filter through group by ------------------------------------------------
 
-// in:  aggregate[ aggregate[data, group(key a, sum b)], match(a > ?) ]
-// out: aggregate[ data, group(key a, sum b), match(a > ?) ]
-// The predicate references only the grouping key, so it descends below the group node.
+// group by a, sum(b) as sum_b
+// filter a > ?: pushed below the group (a is the grouping key)
 TEST_CASE("logical_plan::pushdown_filter_under_group_by_key") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto data = make_data(&resource, {"a", "b"});
@@ -240,8 +216,8 @@ TEST_CASE("logical_plan::pushdown_filter_under_group_by_key") {
     REQUIRE(inner->children()[2]->type() == node_type::match_t);
 }
 
-// A predicate on an aggregate output column (sum_b), not a grouping key, must
-// not be pushed below the group node — it would change the query result.
+// group by a, sum(b) as sum_b
+// filter sum_b > ?: not pushed (aggregate output, not a key)
 TEST_CASE("logical_plan::pushdown_filter_skips_group_by_aggregate_output") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto data = make_data(&resource, {"a", "b"});
@@ -274,9 +250,8 @@ TEST_CASE("logical_plan::pushdown_filter_skips_group_by_aggregate_output") {
 
 // --- Conjunction splitting through join ------------------------------------
 
-// in:  aggregate[ join[data(a,b), data(c,d)], match((a > ?) AND (c > ?)) ]
-// out: join[ aggregate[data(a,b), match(a > ?)], aggregate[data(c,d), match(c > ?)] ]
-// Each conjunct references only one side, so the AND is split across branches.
+// inner join of (a, b) and (c, d)
+// filter (a > ?) AND (c > ?): split into both branches
 TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_into_both_join_branches") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto left_data = make_data(&resource, {"a", "b"});
@@ -316,9 +291,8 @@ TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_into_both_join_branc
     REQUIRE(right_pushed->children()[1]->type() == node_type::match_t);
 }
 
-// in:  aggregate[ join[data(a,b), data(c,d)], match((a > ?) AND (a == c)) ]
-// out: aggregate[ join[ aggregate[data(a,b), match(a > ?)], data(c,d) ], match(a == c) ]
-// The (a == c) conjunct touches both sides and stays above the join as residual.
+// inner join of (a, b) and (c, d)
+// filter (a > ?) AND (a == c): a > ? pushed left, a == c kept above
 TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_with_residual_join") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto left_data = make_data(&resource, {"a", "b"});
@@ -357,12 +331,8 @@ TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_with_residual_join")
     REQUIRE(left_pushed->children()[1]->type() == node_type::match_t);
 }
 
-// in:  aggregate[ join[data(a,b), data(c,d)], match((a > ?) AND (c > ?) AND (a == c)) ]
-// out: aggregate[ join[ aggregate[data(a,b), match(a > ?)],
-//                       aggregate[data(c,d), match(c > ?)] ],
-//                 match(a == c) ]
-// All three buckets are populated at once: the left-only and right-only
-// conjuncts descend into their branches, the cross-side conjunct stays as residual.
+// inner join of (a, b) and (c, d)
+// filter (a > ?) AND (c > ?) AND (a == c): a left, c right, a == c kept above
 TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_into_all_three_buckets") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto left_data = make_data(&resource, {"a", "b"});
@@ -410,12 +380,8 @@ TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_into_all_three_bucke
     REQUIRE(right_pushed->children()[1]->type() == node_type::match_t);
 }
 
-// in:  aggregate[ join[data(a,b), data(c,d)], match((a > ?) AND ((b < ?) AND (c > ?))) ]
-// out: join[ aggregate[data(a,b), match((a > ?) AND (b < ?))],
-//            aggregate[data(c,d), match(c > ?)] ]
-// The nested AND is flattened before classification. Were it treated as one
-// opaque conjunct, (b < ?) AND (c > ?) would touch both join sides and stay as
-// residual; flattening lets b descend left and c descend right independently.
+// inner join of (a, b) and (c, d)
+// filter (a > ?) AND ((b < ?) AND (c > ?)): flattened, then a,b pushed left and c right
 TEST_CASE("logical_plan::pushdown_filter_flattens_nested_conjunction") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto left_data = make_data(&resource, {"a", "b"});
@@ -471,11 +437,8 @@ TEST_CASE("logical_plan::pushdown_filter_flattens_nested_conjunction") {
 
 // --- Conjunction splitting through group by --------------------------------
 
-// in:  aggregate[ aggregate[data, group(key a, sum b->sum_b)],
-//                 match((a > ?) AND (sum_b > ?)) ]
-// out: aggregate[ aggregate[data, group(...), match(a > ?)], match(sum_b > ?) ]
-// The grouping-key conjunct descends below group; the aggregate-output
-// conjunct stays above as residual.
+// group by a, sum(b) as sum_b
+// filter (a > ?) AND (sum_b > ?): a > ? pushed below the group, sum_b > ? kept above
 TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_through_group_by") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto data = make_data(&resource, {"a", "b"});
@@ -516,8 +479,8 @@ TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_through_group_by") {
 
 // --- Cost guard: pushdown under a projection -------------------------------
 
-// data has 3 columns, the projection narrows to 1 -> pushing the filter below
-// it would widen the filter's input rows, so the cost guard vetoes the move.
+// select a (drops b, c)
+// filter a > ?: not pushed (cost guard vetoes the wider scan)
 TEST_CASE("logical_plan::pushdown_filter_vetoed_by_narrowing_projection") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto data = make_data(&resource, {"a", "b", "c"});
@@ -542,8 +505,8 @@ TEST_CASE("logical_plan::pushdown_filter_vetoed_by_narrowing_projection") {
     REQUIRE(inner->children().size() == 2);
 }
 
-// A non-narrowing projection that merely reorders columns keeps the same row
-// width, so the cost guard allows the pushdown.
+// select b, a (reorders, same width)
+// filter a > ?: pushed down
 TEST_CASE("logical_plan::pushdown_filter_allowed_through_non_narrowing_projection") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto data = make_data(&resource, {"a", "b"});
@@ -570,11 +533,8 @@ TEST_CASE("logical_plan::pushdown_filter_allowed_through_non_narrowing_projectio
     REQUIRE(inner->children()[2]->type() == node_type::match_t);
 }
 
-// A projection whose visible columns are not all plain get_field (here an
-// identity column alongside a computed/constant one) has an inestimable width:
-// estimate_projection_width returns 0. The cost guard treats width 0 as
-// "unknown", not "narrow", so it does not veto and the pushdown still happens —
-// even though the three-column source is wider than the two-column projection.
+// select a, k (k is a constant, so width can't be estimated)
+// filter a > ?: pushed down (cost guard doesn't veto unknown width)
 TEST_CASE("logical_plan::pushdown_filter_allowed_when_projection_width_unknown") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto data = make_data(&resource, {"a", "b", "c"});

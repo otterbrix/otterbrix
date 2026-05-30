@@ -1,3 +1,5 @@
+# This code is based on code from Apache Spark under the license found in the LICENSE file located in the 'spark' folder.
+
 from typing import Optional, Union
 from otterbrix.experimental.spark._globals import _NoValueType, _NoValue
 from otterbrix import OtterBrixPyConnection

@@ -26,12 +26,9 @@ namespace components::planner::optimizer {
         using namespace components::expressions;
         using namespace components::logical_plan;
 
-        // Per-call type switch for cfn extraction. node_t no longer exposes a
-        // polymorphic collection_full_name(); each derived node owns role-named
-        // dbname()/relname() accessors. Returns empty identifiers for node
-        // kinds that don't carry a single-table identity (joins, functions,
-        // sub-aggregates), which preserves the old polymorphic helper's
-        // behavior on those nodes.
+        // db identity of a node. 
+        // match_t and aggregate_t carry a table name;
+        // joins, functions and sub-aggregates return empty identifiers
         std::pair<core::dbname_t, core::relname_t> node_cfn(const node_ptr& n) {
             if (!n) {
                 return {core::dbname_t{}, core::relname_t{}};
@@ -233,7 +230,8 @@ namespace components::planner::optimizer {
             return nullptr;
         }
 
-        // std::nullopt = no data node in the subtree; otherwise the summed byte width of all columns.
+        // nullopt = no data node in the subtree
+        // otherwise = the summed byte width of all columns.
         std::optional<size_t> estimate_row_width(const node_ptr& node) {
             const node_data_t* data = find_data_node(node);
             if (!data) {
@@ -246,7 +244,8 @@ namespace components::planner::optimizer {
             return width;
         }
 
-        // std::nullopt = width inestimable (computed/constant column, or output missing from input); else summed width.
+        // nullopt = width can't be estimated (computed/constant column)
+        // otherwise = summed width.
         std::optional<size_t> estimate_projection_width(const node_select_t& sel, const node_ptr& subtree) {
             const node_data_t* data = find_data_node(subtree);
             if (!data) {
@@ -466,11 +465,8 @@ namespace components::planner::optimizer {
                     collect_subtree_columns(join->children()[0], left_cols);
                     collect_subtree_columns(join->children()[1], right_cols);
 
-                    // A predicate may only be pushed below the side of an outer join that
-                    // is row-preserving; pushing onto the null-supplying side is invalid
-                    // (the synthesised NULL rows are emitted regardless of the filter and
-                    // would leak past it). Left join preserves the left side, right join
-                    // the right side, full join neither; inner/cross preserve both.
+                    // Only push below a row-preserving side of an outer join
+                    // Left preserves left, right preserves right, full preserves none, inner/cross preserve both.
                     const auto jt = join->type();
                     const bool can_push_left =
                         jt == join_type::inner || jt == join_type::cross || jt == join_type::left;

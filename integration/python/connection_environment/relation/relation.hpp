@@ -37,7 +37,8 @@ namespace otterbrix {
                 components::logical_plan::node_group_ptr group,
                 components::logical_plan::node_match_ptr match,
                 components::logical_plan::node_sort_ptr sort,
-                components::logical_plan::node_select_ptr select, string name);
+                components::logical_plan::node_select_ptr select, string name,
+                components::logical_plan::node_limit_ptr limit = nullptr);
 
         Relation(shared_ptr<Relation> left, shared_ptr<Relation> right,
                 unique_ptr<vector<components::expressions::expression_ptr>> conditions,
@@ -52,15 +53,17 @@ namespace otterbrix {
                 components::logical_plan::node_group_ptr group,
                 components::logical_plan::node_match_ptr match,
                 components::logical_plan::node_sort_ptr sort,
-                components::logical_plan::node_select_ptr select, string name)
+                components::logical_plan::node_select_ptr select, string name,
+                components::logical_plan::node_limit_ptr limit = nullptr)
                 : resource(resource), group(group), match(match), sort(sort), select(select),
-                  name(std::move(name)) {}
+                  name(std::move(name)), limit(limit) {}
             shared_ptr<Relation> resource;
             components::logical_plan::node_group_ptr group;
             components::logical_plan::node_match_ptr match;
             components::logical_plan::node_sort_ptr sort;
             components::logical_plan::node_select_ptr select;
             string name;
+            components::logical_plan::node_limit_ptr limit;
         };
         
         struct Data {

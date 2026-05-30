@@ -28,13 +28,13 @@ namespace otterbrix {
     }
     
     shared_ptr<Relation> RelationFactory::make_aggregate_relation(shared_ptr<Relation> from, node_group_ptr group,
-            node_match_ptr match, node_sort_ptr sort, node_select_ptr select) {
+            node_match_ptr match, node_sort_ptr sort, node_select_ptr select, node_limit_ptr limit) {
         static int indx = 0;
         auto session = otterbrix::session_id_t();
         string name = "t";
         name += to_string(indx++);
         space->dispatcher()->create_collection(session, "tmp", name);
-        auto res = make_shared<Relation>(from, group, match, sort, select, name);
+        auto res = make_shared<Relation>(from, group, match, sort, select, name, limit);
         return res;
     }
 
@@ -186,7 +186,11 @@ namespace otterbrix {
         return make_join_relation(relation, other, std::move(conditions), type);
     }
     shared_ptr<Relation> RelationFactory::LimitRelation(shared_ptr<Relation> relation, int64_t count) {
-        return make_shared<Relation>(relation, count);
+        auto limit_node = make_node_limit(space->dispatcher()->resource(),
+                                          core::dbname_t{},
+                                          core::relname_t{},
+                                          limit_t(count));
+        return make_aggregate_relation(relation, nullptr, nullptr, nullptr, nullptr, limit_node);
     }
 
     shared_ptr<Relation> RelationFactory::CreateFromSelect(components::logical_plan::node_ptr /*plan*/) {
@@ -226,6 +230,9 @@ namespace otterbrix {
                 }
                 if (rel.select) {
                     aggregator->append_child(rel.select);
+                }
+                if (rel.limit) {
+                    aggregator->append_child(rel.limit);
                 }
                 return boost::static_pointer_cast<node_t>(aggregator);
             } else if constexpr (std::is_same_v<plan_type, Relation::Data>) {

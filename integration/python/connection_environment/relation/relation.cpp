@@ -209,8 +209,9 @@ namespace otterbrix {
             node_group_ptr group,
             node_match_ptr match,
             node_sort_ptr sort,
-            node_select_ptr select, string name)
-            : relation(Aggregate(resource, group, match, sort, select, std::move(name))) {
+            node_select_ptr select, string name,
+            node_limit_ptr limit)
+            : relation(Aggregate(resource, group, match, sort, select, std::move(name), limit)) {
     }
 
 

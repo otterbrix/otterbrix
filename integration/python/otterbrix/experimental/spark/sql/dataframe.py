@@ -708,6 +708,12 @@ class DataFrame:
         +---+----+
         """
 
+        if num <= 0:
+            cols = self.columns
+            if cols:
+                first = col(cols[0])
+                return self.filter(first != first)
+
         rel = self.relation.limit(num)
         return DataFrame(rel, self.session, optimize=self._optimize)
 
@@ -1074,9 +1080,9 @@ class DataFrame:
         >>> df.count()
         3
         """
-        self.relation.optimize = self._optimize
-        count_rel = self.relation.count("*")
-        return int(count_rel.fetchone()[0])
+        # The optimize flag propagates through self.groupBy()
+        rows = self.groupBy().count().collect()
+        return int(rows[0][0]) if rows else 0
 
     def toDF(self, *cols) -> "DataFrame":
         existing_columns = self.relation.columns

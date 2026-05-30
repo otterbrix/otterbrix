@@ -14,8 +14,10 @@
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_select.hpp>
 #include <components/logical_plan/node_sort.hpp>
+#include <components/logical_plan/param_storage.hpp>
 #include <components/planner/optimizer.hpp>
 #include <components/tests/generaty.hpp>
+#include <services/dispatcher/validate_logical_plan.hpp>
 
 using namespace components::logical_plan;
 using namespace components::expressions;
@@ -559,4 +561,63 @@ TEST_CASE("logical_plan::pushdown_filter_allowed_when_projection_width_unknown")
     REQUIRE(inner->children()[0]->type() == node_type::data_t);
     REQUIRE(inner->children()[1]->type() == node_type::select_t);
     REQUIRE(inner->children()[2]->type() == node_type::match_t);
+}
+
+TEST_CASE("kernel_bug_proof::join_keeps_all_physical_columns") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    // left {id, k}, right {k, val}: column "k" shared, both with empty result_alias
+    auto left = make_data(&resource, {"id", "k"});
+    auto right = make_data(&resource, {"k", "val"});
+
+    auto join = make_node_join(&resource, db, rel, join_type::inner);
+    join->append_child(left);
+    join->append_child(right);
+    // ON predicate on unique columns (id == val)
+    join->append_expression(make_compare_expression(&resource,
+                                                    compare_type::eq,
+                                                    key(&resource, "id", side_t::left),
+                                                    key(&resource, "val", side_t::right)));
+
+    components::logical_plan::storage_parameters params(&resource);
+    auto res = services::dispatcher::validate_schema(&resource, nullptr, join.get(), params);
+    REQUIRE_FALSE(res.has_error());
+
+    auto& schema = res.value();
+    // Physical join chunk layout = [id, k(left), k(right), val] = 4 slots
+    // FIXED kernel keeps all 4 (right k marked shadowed)
+    // BUGGY kernel dropped the duplicate -> size 3 -> val's index becomes k
+    REQUIRE(schema.size() == 4);
+    size_t shadowed_count = 0;
+    for (const auto& col : schema) {
+        if (col.shadowed) {
+            ++shadowed_count;
+        }
+    }
+
+     // exactly the duplicate key
+    REQUIRE(shadowed_count == 1);
+}
+
+TEST_CASE("kernel_bug_proof::projection_reports_selected_columns") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto data = make_data(&resource, {"a", "b", "c"});
+
+    auto agg = make_node_aggregate(&resource, db, rel);
+    agg->append_child(data);
+    auto select = make_node_select(&resource, db, rel);
+    // project "c", "a" 
+    // reorder + drop "b"
+    select->append_expression(make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "c")));
+    select->append_expression(make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "a")));
+    agg->append_child(select);
+
+    components::logical_plan::storage_parameters params(&resource);
+    auto res = services::dispatcher::validate_schema(&resource, nullptr, agg.get(), params);
+    REQUIRE_FALSE(res.has_error());
+
+    auto& schema = res.value();
+    // Projection output = [c, a] = 2 columns
+    // FIXED kernel returns [c, a]
+    // BUGGY kernel returns incoming [a, b, c] = 3
+    REQUIRE(schema.size() == 2);
 }

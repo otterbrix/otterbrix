@@ -1285,9 +1285,8 @@ namespace services::dispatcher {
                                     result.emplace_back(col);
                                 }
                             } else {
-                                // Computed column (constant / arithmetic / case). Resolve its key paths
-                                // as before; its output type is not derived here, so fall back to the
-                                // incoming schema for the whole projection rather than risk a wrong type.
+                                // Computed column (constant / arithmetic / case): resolve key paths,
+                                // but fall back to the incoming schema since its output type is unknown.
                                 if (scalar_expr->type() != scalar_type::constant) {
                                     auto res = impl::resolve_key_paths_in_group(resource,
                                                                                 scalar_expr->params(),

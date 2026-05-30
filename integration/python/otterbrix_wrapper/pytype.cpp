@@ -262,7 +262,7 @@ namespace otterbrix {
     	py::tuple args = obj.attr("__args__");
     
     	// Optional inserts NoneType into the Union
-    	// all types are nullable in DuckDB so we just filter the Nones
+    	// all types are nullable so we just filter the Nones
     	auto filtered_args = FilterNones(args);
     	if (filtered_args.size() == 1) {
     		// If only a single type is left, dont construct a UNION
@@ -300,7 +300,7 @@ namespace otterbrix {
     	auto dict = py::reinterpret_steal<py::dict>(obj);
     	std::pmr::vector<complex_logical_type> children(std::pmr::get_default_resource());
     	if (dict.size() == 0) {
-    		throw std::runtime_error("Could not convert empty dictionary to a duckdb STRUCT type");
+    		throw std::runtime_error("Could not convert empty dictionary to a STRUCT type");
     	}
     	children.reserve(dict.size());
     	for (auto &item : dict) {

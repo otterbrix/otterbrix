@@ -550,7 +550,7 @@ def approx_count_distinct(col: "ColumnOrName", rsd: Optional[float] = None) -> C
     +---------------+
     """
     if rsd is not None:
-        raise ValueError("rsd is not supported by DuckDB")
+        raise ValueError("rsd is not supported")
     raise NotImplementedError
 
 

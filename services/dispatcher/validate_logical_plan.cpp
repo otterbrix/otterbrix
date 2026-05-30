@@ -119,15 +119,8 @@ namespace services::dispatcher {
             size_t key_order;
         };
 
-        // JOIN merge: физический вывод join — это левые колонки, за которыми
-        // идут ВСЕ правые, поэтому здесь сохраняются все колонки, чтобы позиции
-        // в объединённой схеме совпадали с раскладкой чанка (пути к колонкам
-        // позиционные). Колонка, дублирующая по имени+result_alias уже
-        // сохранённую, остаётся, но помечается shadowed — она держит свой
-        // физический слот, но исключена из разрешения по имени, поэтому ссылка
-        // по имени разрешается в выжившую (левую) колонку. Это реализует
-        // коалесценцию ключа SQL USING/NATURAL JOIN, сохраняя корректные
-        // индексы остальных правых колонок.
+        // JOIN merge: keep both same-named columns when they come from different
+        // tables; only drop entries that are truly identical (same alias AND same result_alias).
         named_schema merge_schemas(std::pmr::memory_resource* resource, named_schema lhs, named_schema rhs) {
             named_schema merged(resource);
             auto duplicates_kept = [&merged](const type_from_t& type) {
@@ -160,8 +153,6 @@ namespace services::dispatcher {
             type_paths result{resource};
             if (key.storage().at(0) == "*") {
                 for (size_t i = 0; i < schema.size(); i++) {
-                    // Shadowed-колонки (например, ключ JOIN, продублированный
-                    // справа) держат свой физический слот, но не раскрываются '*'.
                     if (schema[i].shadowed) {
                         continue;
                     }
@@ -178,9 +169,6 @@ namespace services::dispatcher {
             // Also we store number of keys used to get there and path
             std::pmr::list<type_match_t> matches(resource);
             for (size_t i = 0; i < schema.size(); i++) {
-                // Shadowed-колонка (ключ JOIN, продублированный справа) не
-                // разрешается по имени: ссылка по имени проваливается в
-                // выжившую (левую) колонку — это коалесценция ключа USING.
                 if (schema[i].shadowed) {
                     continue;
                 }
@@ -1241,13 +1229,6 @@ namespace services::dispatcher {
                             }
                         }
 
-                        // Resolve key paths in node_select scalar expressions against incoming schema,
-                        // AND build the projection's OUTPUT schema. The output of a projection is the
-                        // SELECT columns (in order) — NOT the incoming schema. A consumer stacked above
-                        // this projection (e.g. a filter) resolves its column indices against this
-                        // returned schema; returning the wider incoming schema makes those indices
-                        // stale, so the consumer reads out-of-range columns at execution time.
-                        // Aggregates are always in node_group_t now, so only scalar expressions appear here.
                         bool has_computed_column = false;
                         for (auto& expr : node_select->expressions()) {
                             if (expr->group() != expression_group::scalar) {
@@ -1306,10 +1287,6 @@ namespace services::dispatcher {
                         // Duplicate names across JOIN'd tables are legitimate (PostgreSQL semantics).
                         std::set<std::pair<std::string, std::string>> seen_pairs;
                         for (const auto& col : incoming_schema) {
-                            // Shadowed-колонка — это коалесцированный дубликат ключа
-                            // JOIN: она держит свой физический слот, но не является
-                            // отдельной именованной колонкой, поэтому не считается
-                            // неоднозначным дубликатом здесь.
                             if (col.shadowed) {
                                 continue;
                             }

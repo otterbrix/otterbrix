@@ -135,6 +135,48 @@ namespace components::sql::transform {
                                                             const name_collection_t& names,
                                                             logical_plan::parameter_node_t* params);
 
+        // --- JSONB navigation (-> ->> #> #>>) ----------------------------
+        // Resolve a scalar (text-returning, ->> / #>>) jsonb navigation chain
+        // into the single slash-joined column key it addresses (e.g.
+        // `t -> 'a' ->> 'b'` -> key "a/b"). The chain collapses to one path:
+        // the base operand (a bare table name contributes nothing/root, a
+        // column contributes its name) followed by every operator's key(s).
+        // On a table-returning top operator (-> / #>) in this scalar position,
+        // or any malformed operand, sets error_ and returns false.
+        bool resolve_jsonb_scalar_key(A_Expr* node,
+                                      const name_collection_t& names,
+                                      expressions::key_t& out_key);
+        // Recursive worker: appends this chain's path segments (in order) and
+        // sets `side` from the base operand. Accepts any nav operator.
+        bool collect_jsonb_path(A_Expr* node,
+                                const name_collection_t& names,
+                                std::pmr::vector<std::pmr::string>& segments,
+                                expressions::side_t& side);
+        // Resolve the base (left-most) operand of a jsonb chain into its path
+        // segments + side. A bare table name yields no segments (document root);
+        // a column yields its name.
+        bool resolve_jsonb_base(Node* lexpr,
+                                const name_collection_t& names,
+                                std::pmr::vector<std::pmr::string>& segments,
+                                expressions::side_t& side);
+
+        // Table-valued jsonb operators ('->','#>' expand; '-','#-' delete).
+        // Collapse the chain into a single slash-joined prefix key (e.g. 'a/b').
+        // Used in the SELECT list; validate_logical_plan turns the resulting
+        // jsonb_expand / jsonb_delete expression into get_field columns.
+        bool resolve_jsonb_prefix_key(A_Expr* node, const name_collection_t& names, expressions::key_t& out_key);
+        // True if `node` is a bare identifier naming the FROM table/alias — i.e.
+        // the document root. Distinguishes 't - x' (jsonb delete) from arithmetic.
+        bool jsonb_lhs_is_table(Node* node, const name_collection_t& names) const;
+
+        // jsonb key existence: '?' (one key), '?|' (any of), '?&' (all of).
+        // Desugars each key to an IS NOT NULL test on the flattened path, then
+        // combines with OR ('?'/'?|') or AND ('?&').
+        expressions::expression_ptr transform_jsonb_exists(A_Expr* node,
+                                                          const name_collection_t& names,
+                                                          logical_plan::parameter_node_t* params,
+                                                          std::string_view op);
+
         expressions::expression_ptr
         transform_null_test(NullTest* node, const name_collection_t& names, logical_plan::parameter_node_t* params);
 
@@ -161,6 +203,7 @@ namespace components::sql::transform {
         std::pmr::unordered_map<size_t, core::parameter_id_t> parameter_map_;
         std::pmr::unordered_map<size_t, std::pmr::vector<insert_location_t>> parameter_insert_map_;
         vector::data_chunk_t parameter_insert_rows_;
+        std::vector<deferred_limit_t> deferred_limits_;
         size_t aggregate_counter_{0};
         std::pmr::vector<expressions::expression_ptr> pending_internal_aggs_{resource_};
         core::error_t error_;

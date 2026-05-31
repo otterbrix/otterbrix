@@ -484,6 +484,7 @@ namespace services::dispatcher {
             drop_target_collection = qualified_name_t{names.first, names.second};
         }
         auto logic_plan = std::move(plan);
+        context_storage_t collections_context_storage(resource(), log_.clone(), session_tz(session));
         // Optimizer: constant folding, etc.
         logic_plan = components::planner::optimize(resource(), logic_plan, params.get());
 
@@ -688,7 +689,7 @@ namespace services::dispatcher {
                 }
                 auto pass1_params = make_parameter_node(resource());
                 auto pass1_result =
-                    co_await execute_plan_impl(session, pass1_root, pass1_params->take_parameters(), pass1_txn);
+                    co_await execute_plan_impl(session, pass1_root, pass1_params->take_parameters(), pass1_txn, &collections_context_storage);
                 if (pass1_result.cursor->is_error()) {
                     trace(log_,
                           "manager_dispatcher_t::execute_plan: Pass 1 "
@@ -759,7 +760,7 @@ namespace services::dispatcher {
                     }
                     auto pass2_params = make_parameter_node(resource());
                     auto pass2_result =
-                        co_await execute_plan_impl(session, pass2_root, pass2_params->take_parameters(), ctx.txn);
+                        co_await execute_plan_impl(session, pass2_root, pass2_params->take_parameters(), ctx.txn, &collections_context_storage);
                     if (pass2_result.cursor->is_error()) {
                         trace(log_,
                               "manager_dispatcher_t::execute_plan: view sub-plan Pass 1 "
@@ -1154,10 +1155,15 @@ namespace services::dispatcher {
             co_return std::move(error);
         }
 
+        // Late logical optimization. Runs after validate_schema has stamped key
+        // side()/path(), so schema-aware rewrites are safe here. Currently rewrites
+        // eligible nested-loop joins into hash joins (node_join_t -> node_hash_join_t).
+        logic_plan = components::planner::post_validate_optimize(resource(), std::move(logic_plan));
+
         // Enrich DML node fields with catalog metadata (NOT NULL, DEFAULT, CHECK exprs).
         // enrich reads exclusively from the plan-tree idx.
         {
-            auto ef = enrich_plan(resource(), logic_plan, disk_address_, ctx);
+            auto ef = enrich_plan(resource(), logic_plan, disk_address_, ctx, index_address_, &collections_context_storage);
             co_await std::move(ef);
         }
         // Logical plan rewrite: insert constraint wrapper nodes driven by enriched fields.
@@ -1370,7 +1376,7 @@ namespace services::dispatcher {
             // call below reuses this same txn.
             auto enrich_txn = txn_manager_.begin_transaction(session).data();
             components::execution_context_t enriched_ctx{session, enrich_txn, ctx.session_tz, ctx.table_oid};
-            auto ef2 = enrich_plan(resource(), logic_plan, disk_address_, enriched_ctx);
+            auto ef2 = enrich_plan(resource(), logic_plan, disk_address_, enriched_ctx, index_address_, &collections_context_storage);
             co_await std::move(ef2);
         }
 
@@ -1455,12 +1461,12 @@ namespace services::dispatcher {
                 if (logic_plan->type() == node_type::alter_table_t) {
                     exec_result = {make_cursor(resource()), {}, {}, {}};
                 } else {
-                    exec_result = co_await execute_plan_impl(session, logic_plan, params->take_parameters(), txn_data);
+                    exec_result = co_await execute_plan_impl(session, logic_plan, params->take_parameters(), txn_data, &collections_context_storage);
                 }
                 break;
             }
             default:
-                exec_result = co_await execute_plan_impl(session, logic_plan, params->take_parameters(), txn_data);
+                exec_result = co_await execute_plan_impl(session, logic_plan, params->take_parameters(), txn_data, &collections_context_storage);
                 break;
         }
 
@@ -1855,7 +1861,9 @@ namespace services::dispatcher {
     manager_dispatcher_t::execute_plan_impl(components::session::session_id_t session,
                                             node_ptr logical_plan,
                                             storage_parameters parameters,
-                                            components::table::transaction_data txn) {
+                                            components::table::transaction_data txn,
+                                            context_storage_t* collections_context_storage) {
+        auto context_copy = *collections_context_storage;
         trace(log_,
               "manager_dispatcher_t:execute_plan_impl: node_type: {}, table_oid: {}, session: {}",
               components::logical_plan::to_string(logical_plan->type()),
@@ -1868,9 +1876,9 @@ namespace services::dispatcher {
         // and forward the set to the executor. Wrapper / parser-window / DDL
         // nodes contribute INVALID_OID and are filtered.
         auto dependency_oids = logical_plan->table_oid_dependencies();
-        context_storage_t collections_context_storage(resource(), log_.clone(), session_tz(session));
+
         for (auto oid : dependency_oids) {
-            collections_context_storage.known_oids.insert(oid);
+            context_copy.known_oids.insert(oid);
         }
         // Forward resolve_table metadata (relkind + live columns)
         // so plan generators can build transfer_scan with the right
@@ -1882,21 +1890,11 @@ namespace services::dispatcher {
             impl::plan_resolve_index_t local_idx;
             impl::gather_plan_resolve_index(logical_plan.get(), local_idx);
             for (const auto& [oid, md_ptr] : local_idx.tbl_md_by_oid) {
-                collections_context_storage.table_metadata[oid] = md_ptr;
+                context_copy.table_metadata[oid] = md_ptr;
             }
         }
 
-        // Populate index metadata for optimizer-driven index selection.
-        // Keyed on table_oid (stamped by enrich_logical_plan).
-        if (index_address_ != actor_zeta::address_t::empty_address()) {
-            const auto tbl_oid = logical_plan->table_oid();
-            if (tbl_oid != components::catalog::INVALID_OID) {
-                auto [_ik, ikf] =
-                    actor_zeta::send(index_address_, &index::manager_index_t::get_indexed_keys, session, tbl_oid);
-                collections_context_storage.indexed_keys = co_await std::move(ikf);
-            }
-        }
-        collections_context_storage.parameters = &parameters;
+        context_copy.parameters = &parameters;
 
         assert(!executors_.empty());
         // Oid-only pool routing. For wrapper nodes (sequence_t etc.)
@@ -1917,7 +1915,7 @@ namespace services::dispatcher {
                                                                  session,
                                                                  logical_plan,
                                                                  parameters,
-                                                                 std::move(collections_context_storage),
+                                                                 std::move(context_copy),
                                                                  txn);
         if (needs_sched && executors_[pool_idx]) {
             scheduler_->enqueue(executors_[pool_idx].get());

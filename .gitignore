@@ -287,3 +287,7 @@ build-verify/
 
 .diffs
 test_dynamic_schema/*
+
+# Local Rust integration (#492 Rust FFI)
+integration/rust/.cargo/
+**/target/

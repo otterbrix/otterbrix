@@ -1,0 +1,78 @@
+FROM ubuntu:22.04 AS builder
+
+ENV TZ=America/US
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONFAULTHANDLER=1
+
+RUN apt update && \
+    apt upgrade -y && \
+    apt install -y \
+        build-essential \
+        ninja-build \
+        python3-pip \
+        python3-venv \
+        curl gnupg apt-transport-https \
+        zlib1g \
+        flex \
+        bison && \
+    apt clean && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --no-cache-dir conan==2.20.0 "cmake<4" && \
+    conan profile detect --force && \
+    conan remote add otterbrix http://conan.otterbrix.com
+
+RUN rm /bin/sh && ln -s /bin/bash /bin/sh
+
+WORKDIR /app/build
+COPY ./conanfile.py ./conanfile.py
+RUN conan install conanfile.py --build missing -s build_type=Release -s compiler.cppstd=gnu20
+
+WORKDIR /app
+COPY ./integration ./integration
+COPY ./cmake ./cmake
+COPY ./components ./components
+COPY ./core ./core
+COPY ./services ./services
+COPY ./example ./example
+COPY ./CMakeLists.txt ./CMakeLists.txt
+
+WORKDIR /app/build
+RUN cmake .. -G Ninja \
+    -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_toolchain.cmake \
+    -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON && \
+    cmake --build . --target c_otterbrix -- -j "$(nproc)"
+
+FROM ubuntu:22.04 AS rust
+
+ENV TZ=America/US
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt update && \
+    apt install -y \
+        build-essential \
+        curl \
+        ca-certificates \
+        clang \
+        libclang-dev \
+        pkg-config && \
+    apt clean && \
+    rm -rf /var/lib/apt/lists/*
+
+ARG RUST_VERSION=1.86.0
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+        sh -s -- -y --default-toolchain "${RUST_VERSION}" --profile minimal \
+            --component rustfmt --component clippy
+ENV PATH=/root/.cargo/bin:${PATH}
+
+WORKDIR /app
+COPY --from=builder /app /app
+
+WORKDIR /app/integration/rust
+RUN cargo fmt --all -- --check
+RUN cargo clippy --workspace --all-targets -- -D warnings
+RUN RUSTDOCFLAGS="-D missing_docs -D rustdoc::broken_intra_doc_links" \
+        cargo doc --workspace --no-deps
+ENV RPATH_FLAG="-C link-arg=-Wl,-rpath,/app/build/integration/c"
+RUN RUSTFLAGS="$RPATH_FLAG" cargo test --workspace
+RUN RUSTDOCFLAGS="$RPATH_FLAG" cargo test --workspace --doc

@@ -449,6 +449,9 @@ namespace components::sql::transform {
                             auto col_ref = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
                             auto field_name = std::string(col_ref.field.storage().back());
                             col_ref.field.set_cast_type(target_type_res.value());
+                            if (cast->variant_select) {
+                                col_ref.field.set_variant_select(true);
+                            }
                             std::string alias = res->name ? res->name : field_name;
                             has_non_star = true;
                             select_node->append_expression(make_scalar_expression(resource_,
@@ -456,6 +459,38 @@ namespace components::sql::transform {
                                                                                   expressions::key_t{resource_, alias},
                                                                                   std::move(col_ref.field)));
                             break;
+                        }
+                        // '<jsonb nav chain> ::? type' — e.g. `m -> 'a' ->> 'b' ::? string`.
+                        // Resolve the chain to its flattened key, then attach the
+                        // type so find_types picks the matching multi-type variant.
+                        if (cast->arg && nodeTag(cast->arg) == T_A_Expr) {
+                            auto* sub = pg_ptr_cast<A_Expr>(cast->arg);
+                            if (sub->kind == AEXPR_OP && sub->name &&
+                                nodeTag(sub->name->lst.front().data) == T_String &&
+                                is_jsonb_nav_operator(strVal(sub->name->lst.front().data))) {
+                                auto target_type_res = get_type(resource_, cast->typeName);
+                                if (target_type_res.has_error()) {
+                                    error_ = target_type_res.error();
+                                    break;
+                                }
+                                expressions::key_t field_key{resource_};
+                                if (!resolve_jsonb_scalar_key(sub, names, field_key)) {
+                                    return nullptr;
+                                }
+                                field_key.set_cast_type(target_type_res.value());
+                                if (cast->variant_select) {
+                                    field_key.set_variant_select(true);
+                                }
+                                std::string alias = res->name ? res->name
+                                                              : std::string(field_key.storage().back());
+                                has_non_star = true;
+                                select_node->append_expression(
+                                    make_scalar_expression(resource_,
+                                                           scalar_type::get_field,
+                                                           expressions::key_t{resource_, alias},
+                                                           std::move(field_key)));
+                                break;
+                            }
                         }
                         [[fallthrough]];
                     }
@@ -473,10 +508,56 @@ namespace components::sql::transform {
                         auto a_expr = pg_ptr_cast<A_Expr>(res->val);
                         if (a_expr->kind == AEXPR_OP) {
                             auto op_str = std::string_view(strVal(a_expr->name->lst.front().data));
+                            // JSONB delete: '#-' always; '-' only when the left side is
+                            // the table itself (document root) — otherwise it is plain
+                            // arithmetic subtraction. a_expr->lexpr is null for unary
+                            // minus ('-x'), so guard before probing it.
+                            if (op_str == "#-" ||
+                                (op_str == "-" && a_expr->lexpr && jsonb_lhs_is_table(a_expr->lexpr, names))) {
+                                has_non_star = true;
+                                expressions::key_t prefix_key{resource_};
+                                if (!resolve_jsonb_prefix_key(a_expr, names, prefix_key)) {
+                                    return nullptr;
+                                }
+                                select_node->append_expression(
+                                    make_scalar_expression(resource_, scalar_type::jsonb_delete, prefix_key));
+                                break;
+                            }
                             if (is_arithmetic_operator(op_str)) {
                                 has_non_star = true;
                                 logical_plan::node_ptr sel_node = select_node;
                                 transform_select_a_expr(a_expr, res->name, names, params, sel_node);
+                                break;
+                            }
+                            if (is_jsonb_nav_operator(op_str)) {
+                                has_non_star = true;
+                                if (jsonb_nav_returns_scalar(op_str)) {
+                                    // Scalar jsonb navigation (->> / #>>) collapses to a
+                                    // get_field on the flattened slash-joined column key.
+                                    expressions::key_t field_key{resource_};
+                                    if (!resolve_jsonb_scalar_key(a_expr, names, field_key)) {
+                                        return nullptr;
+                                    }
+                                    if (res->name) {
+                                        select_node->append_expression(
+                                            make_scalar_expression(resource_,
+                                                                   scalar_type::get_field,
+                                                                   expressions::key_t{resource_, res->name},
+                                                                   field_key));
+                                    } else {
+                                        select_node->append_expression(
+                                            make_scalar_expression(resource_, scalar_type::get_field, field_key));
+                                    }
+                                } else {
+                                    // Table-valued navigation (-> / #>): expand the subtree
+                                    // under the prefix into its (rerooted) columns.
+                                    expressions::key_t prefix_key{resource_};
+                                    if (!resolve_jsonb_prefix_key(a_expr, names, prefix_key)) {
+                                        return nullptr;
+                                    }
+                                    select_node->append_expression(
+                                        make_scalar_expression(resource_, scalar_type::jsonb_expand, prefix_key));
+                                }
                                 break;
                             }
                         }
@@ -761,59 +842,81 @@ namespace components::sql::transform {
         if (node.limitCount || node.limitOffset) {
             int64_t limit_val = logical_plan::limit_t::unlimit().limit();
             int64_t offset_val = 0;
+            std::optional<core::parameter_id_t> limit_param;
+            std::optional<core::parameter_id_t> offset_param;
 
             if (node.limitCount) {
-                if (nodeTag(node.limitCount) != T_A_Const) {
-                    error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                           std::pmr::string{"Unknown node type in limit clause: " +
-                                                                node_tag_to_string(nodeTag(node.limitCount)),
-                                                            resource_});
-                    return nullptr;
-                }
-                auto* value = &(pg_ptr_cast<A_Const>(node.limitCount)->val);
-                switch (nodeTag(value)) {
-                    case T_Null:
-                        break; // LIMIT ALL — keep unlimit_
-                    case T_Integer:
-                        limit_val = intVal(value);
+                switch (nodeTag(node.limitCount)) {
+                    case T_A_Const: {
+                        auto* value = &(pg_ptr_cast<A_Const>(node.limitCount)->val);
+                        switch (nodeTag(value)) {
+                            case T_Null:
+                                break; // LIMIT ALL — keep unlimit_
+                            case T_Integer:
+                                limit_val = intVal(value);
+                                break;
+                            default:
+                                error_ = core::error_t(
+                                    core::error_code_t::sql_parse_error,
+                                    std::pmr::string{
+                                        "Forbidden expression in limit clause: allowed only LIMIT <integer>/ALL",
+                                        resource_});
+                                return nullptr;
+                        }
+                        break;
+                    }
+                    case T_ParamRef:
+                        limit_param = add_param_value(node.limitCount, params);
                         break;
                     default:
-                        error_ = core::error_t(
-                            core::error_code_t::sql_parse_error,
-                            std::pmr::string{"Forbidden expression in limit clause: allowed only LIMIT <integer>/ALL",
-                                             resource_});
+                        error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                               std::pmr::string{"Unknown node type in limit clause: " +
+                                                                    node_tag_to_string(nodeTag(node.limitCount)),
+                                                                resource_});
                         return nullptr;
                 }
             }
 
             if (node.limitOffset) {
-                if (nodeTag(node.limitOffset) != T_A_Const) {
-                    error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                           std::pmr::string{"Unknown node type in offset clause: " +
-                                                                node_tag_to_string(nodeTag(node.limitOffset)),
-                                                            resource_});
-                    return nullptr;
-                }
-                auto* value = &(pg_ptr_cast<A_Const>(node.limitOffset)->val);
-                switch (nodeTag(value)) {
-                    case T_Null:
-                        break; // OFFSET NULL — treat as 0
-                    case T_Integer:
-                        offset_val = intVal(value);
+                switch (nodeTag(node.limitOffset)) {
+                    case T_A_Const: {
+                        auto* value = &(pg_ptr_cast<A_Const>(node.limitOffset)->val);
+                        switch (nodeTag(value)) {
+                            case T_Null:
+                                break; // OFFSET NULL — treat as 0
+                            case T_Integer:
+                                offset_val = intVal(value);
+                                break;
+                            default:
+                                error_ = core::error_t(
+                                    core::error_code_t::sql_parse_error,
+                                    std::pmr::string{
+                                        "Forbidden expression in offset clause: allowed only OFFSET <integer>",
+                                        resource_});
+                                return nullptr;
+                        }
+                        break;
+                    }
+                    case T_ParamRef:
+                        offset_param = add_param_value(node.limitOffset, params);
                         break;
                     default:
-                        error_ = core::error_t(
-                            core::error_code_t::sql_parse_error,
-                            std::pmr::string{"Forbidden expression in offset clause: allowed only OFFSET <integer>",
-                                             resource_});
+                        error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                               std::pmr::string{"Unknown node type in offset clause: " +
+                                                                    node_tag_to_string(nodeTag(node.limitOffset)),
+                                                                resource_});
                         return nullptr;
                 }
             }
 
-            agg->append_child(logical_plan::make_node_limit(resource_,
+            auto limit_node = logical_plan::make_node_limit(resource_,
                                                             core::dbname_t{agg->dbname()},
                                                             core::relname_t{agg->relname()},
-                                                            logical_plan::limit_t(limit_val, offset_val)));
+                                                            logical_plan::limit_t(limit_val, offset_val));
+            if (limit_param || offset_param) {
+                deferred_limits_.push_back(deferred_limit_t{limit_node.get(), limit_param, offset_param});
+            }
+            agg->append_child(std::move(limit_node));
         }
 
         return agg;

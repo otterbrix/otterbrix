@@ -7,6 +7,8 @@
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_sort.hpp>
 #include <components/logical_plan/param_storage.hpp>
+#include <components/physical_plan/operators/scan/index_scan.hpp>
+#include <components/physical_plan_generator/impl/create_plan_match.hpp>
 #include <components/physical_plan_generator/impl/index_selection_helpers.hpp>
 #include <components/planner/optimizer.hpp>
 #include <services/collection/context_storage.hpp>
@@ -876,4 +878,141 @@ TEST_CASE("optimizer::param_copy_survives") {
     storage_parameters moved = std::move(copy2);
     REQUIRE(moved.parameters.count(id0) == 1);
     REQUIRE(moved.parameters.at(id0).value<int64_t>() == 5);
+}
+
+static services::context_storage_t make_context_with_oid(std::pmr::memory_resource* resource,
+                                                         components::catalog::oid_t oid,
+                                                         const components::logical_plan::storage_parameters* params) {
+    services::context_storage_t ctx(resource, log_t{}, {});
+    ctx.known_oids.insert(oid);
+    ctx.parameters = params;
+    return ctx;
+}
+
+static services::context_storage_t make_context_with_oid(std::pmr::memory_resource* resource,
+                                                         components::catalog::oid_t oid,
+                                                         const components::logical_plan::parameter_node_t* params) {
+    return make_context_with_oid(resource, oid, params ? &params->parameters() : nullptr);
+}
+
+static void add_single_field_index(services::context_storage_t& ctx,
+                                   std::pmr::memory_resource* resource,
+                                   const char* field,
+                                   components::logical_plan::index_type type) {
+    components::logical_plan::keys_base_storage_t keys(resource);
+    keys.push_back(key(resource, field));
+    ctx.indexed_keys.push_back(keys);
+
+    components::index::index_description_t desc{
+        components::logical_plan::keys_base_storage_t(resource),
+        type,
+    };
+    desc.keys.push_back(key(resource, field));
+    ctx.indexed_descriptions.push_back(std::move(desc));
+}
+
+TEST_CASE("create_plan_match::eq_uses_index_scan_hashed_preferred") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto params = make_parameter_node(&resource);
+    auto pid = params->add_parameter(int64_t(42));
+    constexpr auto table_oid = components::catalog::oid_t{777};
+
+    auto ctx = make_context_with_oid(&resource, table_oid, params.get());
+    add_single_field_index(ctx, &resource, "age", components::logical_plan::index_type::hashed);
+
+    auto node = make_node_match(&resource,
+                                core::dbname_t{database_name},
+                                core::relname_t{collection_name},
+                                make_compare_expression(&resource, compare_type::eq, key(&resource, "age"), pid));
+    node->set_table_oid(table_oid);
+
+    auto op = services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+    REQUIRE(op->type() == components::operators::operator_type::index_scan);
+    auto* scan = static_cast<components::operators::index_scan*>(op.get());
+    REQUIRE(scan->compare_type() == compare_type::eq);
+    REQUIRE(scan->preferred_index_type() == components::logical_plan::index_type::hashed);
+}
+
+TEST_CASE("create_plan_match::range_uses_index_scan_single_preferred") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto params = make_parameter_node(&resource);
+    auto pid = params->add_parameter(int64_t(30));
+    constexpr auto table_oid = components::catalog::oid_t{778};
+
+    auto ctx = make_context_with_oid(&resource, table_oid, params.get());
+    add_single_field_index(ctx, &resource, "age", components::logical_plan::index_type::single);
+
+    auto node = make_node_match(&resource,
+                                core::dbname_t{database_name},
+                                core::relname_t{collection_name},
+                                make_compare_expression(&resource, compare_type::gte, key(&resource, "age"), pid));
+    node->set_table_oid(table_oid);
+
+    auto op = services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+    REQUIRE(op->type() == components::operators::operator_type::index_scan);
+    auto* scan = static_cast<components::operators::index_scan*>(op.get());
+    REQUIRE(scan->compare_type() == compare_type::gte);
+    REQUIRE(scan->preferred_index_type() == components::logical_plan::index_type::single);
+}
+
+TEST_CASE("create_plan_match::range_with_only_hashed_falls_back_to_full_scan") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto params = make_parameter_node(&resource);
+    auto pid = params->add_parameter(int64_t(30));
+    constexpr auto table_oid = components::catalog::oid_t{779};
+
+    auto ctx = make_context_with_oid(&resource, table_oid, params.get());
+    add_single_field_index(ctx, &resource, "age", components::logical_plan::index_type::hashed);
+
+    auto node = make_node_match(&resource,
+                                core::dbname_t{database_name},
+                                core::relname_t{collection_name},
+                                make_compare_expression(&resource, compare_type::gt, key(&resource, "age"), pid));
+    node->set_table_oid(table_oid);
+
+    auto op = services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+    REQUIRE(op->type() == components::operators::operator_type::full_scan);
+}
+
+TEST_CASE("create_plan_match::key_on_right_mirrors_compare_type_for_index_scan") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto params = make_parameter_node(&resource);
+    auto pid = params->add_parameter(int64_t(30));
+    constexpr auto table_oid = components::catalog::oid_t{780};
+
+    auto ctx = make_context_with_oid(&resource, table_oid, params.get());
+    add_single_field_index(ctx, &resource, "age", components::logical_plan::index_type::single);
+
+    auto node = make_node_match(&resource,
+                                core::dbname_t{database_name},
+                                core::relname_t{collection_name},
+                                make_compare_expression(&resource, compare_type::lt, pid, key(&resource, "age")));
+    node->set_table_oid(table_oid);
+
+    auto op = services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+    REQUIRE(op->type() == components::operators::operator_type::index_scan);
+    auto* scan = static_cast<components::operators::index_scan*>(op.get());
+    REQUIRE(scan->compare_type() == compare_type::gt);
+}
+
+TEST_CASE("create_plan_match::union_compare_uses_full_scan") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto params = make_parameter_node(&resource);
+    auto pid = params->add_parameter(int64_t(30));
+    constexpr auto table_oid = components::catalog::oid_t{781};
+
+    auto ctx = make_context_with_oid(&resource, table_oid, params.get());
+    add_single_field_index(ctx, &resource, "age", components::logical_plan::index_type::single);
+
+    auto union_expr = make_compare_union_expression(&resource, compare_type::union_and);
+    union_expr->append_child(make_compare_expression(&resource, compare_type::gte, key(&resource, "age"), pid));
+
+    auto node =
+        make_node_match(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, union_expr);
+    node->set_table_oid(table_oid);
+
+    auto op = services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+    REQUIRE(op->type() == components::operators::operator_type::match);
+    REQUIRE(op->left() != nullptr);
+    REQUIRE(op->left()->type() == components::operators::operator_type::full_scan);
 }

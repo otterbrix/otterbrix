@@ -137,6 +137,11 @@ namespace services::dispatcher {
             size_t key_order;
         };
 
+        // JOIN merge: keep ALL physical columns from both sides, even when a name is
+        // shared across tables (e.g. left.k and right.k). Dropping a same-named column
+        // here loses real data — see kernel_bug_proof::join_keeps_all_physical_columns.
+        // Wildcard ambiguity is not resolved here: SELECT * returns every column, and an
+        // EXPLICIT reference to an ambiguous name is rejected later in find_types.
         named_schema merge_schemas(std::pmr::memory_resource* resource, named_schema lhs, named_schema rhs) {
             named_schema merged(resource);
             for (auto&& type : lhs) {
@@ -265,7 +270,23 @@ namespace services::dispatcher {
                 matches.erase(it);
             }
 
-            // if result contains multiple types, try to disambiguate via cast_type_ hint
+            // '::?' type-variant selection: among several same-name columns
+            // (computing multi-type fields), keep only the one whose physical type
+            // matches the requested type. Disambiguates what would otherwise be an
+            // ambiguous name; an empty result falls through to "not found" below.
+            if (key.is_variant_select() && key.has_cast_type()) {
+                const auto want = key.cast_type().type();
+                type_paths filtered{resource};
+                for (auto& tp : result) {
+                    if (tp.type.type() == want) {
+                        filtered.push_back(std::move(tp));
+                    }
+                }
+                result = std::move(filtered);
+            }
+
+            // if result still contains multiple types, try to disambiguate via the
+            // cast_type_ hint; if it remains ambiguous, that is an error
             if (result.size() > 1) {
                 if (truncated_key.has_cast_type()) {
                     auto cast_lt = truncated_key.cast_type().type();
@@ -368,6 +389,57 @@ namespace services::dispatcher {
                     return column_path_left;
                 }
             }
+        }
+
+        // Rewrite an is_not_null / is_null predicate on a multi-type field into
+        // an OR / AND over its per-type-variant columns: the key "exists" iff ANY
+        // variant is non-null, and is null only if ALL variants are null. This is
+        // how jsonb '?'/'?|'/'?&' behave over multi-type fields. Other compare
+        // types on such a name stay ambiguous (use '::?type' to pick a variant).
+        components::expressions::expression_ptr
+        rewrite_multitype_null_checks(std::pmr::memory_resource* resource,
+                                      const components::expressions::expression_ptr& expr,
+                                      const named_schema& schema) {
+            using namespace components::expressions;
+            if (!expr || expr->group() != expression_group::compare) {
+                return expr;
+            }
+            auto* cmp = static_cast<compare_expression_t*>(expr.get());
+            if (cmp->is_union()) {
+                auto rebuilt = make_compare_union_expression(resource, cmp->type());
+                for (const auto& ch : cmp->children()) {
+                    rebuilt->append_child(rewrite_multitype_null_checks(resource, ch, schema));
+                }
+                return rebuilt;
+            }
+            const bool is_nn = cmp->type() == compare_type::is_not_null;
+            const bool is_n = cmp->type() == compare_type::is_null;
+            if ((!is_nn && !is_n) || !std::holds_alternative<components::expressions::key_t>(cmp->left())) {
+                return expr;
+            }
+            const auto& key = std::get<components::expressions::key_t>(cmp->left());
+            if (key.storage().empty()) {
+                return expr;
+            }
+            const std::string name = key.as_string();
+            std::vector<components::types::complex_logical_type> variants;
+            for (const auto& c : schema) {
+                if (c.type.has_alias() && std::string(c.type.alias()) == name) {
+                    variants.push_back(c.type);
+                }
+            }
+            if (variants.size() <= 1) {
+                return expr; // single-type (or unknown) — leave as-is
+            }
+            auto combined =
+                make_compare_union_expression(resource, is_nn ? compare_type::union_or : compare_type::union_and);
+            for (const auto& vt : variants) {
+                components::expressions::key_t vkey = key;
+                vkey.set_cast_type(vt);
+                vkey.set_variant_select(true);
+                combined->append_child(make_compare_expression(resource, cmp->type(), vkey, cmp->right()));
+            }
+            return combined;
         }
 
         [[nodiscard]] core::result_wrapper_t<named_schema>
@@ -1260,6 +1332,11 @@ namespace services::dispatcher {
                     same_schema = true;
                 }
                 if (node_match) {
+                    // Expand is_not_null/is_null on multi-type fields into OR/AND
+                    // over their variants (jsonb '?'/'?|'/'?&' over multi-type).
+                    for (auto& e : node_match->expressions()) {
+                        e = impl::rewrite_multitype_null_checks(resource, e, incoming_schema);
+                    }
                     auto res = impl::validate_schema(resource,
                                                      idx,
                                                      node_match,
@@ -1359,6 +1436,64 @@ namespace services::dispatcher {
                             }
                         }
 
+                        // Pre-expand table-valued jsonb operators (jsonb_expand '->'/'#>'
+                        // and jsonb_delete '-'/'#-') into individual get_field columns
+                        // against the resolved schema. On a computing table nested fields
+                        // are flattened to columns named by their slash-joined path, so:
+                        //   expand prefix P -> every column == P or under "P/", rerooted
+                        //                      (strip "P/"; a leaf == P keeps its last seg)
+                        //   delete prefix P -> every column NOT under P (kept as-is)
+                        {
+                            auto& exprs = node_select->expressions();
+                            for (size_t ei = 0; ei < exprs.size();) {
+                                if (exprs[ei]->group() != expression_group::scalar) {
+                                    ei++;
+                                    continue;
+                                }
+                                auto* se = reinterpret_cast<scalar_expression_t*>(exprs[ei].get());
+                                const bool is_expand = se->type() == scalar_type::jsonb_expand;
+                                const bool is_delete = se->type() == scalar_type::jsonb_delete;
+                                if (!is_expand && !is_delete) {
+                                    ei++;
+                                    continue;
+                                }
+                                const std::string prefix = se->key().as_string();
+                                const std::string prefix_slash = prefix + "/";
+                                // (output_name, source_alias) pairs
+                                std::vector<std::pair<std::string, std::string>> cols;
+                                for (const auto& sc : incoming_schema) {
+                                    if (!sc.type.has_alias()) {
+                                        continue;
+                                    }
+                                    std::string alias(sc.type.alias());
+                                    const bool under =
+                                        alias == prefix || alias.rfind(prefix_slash, 0) == 0;
+                                    if (is_delete) {
+                                        if (!under) {
+                                            cols.emplace_back(alias, alias);
+                                        }
+                                    } else if (under) {
+                                        std::string out = alias == prefix
+                                                              ? prefix.substr(prefix.find_last_of('/') + 1)
+                                                              : alias.substr(prefix_slash.size());
+                                        cols.emplace_back(std::move(out), std::move(alias));
+                                    }
+                                }
+                                exprs.erase(exprs.begin() + static_cast<ptrdiff_t>(ei));
+                                for (size_t j = 0; j < cols.size(); j++) {
+                                    components::expressions::key_t out_key(resource, cols[j].first.c_str());
+                                    components::expressions::key_t src_key(resource, cols[j].second.c_str());
+                                    exprs.insert(
+                                        exprs.begin() + static_cast<ptrdiff_t>(ei + j),
+                                        make_scalar_expression(resource, scalar_type::get_field, out_key, src_key));
+                                }
+                                ei += cols.size();
+                            }
+                        }
+
+                        // Resolve key paths in node_select scalar expressions against incoming schema,
+                        // building a precise result schema. Aggregates are always in node_group_t now,
+                        // so only scalar expressions appear here.
                         bool has_computed_column = false;
                         for (auto& expr : node_select->expressions()) {
                             if (expr->group() != expression_group::scalar) {
@@ -1413,22 +1548,19 @@ namespace services::dispatcher {
                             return result;
                         }
                     } else {
-                        // Type-aware check of incoming_schema for type conflicts:
-                        // error only when the same name+qualifier is repeated with different types
-                        for (size_t i = 0; i < incoming_schema.size(); i++) {
-                            for (size_t j = 0; j < i; j++) {
-                                if (incoming_schema[j].result_alias == incoming_schema[i].result_alias &&
-                                    std::string(incoming_schema[j].type.alias()) ==
-                                        std::string(incoming_schema[i].type.alias()) &&
-                                    incoming_schema[j].type != incoming_schema[i].type) {
-                                    return core::error_t(
-                                        core::error_code_t::schema_error,
-                                        std::pmr::string{"column '" + incoming_schema[i].type.alias() +
-                                                             "' has multiple types; use explicit type selection",
-                                                         resource});
-                                }
-                            }
-                        }
+                        // "SELECT *" / "SELECT t.*" — emit every column unchanged. The
+                        // wildcard is never ambiguous: it simply returns all columns,
+                        // including
+                        //   * several same-name columns of different types (multi-type
+                        //     fields on a computing table), and
+                        //   * same-name columns from different JOIN'd tables, and
+                        //   * the doubled columns of a bare self-join.
+                        // Ambiguity is enforced only on an EXPLICIT reference to such a
+                        // name (handled in find_types, which errors with ambiguous_name
+                        // and requires aliases / '::?type' selection). No dedup or type
+                        // conflict check belongs here — see the merge_schemas note above
+                        // and tests test_computed_schema::multitype_select_star,
+                        // test_join "self join", join_keeps_all_physical_columns.
                     }
                     return incoming_schema;
                 } else {

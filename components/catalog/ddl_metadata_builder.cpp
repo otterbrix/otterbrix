@@ -446,8 +446,8 @@ namespace components::catalog {
         // Allows future DROP TABLE source to detect dangling matview (followup #11).
         if (source_table_oid != INVALID_OID) {
             if (const auto* def = find_system_table("pg_depend")) {
-                auto chunk = make_pg_rows(
-                    resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                auto chunk =
+                    make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                         set_oid(c, 0, 0, well_known_oid::pg_class_table);
                         set_oid(c, 1, 0, mv_oid);
                         set_oid(c, 2, 0, well_known_oid::pg_class_table);

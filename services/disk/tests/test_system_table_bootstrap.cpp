@@ -48,6 +48,8 @@ namespace {
             return wk::pg_sequence_table;
         if (name == "pg_rewrite")
             return wk::pg_rewrite_table;
+        if (name == "pg_settings")
+            return wk::pg_settings_table;
         return components::catalog::INVALID_OID;
     }
 

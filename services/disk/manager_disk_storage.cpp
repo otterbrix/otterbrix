@@ -6,12 +6,15 @@ namespace services::disk {
     namespace catalog = components::catalog;
     using namespace detail;
 
-    uint64_t manager_disk_t::direct_append_sync(catalog::oid_t table_oid, components::vector::data_chunk_t& data) {
-        return direct_append_sync(table_oid, data, components::table::transaction_data{0, 0});
+    uint64_t manager_disk_t::direct_append_sync(catalog::oid_t table_oid,
+                                                components::vector::data_chunk_t& data,
+                                                core::date::timezone_offset_t session_tz) {
+        return direct_append_sync(table_oid, data, session_tz, components::table::transaction_data{0, 0});
     }
 
     uint64_t manager_disk_t::direct_append_sync(catalog::oid_t table_oid,
                                                 components::vector::data_chunk_t& data,
+                                                core::date::timezone_offset_t session_tz,
                                                 const components::table::transaction_data& txn) {
         auto* s = get_storage(table_oid);
         if (!s || data.size() == 0)
@@ -66,7 +69,7 @@ namespace services::disk {
                     components::vector::vector_t casted(resource(), target_type, local.size());
                     for (uint64_t row = 0; row < local.size(); row++) {
                         if (src_vec.validity().row_is_valid(row)) {
-                            casted.set_value(row, src_vec.value(row).cast_as(target_type));
+                            casted.set_value(row, src_vec.value(row).cast_as(target_type, session_tz));
                         } else {
                             casted.validity().set_invalid(row);
                         }
@@ -505,7 +508,7 @@ namespace services::disk {
                     components::vector::vector_t casted(resource(), target_type, data->size());
                     for (uint64_t row = 0; row < data->size(); row++) {
                         if (src_vec.validity().row_is_valid(row)) {
-                            casted.set_value(row, src_vec.value(row).cast_as(target_type));
+                            casted.set_value(row, src_vec.value(row).cast_as(target_type, ctx.session_tz));
                         } else {
                             casted.validity().set_invalid(row);
                         }

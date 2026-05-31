@@ -14,6 +14,7 @@ namespace services {
     struct context_storage_t {
         std::pmr::memory_resource* resource;
         log_t log;
+        core::date::timezone_offset_t session_timezone;
         // oid-only routing. Plan generators ask "do we know about this table?"
         // via the resolved table_oid stamped on the logical_plan node.
         // Wrapper / parser-window paths fall back to the empty set.
@@ -27,9 +28,12 @@ namespace services {
         std::unordered_map<components::catalog::oid_t, const components::logical_plan::resolved_table_metadata_t*>
             table_metadata;
 
-        context_storage_t(std::pmr::memory_resource* resource, log_t log)
+        context_storage_t(std::pmr::memory_resource* resource,
+                          log_t log,
+                          core::date::timezone_offset_t session_timezone)
             : resource(resource)
             , log(std::move(log))
+            , session_timezone(session_timezone)
             , indexed_keys(resource) {}
 
         bool has_table_oid(components::catalog::oid_t oid) const noexcept {

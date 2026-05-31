@@ -85,7 +85,7 @@ namespace components::operators {
         // pipeline once dispatched as its own plan. body_op_ holds the
         // compiled body plan; intentionally not driven here. See
         // docs/pr496-followups.md #2 for the populate-on-CREATE workplan.
-        (void)body_op_;
+        (void) body_op_;
         mark_executed();
     }
 

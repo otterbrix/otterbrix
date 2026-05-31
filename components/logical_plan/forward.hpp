@@ -103,6 +103,7 @@ namespace components::logical_plan {
         // manager_disk_t::allocate_oids_batch — DDL planner reads the
         // resulting batch via node_allocate_oids_t::oids().
         allocate_oids_t,
+        set_timezone_t,
         unused
     };
 

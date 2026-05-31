@@ -518,10 +518,10 @@ namespace components::sql::transform {
                                 // (table_alias.struct_col).* needs schema-aware struct expansion;
                                 // not supported — surface explicitly instead of silent miswiring.
                                 if (cref->fields->lst.size() > 1 && !path.empty() && path.front() == "*") {
-                                    error_ = core::error_t(core::error_code_t::unimplemented_yet,
-                                                           std::pmr::string{
-                                                               "struct field wildcard (alias.struct).* not supported",
-                                                               resource_});
+                                    error_ = core::error_t(
+                                        core::error_code_t::unimplemented_yet,
+                                        std::pmr::string{"struct field wildcard (alias.struct).* not supported",
+                                                         resource_});
                                     return nullptr;
                                 }
                                 path.emplace_back(pmrStrVal(cref->fields->lst.back().data, resource_));

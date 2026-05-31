@@ -2,6 +2,7 @@
 
 #include "appender/append_data.hpp"
 #include "appender/bool_data.hpp"
+#include "appender/datetime_data.hpp"
 #include "appender/fixed_size_list_data.hpp"
 #include "appender/list_data.hpp"
 #include "appender/list_view_data.hpp"
@@ -133,10 +134,6 @@ namespace components::vector::arrow {
             case logical_type::INTEGER:
                 initialize_appender_templated<appender::arrow_scala_data<int32_t>>(append_data);
                 break;
-            case logical_type::TIMESTAMP_SEC:
-            case logical_type::TIMESTAMP_MS:
-            case logical_type::TIMESTAMP_US:
-            case logical_type::TIMESTAMP_NS:
             case logical_type::BIGINT:
                 initialize_appender_templated<appender::arrow_scala_data<int64_t>>(append_data);
                 break;
@@ -212,6 +209,19 @@ namespace components::vector::arrow {
             }
             case logical_type::MAP:
                 initialize_appender_templated<appender::arrow_map_data_t<int32_t>>(append_data);
+                break;
+            case logical_type::DATE:
+                initialize_appender_templated<appender::arrow_date_appender_t>(append_data);
+                break;
+            case logical_type::TIME:
+                initialize_appender_templated<appender::arrow_time_appender_t>(append_data);
+                break;
+            case logical_type::TIMESTAMP:
+            case logical_type::TIMESTAMP_TZ:
+                initialize_appender_templated<appender::arrow_timestamp_appender_t>(append_data);
+                break;
+            case logical_type::INTERVAL:
+                initialize_appender_templated<appender::arrow_interval_appender_t>(append_data);
                 break;
             default:
                 throw std::runtime_error("Unsupported type in OtterBrix -> initialize_function_pointers()");

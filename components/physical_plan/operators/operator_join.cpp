@@ -152,7 +152,8 @@ namespace components::operators {
                                                                     expression_,
                                                                     left_chunks.front().types(),
                                                                     right_chunks.front().types(),
-                                                                    &context->parameters)
+                                                                    &context->parameters,
+                                                                    context->session_tz)
                                      : predicates::create_all_true_predicate(left_out->resource());
 
         auto* res_resource = left_out->resource();

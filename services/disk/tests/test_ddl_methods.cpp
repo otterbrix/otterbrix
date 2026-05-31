@@ -547,6 +547,7 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
         chunk->set_value(2, 0, logical_value_t(&fx.resource, std::int64_t{3}));
         components::execution_context_t append_ctx{session_id_t{},
                                                    components::table::transaction_data{0, 0},
+                                                   {},
                                                    table_oid};
         fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, std::move(chunk));
     }
@@ -675,7 +676,7 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
     fx.invoke(&manager_disk_t::create_storage, session_id_t{}, table_oid, catalog::well_known_oid::main_database);
 
     auto append_ctx = [&](catalog::oid_t toid) {
-        return components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, toid};
+        return components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}, toid};
     };
 
     auto build_chunk = [&](std::vector<std::pair<std::string, complex_logical_type>> cols,

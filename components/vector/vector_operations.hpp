@@ -364,6 +364,47 @@ namespace components::vector::vector_ops {
               uint64_t target_offset,
               uint64_t copy_count);
 
+    // Writes source[i] → target[i*stride + offset] for i in 0..count-1.
+    // Used for updating a fixed-index element across all rows in an ARRAY column.
+    void
+    copy_strided_target(const vector_t& source, vector_t& target, uint64_t count, uint64_t stride, uint64_t offset);
+
+    // Returns a new FLAT vector of target_type with each element cast from source.
+    // Only numeric physical types are supported.
+    vector_t cast_vector(std::pmr::memory_resource* resource,
+                         const vector_t& source,
+                         const types::complex_logical_type& target_type,
+                         uint64_t count);
+
+    enum class unary_vector_op
+    {
+        abs,
+        bit_not,
+        sqr_root,
+        cube_root,
+        factorial
+    };
+    enum class binary_vector_op
+    {
+        exp,
+        bit_and,
+        bit_or,
+        bit_xor,
+        shift_left,
+        shift_right
+    };
+
+    // Element-wise unary op. abs/bit_not preserve source type; sqr_root/cube_root/factorial return DOUBLE.
+    vector_t
+    apply_unary_vector_op(std::pmr::memory_resource* resource, unary_vector_op op, const vector_t& src, uint64_t count);
+
+    // Element-wise binary op. exp returns DOUBLE; bitwise/shift ops preserve lhs type.
+    vector_t apply_binary_vector_op(std::pmr::memory_resource* resource,
+                                    binary_vector_op op,
+                                    const vector_t& lhs,
+                                    const vector_t& rhs,
+                                    uint64_t count);
+
     void hash(vector_t& input, vector_t& result, uint64_t count);
     void hash(vector_t& input, vector_t& result, const indexing_vector_t& indexing, uint64_t count);
 

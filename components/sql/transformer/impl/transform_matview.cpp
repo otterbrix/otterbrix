@@ -19,8 +19,7 @@ namespace components::sql::transform {
         std::string extract_matview_body(const char* sql) {
             std::string s(sql);
             std::string upper(s);
-            std::transform(upper.begin(), upper.end(), upper.begin(),
-                           [](unsigned char c) { return std::toupper(c); });
+            std::transform(upper.begin(), upper.end(), upper.begin(), [](unsigned char c) { return std::toupper(c); });
             auto pos = upper.find(" AS ");
             if (pos == std::string::npos) {
                 return "SELECT *";
@@ -37,15 +36,13 @@ namespace components::sql::transform {
     logical_plan::node_ptr transformer::transform_create_matview(CreateTableAsStmt& cs,
                                                                  logical_plan::parameter_node_t* params) {
         if (!cs.query || cs.query->type != T_SelectStmt) {
-            error_ = core::error_t(
-                core::error_code_t::sql_parse_error,
-                std::pmr::string{"CREATE MATERIALIZED VIEW requires a SELECT body", resource_});
+            error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                   std::pmr::string{"CREATE MATERIALIZED VIEW requires a SELECT body", resource_});
             return nullptr;
         }
         if (!cs.into || !cs.into->rel) {
-            error_ = core::error_t(
-                core::error_code_t::sql_parse_error,
-                std::pmr::string{"CREATE MATERIALIZED VIEW missing target relation", resource_});
+            error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                   std::pmr::string{"CREATE MATERIALIZED VIEW missing target relation", resource_});
             return nullptr;
         }
 
@@ -75,8 +72,9 @@ namespace components::sql::transform {
         const std::string mv_name = target_qn.relname;
 
         // 5. Build matview node carrying body plan as child[0].
-        auto matview_node = logical_plan::make_node_create_matview(
-            resource_, core::matviewname_t{mv_name}, core::body_sql_t{std::move(body_sql)});
+        auto matview_node = logical_plan::make_node_create_matview(resource_,
+                                                                   core::matviewname_t{mv_name},
+                                                                   core::body_sql_t{std::move(body_sql)});
         matview_node->set_body_plan(body_aggregate);
 
         // 6. Wrap with namespace resolve(s) + source table resolve at the front
@@ -84,8 +82,7 @@ namespace components::sql::transform {
         // catalog_resolve_*_t children and stamps oids + metadata.
         auto outer = boost::intrusive_ptr(new logical_plan::node_sequence_t(resource_));
         if (!mv_db.empty()) {
-            outer->append_child(
-                logical_plan::make_node_catalog_resolve_namespace(resource_, core::dbname_t{mv_db}));
+            outer->append_child(logical_plan::make_node_catalog_resolve_namespace(resource_, core::dbname_t{mv_db}));
         }
         // Source's namespace + table resolve so Pass 1 stamps source's
         // resolved_metadata.columns for the planner's derive_output_schema.
@@ -94,8 +91,9 @@ namespace components::sql::transform {
                 logical_plan::make_node_catalog_resolve_namespace(resource_, core::dbname_t{source_db}));
         }
         if (!source_rel.empty()) {
-            outer->append_child(logical_plan::make_node_catalog_resolve_table(
-                resource_, core::dbname_t{source_db}, core::relname_t{source_rel}));
+            outer->append_child(logical_plan::make_node_catalog_resolve_table(resource_,
+                                                                              core::dbname_t{source_db},
+                                                                              core::relname_t{source_rel}));
         }
         outer->append_child(matview_node);
         return outer;
@@ -103,14 +101,15 @@ namespace components::sql::transform {
 
     logical_plan::node_ptr transformer::transform_refresh_matview(RefreshMatViewStmt& rs) {
         if (!rs.relation) {
-            error_ = core::error_t(
-                core::error_code_t::sql_parse_error,
-                std::pmr::string{"REFRESH MATERIALIZED VIEW missing relation", resource_});
+            error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                   std::pmr::string{"REFRESH MATERIALIZED VIEW missing relation", resource_});
             return nullptr;
         }
         auto qn = rangevar_to_qualified_name(rs.relation);
-        auto node = logical_plan::make_node_refresh_matview(
-            resource_, core::matviewname_t{qn.relname}, rs.concurrent, !rs.skipData);
+        auto node = logical_plan::make_node_refresh_matview(resource_,
+                                                            core::matviewname_t{qn.relname},
+                                                            rs.concurrent,
+                                                            !rs.skipData);
         // Wrap so Pass 1 stamps mv's resolved_metadata including view_sql
         // (Phase A.A2 reads pg_rewrite.ev_action for relkind='m').
         return maybe_wrap_with_catalog_resolve_table(resource_, qn.dbname, qn.relname, std::move(node));

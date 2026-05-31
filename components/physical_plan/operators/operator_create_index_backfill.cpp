@@ -48,7 +48,8 @@ namespace components::operators {
                                            table_oid_,
                                            services::index::index_name_t(index_name_),
                                            keys_,
-                                           index_type_);
+                                           index_type_,
+                                           ctx->session_tz);
         const auto id_index = co_await std::move(ixf);
 
         if (id_index == components::index::INDEX_ID_UNDEFINED) {
@@ -74,14 +75,14 @@ namespace components::operators {
                 auto scan_data = co_await std::move(ssf);
                 if (scan_data) {
                     const auto count = scan_data->size();
-                    auto [_ir, irf] =
-                        actor_zeta::send(ctx->index_address,
-                                         &services::index::manager_index_t::insert_rows,
-                                         services::index::execution_context_t{ctx->session, ctx->txn, table_oid_},
-                                         table_oid_,
-                                         std::move(scan_data),
-                                         uint64_t{0},
-                                         count);
+                    auto [_ir, irf] = actor_zeta::send(
+                        ctx->index_address,
+                        &services::index::manager_index_t::insert_rows,
+                        services::index::execution_context_t{ctx->session, ctx->txn, ctx->session_tz, table_oid_},
+                        table_oid_,
+                        std::move(scan_data),
+                        uint64_t{0},
+                        count);
                     co_await std::move(irf);
                     // Group 3 fix: insert_rows tags index entries with the
                     // current txn_id but leaves them PENDING. They become

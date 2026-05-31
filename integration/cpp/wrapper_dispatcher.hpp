@@ -26,6 +26,8 @@
 #include <components/session/session.hpp>
 #include <components/sql/transformer/transformer.hpp>
 
+#include <services/dispatcher/dispatcher.hpp>
+
 namespace otterbrix {
 
     using components::session::session_id_t;
@@ -38,17 +40,19 @@ namespace otterbrix {
         using dispatch_traits = actor_zeta::dispatch_traits<>;
 
         /// blocking method
-        wrapper_dispatcher_t(std::pmr::memory_resource*, actor_zeta::address_t, log_t& log);
+        wrapper_dispatcher_t(std::pmr::memory_resource*,
+                             services::dispatcher::manager_dispatcher_t* manager_dispatcher,
+                             actor_zeta::scheduler_raw scheduler,
+                             log_t& log);
         ~wrapper_dispatcher_t();
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
         auto make_type() const noexcept -> const char*;
-        void behavior(actor_zeta::mailbox::message* msg);
+        actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
-        auto create_database(const session_id_t& session, const database_name_t& database)
-            -> components::cursor::cursor_t_ptr;
-        auto drop_database(const session_id_t& session, const database_name_t& database)
-            -> components::cursor::cursor_t_ptr;
+        [[nodiscard]] std::pair<bool, actor_zeta::detail::enqueue_result>
+        enqueue_impl(actor_zeta::mailbox::message_ptr msg);
+
         auto create_collection(const session_id_t& session,
                                const database_name_t& database,
                                const collection_name_t& collection,
@@ -105,7 +109,8 @@ namespace otterbrix {
 
     private:
         std::pmr::memory_resource* resource_;
-        actor_zeta::address_t manager_dispatcher_;
+        services::dispatcher::manager_dispatcher_t* manager_dispatcher_;
+        actor_zeta::scheduler_raw scheduler_;
         log_t log_;
         std::atomic_int i = 0;
 
@@ -123,16 +128,13 @@ namespace otterbrix {
 
     template<typename T>
     T wrapper_dispatcher_t::wait_future(unique_future<T>& future) {
-        while (!future.available()) {
+        while (!future.is_ready()) {
             std::unique_lock<std::mutex> lock(event_loop_mutex_);
-            if (!future.available()) {
+            if (!future.is_ready()) {
                 event_loop_cv_.wait_for(lock, std::chrono::milliseconds(10));
             }
         }
-
-        event_loop_cv_.notify_all();
-
-        return std::move(future).get();
+        return std::move(future).take_ready();
     }
 
 } // namespace otterbrix

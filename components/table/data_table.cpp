@@ -3,6 +3,7 @@
 #include <components/table/storage/partial_block_manager.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/vector_operations.hpp>
+#include <cstdlib>
 #include <unordered_set>
 
 #include "row_group.hpp"
@@ -214,16 +215,24 @@ namespace components::table {
 
     void data_table_t::append_lock(table_append_state& state) {
         state.append_lock = std::unique_lock(append_lock_);
+        // Recoverable: concurrent DDL altered table. TODO: return core::error_t for graceful
+        // txn abort (Block B-MVCC follow-up — full plumb via state.error or signature change).
+        // Current fix: assert+abort eliminates actor-zeta UB (-fno-exceptions swallows throws
+        // silently inside coroutines). For DDL-DML race detection this is conservative-fail.
+        assert(is_root_ && "Transaction conflict: adding entries to a table that has been altered!");
         if (!is_root_) {
-            throw std::logic_error("Transaction conflict: adding entries to a table that has been altered!");
+            std::abort();
         }
         state.row_start = static_cast<int64_t>(row_groups_->total_rows());
         state.current_row = state.row_start;
     }
 
     void data_table_t::initialize_append(table_append_state& state) {
+        // Invariant violation: programmer-error precondition (append_lock not called).
+        assert(state.append_lock &&
+               "data_table_t::append_lock should be called before data_table_t::initialize_append");
         if (!state.append_lock) {
-            throw std::logic_error("data_table_t::append_lock should be called before data_table_t::initialize_append");
+            std::abort();
         }
         row_groups_->initialize_append(state);
     }
@@ -437,8 +446,11 @@ namespace components::table {
             return;
         }
 
+        // Recoverable: concurrent DDL altered table. TODO follow-up: core::error_t return for
+        // graceful txn abort. Current: assert+abort eliminates actor-zeta -fno-exceptions UB.
+        assert(is_root_ && "Transaction conflict: cannot update a table that has been altered!");
         if (!is_root_) {
-            throw std::logic_error("Transaction conflict: cannot update a table that has been altered!");
+            std::abort();
         }
 
         updates.flatten();

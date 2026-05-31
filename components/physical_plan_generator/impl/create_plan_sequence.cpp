@@ -162,9 +162,9 @@ namespace services::planner::impl {
             // (Pass 1's own sub-plan), don't skip — we'd produce an empty
             // chain. Pass 1 explicitly wants the resolves executed.
             auto is_catalog_resolve = [](node_type t) {
-                return t == node_type::catalog_resolve_namespace_t || t == node_type::catalog_resolve_table_t ||
-                       t == node_type::catalog_resolve_type_t || t == node_type::catalog_resolve_function_t ||
-                       t == node_type::catalog_resolve_constraint_t;
+                return t == node_type::catalog_resolve_namespace_t || t == node_type::catalog_resolve_database_t ||
+                       t == node_type::catalog_resolve_table_t || t == node_type::catalog_resolve_type_t ||
+                       t == node_type::catalog_resolve_function_t || t == node_type::catalog_resolve_constraint_t;
             };
             bool has_non_resolve_child = false;
             for (const auto& child : node->children()) {

@@ -21,6 +21,11 @@ namespace services::wal {
         crc32_t last_crc32;
         id_t id;
         uint64_t transaction_id{0};
+        // Block F (Pass 9 dec 47): COMMIT records carry the MVCC commit_id
+        // allocated by txn_manager_->commit() so snapshot-aware replay can
+        // restore published_horizon_ and the in_flight set without re-running
+        // any business logic. Non-COMMIT records carry the field as 0.
+        uint64_t commit_id{0};
         wal_record_type record_type{wal_record_type::COMMIT};
 
         // Physical WAL fields

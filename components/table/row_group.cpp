@@ -3,6 +3,8 @@
 #include <components/table/persistent_column_data.hpp>
 #include <components/table/storage/buffer_manager.hpp>
 #include <components/table/storage/partial_block_manager.hpp>
+#include <cstdlib>
+#include <limits>
 #include <vector/data_chunk.hpp>
 
 #include "collection.hpp"
@@ -53,10 +55,12 @@ namespace components::table {
             assert(is_loaded_[c]);
             return *columns_[c];
         }
-        if (column_pointers_.size() != columns_.size()) {
-            throw std::logic_error("Lazy loading a column but the pointer was not set");
-        }
-        throw std::runtime_error("row_group_t::get_column: unknown error");
+        // Invariant violation: pointer-table desync during lazy column load.
+        assert(column_pointers_.size() == columns_.size() &&
+               "Lazy loading a column but the pointer was not set");
+        // Unreachable: get_column entered for a column that's neither loaded nor lazy-loadable.
+        assert(false && "row_group_t::get_column: unknown error");
+        std::abort();
     }
 
     storage::block_manager_t& row_group_t::block_manager() { return collection_->block_manager(); }
@@ -208,7 +212,9 @@ namespace components::table {
                 return true;
             }
             case expressions::compare_type::invalid: {
-                throw std::logic_error("invalid type for filter selection");
+                // Invariant: planner must not emit invalid compare_type for filters.
+                assert(false && "invalid type for filter selection");
+                std::abort();
             }
             case expressions::compare_type::is_null:
             case expressions::compare_type::is_not_null: {
@@ -300,18 +306,22 @@ namespace components::table {
 
             uint64_t count;
             if (TYPE == table_scan_type::REGULAR) {
-                count = (state.txn.transaction_id != 0 || state.txn.start_time != 0)
-                            ? state.row_group->indexing_vector(state.txn,
-                                                               state.vector_index,
-                                                               state.valid_indexing,
-                                                               max_count)
-                            : state.row_group->indexing_vector(state.vector_index, state.valid_indexing, max_count);
+                // Block E (Pass 9 dec 46): state.txn carries the snapshot fields
+                // — there is no synth fallback. Callers must initialize state.txn
+                // with a real transaction_data captured by transaction_manager.
+                count = state.row_group->indexing_vector(state.txn,
+                                                         state.vector_index,
+                                                         state.valid_indexing,
+                                                         max_count);
                 if (count == 0) {
                     next_vector(state);
                     continue;
                 }
             } else if (TYPE == table_scan_type::COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED) {
-                count = state.row_group->committed_indexing_vector(state.vector_index, state.valid_indexing, max_count);
+                count = state.row_group->committed_indexing_vector(state.txn,
+                                                                   state.vector_index,
+                                                                   state.valid_indexing,
+                                                                   max_count);
                 if (count == 0) {
                     next_vector(state);
                     continue;
@@ -446,7 +456,9 @@ namespace components::table {
                 templated_scan<table_scan_type::COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED>(state, result);
                 break;
             default:
-                throw std::logic_error("Unrecognized table scan type");
+                // Invariant: planner must produce a known table_scan_type value.
+                assert(false && "Unrecognized table scan type");
+                std::abort();
         }
     }
 
@@ -667,18 +679,23 @@ namespace components::table {
 
     uint64_t row_group_t::calculate_size() {
         vector::indexing_vector_t temp_indexing(collection().resource(), count);
-        return indexing_vector(index, temp_indexing, count);
+        // Block E (Pass 9 dec 46): calculate_size reads all committed rows
+        // (no transaction context, no in-flight set). Explicit "see everything"
+        // snapshot — UINT64_MAX horizon + empty in_flight passes the visibility
+        // filter for every committed insert_id < TRANSACTION_ID_START. This is
+        // metadata accounting, not a user-facing scan — constraint #6 (no
+        // fallback) does not apply here as the semantic is an explicit choice.
+        transaction_data td(0, 0);
+        td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
+        return indexing_vector(td, index, temp_indexing, count);
     }
 
-    uint64_t
-    row_group_t::indexing_vector(uint64_t vector_idx, vector::indexing_vector_t& indexing_vector, uint64_t max_count) {
-        auto vinfo = version_info();
-        if (!vinfo) {
-            return max_count;
-        }
-        return vinfo->indexing_vector({current_version_, current_version_}, vector_idx, indexing_vector, max_count);
-    }
-
+    // Block E (Pass 9 dec 46): the legacy synth overload
+    //   indexing_vector(uint64_t vector_idx, ...)
+    // was removed per constraint #6 (no backwards compatibility). Every scan
+    // must supply a real transaction_data — boot/init code that previously
+    // relied on {current_version_, current_version_} now takes the txn-aware
+    // signature directly.
     uint64_t row_group_t::indexing_vector(transaction_data txn,
                                           uint64_t vector_idx,
                                           vector::indexing_vector_t& indexing_vector,
@@ -690,18 +707,15 @@ namespace components::table {
         return vinfo->indexing_vector(txn, vector_idx, indexing_vector, max_count);
     }
 
-    uint64_t row_group_t::committed_indexing_vector(uint64_t vector_idx,
+    uint64_t row_group_t::committed_indexing_vector(const transaction_data& txn,
+                                                    uint64_t vector_idx,
                                                     vector::indexing_vector_t& indexing_vector,
                                                     uint64_t max_count) {
         auto vinfo = version_info();
         if (!vinfo) {
             return max_count;
         }
-        return vinfo->committed_indexing_vector(current_version_,
-                                                current_version_,
-                                                vector_idx,
-                                                indexing_vector,
-                                                max_count);
+        return vinfo->committed_indexing_vector(txn, vector_idx, indexing_vector, max_count);
     }
 
     std::shared_ptr<row_version_manager_t> row_group_t::get_or_create_version_info_internal() {

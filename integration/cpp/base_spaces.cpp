@@ -2,6 +2,7 @@
 #include <actor-zeta.hpp>
 #include <actor-zeta/spawn.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/system_table_schemas.hpp>
 #include <components/logical_plan/node_checkpoint.hpp>
 #include <core/executor.hpp>
 #include <core/file/file_handle.hpp>
@@ -28,7 +29,8 @@ namespace otterbrix {
         , manager_wal_(nullptr, actor_zeta::pmr::deleter_t(&resource))
         , manager_index_(nullptr, actor_zeta::pmr::deleter_t(&resource))
         , wrapper_dispatcher_(nullptr, actor_zeta::pmr::deleter_t(&resource))
-        , scheduler_disk_(new actor_zeta::shared_work(3, 1000)) {
+        , scheduler_disk_(new actor_zeta::shared_work(3, 1000))
+        , index_table_agents_(&resource) {
         log_ = initialization_logger("python", config.log.path.c_str());
         log_.set_level(config.log.level);
         trace(log_, "spaces::spaces()");
@@ -107,7 +109,10 @@ namespace otterbrix {
             actor_zeta::spawn<services::dispatcher::manager_dispatcher_t>(&resource, scheduler_dispatcher_.get(), log_);
         trace(log_, "spaces::manager_dispatcher finish");
 
-        wrapper_dispatcher_ = actor_zeta::spawn<wrapper_dispatcher_t>(&resource, manager_dispatcher_->address(), log_);
+        wrapper_dispatcher_ = actor_zeta::spawn<wrapper_dispatcher_t>(&resource,
+                                                                       manager_dispatcher_.get(),
+                                                                       scheduler_dispatcher_.get(),
+                                                                       log_);
         trace(log_, "spaces::manager_dispatcher create dispatcher");
 
         // When WAL is disabled, pass empty_address so all wal_address_ != empty()
@@ -117,6 +122,14 @@ namespace otterbrix {
         manager_dispatcher_->sync(std::make_tuple(effective_wal_address, manager_disk_address, manager_index_address));
 
         wal_ptr->sync(std::make_tuple(actor_zeta::address_t(manager_disk_address), manager_dispatcher_->address()));
+
+        // Publish the dispatcher address back into manager_disk / manager_index so the
+        // dec 33 GC-ack path (manager_disk → dispatcher → manager_wal truncate) has a
+        // destination. Bootstrap-time sync direct call — rule 11 base_spaces exception.
+        if (disk_ptr) {
+            disk_ptr->set_manager_dispatcher_sync(manager_dispatcher_->address());
+        }
+        manager_index_->set_manager_dispatcher_sync(manager_dispatcher_->address());
 
         if (disk_ptr) {
             // Bring up the pg_catalog system tables before any DDL/DML can flow through
@@ -278,6 +291,157 @@ namespace otterbrix {
         // are included. Idempotent: seed() never lowers the counter.
         if (disk_ptr) {
             disk_ptr->restore_oid_generator_sync();
+        }
+
+        // Block C §3.5 dec 37 V1 catalog scan rebuild — pg_class rows tombstoned
+        // by a pre-crash DROP TABLE that didn't get to physically remove the
+        // .otbx are recovered here, BEFORE scheduler.start. The scan returns
+        // (oid, sentinel delete_id=1) pairs; we rebuild dropped_storages_ on
+        // disk and dropped_table_agents_ on index, and flip the dispatcher's
+        // per-subscriber broadcast flags so the first post-start horizon
+        // advance fires on_horizon_advanced and finishes the deferred GC.
+        // Bootstrap-only sync calls — schedulers haven't started, single
+        // threaded by construction (rule 11 base_spaces exception).
+        if (disk_ptr && manager_index_) {
+            auto dropped_oids = disk_ptr->scan_dropped_oids_sync();
+            if (!dropped_oids.empty()) {
+                const auto db_root = disk_ptr->path_db();
+                constexpr components::catalog::oid_t main_db_oid =
+                    components::catalog::well_known_oid::main_database;
+                for (auto& [oid, delete_id] : dropped_oids) {
+                    // Mirrors create_storage_disk's layout:
+                    //   ${db_root}/${db_oid}/${tbl_oid}/table.otbx
+                    // with sidecars `table.otbx.wal_id` and `table.otbx.prev`
+                    // — same files drop_storage removes on the live path.
+                    auto base = db_root / std::to_string(static_cast<unsigned>(main_db_oid)) /
+                                std::to_string(static_cast<unsigned>(oid));
+                    auto otbx = base / "table.otbx";
+                    std::pmr::vector<std::filesystem::path> sidecars{&resource};
+                    {
+                        auto wal_id_sidecar = otbx;
+                        wal_id_sidecar += ".wal_id";
+                        sidecars.push_back(std::move(wal_id_sidecar));
+                    }
+                    {
+                        auto prev_sidecar = otbx;
+                        prev_sidecar += ".prev";
+                        sidecars.push_back(std::move(prev_sidecar));
+                    }
+                    disk_ptr->register_dropped_storage_sync(oid,
+                                                            delete_id,
+                                                            std::move(otbx),
+                                                            std::move(sidecars));
+                    manager_index_->mark_table_dropped_sync(oid, delete_id);
+                }
+                // Flip the dispatcher's selective-broadcast flags so the next
+                // commit (the first one after scheduler.start) advances the
+                // horizon past 1 and broadcasts on_horizon_advanced to disk &
+                // index, draining the rebuilt dropped_storages_ / dropped_table_agents_
+                // queues. We deliberately do NOT call on_horizon_advanced
+                // inline: its body is a coroutine handler that uses the
+                // actor's mailbox, and the mailbox isn't running yet.
+                manager_dispatcher_->set_disk_has_dropped_sync(true);
+                manager_dispatcher_->set_index_has_dropped_sync(true);
+                trace(log_,
+                      "spaces::PHASE 2c rebuilt {} dropped storage/index entries from pg_class",
+                      dropped_oids.size());
+            }
+        }
+
+        // Block F (Pass 9 dec 47) — snapshot-aware WAL replay horizon.
+        // Scan COMMIT records (already filtered by 2-pass committed-txn filter in
+        // wal_reader_t) for the maximum commit_id and publish it once so the
+        // post-recovery txn_manager_'s published_horizon_ matches the durable
+        // MVCC frontier. Per rule 6 (no fallback): a crash means in-flight
+        // commits were never published, so we only restore the max-COMMIT
+        // horizon — never reconstruct in_flight ids (crashed txns weren't
+        // visible to any snapshot anyway).
+        if (!wal_records.empty()) {
+            uint64_t max_commit_id = 0;
+            for (const auto& r : wal_records) {
+                if (r.is_commit_marker() && r.commit_id > max_commit_id) {
+                    max_commit_id = r.commit_id;
+                }
+            }
+            if (max_commit_id > 0) {
+                manager_dispatcher_->set_replay_horizon_sync(max_commit_id);
+                trace(log_, "spaces::WAL replay published_horizon advanced to {}", max_commit_id);
+            }
+        }
+
+        // Block D V4 Phase 3.5 — spawn a per-table index_table_agent_t for every
+        // known table_oid (well-known catalog tables + user tables loaded by
+        // Phase 3) and register its address with manager_index. After
+        // registration, manager_index_t's DML feature-flag router forwards
+        // per-table DML to the owning agent for any oid present in the map.
+        //
+        // The agents are owned by index_table_agents_ (member of
+        // base_otterbrix_t) so the addresses registered into
+        // manager_index_t::per_table_agents_ remain live for the entire
+        // base_spaces lifetime. manager_index_t never owns the agent memory
+        // (rule 10: no shared mutable state between actors).
+        //
+        // Bootstrap-time sync calls are allowed (rule 11 base_spaces
+        // exception); the schedulers haven't started yet so the spawn /
+        // register sequence is single-threaded by construction.
+        if (disk_ptr && manager_index_) {
+            // Well-known catalog tables (pg_database, pg_namespace, pg_class,
+            // pg_attribute, pg_type, pg_proc, pg_depend, pg_constraint,
+            // pg_index, pg_computed_column, pg_sequence, pg_rewrite,
+            // pg_settings). Driven off the same all_system_tables() registry
+            // used by bootstrap_system_tables_sync so the two sets cannot
+            // drift.
+            // Block D Final cleanup — engine ownership migration.
+            // For each spawned agent, transfer ownership of its per-table
+            // index_engine_t from manager_index_t::engines_ into the agent
+            // via take_engine_ownership_sync -> set_engine_owned_sync. The
+            // engine is minted on demand if engines_ had no prior entry
+            // (lazy-init was the rule for both system and user oids), so
+            // every agent leaves Phase 3.5 with a non-null engine_ptr_ and
+            // manager's engines_ has no entry for that oid.
+            std::size_t system_count = 0;
+            for (const auto& def : components::catalog::all_system_tables()) {
+                auto oid = def.relation_oid;
+                auto agent = actor_zeta::spawn<services::index::index_table_agent_t>(&resource, log_, oid);
+                manager_index_->register_table_agent_sync(oid, agent->address());
+                agent->set_engine_owned_sync(manager_index_->take_engine_ownership_sync(oid));
+                // Block D DDL routing — hand the agent the disk-spawn config
+                // mirroring manager_index_t's own constants so create_index_local
+                // / drop_index_local can own the disk_agents_ lifecycle.
+                agent->set_disk_config_sync(config.disk.path,
+                                            config.disk.bitcask_flush_threshold,
+                                            config.disk.bitcask_segment_record_limit,
+                                            config.disk.btree_flush_threshold,
+                                            scheduler_.get());
+                index_table_agents_.push_back(std::move(agent));
+                ++system_count;
+            }
+            // User-table oids — the set of pg_class rows whose oid >=
+            // FIRST_USER_OID and that survived dec 37 dropped-oid filtering.
+            // Phase 3 (load_user_table_storages_sync) and Phase 2c (catalog
+            // scan rebuild) have already settled pg_class, so this scan
+            // reflects the final alive set.
+            auto user_oids = disk_ptr->alive_user_oids_sync();
+            for (auto oid : user_oids) {
+                auto agent = actor_zeta::spawn<services::index::index_table_agent_t>(&resource, log_, oid);
+                manager_index_->register_table_agent_sync(oid, agent->address());
+                // Same ownership-transfer pattern as the system loop above:
+                // pull the engine out of manager.engines_ (or mint one) and
+                // give it to the agent.
+                agent->set_engine_owned_sync(manager_index_->take_engine_ownership_sync(oid));
+                // Block D DDL routing — see system-table loop above.
+                agent->set_disk_config_sync(config.disk.path,
+                                            config.disk.bitcask_flush_threshold,
+                                            config.disk.bitcask_segment_record_limit,
+                                            config.disk.btree_flush_threshold,
+                                            scheduler_.get());
+                index_table_agents_.push_back(std::move(agent));
+            }
+            trace(log_,
+                  "spaces::PHASE 3.5 spawned {} index_table_agents ({} system + {} user)",
+                  index_table_agents_.size(),
+                  system_count,
+                  user_oids.size());
         }
 
         scheduler_dispatcher_->start();

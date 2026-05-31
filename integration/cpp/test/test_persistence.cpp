@@ -26,7 +26,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_mixed_batch") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -91,7 +91,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_multi_type") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -143,7 +143,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_not_null") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -211,7 +211,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_dml_full_cycle") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -288,7 +288,7 @@ TEST_CASE("integration::cpp::test_persistence::default_application_in_session") 
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -357,7 +357,7 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_consistent_wal_rec
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -411,7 +411,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_not_null_with_defaul
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -491,7 +491,7 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_two_columns_wal") 
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -541,7 +541,7 @@ TEST_CASE("integration::cpp::test_persistence::double_restart") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -618,7 +618,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_basic") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -673,7 +673,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_after_update") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -749,7 +749,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_plus_wal") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -822,7 +822,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_partial_insert") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -891,7 +891,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_not_null_default") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -964,7 +964,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_wal_only_recovery") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -1012,7 +1012,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_double_restart") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -1091,7 +1091,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_dml_full_cycle") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -1168,7 +1168,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_drop_table_survives_restart"
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -1249,7 +1249,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_add_column_survives_restart"
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -1338,7 +1338,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_mixed_ops_checkpoint_r
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1419,7 +1419,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_long_keys_survive_chec
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1472,7 +1472,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_massive_checkpoint_cyc
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();

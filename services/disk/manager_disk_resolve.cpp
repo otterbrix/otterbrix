@@ -6,13 +6,62 @@ namespace services::disk {
     namespace catalog = components::catalog;
     using namespace detail;
 
+    // ----------------------------------------------------------------------
+    // Version B* Step 8.11 Path B (catalog) — APPLIED. All 10 catalog read
+    // sites in this file (pg_namespace x2, pg_class x2, pg_attribute x2,
+    // pg_type, pg_proc x2, pg_computed_column) probe agents_[0] (CATALOG
+    // agent) via storage_entry_sync(<pg_*_oid>) and treat a null result as
+    // a terminal "no entry" outcome. The manager-map fallback that
+    // appeared between Step 8.9 (Path A) and Step 8.1.B is now gone:
+    // Step 8.1.B moved the catalog SFBM ownership onto the catalog agent,
+    // so manager_disk_t::storages_ holds no entries for these OIDs and
+    // the fallback could never fire.
+    //
+    // Catalog migration pattern (post-fallback removal):
+    //
+    //     const collection_storage_entry_t* entry = nullptr;
+    //     if (!agents_.empty() && agents_[0] != nullptr) {
+    //         entry = agents_[0]->storage_entry_sync(<pg_*_oid>);
+    //     }
+    //     if (entry != nullptr) { /* scan via entry->table_storage.table() */ }
+    //
+    // The two remaining `storages_.find(...)` sites are the generic-
+    // table_oid primitives `scan_by_key` and `read_rows_by_key`. They
+    // probe agents_[pool_idx_for_oid(table_oid, agents_.size())] first
+    // and KEEP the manager-map fallback until Step 8.1.C moves user-table
+    // SFBM ownership onto routed agents and deletes the manager-side
+    // user-table entries.
+    //
+    // Decision rationale (still applies): turning the agent-probe into a
+    // mailbox `co_await` round-trip would add per-resolve scheduler
+    // latency to every catalog probe — measured ~1100 LOC of body that
+    // would need to move to `agent_resolve.cpp`. The storage_entry_sync
+    // raw-pointer borrow is the documented Constraint #11 carve-out (see
+    // header comment on agent_disk_t::storage_entry_sync) — pre-scheduler
+    // reads are race-free; post-scheduler reads happen from inside the
+    // manager mailbox while the agent thread is idle for the agent's
+    // slice.
+    // ----------------------------------------------------------------------
+
     manager_disk_t::unique_future<resolve_namespace_result_t>
     manager_disk_t::resolve_namespace(execution_context_t /*ctx*/, std::string name, std::uint64_t /*since_version*/) {
         resolve_namespace_result_t out(resource());
 
-        if (auto it = storages_.find(pg_namespace_oid_tbl); it != storages_.end()) {
+        // ──────────────── Step 8.11 Path B (catalog) ──────────────────────
+        //
+        // Catalog OIDs always route to agents_[0] (CATALOG agent — see
+        // agent_role_t::CATALOG in agent_disk.hpp). Step 8.1.B moved the
+        // catalog SFBM ownership onto that agent, so manager_disk_t::
+        // storages_ no longer holds entries for catalog OIDs and the prior
+        // manager-map fallback is dead code — deleted here. A null
+        // storage_entry_sync result is now a terminal "no entry" outcome.
+        const collection_storage_entry_t* ns_entry = nullptr;
+        if (!agents_.empty() && agents_[0] != nullptr) {
+            ns_entry = agents_[0]->storage_entry_sync(pg_namespace_oid_tbl);
+        }
+        if (ns_entry != nullptr) {
             std::pmr::synchronized_pool_resource scan_resource;
-            inline_scan(it->second->table_storage.table(),
+            inline_scan(ns_entry->table_storage.table(),
                         {0, 1},
                         &scan_resource,
                         [&](components::vector::data_chunk_t& chunk, uint64_t i) {
@@ -32,16 +81,22 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<resolve_table_result_t>
-    manager_disk_t::resolve_table(execution_context_t /*ctx*/,
+    manager_disk_t::resolve_table(execution_context_t ctx,
                                   components::catalog::oid_t namespace_oid,
                                   std::string name,
                                   std::uint64_t /*since_version*/) {
         resolve_table_result_t out(resource());
         out.namespace_oid = namespace_oid;
 
-        if (auto it = storages_.find(pg_class_oid); it != storages_.end()) {
+        // Step 8.11 Path B (catalog) — agents_[0] is the sole reader for
+        // pg_class; manager-map fallback removed (Step 8.1.B).
+        const collection_storage_entry_t* cls_entry = nullptr;
+        if (!agents_.empty() && agents_[0] != nullptr) {
+            cls_entry = agents_[0]->storage_entry_sync(pg_class_oid);
+        }
+        if (cls_entry != nullptr) {
             std::pmr::synchronized_pool_resource scan_resource;
-            inline_scan(it->second->table_storage.table(),
+            inline_scan(cls_entry->table_storage.table(),
                         {0, 1, 2, 3},
                         &scan_resource,
                         [&](components::vector::data_chunk_t& chunk, uint64_t i) {
@@ -71,8 +126,13 @@ namespace services::disk {
         }
 
         if (out.relkind == catalog::relkind::computed) {
-            auto cc_it = storages_.find(pg_computed_column_oid);
-            if (cc_it != storages_.end()) {
+            // Step 8.11 Path B (catalog) — agents_[0] is the sole reader for
+            // pg_computed_column; manager-map fallback removed (Step 8.1.B).
+            const collection_storage_entry_t* cc_entry = nullptr;
+            if (!agents_.empty() && agents_[0] != nullptr) {
+                cc_entry = agents_[0]->storage_entry_sync(pg_computed_column_oid);
+            }
+            if (cc_entry != nullptr) {
                 std::pmr::synchronized_pool_resource cc_scan_resource;
                 struct cc_row_t {
                     components::catalog::oid_t attoid;
@@ -94,7 +154,7 @@ namespace services::disk {
                     std::int64_t attrefcount;
                 };
                 std::unordered_map<std::string, cc_row_with_rc_t> latest_any;
-                inline_scan(cc_it->second->table_storage.table(),
+                inline_scan(cc_entry->table_storage.table(),
                             {0, 1, 2, 3, 4, 5, 6},
                             &cc_scan_resource,
                             [&](components::vector::data_chunk_t& chunk, uint64_t i) {
@@ -163,12 +223,20 @@ namespace services::disk {
             co_return out;
         }
 
-        auto att_it = storages_.find(pg_attribute_oid);
-        if (att_it != storages_.end()) {
+        // Step 8.11 Path B (catalog) — agents_[0] is the sole reader for
+        // pg_attribute; manager-map fallback removed (Step 8.1.B).
+        const collection_storage_entry_t* att_entry = nullptr;
+        if (!agents_.empty() && agents_[0] != nullptr) {
+            att_entry = agents_[0]->storage_entry_sync(pg_attribute_oid);
+        }
+        if (att_entry != nullptr) {
             std::pmr::synchronized_pool_resource scan_resource;
             std::vector<column_info_t> rows;
-            inline_scan(att_it->second->table_storage.table(),
-                        {0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
+            // Block C §3.5 dec 32 V2 column visibility — read added_at_commit_id
+            // (col 10) + dropped_at_commit_id (col 11) and filter by ctx.txn.start_time.
+            const auto snapshot_start_time = ctx.txn.start_time;
+            inline_scan(att_entry->table_storage.table(),
+                        {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11},
                         &scan_resource,
                         [&](components::vector::data_chunk_t& chunk, uint64_t i) {
                             auto rel = chunk.value(1, i);
@@ -180,6 +248,20 @@ namespace services::disk {
                             const bool is_dropped = !dropped.is_null() && dropped.value<bool>();
                             if (is_dropped)
                                 return true;
+                            // dec 32 V2 MVCC visibility — column added after snapshot is hidden;
+                            // column dropped before snapshot is hidden.
+                            auto added_at_v = chunk.value(10, i);
+                            if (!added_at_v.is_null()) {
+                                auto added_at = static_cast<uint64_t>(added_at_v.value<std::int64_t>());
+                                if (added_at > snapshot_start_time)
+                                    return true;
+                            }
+                            auto dropped_at_v = chunk.value(11, i);
+                            if (!dropped_at_v.is_null()) {
+                                auto dropped_at = static_cast<uint64_t>(dropped_at_v.value<std::int64_t>());
+                                if (dropped_at != 0 && dropped_at <= snapshot_start_time)
+                                    return true;
+                            }
                             column_info_t info;
                             info.attoid =
                                 static_cast<components::catalog::oid_t>(chunk.value(0, i).value<std::uint32_t>());
@@ -225,10 +307,15 @@ namespace services::disk {
         resolve_type_result_t out(resource());
         out.namespace_oid = namespace_oid;
 
-        auto it = storages_.find(pg_type_oid);
-        if (it != storages_.end()) {
+        // Step 8.11 Path B (catalog) — agents_[0] is the sole reader for
+        // pg_type; manager-map fallback removed (Step 8.1.B).
+        const collection_storage_entry_t* type_entry = nullptr;
+        if (!agents_.empty() && agents_[0] != nullptr) {
+            type_entry = agents_[0]->storage_entry_sync(pg_type_oid);
+        }
+        if (type_entry != nullptr) {
             std::pmr::synchronized_pool_resource scan_resource;
-            inline_scan(it->second->table_storage.table(),
+            inline_scan(type_entry->table_storage.table(),
                         {0, 1, 2, 3},
                         &scan_resource,
                         [&](components::vector::data_chunk_t& chunk, uint64_t i) {
@@ -251,13 +338,18 @@ namespace services::disk {
         if (out.found) {
             return out;
         }
-        auto cls_it = storages_.find(pg_class_oid);
-        if (cls_it == storages_.end()) {
+        // Step 8.11 Path B (catalog) — agents_[0] is the sole reader for
+        // pg_class; manager-map fallback removed (Step 8.1.B).
+        const collection_storage_entry_t* cls_entry = nullptr;
+        if (!agents_.empty() && agents_[0] != nullptr) {
+            cls_entry = agents_[0]->storage_entry_sync(pg_class_oid);
+        }
+        if (cls_entry == nullptr) {
             return out;
         }
         components::catalog::oid_t composite_oid = components::catalog::INVALID_OID;
         std::pmr::synchronized_pool_resource scan_resource;
-        inline_scan(cls_it->second->table_storage.table(),
+        inline_scan(cls_entry->table_storage.table(),
                     {0, 1, 2, 3},
                     &scan_resource,
                     [&](components::vector::data_chunk_t& chunk, uint64_t i) {
@@ -281,8 +373,13 @@ namespace services::disk {
         if (composite_oid == components::catalog::INVALID_OID) {
             return out;
         }
-        auto att_it = storages_.find(pg_attribute_oid);
-        if (att_it == storages_.end()) {
+        // Step 8.11 Path B (catalog) — agents_[0] is the sole reader for
+        // pg_attribute; manager-map fallback removed (Step 8.1.B).
+        const collection_storage_entry_t* att_entry = nullptr;
+        if (!agents_.empty() && agents_[0] != nullptr) {
+            att_entry = agents_[0]->storage_entry_sync(pg_attribute_oid);
+        }
+        if (att_entry == nullptr) {
             return out;
         }
         struct field_row {
@@ -292,7 +389,7 @@ namespace services::disk {
             std::string atttypspec;
         };
         std::vector<field_row> fields;
-        inline_scan(att_it->second->table_storage.table(),
+        inline_scan(att_entry->table_storage.table(),
                     {1, 2, 3, 4, 7, 8},
                     &scan_resource,
                     [&](components::vector::data_chunk_t& chunk, uint64_t i) {
@@ -364,10 +461,15 @@ namespace services::disk {
         resolve_function_result_t out(resource());
         out.namespace_oid = namespace_oid;
 
-        auto it = storages_.find(pg_proc_oid);
-        if (it != storages_.end()) {
+        // Step 8.11 Path B (catalog) — agents_[0] is the sole reader for
+        // pg_proc; manager-map fallback removed (Step 8.1.B).
+        const collection_storage_entry_t* proc_entry = nullptr;
+        if (!agents_.empty() && agents_[0] != nullptr) {
+            proc_entry = agents_[0]->storage_entry_sync(pg_proc_oid);
+        }
+        if (proc_entry != nullptr) {
             std::pmr::synchronized_pool_resource scan_resource;
-            inline_scan(it->second->table_storage.table(),
+            inline_scan(proc_entry->table_storage.table(),
                         {0, 1, 2, 3, 4, 5, 6},
                         &scan_resource,
                         [&](components::vector::data_chunk_t& chunk, uint64_t i) {
@@ -404,12 +506,17 @@ namespace services::disk {
                                              std::string name,
                                              std::uint64_t /*since_version*/) {
         std::pmr::vector<resolve_function_result_t> out(resource());
-        auto it = storages_.find(pg_proc_oid);
-        if (it == storages_.end()) {
+        // Step 8.11 Path B (catalog) — agents_[0] is the sole reader for
+        // pg_proc; manager-map fallback removed (Step 8.1.B).
+        const collection_storage_entry_t* proc_entry = nullptr;
+        if (!agents_.empty() && agents_[0] != nullptr) {
+            proc_entry = agents_[0]->storage_entry_sync(pg_proc_oid);
+        }
+        if (proc_entry == nullptr) {
             co_return out;
         }
         std::pmr::synchronized_pool_resource scan_resource;
-        inline_scan(it->second->table_storage.table(),
+        inline_scan(proc_entry->table_storage.table(),
                     {0, 1, 2, 3, 4, 5, 6},
                     &scan_resource,
                     [&](components::vector::data_chunk_t& chunk, uint64_t i) {
@@ -443,12 +550,17 @@ namespace services::disk {
     manager_disk_t::unique_future<std::pmr::vector<std::string>>
     manager_disk_t::list_namespaces(execution_context_t /*ctx*/) {
         std::pmr::vector<std::string> out(resource());
-        auto it = storages_.find(pg_namespace_oid_tbl);
-        if (it == storages_.end()) {
+        // Step 8.11 Path B (catalog) — agents_[0] is the sole reader for
+        // pg_namespace; manager-map fallback removed (Step 8.1.B).
+        const collection_storage_entry_t* ns_entry = nullptr;
+        if (!agents_.empty() && agents_[0] != nullptr) {
+            ns_entry = agents_[0]->storage_entry_sync(pg_namespace_oid_tbl);
+        }
+        if (ns_entry == nullptr) {
             co_return out;
         }
         std::pmr::synchronized_pool_resource scan_resource;
-        inline_scan(it->second->table_storage.table(),
+        inline_scan(ns_entry->table_storage.table(),
                     {0, 1},
                     &scan_resource,
                     [&](components::vector::data_chunk_t& chunk, uint64_t i) {
@@ -487,11 +599,19 @@ namespace services::disk {
             co_return out;
         }
 
-        auto it = storages_.find(table_oid);
-        if (it == storages_.end())
+        // Step 8.11 wrap (2026-05-31): manager.storages_ deleted. The routed
+        // agent slice (catalog → agents_[0], user → agents_[1..N-1] via
+        // pool_idx_for_oid) is the sole canonical SFBM/IN_MEMORY owner.
+        if (agents_.empty())
+            co_return out;
+        const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
+        if (agents_[idx] == nullptr)
+            co_return out;
+        const collection_storage_entry_t* entry = agents_[idx]->storage_entry_sync(table_oid);
+        if (entry == nullptr)
             co_return out;
 
-        auto& tbl = it->second->table_storage.table();
+        auto& tbl = entry->table_storage.table();
         const auto& all_cols = tbl.columns();
 
         auto filter = std::make_unique<components::table::conjunction_and_filter_t>();
@@ -513,9 +633,9 @@ namespace services::disk {
                                                                        std::move(idx_vec)));
         }
 
-        auto types = it->second->storage->types();
+        auto types = entry->storage->types();
         components::vector::data_chunk_t chunk(resource(), types);
-        it->second->storage->scan(chunk, filter.get(), -1, ctx.txn);
+        entry->storage->scan(chunk, filter.get(), -1, ctx.txn);
         for (uint64_t i = 0; i < chunk.size(); ++i) {
             out.push_back(chunk.row_ids.data<std::int64_t>()[i]);
         }
@@ -532,11 +652,19 @@ namespace services::disk {
         if (key_col_names.size() != key_values.size() || key_col_names.empty())
             co_return out;
 
-        auto it = storages_.find(table_oid);
-        if (it == storages_.end())
+        // Step 8.11 wrap (2026-05-31): manager.storages_ deleted. The routed
+        // agent slice (catalog → agents_[0], user → agents_[1..N-1] via
+        // pool_idx_for_oid) is the sole canonical SFBM/IN_MEMORY owner.
+        if (agents_.empty())
+            co_return out;
+        const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
+        if (agents_[idx] == nullptr)
+            co_return out;
+        const collection_storage_entry_t* entry = agents_[idx]->storage_entry_sync(table_oid);
+        if (entry == nullptr)
             co_return out;
 
-        auto& tbl = it->second->table_storage.table();
+        auto& tbl = entry->table_storage.table();
         const auto& all_cols = tbl.columns();
 
         auto filter = std::make_unique<components::table::conjunction_and_filter_t>();
@@ -558,9 +686,9 @@ namespace services::disk {
                                                                        std::move(idx_vec)));
         }
 
-        auto types = it->second->storage->types();
+        auto types = entry->storage->types();
         components::vector::data_chunk_t chunk(resource(), types);
-        it->second->storage->scan(chunk, filter.get(), -1, ctx.txn);
+        entry->storage->scan(chunk, filter.get(), -1, ctx.txn);
 
         for (uint64_t i = 0; i < chunk.size(); ++i) {
             row_t row(resource());

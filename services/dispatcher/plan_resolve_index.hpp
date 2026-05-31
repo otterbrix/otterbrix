@@ -27,7 +27,18 @@
 #include <string_view>
 #include <unordered_map>
 
-namespace services::dispatcher::impl {
+// NOTE (Variant E.3 Pass 1): the helpers below were originally defined under
+// `services::dispatcher::impl` because only manager_dispatcher_t consumed
+// them. Pass 1's executor-side migration (`executor_t::execute_plan_full`)
+// needs to call the same gather + lookup primitives, so the canonical
+// namespace is now `services::catalog_resolve`. The trailing
+// `services::dispatcher::impl { using ... }` re-export block keeps existing
+// dispatcher/validate/resolve_type call sites compiling unchanged — they keep
+// writing `impl::plan_resolve_index_t`. New (executor) callers should spell
+// out `services::catalog_resolve::plan_resolve_index_t` (or pull in a local
+// alias). No signatures changed; pure namespace promotion. (Option A from
+// the task brief — physical location preserved.)
+namespace services::catalog_resolve {
 
     struct plan_resolve_index_t {
         // Namespace name -> ns_oid (from node_catalog_resolve_namespace_t
@@ -231,4 +242,19 @@ namespace services::dispatcher::impl {
         return components::catalog::INVALID_OID;
     }
 
+} // namespace services::catalog_resolve
+
+// Back-compat re-export. Existing dispatcher / validate / resolve_type call
+// sites use `impl::plan_resolve_index_t`, `impl::gather_plan_resolve_index`,
+// `impl::tbl_md_for`, etc. The using-declarations below let those continue
+// to resolve without touching every call site. Only NEW code (executor-side
+// Pass 1 migration) needs to spell `catalog_resolve::` directly.
+namespace services::dispatcher::impl {
+    using catalog_resolve::gather_plan_resolve_index;
+    using catalog_resolve::ns_oid_for;
+    using catalog_resolve::ns_oid_for_dbname;
+    using catalog_resolve::plan_resolve_index_t;
+    using catalog_resolve::tbl_md_for;
+    using catalog_resolve::tbl_md_for_oid;
+    using catalog_resolve::type_md_for;
 } // namespace services::dispatcher::impl

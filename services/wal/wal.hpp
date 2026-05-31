@@ -25,8 +25,6 @@
 
 namespace services::wal {
 
-    class manager_wal_replicate_t;
-
     using session_id_t = components::session::session_id_t;
 
     class wal_worker_t final : public actor_zeta::actor::basic_actor<wal_worker_t> {
@@ -34,8 +32,13 @@ namespace services::wal {
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
 
+        // Pass 9 dec 39 revocation (Variant C): parent pointer parameter removed.
+        // The previous manager_wal_replicate_t* arg was UNUSED in wal_worker_t
+        // (commented out as /*manager*/ in the .cpp) and would have violated
+        // constraint #11 (no parent-pointer sync calls between actors). The
+        // worker is fully self-contained — manager interactions go through
+        // mailbox via worker->address().
         wal_worker_t(std::pmr::memory_resource* resource,
-                     manager_wal_replicate_t* manager,
                      log_t& log,
                      configuration::config_wal config,
                      components::catalog::oid_t database_oid);
@@ -52,8 +55,14 @@ namespace services::wal {
 
         unique_future<std::vector<record_t>> load(session_id_t session, wal::id_t after_wal_id);
 
-        unique_future<wal::id_t>
-        commit_txn(session_id_t session, uint64_t transaction_id, wal_sync_mode sync_mode, wal::id_t wal_id);
+        // Block F (Pass 9 dec 47): commit_id is the MVCC version timestamp
+        // allocated by transaction_manager_t::commit(); written into the
+        // COMMIT record so snapshot-aware replay restores published_horizon_.
+        unique_future<wal::id_t> commit_txn(session_id_t session,
+                                            uint64_t transaction_id,
+                                            wal_sync_mode sync_mode,
+                                            wal::id_t wal_id,
+                                            uint64_t commit_id);
 
         unique_future<void> truncate_before(session_id_t session, wal::id_t checkpoint_wal_id);
 

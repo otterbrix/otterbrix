@@ -15,6 +15,8 @@
 #include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
 
+#include "index_result.hpp"
+
 namespace services::index {
 
     using session_id_t = components::session::session_id_t;
@@ -48,9 +50,12 @@ namespace services::index {
                                         int64_t new_start_row_id);
 
         // MVCC commit/revert/cleanup
-        unique_future<void>
+        // Block B Parallel A.B3: commit_insert / commit_delete now return a
+        // typed result_t so callers can branch on a future C §3.1 index-side
+        // abort path without another signature migration.
+        unique_future<result_t>
         commit_insert(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id);
-        unique_future<void>
+        unique_future<result_t>
         commit_delete(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id);
         unique_future<void> revert_insert(execution_context_t ctx, components::catalog::oid_t table_oid);
         unique_future<void> cleanup_all_versions(session_id_t session, uint64_t lowest_active);
@@ -96,6 +101,44 @@ namespace services::index {
         unique_future<std::pmr::vector<components::index::index_description_t>>
         get_indexed_descriptions(session_id_t session, components::catalog::oid_t table_oid);
 
+        // dec 33 V1 event-driven GC subscriber. Stub today; real body lands
+        // with Block D DML (cleanup per-table agents whose pinned start_time
+        // < new_horizon).
+        unique_future<void> on_horizon_advanced(uint64_t new_horizon);
+
+        // Runtime DROP TABLE path — operator_dynamic_cascade_delete sends this
+        // from inside the executor actor so the manager_index side records the
+        // (oid, dropped_at_commit_id) pair into dropped_table_agents_ for the
+        // next horizon-advance GC sweep. Pair with
+        // manager_dispatcher_t::on_drop_resource_marked(INDEX_KIND).
+        unique_future<void> mark_table_dropped(session_id_t session,
+                                               components::catalog::oid_t table_oid,
+                                               uint64_t dropped_at_commit_id);
+
+        // Block C §3.5 dec 31 V1.d — CREATE INDEX Phase 2.5 catchup. Called per
+        // matching WAL record by operator_create_index_backfill to apply a
+        // PHYSICAL_{INSERT,DELETE,UPDATE} effect to the build's in-memory
+        // index_engine_t. The chunk + row metadata are shipped over the
+        // mailbox so the handler can drive engine_->insert_row /
+        // mark_delete_row directly (mirrors the insert_rows / delete_rows
+        // DML path). physical_data is the row chunk (NEW rows for
+        // INSERT/UPDATE, empty/null for DELETE — see TBD note in the
+        // handler). physical_row_start is the WAL header's row-id base used
+        // when row_ids is not supplied. txn_id is the CREATE INDEX
+        // transaction so replayed entries land in the PENDING bucket and
+        // get committed by the post-pipeline commit_insert. session_tz is
+        // forwarded into the index key encoder.
+        unique_future<void> apply_wal_record_for_index(session_id_t session,
+                                                       components::catalog::oid_t table_oid,
+                                                       components::catalog::oid_t index_oid,
+                                                       uint64_t wal_record_id,
+                                                       uint8_t record_type,
+                                                       std::pmr::vector<int64_t> row_ids,
+                                                       std::unique_ptr<components::vector::data_chunk_t> physical_data,
+                                                       uint64_t physical_row_start,
+                                                       uint64_t txn_id,
+                                                       core::date::timezone_offset_t session_tz);
+
         using dispatch_traits = actor_zeta::dispatch_traits<&index_contract::register_collection,
                                                             &index_contract::unregister_collection,
                                                             &index_contract::insert_rows,
@@ -113,7 +156,10 @@ namespace services::index {
                                                             &index_contract::has_index,
                                                             &index_contract::flush_all_indexes,
                                                             &index_contract::get_indexed_keys,
-                                                            &index_contract::get_indexed_descriptions>;
+                                                            &index_contract::get_indexed_descriptions,
+                                                            &index_contract::on_horizon_advanced,
+                                                            &index_contract::mark_table_dropped,
+                                                            &index_contract::apply_wal_record_for_index>;
 
         index_contract() = delete;
     };

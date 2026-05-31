@@ -206,11 +206,26 @@ namespace components::operators {
                 // copying full row vectors.
                 std::pmr::vector<std::pair<std::int32_t, std::size_t>> ordering(resource_);
                 ordering.reserve(pa_rows.size());
+                // Block C §3.5 dec 32 V2: column visibility under this txn's snapshot.
+                // Same predicate as operator_resolve_table — visible iff
+                // added_at_commit_id <= snapshot.start_time AND
+                // (dropped_at_commit_id == 0 OR dropped_at_commit_id > snapshot).
+                const auto snapshot_start_time = ctx->txn.start_time;
                 for (std::size_t i = 0; i < pa_rows.size(); ++i) {
                     if (pa_rows[i].size() < 8)
                         continue;
                     if (!pa_rows[i][7].is_null() && pa_rows[i][7].value<bool>()) {
-                        continue; // attisdropped
+                        continue; // attisdropped (structural tombstone)
+                    }
+                    if (pa_rows[i].size() > 10 && !pa_rows[i][10].is_null()) {
+                        auto added_at = static_cast<uint64_t>(pa_rows[i][10].value<std::int64_t>());
+                        if (added_at > snapshot_start_time)
+                            continue;
+                    }
+                    if (pa_rows[i].size() > 11 && !pa_rows[i][11].is_null()) {
+                        auto dropped_at = static_cast<uint64_t>(pa_rows[i][11].value<std::int64_t>());
+                        if (dropped_at != 0 && dropped_at <= snapshot_start_time)
+                            continue;
                     }
                     std::int32_t attnum = pa_rows[i][4].is_null() ? 0 : pa_rows[i][4].value<std::int32_t>();
                     ordering.emplace_back(attnum, i);

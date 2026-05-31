@@ -1,6 +1,7 @@
 #include "create_plan.hpp"
 
 #include "impl/create_plan_abort_transaction.hpp"
+#include "impl/create_plan_begin_transaction.hpp"
 #include "impl/create_plan_aggregate.hpp"
 #include "impl/create_plan_allocate_oids.hpp"
 #include "impl/create_plan_alter_column_add.hpp"
@@ -27,6 +28,7 @@
 #include "impl/create_plan_primitive_write.hpp"
 #include "impl/create_plan_resolve_constraint.hpp"
 #include "impl/create_plan_resolve_function.hpp"
+#include "impl/create_plan_resolve_database.hpp"
 #include "impl/create_plan_resolve_namespace.hpp"
 #include "impl/create_plan_resolve_table.hpp"
 #include "impl/create_plan_resolve_type.hpp"
@@ -105,12 +107,16 @@ namespace services::planner {
                 return impl::create_plan_commit_transaction(context, node);
             case node_type::abort_transaction_t:
                 return impl::create_plan_abort_transaction(context, node);
+            case node_type::begin_transaction_t:
+                return impl::create_plan_begin_transaction(context, node);
             case node_type::computed_field_register_t:
                 return impl::create_plan_computed_field_register(context, node);
             case node_type::computed_field_unregister_t:
                 return impl::create_plan_computed_field_unregister(context, node);
             case node_type::catalog_resolve_namespace_t:
                 return impl::create_plan_resolve_namespace(context, node);
+            case node_type::catalog_resolve_database_t:
+                return impl::create_plan_resolve_database(context, node);
             case node_type::catalog_resolve_function_t:
                 return impl::create_plan_resolve_function(context, node);
             case node_type::catalog_resolve_table_t:

@@ -82,12 +82,18 @@ namespace components::operators {
         // COMMIT / ROLLBACK — operator-pipeline replacement for inline
         // manager_dispatcher_t::{commit,abort}_transaction. The operator
         // drives txn_manager->{commit,abort}() and (for commit) the
-        // pg_catalog MVCC state swap on disk via storage_commit_appends /
+        // pg_catalog MVCC state swap on disk via storage_publish_commits /
         // storage_revert_appends. Invoked directly by the dispatcher
         // (mirrors operator_get_schema_t) since the manager-level state
         // (txn_manager_) lives outside the per-collection executor.
         commit_transaction,
         abort_transaction,
+        // BEGIN / START TRANSACTION (Block C §3.5 dec 22 Central accumulation):
+        // ensures an active transaction exists for the session and marks it as
+        // explicit. The executor's commit phase then accumulates DML ranges on
+        // the transaction instead of publishing per statement; operator_commit
+        // drains them in a batched publish at COMMIT.
+        begin_transaction,
         // COMPUTED_FIELD_REGISTER / COMPUTED_FIELD_UNREGISTER —
         // maintain pg_computed_column rows for relkind='g' dynamic-schema
         // tables. register: per-column NEW / SAME-TYPE / TYPE-EVOLUTION
@@ -112,6 +118,10 @@ namespace components::operators {
         // data_chunk (col 0 = UINTEGER oid). Used by name-resolution
         // pipelines that need to avoid the dispatcher's cached catalog snapshot.
         resolve_namespace,
+        // RESOLVE_DATABASE (B14.C) — analogous leaf operator that scans
+        // pg_database (well_known_oid=19) by datname and emits the resolved
+        // database_oid. Routing key for Variant C multi-database WAL workers.
+        resolve_database,
         // RESOLVE_TYPE — leaf operator that scans pg_type by
         // (typname, typnamespace) and emits the matching row as a single-row
         // data_chunk_t (cols mirror pg_type_columns: oid, typname,

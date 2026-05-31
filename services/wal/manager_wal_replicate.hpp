@@ -16,6 +16,7 @@
 #include <components/session/session.hpp>
 
 #include <functional>
+#include <set>
 #include <thread>
 #include <unordered_map>
 
@@ -47,10 +48,14 @@ namespace services::wal {
         // Contract handlers.
         unique_future<std::vector<record_t>> load(session_id_t session, wal::id_t wal_id);
 
+        // Block F (Pass 9 dec 47): commit_id is the MVCC version timestamp from
+        // transaction_manager_t::commit() — written into the COMMIT WAL record
+        // so snapshot-aware replay can rebuild published_horizon_.
         unique_future<wal::id_t> commit_txn(session_id_t session,
                                             uint64_t txn_id,
                                             wal_sync_mode sync_mode,
-                                            components::catalog::oid_t database_oid);
+                                            components::catalog::oid_t database_oid,
+                                            uint64_t commit_id);
 
         unique_future<void> truncate_before(session_id_t session, wal::id_t checkpoint_wal_id);
 
@@ -63,20 +68,30 @@ namespace services::wal {
                                                        std::unique_ptr<components::vector::data_chunk_t> data_chunk,
                                                        uint64_t row_start,
                                                        uint64_t row_count,
-                                                       uint64_t txn_id);
+                                                       uint64_t txn_id,
+                                                       components::catalog::oid_t database_oid);
 
         unique_future<wal::id_t> write_physical_delete(session_id_t session,
                                                        components::catalog::oid_t table_oid,
                                                        std::pmr::vector<int64_t> row_ids,
                                                        uint64_t count,
-                                                       uint64_t txn_id);
+                                                       uint64_t txn_id,
+                                                       components::catalog::oid_t database_oid);
 
         unique_future<wal::id_t> write_physical_update(session_id_t session,
                                                        components::catalog::oid_t table_oid,
                                                        std::pmr::vector<int64_t> row_ids,
                                                        std::unique_ptr<components::vector::data_chunk_t> new_data,
                                                        uint64_t count,
-                                                       uint64_t txn_id);
+                                                       uint64_t txn_id,
+                                                       components::catalog::oid_t database_oid);
+
+        // Block F (Pass 11): mailbox-handler twin of the _sync helpers, used by
+        // operator_create_index_backfill which runs inside the executor actor
+        // (rule 11: no sync inter-actor calls). Forwards to the same underlying
+        // active_build_start_positions_ set.
+        unique_future<void> register_active_build(session_id_t session, wal::id_t build_start_wal_position);
+        unique_future<void> unregister_active_build(session_id_t session, wal::id_t build_start_wal_position);
 
         using dispatch_traits = actor_zeta::implements<wal_contract,
                                                        &manager_wal_replicate_t::load,
@@ -86,7 +101,9 @@ namespace services::wal {
                                                        &manager_wal_replicate_t::auto_checkpoint_wal_id,
                                                        &manager_wal_replicate_t::write_physical_insert,
                                                        &manager_wal_replicate_t::write_physical_delete,
-                                                       &manager_wal_replicate_t::write_physical_update>;
+                                                       &manager_wal_replicate_t::write_physical_update,
+                                                       &manager_wal_replicate_t::register_active_build,
+                                                       &manager_wal_replicate_t::unregister_active_build>;
 
         // Global WAL ID counter — shared across all per-database workers.
         wal::id_t next_wal_id();
@@ -94,14 +111,33 @@ namespace services::wal {
         // Returns true (and resets the flag) if WAL bytes since last checkpoint exceeded the
         // configured threshold. The caller (dispatcher execute_ddl_inline) then triggers
         // checkpoint_all on disk and calls reset_auto_checkpoint_bytes() after the checkpoint.
+        // Pass 9 BLOCKER 16 fix: wal_bytes_since_checkpoint_ is atomic — writer in commit_txn
+        // coroutine and reader needs_auto_checkpoint() on the dispatcher thread used to race
+        // on a plain std::uintmax_t.
         bool needs_auto_checkpoint() const noexcept {
             return config_.on && config_.auto_checkpoint_threshold_bytes > 0 &&
-                   wal_bytes_since_checkpoint_ >= config_.auto_checkpoint_threshold_bytes;
+                   wal_bytes_since_checkpoint_.load(std::memory_order_relaxed) >=
+                       config_.auto_checkpoint_threshold_bytes;
         }
-        void reset_auto_checkpoint_bytes() noexcept { wal_bytes_since_checkpoint_ = 0; }
+        void reset_auto_checkpoint_bytes() noexcept {
+            wal_bytes_since_checkpoint_.store(0, std::memory_order_relaxed);
+        }
 
         // Compute total WAL directory bytes by scanning segment files.
         std::uintmax_t total_wal_bytes() const noexcept;
+
+        // Block F (Pass 11) retention guard helpers.
+        // Bootstrap helper — operator_create_index registers its build_start_wal_position
+        // at Phase 2 start; unregisters at Phase 3 publish OR cleanup_and_fail.
+        // Sync because base_spaces / operator pipeline calls them outside mailbox.
+        // NOT mailbox handlers.
+        //
+        // TODO (dec 18 V1 carve-out): the sync-from-operator-pipeline assumption
+        // holds today because the operator pipeline runs single-threaded relative
+        // to the wal dispatcher; under multi-DB Variant C this may need to become
+        // a proper mailbox handler.
+        void register_active_build_sync(wal::id_t build_start_wal_position);
+        void unregister_active_build_sync(wal::id_t build_start_wal_position);
 
     private:
         // Workers keyed by database_oid. Currently uses main_database for all WAL
@@ -115,12 +151,20 @@ namespace services::wal {
         log_t log_;
         bool enabled_;
         atomic_id_t global_id_{0};
-        std::uintmax_t wal_bytes_since_checkpoint_{0};
+        // Pass 9 BLOCKER 16: atomic — written from commit_txn coroutine, read by
+        // dispatcher thread via needs_auto_checkpoint(). Plain uintmax_t raced.
+        std::atomic<std::uintmax_t> wal_bytes_since_checkpoint_{0};
 
         actor_zeta::address_t manager_disk_;
         actor_zeta::address_t manager_dispatcher_;
 
         std::unordered_map<components::catalog::oid_t, wal_worker_ptr> wal_actors_;
+
+        // Block F (Pass 11) retention guard: build_start_wal_position of every
+        // CREATE INDEX currently in Phase 2.5 catchup. truncate_before clamps to
+        // min(active_build_start_wal_positions_) so concurrent catchup never
+        // misses a truncated record. Empty when no builds are active — no clamp.
+        std::pmr::set<wal::id_t> active_build_start_positions_{resource_};
 
         run_fn_t run_fn_{[] { std::this_thread::yield(); }};
         actor_zeta::behavior_t current_behavior_;

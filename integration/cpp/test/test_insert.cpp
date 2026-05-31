@@ -97,7 +97,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, table_database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + table_database_name + ";");
         }
         create_collection(table_collection_name_simple, columns_simple);
         create_collection(table_collection_name_not_null, columns_not_null);

@@ -177,7 +177,7 @@ TEST_CASE("services::disk::pg_depend::drop_type_restrict_no_deps") {
                   std::int64_t{3},
                   type_oid);
         std::set<catalog::oid_t> deletes_local{pg_type, pg_dep};
-        fx.invoke(&manager_disk_t::storage_commit_deletes,
+        fx.invoke(&manager_disk_t::storage_publish_deletes,
                   disk_test_helpers::txn_ctx(),
                   std::uint64_t{1000},
                   std::move(deletes_local));

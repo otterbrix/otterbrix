@@ -13,7 +13,7 @@ namespace components::operators {
     // manager_dispatcher_t::commit_transaction inline body. Steps:
     //   1. Snapshot txn_data + swap-info from ctx->txn_manager.
     //   2. ctx->txn_manager->commit(session) → commit_id.
-    //   3. storage_commit_appends / storage_commit_deletes via disk actor.
+    //   3. storage_publish_commits / storage_publish_deletes via disk actor.
     //
     // DDL-commit mode (is_ddl_commit=true): same as RPC mode plus a
     // prefix of:

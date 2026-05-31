@@ -1,6 +1,8 @@
 #include "manager_wal_replicate.hpp"
 
 #include <algorithm>
+#include <cassert>
+#include <cstdlib>
 #include <filesystem>
 #include <mutex>
 
@@ -131,6 +133,14 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::write_physical_update, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::register_active_build>: {
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::register_active_build, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::unregister_active_build>: {
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::unregister_active_build, msg);
+                break;
+            }
             default:
                 break;
         }
@@ -145,6 +155,58 @@ namespace services::wal {
         manager_disk_ = std::move(disk_addr);
         manager_dispatcher_ = std::move(dispatcher_addr);
         trace(log_, "manager_wal_replicate::sync done");
+    }
+
+    // -----------------------------------------------------------------------
+    // Block F (Pass 11) retention guard: active CREATE INDEX build registration
+    //
+    // No locking: assumed called from the operator-pipeline thread BEFORE the
+    // wal_worker has finished the previous batch — single-threaded relative to
+    // the dispatcher / wal contracts. TODO: re-evaluate under multi-DB Variant C.
+    // -----------------------------------------------------------------------
+
+    void manager_wal_replicate_t::register_active_build_sync(wal::id_t build_start_wal_position) {
+        active_build_start_positions_.emplace(build_start_wal_position);
+        trace(log_,
+              "manager_wal_replicate::register_active_build_sync wal_id={} active_builds={}",
+              build_start_wal_position,
+              active_build_start_positions_.size());
+    }
+
+    void manager_wal_replicate_t::unregister_active_build_sync(wal::id_t build_start_wal_position) {
+        auto erased = active_build_start_positions_.erase(build_start_wal_position);
+        // Invariant: unregister must match a prior register; otherwise we have a
+        // lifecycle bug in operator_create_index that would silently leak retention.
+        assert(erased == 1 && "unregister_active_build_sync called without matching register");
+        if (erased != 1) {
+            std::abort();
+        }
+        trace(log_,
+              "manager_wal_replicate::unregister_active_build_sync wal_id={} active_builds={}",
+              build_start_wal_position,
+              active_build_start_positions_.size());
+    }
+
+    // -----------------------------------------------------------------------
+    // Block F (Pass 11) mailbox-handler twins of the _sync helpers above.
+    // Called by operator_create_index_backfill which runs inside the executor
+    // actor — rule 11 forbids sync inter-actor calls there, so we route the
+    // same in-place set mutation through the manager's mailbox. The handler
+    // body is intentionally thin: dispatch into the actor's own coroutine, run
+    // the sync helper (we are now on the manager's thread per actor-zeta
+    // single-consumer mailbox model), co_return.
+    // -----------------------------------------------------------------------
+
+    manager_wal_replicate_t::unique_future<void>
+    manager_wal_replicate_t::register_active_build(session_id_t /*session*/, wal::id_t build_start_wal_position) {
+        register_active_build_sync(build_start_wal_position);
+        co_return;
+    }
+
+    manager_wal_replicate_t::unique_future<void>
+    manager_wal_replicate_t::unregister_active_build(session_id_t /*session*/, wal::id_t build_start_wal_position) {
+        unregister_active_build_sync(build_start_wal_position);
+        co_return;
     }
 
     // -----------------------------------------------------------------------
@@ -164,7 +226,7 @@ namespace services::wal {
         }
 
         trace(log_, "manager_wal_replicate: spawning worker for database_oid={}", static_cast<unsigned>(database_oid));
-        auto worker = actor_zeta::spawn<wal_worker_t>(resource_, this, log_, config_, database_oid);
+        auto worker = actor_zeta::spawn<wal_worker_t>(resource_, log_, config_, database_oid);
         auto* ptr = worker.get();
         wal_actors_.emplace(database_oid, std::move(worker));
         return ptr;
@@ -207,7 +269,8 @@ namespace services::wal {
     manager_wal_replicate_t::commit_txn(session_id_t session,
                                         uint64_t txn_id,
                                         wal_sync_mode sync_mode,
-                                        components::catalog::oid_t database_oid) {
+                                        components::catalog::oid_t database_oid,
+                                        uint64_t commit_id) {
         if (!enabled_) {
             co_return wal::id_t{0};
         }
@@ -219,13 +282,14 @@ namespace services::wal {
                                                               session,
                                                               txn_id,
                                                               sync_mode,
-                                                              wal_id);
+                                                              wal_id,
+                                                              commit_id);
         if (needs_sched) {
             scheduler_->enqueue(worker);
         }
         auto result = co_await std::move(fut);
-        // Track WAL bytes for auto-checkpoint threshold.
-        wal_bytes_since_checkpoint_ = total_wal_bytes();
+        // Track WAL bytes for auto-checkpoint threshold (atomic, BLOCKER 16).
+        wal_bytes_since_checkpoint_.store(total_wal_bytes(), std::memory_order_relaxed);
         co_return result;
     }
 
@@ -265,6 +329,21 @@ namespace services::wal {
                                                                                           wal::id_t checkpoint_wal_id) {
         if (!enabled_) {
             co_return;
+        }
+
+        // Block F (Pass 11): clamp to min(active_build_start_wal_positions_) so any
+        // in-flight CREATE INDEX Phase 2.5 catchup still has its records. Empty set
+        // means no active builds, so no clamp is necessary. std::set is ordered
+        // ascending — .begin() is the minimum.
+        if (!active_build_start_positions_.empty()) {
+            auto earliest = *active_build_start_positions_.begin();
+            if (earliest < checkpoint_wal_id) {
+                trace(log_,
+                      "manager_wal_replicate::truncate_before clamped from {} to {} due to active build retention",
+                      checkpoint_wal_id,
+                      earliest);
+                checkpoint_wal_id = earliest;
+            }
         }
 
         // Send to ALL workers.
@@ -333,13 +412,13 @@ namespace services::wal {
                                                    std::unique_ptr<components::vector::data_chunk_t> data_chunk,
                                                    uint64_t row_start,
                                                    uint64_t row_count,
-                                                   uint64_t txn_id) {
+                                                   uint64_t txn_id,
+                                                   components::catalog::oid_t database_oid) {
         if (!enabled_) {
             co_return wal::id_t{0};
         }
 
-        constexpr auto db_oid = components::catalog::well_known_oid::main_database;
-        auto* worker = get_or_create_worker(db_oid);
+        auto* worker = get_or_create_worker(database_oid);
         auto wal_id = next_wal_id();
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(worker->address(),
                                                               &wal_worker_t::write_physical_insert,
@@ -366,13 +445,13 @@ namespace services::wal {
                                                    components::catalog::oid_t table_oid,
                                                    std::pmr::vector<int64_t> row_ids,
                                                    uint64_t count,
-                                                   uint64_t txn_id) {
+                                                   uint64_t txn_id,
+                                                   components::catalog::oid_t database_oid) {
         if (!enabled_) {
             co_return wal::id_t{0};
         }
 
-        constexpr auto db_oid = components::catalog::well_known_oid::main_database;
-        auto* worker = get_or_create_worker(db_oid);
+        auto* worker = get_or_create_worker(database_oid);
         auto wal_id = next_wal_id();
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(worker->address(),
                                                               &wal_worker_t::write_physical_delete,
@@ -399,13 +478,13 @@ namespace services::wal {
                                                    std::pmr::vector<int64_t> row_ids,
                                                    std::unique_ptr<components::vector::data_chunk_t> new_data,
                                                    uint64_t count,
-                                                   uint64_t txn_id) {
+                                                   uint64_t txn_id,
+                                                   components::catalog::oid_t database_oid) {
         if (!enabled_) {
             co_return wal::id_t{0};
         }
 
-        constexpr auto db_oid = components::catalog::well_known_oid::main_database;
-        auto* worker = get_or_create_worker(db_oid);
+        auto* worker = get_or_create_worker(database_oid);
         auto wal_id = next_wal_id();
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(worker->address(),
                                                               &wal_worker_t::write_physical_update,

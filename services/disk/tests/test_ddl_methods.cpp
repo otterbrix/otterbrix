@@ -468,7 +468,7 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
             fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_cc, std::int64_t{1}, attoid);
         }
         std::set<catalog::oid_t> deletes_local{pg_cc};
-        fx.invoke(&manager_disk_t::storage_commit_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
+        fx.invoke(&manager_disk_t::storage_publish_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
     }
 
     // Post-VACUUM: 2 rows left (a, c). b's live row was wiped together with
@@ -578,7 +578,7 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
             fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_cc, std::int64_t{1}, attoid);
         }
         std::set<catalog::oid_t> deletes_local{pg_cc};
-        fx.invoke(&manager_disk_t::storage_commit_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
+        fx.invoke(&manager_disk_t::storage_publish_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
     }
 
     // Now run step 5b: compact_relkind_g_storage with live = {a, c}. Storage

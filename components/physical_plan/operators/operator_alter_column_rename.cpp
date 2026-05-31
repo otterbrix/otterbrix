@@ -3,7 +3,10 @@
 #include <set>
 #include <vector>
 
+#include "alter_validators.hpp"
+
 #include <components/catalog/ddl_metadata_builder.hpp>
+#include <components/catalog/dec43_alter_validators.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
 #include <services/disk/manager_disk.hpp>
@@ -29,6 +32,19 @@ namespace components::operators {
     actor_zeta::unique_future<void> operator_alter_column_rename_t::await_async_and_resume(pipeline::context_t* ctx) {
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
         constexpr catalog::oid_t pg_attr = catalog::well_known_oid::pg_attribute_table;
+
+        // dec 43 V1 Phase 2: new_name_ must not collide with existing visible
+        // columns of the table — visible_column_names populated by async
+        // pg_attribute scan filtered by dec 32 V2 MVCC visibility (see
+        // alter_validators.cpp).
+        auto vc_fut = alter_validators::visible_column_names(resource_, ctx->disk_address, exec_ctx, table_oid_);
+        auto visible_column_names = co_await std::move(vc_fut);
+        auto ec_dup =
+            components::catalog::dec43::validate_column_not_duplicate(resource_, visible_column_names, new_name_);
+        if (ec_dup.contains_error()) {
+            set_error(std::move(ec_dup));
+            co_return;
+        }
 
         // Routing by attoid (pre-stamped by enrich_logical_plan).
         // INVALID_OID means the resolver couldn't find the column — treat as
@@ -57,6 +73,10 @@ namespace components::operators {
         catalog::oid_t atttypid = catalog::INVALID_OID;
         bool att_not_null = false, att_has_default = false;
         std::string att_typspec, att_defspec;
+        // Block C §3.5 dec 32 V2 OPTION X: capture original added_at_commit_id
+        // so the re-appended row preserves the column's lifetime endpoint
+        // (RENAME is identity-preserving — added_at MUST NOT change).
+        std::int64_t att_added_at_commit_id = 0;
         for (const auto& row : attr_rows) {
             if (row.size() < 10 || row[0].is_null())
                 continue;
@@ -72,6 +92,11 @@ namespace components::operators {
                 att_typspec = std::string(row[8].value<std::string_view>());
             if (!row[9].is_null())
                 att_defspec = std::string(row[9].value<std::string_view>());
+            // Column index 10 = added_at_commit_id (see system_table_schemas.cpp).
+            // pg_attribute schema only guarantees 10 trailing columns when the
+            // row was written pre-dec 32 V2; tolerate missing slot as 0.
+            if (row.size() > 10 && !row[10].is_null())
+                att_added_at_commit_id = row[10].value<std::int64_t>();
             break;
         }
 
@@ -88,6 +113,16 @@ namespace components::operators {
                 ctx->pg_catalog_delete_tables.insert(pg_attr);
 
             // Step 3: append a fresh row reusing attoid/attnum/atttypid with the new name.
+            //
+            // Block C §3.5 dec 32 V2 OPTION X:
+            // RENAME is identity-preserving (same attoid, same attnum, same
+            // atttypid), so the re-appended row MUST preserve the original
+            // column's added_at_commit_id captured above. dropped_at remains
+            // 0 (column is still live). If att_added_at_commit_id was 0 at
+            // capture time (column originally CREATEd, or pre-OPTION-X
+            // ALTERed and not yet backfilled), preserving 0 is still
+            // correct — RENAME never widens visibility, and the next ALTER
+            // ADD against this column would push its own backfill marker.
             auto new_row = catalog::build_pg_attribute_row(resource_,
                                                            attoid,
                                                            table_oid_,
@@ -98,7 +133,9 @@ namespace components::operators {
                                                            att_has_default,
                                                            /*is_dropped=*/false,
                                                            att_typspec,
-                                                           att_defspec);
+                                                           att_defspec,
+                                                           /*added_at_commit_id=*/att_added_at_commit_id,
+                                                           /*dropped_at_commit_id=*/0);
             auto [_w, wf] = actor_zeta::send(ctx->disk_address,
                                              &services::disk::manager_disk_t::append_pg_catalog_row,
                                              exec_ctx,

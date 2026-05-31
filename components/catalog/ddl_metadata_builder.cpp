@@ -724,7 +724,9 @@ namespace components::catalog {
                                                 bool has_default,
                                                 bool is_dropped,
                                                 const std::string& typspec,
-                                                const std::string& defspec) {
+                                                const std::string& defspec,
+                                                std::int64_t added_at_commit_id,
+                                                std::int64_t dropped_at_commit_id) {
         const auto* def = find_system_table("pg_attribute");
         if (!def) {
             // Return an empty chunk — caller must check column count before use
@@ -742,6 +744,9 @@ namespace components::catalog {
             set_bool(c, 7, 0, is_dropped);
             set_str(c, 8, 0, typspec, r);
             set_str(c, 9, 0, defspec, r);
+            // Block C §3.5 dec 32 V2 lazy backfill MVCC versioning.
+            set_i64(c, 10, 0, added_at_commit_id);
+            set_i64(c, 11, 0, dropped_at_commit_id);
         });
     }
 

@@ -7,6 +7,7 @@
 #include <components/context/context.hpp>
 #include <components/types/logical_value.hpp>
 #include <services/disk/manager_disk.hpp>
+#include <services/dispatcher/dispatcher.hpp>
 #include <services/index/manager_index.hpp>
 
 #include <cstdint>
@@ -270,21 +271,77 @@ namespace components::operators {
 
         // Step 5 — for each table we identified above, drop the on-disk
         // storage and unregister the in-memory index entry. Order matters:
-        // unregister first so any concurrent index_address consumers stop
-        // referencing the collection before the storage actor frees it.
+        //   (a) mark_table_dropped / mark_storage_dropped record the (oid,
+        //       commit_id) pairs into manager_index_t::dropped_table_agents_
+        //       and the per-agent dropped_storages_ slices owned by
+        //       agent_disk_t (Version B* Step 8.11: manager-side mirror
+        //       deleted; mark_storage_dropped routes the entry into the
+        //       owning agent slice) for the next horizon-advance GC sweep
+        //       (dec 33 V1). They must run BEFORE unregister_collection /
+        //       drop_storage because mark_storage_dropped reads the live
+        //       storages_ entry to derive the .otbx path + sidecars — once
+        //       drop_storage erases that entry the path is lost.
+        //   (b) unregister_collection then drop_storage perform the existing
+        //       immediate cleanup; unregister first so any concurrent
+        //       index_address consumers stop referencing the collection before
+        //       the storage actor frees it.
+        // We pass ctx->txn.transaction_id as the dropped_at_commit_id. The
+        // real post-commit id is not known at execute time; the txn_id is a
+        // monotone upper-bound that the dec 33 GC predicate
+        // (dropped_at < new_horizon) treats correctly — the horizon eventually
+        // crosses the txn_id once all snapshots that started before this DROP
+        // have closed. For txn=0 (auto-commit / bootstrap path) we record 0,
+        // matching the dec 37 V1 catalog scan rebuild convention.
+        const uint64_t dropped_at = ctx->txn.transaction_id;
+        bool any_storage_drop = false;
         for (auto& sd : pending_storage_drops) {
+            any_storage_drop = true;
             if (ctx->index_address != actor_zeta::address_t::empty_address()) {
+                auto [_mti, mtif] = actor_zeta::send(ctx->index_address,
+                                                     &services::index::manager_index_t::mark_table_dropped,
+                                                     ctx->session,
+                                                     sd.table_oid,
+                                                     dropped_at);
+                co_await std::move(mtif);
                 auto [_ui, uif] = actor_zeta::send(ctx->index_address,
                                                    &services::index::manager_index_t::unregister_collection,
                                                    ctx->session,
                                                    sd.table_oid);
                 co_await std::move(uif);
             }
+            auto [_msd, msdf] = actor_zeta::send(ctx->disk_address,
+                                                 &services::disk::manager_disk_t::mark_storage_dropped,
+                                                 ctx->session,
+                                                 sd.table_oid,
+                                                 dropped_at);
+            co_await std::move(msdf);
             auto [_ds, dsf] = actor_zeta::send(ctx->disk_address,
                                                &services::disk::manager_disk_t::drop_storage,
                                                ctx->session,
                                                sd.table_oid);
             co_await std::move(dsf);
+        }
+
+        // Step 6 — flip the dispatcher's selective-broadcast flags so the next
+        // horizon advance fans on_horizon_advanced out to disk + index, which
+        // drain the dropped_storages_ / dropped_table_agents_ queues we just
+        // populated. Fire-and-forget: dispatcher acks the receipt by setting
+        // disk_has_dropped_ / index_has_dropped_ inside its own mailbox.
+        // current_message_sender carries the dispatcher (executor's
+        // parent_address_) — see pipeline::context_t construction in
+        // services/collection/executor.cpp.
+        if (any_storage_drop &&
+            ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
+            constexpr uint8_t DISK_KIND = 1;
+            constexpr uint8_t INDEX_KIND = 2;
+            [[maybe_unused]] auto disk_mark =
+                actor_zeta::send(ctx->current_message_sender,
+                                 &services::dispatcher::manager_dispatcher_t::on_drop_resource_marked,
+                                 DISK_KIND);
+            [[maybe_unused]] auto index_mark =
+                actor_zeta::send(ctx->current_message_sender,
+                                 &services::dispatcher::manager_dispatcher_t::on_drop_resource_marked,
+                                 INDEX_KIND);
         }
 
         // No output — DROP statements return an affected-rows-style cursor

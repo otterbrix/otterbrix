@@ -17,10 +17,18 @@ namespace components::catalog {
     class table_id;
 }
 
+// Forward-declare in the canonical location. validate_logical_plan's
+// public API still spells the type as `impl::plan_resolve_index_t`
+// (back-compat re-export in plan_resolve_index.hpp's tail makes that name
+// an alias for the services::catalog_resolve definition).
+namespace services::catalog_resolve {
+    struct plan_resolve_index_t;
+} // namespace services::catalog_resolve
+
 namespace services::dispatcher {
 
     namespace impl {
-        struct plan_resolve_index_t;
+        using ::services::catalog_resolve::plan_resolve_index_t;
     }
 
     using column_path = std::pmr::vector<size_t>;

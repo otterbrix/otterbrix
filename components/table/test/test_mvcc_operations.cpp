@@ -98,13 +98,14 @@ TEST_CASE("components::table::mvcc::append_commit_visible") {
     test_env env;
     auto table = make_int_table(env);
 
-    transaction_manager_t mgr;
+    transaction_manager_t mgr(&env.resource);
     auto session = components::session::session_id_t::generate_uid();
     auto& txn = mgr.begin_transaction(session);
 
     append_rows_txn(*table, env, 0, 10, txn.data());
 
     auto commit_id = mgr.commit(session);
+    mgr.publish(commit_id);  // Block E ProcArray barrier
     table->commit_append(commit_id, 0, 10);
 
     auto count = scan_count(*table, env);
@@ -115,7 +116,7 @@ TEST_CASE("components::table::mvcc::append_revert_invisible") {
     test_env env;
     auto table = make_int_table(env);
 
-    transaction_manager_t mgr;
+    transaction_manager_t mgr(&env.resource);
     auto session = components::session::session_id_t::generate_uid();
     auto& txn = mgr.begin_transaction(session);
 
@@ -142,12 +143,13 @@ TEST_CASE("components::table::mvcc::cleanup_versions") {
     test_env env;
     auto table = make_int_table(env);
 
-    transaction_manager_t mgr;
+    transaction_manager_t mgr(&env.resource);
     auto session = components::session::session_id_t::generate_uid();
     auto& txn = mgr.begin_transaction(session);
 
     append_rows_txn(*table, env, 0, 10, txn.data());
     auto commit_id = mgr.commit(session);
+    mgr.publish(commit_id);  // Block E ProcArray barrier
     table->commit_append(commit_id, 0, 10);
 
     auto lowest = mgr.lowest_active_start_time();
@@ -161,13 +163,14 @@ TEST_CASE("components::table::mvcc::multiple_txn_appends") {
     test_env env;
     auto table = make_int_table(env);
 
-    transaction_manager_t mgr;
+    transaction_manager_t mgr(&env.resource);
 
     // Transaction 1: append 10 rows
     auto s1 = components::session::session_id_t::generate_uid();
     auto& txn1 = mgr.begin_transaction(s1);
     append_rows_txn(*table, env, 0, 10, txn1.data());
     auto cid1 = mgr.commit(s1);
+    mgr.publish(cid1);  // Block E ProcArray barrier
     table->commit_append(cid1, 0, 10);
 
     // Transaction 2: append 5 more rows
@@ -175,6 +178,7 @@ TEST_CASE("components::table::mvcc::multiple_txn_appends") {
     auto& txn2 = mgr.begin_transaction(s2);
     append_rows_txn(*table, env, 10, 5, txn2.data());
     auto cid2 = mgr.commit(s2);
+    mgr.publish(cid2);  // Block E ProcArray barrier
     table->commit_append(cid2, 10, 5);
 
     auto count = scan_count(*table, env);
@@ -190,7 +194,7 @@ TEST_CASE("components::table::mvcc::delete_rows_txn_commit_all_deletes") {
     REQUIRE(scan_count(*table, env) == 10);
 
     // Begin transaction and delete 5 rows
-    transaction_manager_t mgr;
+    transaction_manager_t mgr(&env.resource);
     auto session = components::session::session_id_t::generate_uid();
     auto& txn = mgr.begin_transaction(session);
 
@@ -211,6 +215,7 @@ TEST_CASE("components::table::mvcc::delete_rows_txn_commit_all_deletes") {
     // Commit: finalize all deletes for this txn
     // Note: mgr.commit() erases txn from active_ map, so txn ref becomes dangling
     auto commit_id = mgr.commit(session);
+    mgr.publish(commit_id);  // Block E ProcArray barrier
     table->commit_all_deletes(txn_id, commit_id);
 
     // Scan should see only 5 rows
@@ -226,7 +231,7 @@ TEST_CASE("components::table::mvcc::delete_rows_txn_without_commit_visible") {
     REQUIRE(scan_count(*table, env) == 10);
 
     // Begin transaction and delete 5 rows
-    transaction_manager_t mgr;
+    transaction_manager_t mgr(&env.resource);
     auto session = components::session::session_id_t::generate_uid();
     auto& txn = mgr.begin_transaction(session);
 
@@ -260,7 +265,7 @@ TEST_CASE("components::table::mvcc::cleanup_committed_deletes") {
     REQUIRE(scan_count(*table, env) == 10);
 
     // Delete all 10 rows via transaction
-    transaction_manager_t mgr;
+    transaction_manager_t mgr(&env.resource);
     auto session = components::session::session_id_t::generate_uid();
     auto& txn = mgr.begin_transaction(session);
 
@@ -277,6 +282,7 @@ TEST_CASE("components::table::mvcc::cleanup_committed_deletes") {
     table->delete_rows(del_state, row_ids_chunk.data[0], 10, txn_id);
 
     auto commit_id = mgr.commit(session);
+    mgr.publish(commit_id);  // Block E ProcArray barrier
     table->commit_all_deletes(txn_id, commit_id);
 
     // After commit, scan should see 0 rows
@@ -300,7 +306,7 @@ TEST_CASE("components::table::mvcc::cleanup_partial_deletes") {
     REQUIRE(scan_count(*table, env) == 10);
 
     // Delete 5 rows via transaction
-    transaction_manager_t mgr;
+    transaction_manager_t mgr(&env.resource);
     auto session = components::session::session_id_t::generate_uid();
     auto& txn = mgr.begin_transaction(session);
 
@@ -317,6 +323,7 @@ TEST_CASE("components::table::mvcc::cleanup_partial_deletes") {
     table->delete_rows(del_state, row_ids_chunk.data[0], 5, txn_id);
 
     auto commit_id = mgr.commit(session);
+    mgr.publish(commit_id);  // Block E ProcArray barrier
     table->commit_all_deletes(txn_id, commit_id);
 
     // 5 rows visible
@@ -339,7 +346,7 @@ TEST_CASE("components::table::mvcc::compact_after_delete") {
     REQUIRE(scan_count(*table, env) == 100);
 
     // Delete 50 rows (0..49)
-    transaction_manager_t mgr;
+    transaction_manager_t mgr(&env.resource);
     auto session = components::session::session_id_t::generate_uid();
     auto& txn = mgr.begin_transaction(session);
 
@@ -356,6 +363,7 @@ TEST_CASE("components::table::mvcc::compact_after_delete") {
     table->delete_rows(del_state, row_ids_chunk.data[0], 50, txn_id);
 
     auto commit_id = mgr.commit(session);
+    mgr.publish(commit_id);  // Block E ProcArray barrier
     table->commit_all_deletes(txn_id, commit_id);
 
     // 50 rows visible
@@ -375,7 +383,7 @@ TEST_CASE("components::table::mvcc::uncommitted_rows_invisible_to_other_txn") {
     test_env env;
     auto table = make_int_table(env);
 
-    transaction_manager_t mgr;
+    transaction_manager_t mgr(&env.resource);
 
     // Txn1 appends 10 rows, does NOT commit
     auto s1 = components::session::session_id_t::generate_uid();
@@ -389,6 +397,7 @@ TEST_CASE("components::table::mvcc::uncommitted_rows_invisible_to_other_txn") {
 
     // Commit txn1
     auto commit_id = mgr.commit(s1);
+    mgr.publish(commit_id);  // Block E ProcArray barrier
     table->commit_append(commit_id, 0, 10);
 
     // Txn3 scans — should see 10 rows
@@ -408,7 +417,7 @@ TEST_CASE("components::table::mvcc::delete_not_visible_until_commit") {
     append_rows(*table, env, 0, 10);
     REQUIRE(scan_count(*table, env) == 10);
 
-    transaction_manager_t mgr;
+    transaction_manager_t mgr(&env.resource);
 
     // Txn1 deletes rows 0..4 (does NOT commit yet)
     auto s1 = components::session::session_id_t::generate_uid();
@@ -434,6 +443,7 @@ TEST_CASE("components::table::mvcc::delete_not_visible_until_commit") {
 
     // Commit delete
     auto commit_id = mgr.commit(s1);
+    mgr.publish(commit_id);  // Block E ProcArray barrier
     table->commit_all_deletes(txn_id, commit_id);
 
     // Txn3 scans — should see 5 rows
@@ -447,7 +457,7 @@ TEST_CASE("components::table::mvcc::txn_sees_own_writes") {
     test_env env;
     auto table = make_int_table(env);
 
-    transaction_manager_t mgr;
+    transaction_manager_t mgr(&env.resource);
 
     // Txn1 appends 5 rows
     auto s1 = components::session::session_id_t::generate_uid();

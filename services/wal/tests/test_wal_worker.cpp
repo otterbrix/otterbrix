@@ -115,13 +115,18 @@ struct test_wal_worker {
     }
 
     actor_zeta::unique_future<services::wal::id_t> send_commit(uint64_t txn_id,
-                                                               wal_sync_mode sync_mode = wal_sync_mode::NORMAL) {
+                                                               wal_sync_mode sync_mode = wal_sync_mode::NORMAL,
+                                                               uint64_t commit_id = 0) {
+        // Block F (Pass 9 dec 47): commit_id is the MVCC version timestamp
+        // written into the COMMIT record. Tests use 0 unless they explicitly
+        // exercise snapshot-aware replay.
         auto [needs_sched, future] = actor_zeta::otterbrix::send(manager_->address(),
                                                                  &manager_wal_replicate_t::commit_txn,
                                                                  session_id_t::generate_uid(),
                                                                  txn_id,
                                                                  sync_mode,
-                                                                 kMainDb);
+                                                                 kMainDb,
+                                                                 commit_id);
         return std::move(future);
     }
 
@@ -156,8 +161,8 @@ TEST_CASE("wal_worker::insert_write_read") {
 
     auto fut_id = env.send_insert(/*txn_id=*/100, /*row_count=*/10, /*row_start=*/0);
     REQUIRE(fut_id.valid());
-    REQUIRE(fut_id.available());
-    auto wal_id = std::move(fut_id).get();
+    REQUIRE(fut_id.is_ready());
+    auto wal_id = std::move(fut_id).take_ready();
     REQUIRE(wal_id > 0);
 
     // Commit so the record is visible on load.
@@ -166,8 +171,8 @@ TEST_CASE("wal_worker::insert_write_read") {
 
     auto fut_records = env.send_load(0);
     REQUIRE(fut_records.valid());
-    REQUIRE(fut_records.available());
-    auto records = std::move(fut_records).get();
+    REQUIRE(fut_records.is_ready());
+    auto records = std::move(fut_records).take_ready();
 
     // Should have at least the INSERT + COMMIT.
     REQUIRE(records.size() >= 2);
@@ -195,7 +200,7 @@ TEST_CASE("wal_worker::delete_write_read") {
     std::pmr::vector<int64_t> ids{1, 3, 5, 7, 9};
     auto fut_id = env.send_delete(/*txn_id=*/200, ids);
     REQUIRE(fut_id.valid());
-    auto wal_id = std::move(fut_id).get();
+    auto wal_id = std::move(fut_id).take_ready();
     REQUIRE(wal_id > 0);
 
     env.send_commit(200);
@@ -224,7 +229,7 @@ TEST_CASE("wal_worker::update_write_read") {
     std::pmr::vector<int64_t> ids{0, 2, 4};
     auto fut_id = env.send_update(/*txn_id=*/300, ids, /*row_count=*/3);
     REQUIRE(fut_id.valid());
-    auto wal_id = std::move(fut_id).get();
+    auto wal_id = std::move(fut_id).take_ready();
     REQUIRE(wal_id > 0);
 
     env.send_commit(300);
@@ -309,7 +314,8 @@ TEST_CASE("wal_worker::corruption_stop") {
                                                          session_id_t::generate_uid(),
                                                          uint64_t{500},
                                                          wal_sync_mode::NORMAL,
-                                                         kMainDb);
+                                                         kMainDb,
+                                                         uint64_t{0});
         }
 
         scheduler->stop();
@@ -356,7 +362,7 @@ TEST_CASE("wal_worker::corruption_stop") {
                                                                   services::wal::id_t{0});
 
     REQUIRE(fut_records.valid());
-    auto records = std::move(fut_records).get();
+    auto records = std::move(fut_records).take_ready();
 
     // We should get fewer than the 5 inserts + 1 commit we wrote because the
     // corruption truncates the read.  At minimum we get zero (if corruption is
@@ -414,14 +420,15 @@ TEST_CASE("wal_worker::crc_chain_startup") {
                                                          session_id_t::generate_uid(),
                                                          uint64_t{600},
                                                          wal_sync_mode::NORMAL,
-                                                         kMainDb);
+                                                         kMainDb,
+                                                         uint64_t{0});
         }
         {
             auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
                                                          &manager_wal_replicate_t::current_wal_id,
                                                          session_id_t::generate_uid());
             REQUIRE(fut.valid());
-            last_wal_id = std::move(fut).get();
+            last_wal_id = std::move(fut).take_ready();
             REQUIRE(last_wal_id > 0);
         }
 
@@ -445,7 +452,7 @@ TEST_CASE("wal_worker::crc_chain_startup") {
                                                               &manager_wal_replicate_t::load,
                                                               session_id_t::generate_uid(),
                                                               services::wal::id_t{0});
-        auto records = std::move(fut_records).get();
+        auto records = std::move(fut_records).take_ready();
         REQUIRE(records.size() >= 2); // at least INSERT + COMMIT
 
         // Write a new record -- should continue the CRC chain.
@@ -458,7 +465,7 @@ TEST_CASE("wal_worker::crc_chain_startup") {
             uint64_t{0},
             uint64_t{3},
             uint64_t{601});
-        auto new_wal_id = std::move(fut_id).get();
+        auto new_wal_id = std::move(fut_id).take_ready();
         REQUIRE(new_wal_id > last_wal_id);
 
         scheduler->stop();
@@ -544,7 +551,7 @@ TEST_CASE("wal_worker::spanning_record") {
                                                      uint64_t{0},
                                                      uint64_t{500},
                                                      uint64_t{800});
-        auto wal_id = std::move(fut).get();
+        auto wal_id = std::move(fut).take_ready();
         REQUIRE(wal_id > 0);
     }
 
@@ -596,7 +603,7 @@ TEST_CASE("wal_worker::fsync_full_mode") {
                                                      uint64_t{0},
                                                      uint64_t{10},
                                                      uint64_t{900});
-        REQUIRE(std::move(fut).get() > 0);
+        REQUIRE(std::move(fut).take_ready() > 0);
     }
 
     {
@@ -605,7 +612,8 @@ TEST_CASE("wal_worker::fsync_full_mode") {
                                                      session_id_t::generate_uid(),
                                                      uint64_t{900},
                                                      wal_sync_mode::FULL,
-                                                     kMainDb);
+                                                     kMainDb,
+                                                     uint64_t{0});
         // commit should succeed
         REQUIRE(fut.valid());
     }
@@ -616,7 +624,7 @@ TEST_CASE("wal_worker::fsync_full_mode") {
                                                      &manager_wal_replicate_t::load,
                                                      session_id_t::generate_uid(),
                                                      services::wal::id_t{0});
-        auto records = std::move(fut).get();
+        auto records = std::move(fut).take_ready();
         REQUIRE(records.size() >= 2);
     }
 
@@ -657,7 +665,7 @@ TEST_CASE("wal_worker::fsync_off_mode") {
                                                      uint64_t{10},
                                                      uint64_t{1000});
         // Write should still return a valid WAL id.
-        REQUIRE(std::move(fut).get() > 0);
+        REQUIRE(std::move(fut).take_ready() > 0);
     }
 
     {
@@ -666,7 +674,8 @@ TEST_CASE("wal_worker::fsync_off_mode") {
                                                      session_id_t::generate_uid(),
                                                      uint64_t{1000},
                                                      wal_sync_mode::OFF,
-                                                     kMainDb);
+                                                     kMainDb,
+                                                     uint64_t{0});
         REQUIRE(fut.valid());
     }
 
@@ -677,7 +686,7 @@ TEST_CASE("wal_worker::fsync_off_mode") {
                                                      &manager_wal_replicate_t::load,
                                                      session_id_t::generate_uid(),
                                                      services::wal::id_t{0});
-        auto records = std::move(fut).get();
+        auto records = std::move(fut).take_ready();
         // Records might be empty if the in-memory-only path discards them,
         // or present if they are buffered. Either outcome is acceptable.
         // The key assertion is that we did not crash.

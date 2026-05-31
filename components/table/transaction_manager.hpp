@@ -4,6 +4,7 @@
 #include <components/session/session.hpp>
 #include <components/table/transaction.hpp>
 #include <memory>
+#include <memory_resource>
 #include <mutex>
 #include <set>
 #include <unordered_map>
@@ -12,7 +13,12 @@ namespace components::table {
 
     class transaction_manager_t {
     public:
-        transaction_manager_t();
+        // Block E (Pass 9 dec 46) — pmr resource is REQUIRED. It is used to
+        // allocate the in_flight_snapshot vector inside each transaction_data
+        // that begin_transaction hands out and inside take_snapshot()'s return.
+        // Rule 14: no std::pmr::get_default_resource() — every snapshot must
+        // be anchored to a real resource.
+        explicit transaction_manager_t(std::pmr::memory_resource* resource);
 
         transaction_t& begin_transaction(session::session_id_t session);
         uint64_t commit(session::session_id_t session);
@@ -24,12 +30,44 @@ namespace components::table {
         uint64_t lowest_active_start_time() const;
         bool has_active_transactions() const;
 
+        // Block E ProcArray (Pass 9 dec 46): atomic publish barrier — moves a
+        // committed txn out of in_flight_commits_ and advances published_horizon_.
+        // Called by executor / operator_commit_transaction at the end of the
+        // commit pipeline (after WAL fsync + storage_publish_*), so a fresh
+        // snapshot captures the new txn as visible.
+        void publish(uint64_t commit_id);
+
+        // Block E: capture an MVCC snapshot atomically. Caller specifies the
+        // resource for the in_flight_snapshot vector so the resulting
+        // transaction_data can be moved freely without dangling.
+        struct snapshot_t {
+            uint64_t snapshot_horizon;
+            std::pmr::vector<uint64_t> in_flight_snapshot;
+
+            explicit snapshot_t(std::pmr::memory_resource* resource)
+                : snapshot_horizon(0)
+                , in_flight_snapshot(resource) {}
+        };
+        snapshot_t take_snapshot(std::pmr::memory_resource* resource) const;
+
+        uint64_t published_horizon() const noexcept {
+            return published_horizon_.load(std::memory_order_acquire);
+        }
+
+        std::pmr::memory_resource* resource() const noexcept { return resource_; }
+
     private:
+        std::pmr::memory_resource* resource_;
         std::atomic<uint64_t> next_transaction_id_{TRANSACTION_ID_START};
         std::atomic<uint64_t> current_timestamp_{1};
         mutable std::mutex lock_;
         std::unordered_map<uint64_t, std::unique_ptr<transaction_t>> active_;
         std::set<uint64_t> active_start_times_;
+        // Block E ProcArray fields (Pass 9 dec 46 + BLOCKER 7/8): commit_ids
+        // allocated by commit() but not yet visible until publish(). Snapshots
+        // captured during this window must reject these ids.
+        std::set<uint64_t> in_flight_commits_;
+        std::atomic<uint64_t> published_horizon_{0};
     };
 
 } // namespace components::table

@@ -26,7 +26,7 @@ constexpr int kDocuments = 100;
     do {                                                                                                               \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
-            dispatcher->create_database(session, database_name);                                                       \
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");                                \
         }                                                                                                              \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \

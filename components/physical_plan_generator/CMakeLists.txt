@@ -31,9 +31,11 @@ set(${PROJECT_NAME}_SOURCES
         impl/create_plan_unregister_udf.cpp
         impl/create_plan_commit_transaction.cpp
         impl/create_plan_abort_transaction.cpp
+        impl/create_plan_begin_transaction.cpp
         impl/create_plan_computed_field_register.cpp
         impl/create_plan_computed_field_unregister.cpp
         impl/create_plan_resolve_namespace.cpp
+        impl/create_plan_resolve_database.cpp
         impl/create_plan_resolve_function.cpp
         impl/create_plan_resolve_table.cpp
         impl/create_plan_resolve_type.cpp

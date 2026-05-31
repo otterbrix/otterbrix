@@ -126,6 +126,7 @@ namespace components::planner {
                 // execute time. Pass through unchanged — no children to walk.
                 case node_type::catalog_resolve_table_t:
                 case node_type::catalog_resolve_namespace_t:
+                case node_type::catalog_resolve_database_t:
                 case node_type::catalog_resolve_type_t:
                 case node_type::catalog_resolve_function_t:
                 case node_type::catalog_resolve_constraint_t:
@@ -691,6 +692,7 @@ namespace components::planner {
                 // operator_resolve_*_t at execute time.
                 case node_type::catalog_resolve_table_t:
                 case node_type::catalog_resolve_namespace_t:
+                case node_type::catalog_resolve_database_t:
                 case node_type::catalog_resolve_type_t:
                 case node_type::catalog_resolve_function_t:
                 case node_type::catalog_resolve_constraint_t:

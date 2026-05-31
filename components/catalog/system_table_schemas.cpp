@@ -110,6 +110,16 @@ namespace components::catalog {
             // (pg_attrdef-equivalent inlined into pg_attribute). Empty when
             // atthasdefault=false.
             c.emplace_back("attdefspec", str_col(), false);
+            // Block C §3.5 dec 32 V2 — ALTER TABLE lazy backfill: MVCC versioning
+            // for columns. added_at_commit_id = commit_id of the ALTER TABLE ADD
+            // COLUMN that introduced this column. dropped_at_commit_id = commit_id
+            // of the matching DROP COLUMN (0 = still alive). Visibility:
+            // snapshot sees column iff added_at_commit_id <= snapshot.horizon
+            // AND (dropped_at_commit_id == 0 OR dropped_at_commit_id > snapshot).
+            // attisdropped boolean tombstone remains for backwards-compatible
+            // structural queries — set in lockstep with dropped_at_commit_id > 0.
+            c.emplace_back("added_at_commit_id", i64_col(), true);   // 10
+            c.emplace_back("dropped_at_commit_id", i64_col(), true); // 11
             return c;
         }
 

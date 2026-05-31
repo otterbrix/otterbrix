@@ -175,7 +175,7 @@ TEST_CASE("test_recovery_ddl_then_dml") {
 }
 
 // 4. test_recovery_orphaned_uncommitted_ddl — DDL rows written under a non-zero txn_id
-//    but never committed (storage_commit_appends not called, simulating a crash) must
+//    but never committed (storage_publish_commits not called, simulating a crash) must
 //    be invisible after manager restart, because rebuild_lookup_indexes uses inline_scan →
 //    scan_committed which filters any row whose txn_id has not been flipped to a commit_id.
 TEST_CASE("test_recovery_orphaned_uncommitted_ddl") {
@@ -185,7 +185,7 @@ TEST_CASE("test_recovery_orphaned_uncommitted_ddl") {
     {
         recovery_fixture fx(dir);
         // Use txn_id=1 so append_pg_catalog_row writes the pg_namespace row under a
-        // non-zero txn (not immediately visible). Without storage_commit_appends the
+        // non-zero txn (not immediately visible). Without storage_publish_commits the
         // flip from txn_id to commit_id never happens.
         components::execution_context_t uncommitted_ctx{session_id_t{}, components::table::transaction_data{1, 0}, {}};
         auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
@@ -195,7 +195,7 @@ TEST_CASE("test_recovery_orphaned_uncommitted_ddl") {
             components::catalog::build_create_namespace_writes(&fx.resource, std::string("orphaned_ns"), ns_oid);
         for (auto& w : writes)
             fx.invoke(&manager_disk_t::append_pg_catalog_row, uncommitted_ctx, w.table_oid, std::move(w.row));
-        // Intentionally omit storage_commit_appends — simulates crash before commit.
+        // Intentionally omit storage_publish_commits — simulates crash before commit.
     }
 
     {

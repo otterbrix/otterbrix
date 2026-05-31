@@ -1,7 +1,10 @@
 #include "operator_alter_column_drop.hpp"
 
+#include "alter_validators.hpp"
+
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/ddl_metadata_builder.hpp>
+#include <components/catalog/dec43_alter_validators.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
 #include <services/disk/manager_disk.hpp>
@@ -111,12 +114,30 @@ namespace components::operators {
                                            std::move(pd_vals));
         auto dep_rows = co_await std::move(pdf);
 
+        // dec 43 V1 Phase 2: build the dependents vector from the pg_depend rows
+        // we just read, then funnel it through the pure validator. This is the
+        // ABORT-on-error gate — any failure here must surface BEFORE the first
+        // mutating delete/append below (atomic-rollback semantics dec 22).
+        std::pmr::vector<std::pair<int, catalog::oid_t>> dependents{resource_};
+        dependents.reserve(dep_rows.size());
+        for (const auto& dep_row : dep_rows) {
+            if (dep_row.size() < 2 || dep_row[0].is_null() || dep_row[1].is_null())
+                continue;
+            const auto dep_cls = static_cast<catalog::oid_t>(dep_row[0].value<std::uint32_t>());
+            const auto dep_oid = static_cast<catalog::oid_t>(dep_row[1].value<std::uint32_t>());
+            dependents.emplace_back(static_cast<int>(dep_cls), dep_oid);
+        }
+        auto ec_cascade = components::catalog::dec43::validate_cascade_dependencies(resource_, dependents);
+        if (ec_cascade.contains_error()) {
+            set_error(std::move(ec_cascade));
+            mark_executed();
+            co_return;
+        }
+
         // Step 3 — for RESTRICT, abort if any non-internal dep exists. For CASCADE,
         // drop each dependent object.
         if (behavior_ == catalog::drop_behavior_t::restrict_) {
-            for (const auto& dep_row : dep_rows) {
-                if (dep_row.size() < 2 || dep_row[0].is_null() || dep_row[1].is_null())
-                    continue;
+            if (!dependents.empty()) {
                 set_error(
                     core::error_t{core::error_code_t::other_error,
                                   std::pmr::string{"DROP COLUMN RESTRICT: column has dependent objects", resource_}});
@@ -215,6 +236,19 @@ namespace components::operators {
         if (ctx->txn.transaction_id != 0)
             ctx->pg_catalog_delete_tables.insert(pg_attr_oid);
 
+        // Block C §3.5 dec 32 V2 OPTION X:
+        // dropped_at_commit_id is stamped as 0 here (placeholder) because the
+        // commit_id is not allocated until operator_commit_transaction_t calls
+        // txn_manager.commit() later in the pipeline. We record a backfill
+        // marker on the pipeline context; operator_commit_transaction drains
+        // the marker after commit() and patches the tombstone row in place
+        // (see TBD-impl note there). The tombstone's MVCC insert_id is still
+        // stamped with the executing transaction_id at write and flipped to
+        // commit_id by storage_publish_commits at COMMIT.
+        //
+        // dec 43 V1 Phase 2: cascade dependency validation already ran in
+        // Phase 1 (above, BEFORE Step 3 mutations) — ABORT-on-error dec 22.
+
         auto tombstone = catalog::build_pg_attribute_row(resource_,
                                                          attoid,
                                                          table_oid_,
@@ -225,7 +259,9 @@ namespace components::operators {
                                                          att_has_default,
                                                          /*is_dropped=*/true,
                                                          att_typspec,
-                                                         att_defspec);
+                                                         att_defspec,
+                                                         /*added_at_commit_id=*/0,
+                                                         /*dropped_at_commit_id=*/0);
         auto [_w, wf] = actor_zeta::send(ctx->disk_address,
                                          &services::disk::manager_disk_t::append_pg_catalog_row,
                                          exec_ctx,
@@ -244,6 +280,13 @@ namespace components::operators {
             co_return;
         }
         ctx->pg_catalog_appends.push_back(std::move(rng));
+        // OPTION X: schedule dropped_at_commit_id backfill on the tombstone.
+        // attoid is the same as the live row's attoid (identity-preserving
+        // tombstone — see build_pg_attribute_row contract).
+        ctx->pg_attribute_commit_id_backfills.push_back(
+            components::pg_attribute_commit_id_backfill_t{
+                attoid,
+                components::pg_attribute_commit_id_backfill_t::kind_t::dropped_at});
 
         // Note: drop_column on a relkind='g' (computing) table is routed to
         // operator_computed_field_unregister_t in planner.cpp::rewrite_alter_table,

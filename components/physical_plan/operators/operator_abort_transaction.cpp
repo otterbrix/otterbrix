@@ -23,10 +23,21 @@ namespace components::operators {
         components::table::transaction_data txn_data =
             txn_t ? txn_t->data() : components::table::transaction_data{0, 0};
         std::vector<components::pg_catalog_append_range_t> swap_appends;
+        std::set<components::catalog::oid_t> swap_deletes_unused;
         if (txn_t) {
-            swap_appends = std::move(txn_t->pg_catalog_appends);
-            // delete_tables: nothing to revert — uncommitted tombstones are invisible.
-            txn_t->pg_catalog_delete_tables.clear();
+            // Block C §3.5 dec 22 EXTENSION — pg_catalog accumulation API.
+            // drain_pg_catalog_pending mirrors the COMMIT path. On ABORT we
+            // discard the delete-tables set (uncommitted tombstones with
+            // delete_id == txn_id are invisible to every reader; abort()
+            // makes them GC-eligible). The appends still need revert because
+            // their physical row slots persist until storage_revert_appends.
+            txn_t->drain_pg_catalog_pending(swap_appends, swap_deletes_unused);
+            swap_deletes_unused.clear();
+            // Block C §3.5 dec 32 V2 OPTION X: drop any pg_attribute backfill
+            // markers. Their target rows live in swap_appends above and will
+            // be reverted by storage_revert_appends; the markers carry no
+            // residual state.
+            (void) txn_t->drain_pg_attribute_commit_id_backfills();
         }
 
         // Step 2: abort the transaction in the txn_manager (synchronous).

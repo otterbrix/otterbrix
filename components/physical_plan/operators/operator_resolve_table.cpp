@@ -378,12 +378,29 @@ namespace components::operators {
                                                std::move(pa_vals));
             auto pa_rows = co_await std::move(paf);
 
+            // Block C §3.5 dec 32 V2: column visibility under this txn's snapshot.
+            // Column visible iff added_at_commit_id <= snapshot.start_time AND
+            // (dropped_at_commit_id == 0 OR dropped_at_commit_id > snapshot.start_time).
+            // attisdropped boolean tombstone is retained as a structural backup
+            // — set in lockstep with dropped_at_commit_id > 0.
+            const auto snapshot_start_time = ctx->txn.start_time;
             for (const auto& row : pa_rows) {
                 if (row.size() < 8)
                     continue;
                 // Drop tombstones (attisdropped=true).
                 if (!row[7].is_null() && row[7].value<bool>())
                     continue;
+                // dec 32 V2: filter by MVCC commit-id fields if present.
+                if (row.size() > 10 && !row[10].is_null()) {
+                    auto added_at = static_cast<uint64_t>(row[10].value<std::int64_t>());
+                    if (added_at > snapshot_start_time)
+                        continue; // column added after our snapshot — invisible
+                }
+                if (row.size() > 11 && !row[11].is_null()) {
+                    auto dropped_at = static_cast<uint64_t>(row[11].value<std::int64_t>());
+                    if (dropped_at != 0 && dropped_at <= snapshot_start_time)
+                        continue; // column dropped before our snapshot
+                }
                 out_row_t r;
                 r.attoid = row[0].is_null() ? catalog::INVALID_OID
                                             : static_cast<catalog::oid_t>(row[0].value<std::uint32_t>());

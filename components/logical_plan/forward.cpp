@@ -104,6 +104,8 @@ namespace components::logical_plan {
                 return "commit_transaction_t";
             case node_type::abort_transaction_t:
                 return "abort_transaction_t";
+            case node_type::begin_transaction_t:
+                return "begin_transaction_t";
             case node_type::computed_field_register_t:
                 return "computed_field_register_t";
             case node_type::computed_field_unregister_t:
@@ -112,6 +114,8 @@ namespace components::logical_plan {
                 return "catalog_resolve_table_t";
             case node_type::catalog_resolve_namespace_t:
                 return "catalog_resolve_namespace_t";
+            case node_type::catalog_resolve_database_t:
+                return "catalog_resolve_database_t";
             case node_type::catalog_resolve_type_t:
                 return "catalog_resolve_type_t";
             case node_type::catalog_resolve_function_t:

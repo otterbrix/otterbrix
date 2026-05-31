@@ -176,7 +176,7 @@ TEST_CASE("integration::cpp::test_batch_where") {
     INFO("initialization") {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -277,7 +277,7 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
     INFO("initialization") {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -607,7 +607,7 @@ TEST_CASE("integration::cpp::test_batch_edge_cases") {
     INFO("initialization") {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -707,7 +707,7 @@ TEST_CASE("integration::cpp::test_batch_boundaries") {
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->create_database(session, database_name);
+        dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
     }
     {
         auto session = otterbrix::session_id_t();

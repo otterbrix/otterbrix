@@ -74,7 +74,7 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         auto result = std::move(*pending_future_).get();
         pending_future_.reset();
         // Drain again to ensure executor's post-result DDL inline pipeline
-        // (catalog writes + flush + commit_txn + storage_commit_appends) completes
+        // (catalog writes + flush + commit_txn + storage_publish_commits) completes
         // before returning.
         step();
         return result;

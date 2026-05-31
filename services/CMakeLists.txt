@@ -31,6 +31,7 @@ set(${PROJECT_NAME}_SOURCES
         index/disk_hash_table.cpp
         index/btree_index_disk.cpp
         index/index_agent_disk.cpp
+        index/index_table_agent.cpp
         index/manager_index.cpp
 
     # wal

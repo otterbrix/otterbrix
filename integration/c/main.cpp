@@ -97,7 +97,7 @@ extern "C" cursor_ptr create_database(otterbrix_ptr ptr, string_view_t database_
     assert(database_name.data != nullptr);
     auto session = otterbrix::session_id_t();
     std::string database(database_name.data, database_name.size);
-    auto cursor = pod_space->space->dispatcher()->create_database(session, database);
+    auto cursor = pod_space->space->dispatcher()->execute_sql(session, "CREATE DATABASE " + database + ";");
     auto cursor_storage = std::make_unique<cursor_storage_t>();
     cursor_storage->cursor = cursor;
     cursor_storage->state = state_t::created;

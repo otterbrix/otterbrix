@@ -82,6 +82,10 @@ namespace services::index {
     index_agent_disk_t::unique_future<void> index_agent_disk_t::drop(session_id_t session) {
         trace(log_, "index_agent_disk_t::drop, session: {}", session.data());
         index_disk_->drop();
+        // TODO Parallel A.B2: when index_disk_->drop() returns core::error_t
+        // instead of being assert+abort terminal, check ec here and propagate
+        // via promise::error or a result_t-returning signature change. Current:
+        // bitcask/btree drop is terminal, unreachable on failure.
         is_dropped_ = true;
         co_return;
     }
@@ -90,6 +94,10 @@ namespace services::index {
     index_agent_disk_t::insert(session_id_t session, value_t key, size_t row_id) {
         trace(log_, "index_agent_disk_t::insert row {}, session: {}", row_id, session.data());
         index_disk_->insert(key, row_id);
+        // TODO Parallel A.B2: when bitcask methods return core::error_t instead
+        // of assert+abort, check ec here and propagate via promise::error or
+        // result_t-returning signature change. Current: bitcask is terminal,
+        // unreachable on failure.
         co_return;
     }
 
@@ -99,6 +107,10 @@ namespace services::index {
         auto* bitcask = dynamic_cast<bitcask_index_disk_t*>(index_disk_.get());
         if (bitcask && txn_id != 0) {
             bitcask->apply_txn_inserts(txn_id, values);
+            // TODO Parallel A.B2: when bitcask methods return core::error_t
+            // instead of assert+abort, check ec here and propagate via
+            // promise::error or result_t-returning signature change. Current:
+            // bitcask is terminal, unreachable on failure.
             co_return;
         }
         struct bulk_guard_t {
@@ -114,9 +126,18 @@ namespace services::index {
         }
         for (const auto& [key, row_id] : values) {
             index_disk_->insert(key, row_id);
+            // TODO Parallel A.B2: when bitcask methods return core::error_t
+            // instead of assert+abort, check ec here and propagate via
+            // promise::error or result_t-returning signature change. On error
+            // we would break out of the loop, disengage the bulk_guard (so the
+            // partial bulk window is closed), and forward result_t::failure(ec)
+            // to the caller. Current: bitcask is terminal, unreachable on
+            // failure.
         }
         if (bitcask) {
             bitcask->force_flush();
+            // TODO Parallel A.B2: same — force_flush failure would need to be
+            // surfaced as result_t::failure(ec) once bitcask is non-terminal.
         }
         co_return;
     }
@@ -125,6 +146,10 @@ namespace services::index {
     index_agent_disk_t::remove(session_id_t session, value_t key, size_t row_id) {
         trace(log_, "index_agent_disk_t::remove row {}, session: {}", row_id, session.data());
         index_disk_->remove(key, row_id);
+        // TODO Parallel A.B2: when bitcask methods return core::error_t instead
+        // of assert+abort, check ec here and propagate via promise::error or
+        // result_t-returning signature change. Current: bitcask is terminal,
+        // unreachable on failure.
         co_return;
     }
 
@@ -134,13 +159,24 @@ namespace services::index {
         auto* bitcask = dynamic_cast<bitcask_index_disk_t*>(index_disk_.get());
         if (bitcask && txn_id != 0) {
             bitcask->apply_txn_deletes(txn_id, values);
+            // TODO Parallel A.B2: when bitcask methods return core::error_t
+            // instead of assert+abort, check ec here and propagate via
+            // promise::error or result_t-returning signature change. Current:
+            // bitcask is terminal, unreachable on failure.
             co_return;
         }
         for (const auto& [key, row_id] : values) {
             index_disk_->remove(key, row_id);
+            // TODO Parallel A.B2: when bitcask methods return core::error_t
+            // instead of assert+abort, check ec here and propagate via
+            // promise::error or result_t-returning signature change. On error
+            // we would break and forward result_t::failure(ec). Current:
+            // bitcask is terminal, unreachable on failure.
         }
         if (bitcask) {
             bitcask->force_flush();
+            // TODO Parallel A.B2: same — force_flush failure would need to be
+            // surfaced as result_t::failure(ec) once bitcask is non-terminal.
         }
         co_return;
     }
@@ -182,12 +218,20 @@ namespace services::index {
     index_agent_disk_t::unique_future<void> index_agent_disk_t::force_flush(session_id_t session) {
         trace(log_, "index_agent_disk_t::force_flush, session: {}", session.data());
         force_flush_sync();
+        // TODO Parallel A.B2: when force_flush_sync surfaces core::error_t
+        // (because the underlying bitcask/btree flush is non-terminal), check
+        // ec here and propagate via result_t. Current: terminal on failure.
         co_return;
     }
 
     void index_agent_disk_t::force_flush_sync() {
         if (index_disk_ && !is_dropped_) {
             index_disk_->force_flush();
+            // TODO Parallel A.B2: this is the synchronous owner-side entry
+            // (called by manager_index_t outside the actor mailbox). Once
+            // bitcask/btree flush returns core::error_t, force_flush_sync's
+            // signature will change to return result_t and the owning manager
+            // will forward the failure to its caller. Current: terminal.
         }
     }
 

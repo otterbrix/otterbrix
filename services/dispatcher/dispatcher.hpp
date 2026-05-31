@@ -69,6 +69,25 @@ namespace services::dispatcher {
 
         void sync(sync_pack pack);
 
+        // Block F (Pass 9 dec 47) — bootstrap-time hook called from base_spaces
+        // after WAL replay scans all records and finds the maximum durable
+        // commit_id. Advances published_horizon_ past everything already on
+        // disk so post-recovery snapshots observe the right MVCC visibility.
+        // Direct sync call is allowed here: scheduler_dispatcher_ has not been
+        // started yet (rule 11 base_spaces bootstrap exception). Idempotent —
+        // publish() is monotonic and ignores stale ids.
+        void set_replay_horizon_sync(uint64_t commit_id);
+
+        // Block C §3.5 dec 37 V1 catalog scan rebuild — base_spaces Phase 2c
+        // calls these after rebuilding dropped_storages_ / dropped_table_agents_
+        // so the very first post-start horizon advance broadcasts
+        // on_horizon_advanced to the affected subscribers and finishes the GC
+        // pass that the pre-crash DROP didn't get to. Equivalent to the
+        // mailbox handler on_drop_resource_marked() but usable pre-
+        // scheduler.start (rule 11 base_spaces bootstrap exception). Idempotent.
+        void set_disk_has_dropped_sync(bool value) noexcept { disk_has_dropped_ = value; }
+        void set_index_has_dropped_sync(bool value) noexcept { index_has_dropped_ = value; }
+
         unique_future<components::cursor::cursor_t_ptr>
         execute_plan(components::session::session_id_t session,
                      components::logical_plan::node_ptr plan,
@@ -87,20 +106,82 @@ namespace services::dispatcher {
         unique_future<uint64_t> commit_transaction(components::session::session_id_t session);
         unique_future<void> abort_transaction(components::session::session_id_t session);
 
+        // Variant E.3 (Constraint #11): low-level transaction-manager wrappers
+        // for the executor. The executor currently dereferences a raw
+        // `transaction_manager_t*` shared from this dispatcher (anti-pattern —
+        // mutable state shared across actors). These handlers replay the same
+        // sync calls inside the dispatcher's own actor context, so the
+        // executor only ever communicates via the mailbox.
+        //
+        // Each handler is a thin pass-through to `txn_manager_.{method}()`
+        // with no operator-pipeline / WAL / disk side-effects. The heavier
+        // commit_transaction / abort_transaction handlers above continue to
+        // route DDL commits/aborts through their operator pipelines.
+        //
+        //   txn_begin_msg          → tm.begin_transaction(session).data()
+        //   txn_commit_msg         → tm.commit(session)  (returns commit_id)
+        //   txn_abort_msg          → tm.abort(session)
+        //   txn_publish_msg        → tm.publish(commit_id)  (ProcArray barrier)
+        //   txn_lowest_active_msg  → tm.lowest_active_start_time()
+        unique_future<components::table::transaction_data>
+        txn_begin_msg(components::session::session_id_t session);
+        unique_future<uint64_t> txn_commit_msg(components::session::session_id_t session);
+        unique_future<void> txn_abort_msg(components::session::session_id_t session);
+        unique_future<void> txn_publish_msg(uint64_t commit_id);
+        unique_future<uint64_t> txn_lowest_active_msg();
+
+        // Variant E.3 (Constraint #11): SET TIME ZONE mailbox handler. The
+        // dispatcher owns default_tz_cat_ (session-shared mutable state); the
+        // executor cannot mutate it directly without violating the no-shared-
+        // state rule, so it routes SET TIME ZONE through this handler. The
+        // body mirrors the dispatcher's own set_timezone_t case in
+        // execute_plan_impl: mutates default_tz_cat_, then appends a
+        // ("TimeZone", <name>) row to pg_settings via disk_address_'s
+        // append_pg_catalog_row mailbox. Returns the success/error cursor.
+        unique_future<components::cursor::cursor_t_ptr>
+        set_default_timezone_msg(components::session::session_id_t session, std::pmr::string tz_name);
+
+        // dec 38/40 selective broadcast — DROP TABLE / DROP INDEX path marks the
+        // owning subscriber as "has dropped resources pending GC" via this
+        // mailbox handler. Cleared by on_subscriber_empty once the subscriber's
+        // dropped_storages_ queue is empty. These are mailbox handlers invoked
+        // via actor_zeta::send (rule 11 — no sync parent-pointer calls). They
+        // return unique_future<void> because actor_zeta::dispatch requires all
+        // actor methods to return unique_future<T> or generator<T>.
+        unique_future<void> on_drop_resource_marked(uint8_t subscriber_kind);
+        // dec 38/40 subscriber-empty ack — subscriber sends this back once its
+        // dropped_storages_ queue drained (i.e. nothing left to GC for that kind),
+        // which clears the corresponding broadcast flag and stops further
+        // on_horizon_advanced broadcasts to that subscriber.
+        unique_future<void> on_subscriber_empty(uint8_t subscriber_kind);
+
         using dispatch_traits = actor_zeta::dispatch_traits<&manager_dispatcher_t::execute_plan,
                                                             &manager_dispatcher_t::get_schema,
                                                             &manager_dispatcher_t::register_udf,
                                                             &manager_dispatcher_t::unregister_udf,
                                                             &manager_dispatcher_t::begin_transaction,
                                                             &manager_dispatcher_t::commit_transaction,
-                                                            &manager_dispatcher_t::abort_transaction>;
+                                                            &manager_dispatcher_t::abort_transaction,
+                                                            &manager_dispatcher_t::txn_begin_msg,
+                                                            &manager_dispatcher_t::txn_commit_msg,
+                                                            &manager_dispatcher_t::txn_abort_msg,
+                                                            &manager_dispatcher_t::txn_publish_msg,
+                                                            &manager_dispatcher_t::txn_lowest_active_msg,
+                                                            &manager_dispatcher_t::set_default_timezone_msg,
+                                                            &manager_dispatcher_t::on_drop_resource_marked,
+                                                            &manager_dispatcher_t::on_subscriber_empty>;
 
     private:
-        // Pipeline-routed OID allocation. Builds a node_allocate_oids_t leaf,
-        // drives operator_allocate_oids_t via the standard executor loop, and
-        // returns the stamped batch.
-        unique_future<std::vector<components::catalog::oid_t>>
-        allocate_oids_via_pipeline(components::session::session_id_t session, std::size_t count);
+        // dec 38/40 cleanup-trigger helper. Called INLINE from the commit_txn /
+        // abort_txn handler bodies (Variant E.3 work; not wired yet). This is a
+        // regular private member function — NOT a std::function callback (rule
+        // 13) — so the call site stays a direct method call without indirection.
+        // Reads `txn_manager_.lowest_active_start_time()`, and if it advanced
+        // since `last_broadcast_horizon_`, sends `on_horizon_advanced(new)` to
+        // each subscriber whose drop-resource flag is set. Skip-send is the
+        // common case (no drops outstanding → no message bursts on every
+        // commit).
+        void try_trigger_cleanup_if_horizon_advanced() noexcept;
 
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
@@ -109,6 +190,12 @@ namespace services::dispatcher {
 
         static constexpr std::size_t executor_pool_size_ = 4;
 
+        // Variant E.3 (Pass 9 dec 1) collections_ partition:
+        // FUTURE: this map will be partitioned across 4 executors by `oid % 4`.
+        // Until that migration, collections_ stays here and is the source of truth.
+        // See services/collection/executor.hpp Variant E.3 docstring for the
+        // migration contract.
+        //
         // Fast-path membership cache for collections. Read by physical_plan_generator
         // in 8 sites (join, match, aggregate, sort, group) to drive optimizer
         // decisions. Removing would require touching all 8 + replacing with
@@ -120,6 +207,18 @@ namespace services::dispatcher {
         actor_zeta::address_t wal_address_ = actor_zeta::address_t::empty_address();
         actor_zeta::address_t disk_address_ = actor_zeta::address_t::empty_address();
         actor_zeta::address_t index_address_ = actor_zeta::address_t::empty_address();
+
+        // dec 38/40 selective broadcast flags. Set when DROP TABLE / DROP INDEX
+        // marks a resource dropped (via on_drop_resource_marked); cleared by the
+        // subscriber's on_subscriber_empty ack. Single-actor private state — no
+        // atomic / no shared (rule 10).
+        bool disk_has_dropped_{false};
+        bool index_has_dropped_{false};
+        // Cached last-broadcast horizon to skip redundant on_horizon_advanced
+        // sends — every commit advances lowest_active by at most one txn, but
+        // many commits do not advance it at all (long-running concurrent txn
+        // pins it). Only re-broadcast when the value actually moves forward.
+        uint64_t last_broadcast_horizon_{0};
 
         std::mutex mutex_;
 

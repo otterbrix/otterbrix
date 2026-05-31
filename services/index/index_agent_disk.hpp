@@ -1,5 +1,24 @@
 #pragma once
 
+// Block B Parallel A.B2: error_code propagation boundary notes.
+//
+// Today the write-path methods on index_agent_disk_t (insert / insert_many /
+// remove / remove_many / drop / force_flush) return unique_future<void>
+// because the underlying bitcask_index_disk_t / btree_index_disk_t methods are
+// assert+abort terminal (Block A.B1). There is no recoverable failure path to
+// surface, so the signatures intentionally stay as unique_future<void>.
+//
+// When bitcask gains a non-terminal error mode (returning core::error_t from
+// its mutating calls), these signatures will switch to
+// unique_future<services::index::result_t> — matching the manager_index_t
+// commit_insert / commit_delete pattern introduced in Block A.B3
+// (see services/index/index_result.hpp). At that point the call sites in
+// index_agent_disk.cpp marked with "TODO Parallel A.B2" become the integration
+// points: each bitcask/btree call result will be inspected and forwarded via
+// result_t::failure(ec) instead of co_return-ing void. Per Rule 14, no
+// std::variant / std::shared_ptr / std::function / std::any is introduced;
+// result_t is a POD carrying a core::error_t.
+
 #include "index_disk.hpp"
 
 #include <actor-zeta.hpp>
@@ -24,6 +43,34 @@ namespace services::index {
 
     using index_name_t = std::string;
 
+    // Architectural roles & current migration status:
+    //
+    // 1. Block B Parallel A.B1 (Pass 9 dec 19) bitcask exception removal: ✅ done
+    //    via agents #a979b1a (markers) — all 20 bitcask throws converted to
+    //    assert+abort. index_agent_disk_t calls bitcask methods that are
+    //    currently terminal on failure.
+    //
+    // 2. Block B Parallel A.B2 error_code propagation: TODO. When bitcask gains
+    //    non-terminal error mode (returns core::error_t), this agent's methods
+    //    will need result_t-returning signatures matching the manager_index
+    //    A.B3 pattern (services/index/index_result.hpp). Sites already marked
+    //    with `TODO Parallel A.B2:` comments at every write-path call site.
+    //
+    // 3. Block D per-table-agent migration: index_agent_disk_t remains the
+    //    PERSISTENCE LAYER actor — used by both manager_index_t and (eventually)
+    //    index_table_agent_t. NOT migrated. The Block D split places the
+    //    in-memory engine_t on per-table agents; this disk-persistence actor
+    //    stays the same and is reached via address handles.
+    //
+    // 4. Block C §3.5 dec 33 V1 deferred DROP TABLE GC: index_agent_disk's
+    //    persisted on-disk files are unlinked by manager_disk_t's
+    //    on_horizon_advanced handler iterating dropped_storages_. This agent
+    //    does NOT need a separate GC handler — the storage layout puts index
+    //    files alongside table files.
+    //
+    // Constraint #10 (no shared mutable state between actors): preserved.
+    // index_agent_disk_t owns its own bitcask + btree state exclusively;
+    // callers reach it through mailbox sends to its address.
     class index_agent_disk_t final : public actor_zeta::basic_actor<index_agent_disk_t> {
         using path_t = std::filesystem::path;
         using session_id_t = ::components::session::session_id_t;

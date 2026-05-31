@@ -20,10 +20,12 @@ set(SOURCE_${PROJECT_NAME}
         node_unregister_udf.cpp
         node_commit_transaction.cpp
         node_abort_transaction.cpp
+        node_begin_transaction.cpp
         node_computed_field_register.cpp
         node_computed_field_unregister.cpp
         node_catalog_resolve_table.cpp
         node_catalog_resolve_namespace.cpp
+        node_catalog_resolve_database.cpp
         node_catalog_resolve_type.cpp
         node_catalog_resolve_function.cpp
         node_catalog_resolve_constraint.cpp

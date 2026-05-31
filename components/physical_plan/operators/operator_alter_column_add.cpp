@@ -3,7 +3,10 @@
 #include <set>
 #include <vector>
 
+#include "alter_validators.hpp"
+
 #include <components/catalog/ddl_metadata_builder.hpp>
+#include <components/catalog/dec43_alter_validators.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
 #include <services/disk/manager_disk.hpp>
@@ -24,6 +27,38 @@ namespace components::operators {
 
     actor_zeta::unique_future<void> operator_alter_column_add_t::await_async_and_resume(pipeline::context_t* ctx) {
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
+
+        // dec 43 V1 Phase 1 validation: pure pre-execute checks. Any failure → error
+        // cursor + co_return BEFORE any catalog mutation (atomic-rollback semantics).
+
+        // Validate column name not duplicate against currently-visible column list.
+        // dec 43 Phase 2: visible_column_names populated by async pg_attribute
+        // scan (filtered by dec 32 V2 MVCC visibility — see alter_validators.cpp).
+        auto vc_fut = alter_validators::visible_column_names(resource_, ctx->disk_address, exec_ctx, table_oid_);
+        auto visible_column_names = co_await std::move(vc_fut);
+        auto ec_dup = components::catalog::dec43::validate_column_not_duplicate(resource_,
+                                                                                visible_column_names,
+                                                                                std::string(column_.name()));
+        if (ec_dup.contains_error()) {
+            set_error(std::move(ec_dup));
+            co_return;
+        }
+
+        // Validate default value type / evaluability if present.
+        auto ec_type = components::catalog::dec43::validate_default_value_type(resource_,
+                                                                               column_.type(),
+                                                                               column_.default_value_opt());
+        if (ec_type.contains_error()) {
+            set_error(std::move(ec_type));
+            co_return;
+        }
+
+        auto ec_eval =
+            components::catalog::dec43::validate_default_value_evaluatable(resource_, column_.default_value_opt());
+        if (ec_eval.contains_error()) {
+            set_error(std::move(ec_eval));
+            co_return;
+        }
 
         // Step 1: scan pg_attribute for max(attnum) for this table.
         constexpr catalog::oid_t pg_attr_oid = catalog::well_known_oid::pg_attribute_table;
@@ -62,6 +97,17 @@ namespace components::operators {
         const catalog::oid_t atttypid = (column_.atttypid() != catalog::INVALID_OID)
                                             ? column_.atttypid()
                                             : catalog::builtin_type_to_oid(column_.type().type());
+        // Block C §3.5 dec 32 V2 OPTION X:
+        // added_at_commit_id / dropped_at_commit_id are stamped as 0 here
+        // (placeholder) because the commit_id is not allocated until
+        // operator_commit_transaction_t calls txn_manager.commit() later in
+        // the pipeline. We record a backfill marker on the pipeline context;
+        // operator_commit_transaction drains the marker after commit() and
+        // patches the row in place (see TBD-impl note there). The row's own
+        // MVCC insert_id is still stamped with the executing transaction_id
+        // at write and flipped to commit_id by storage_publish_commits at
+        // COMMIT, so even pre-backfill the row participates in normal MVCC
+        // version filtering.
         auto att_row = catalog::build_pg_attribute_row(resource_,
                                                        attoid,
                                                        table_oid_,
@@ -72,15 +118,24 @@ namespace components::operators {
                                                        column_.has_default_value(),
                                                        /*is_dropped=*/false,
                                                        typspec,
-                                                       defspec);
+                                                       defspec,
+                                                       /*added_at_commit_id=*/0,
+                                                       /*dropped_at_commit_id=*/0);
         auto [_w, wf] = actor_zeta::send(ctx->disk_address,
                                          &services::disk::manager_disk_t::append_pg_catalog_row,
                                          exec_ctx,
                                          pg_attr_oid,
                                          std::move(att_row));
         auto rng = co_await std::move(wf);
-        if (rng.count > 0)
+        if (rng.count > 0) {
             ctx->pg_catalog_appends.push_back(std::move(rng));
+            // OPTION X: schedule added_at_commit_id backfill on the freshly-
+            // inserted pg_attribute row. attoid is the keyed identity.
+            ctx->pg_attribute_commit_id_backfills.push_back(
+                components::pg_attribute_commit_id_backfill_t{
+                    attoid,
+                    components::pg_attribute_commit_id_backfill_t::kind_t::added_at});
+        }
 
         // resolve_table rebuilds columns from pg_attribute on each call, so
         // subsequent statements see the new column. A DML in the same txn

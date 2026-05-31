@@ -19,7 +19,6 @@
 #include <logical_plan/node_create_index.hpp>
 #include <logical_plan/node_create_macro.hpp>
 #include <logical_plan/node_create_matview.hpp>
-#include <logical_plan/node_refresh_matview.hpp>
 #include <logical_plan/node_create_sequence.hpp>
 #include <logical_plan/node_create_type.hpp>
 #include <logical_plan/node_create_view.hpp>
@@ -37,6 +36,7 @@
 #include <logical_plan/node_insert.hpp>
 #include <logical_plan/node_primitive_delete.hpp>
 #include <logical_plan/node_primitive_write.hpp>
+#include <logical_plan/node_refresh_matview.hpp>
 #include <logical_plan/node_sequence.hpp>
 #include <logical_plan/node_update.hpp>
 
@@ -308,8 +308,7 @@ namespace components::planner {
         // physical_plan_generator's case create_matview_t then builds the composite
         // operator_create_matview_t which atomically performs heap creation,
         // catalog row writes, body scan, and storage_append in one async coroutine.
-        node_ptr
-        rewrite_create_matview(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
+        node_ptr rewrite_create_matview(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
             auto* cm = static_cast<logical_plan::node_create_matview_t*>(node.get());
             const auto& cols = cm->inferred_columns();
             if (cols.empty()) {

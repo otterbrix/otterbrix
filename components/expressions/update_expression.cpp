@@ -1,58 +1,46 @@
 #include "update_expression.hpp"
 
 #include <components/logical_plan/param_storage.hpp>
+#include <components/vector/arithmetic.hpp>
+#include <components/vector/vector_operations.hpp>
+
+using namespace components::vector;
 
 namespace components::expressions {
-
-    update_expr_t::expr_output_t::expr_output_t()
-        : output_(nullptr, false) {}
-
-    update_expr_t::expr_output_t::expr_output_t(types::logical_value_t value)
-        : output_(std::move(value)) {}
-
-    types::logical_value_t& update_expr_t::expr_output_t::value() { return output_; }
-
-    const types::logical_value_t& update_expr_t::expr_output_t::value() const { return output_; }
 
     update_expr_t::update_expr_t(update_expr_type type)
         : type_(type) {}
 
-    bool update_expr_t::execute(vector::data_chunk_t& to,
-                                const vector::data_chunk_t& from,
-                                size_t row_to,
-                                size_t row_from,
-                                const logical_plan::storage_parameters* parameters) {
+    std::pmr::vector<bool> update_expr_t::execute(std::pmr::memory_resource* resource,
+                                                  vector::data_chunk_t& to,
+                                                  const vector::data_chunk_t& from,
+                                                  uint64_t count,
+                                                  const logical_plan::storage_parameters* parameters,
+                                                  core::date::timezone_offset_t session_tz) {
         if (left_) {
-            left_->execute(to, from, row_to, row_from, parameters);
+            left_->execute(resource, to, from, count, parameters, session_tz);
         }
         if (right_) {
-            right_->execute(to, from, row_to, row_from, parameters);
+            right_->execute(resource, to, from, count, parameters, session_tz);
         }
-        return execute_impl(to, from, row_to, row_from, parameters);
+        return execute_impl(resource, to, from, count, parameters, session_tz);
     }
 
     update_expr_type update_expr_t::type() const noexcept { return type_; }
 
     update_expr_ptr& update_expr_t::left() { return left_; }
-
     const update_expr_ptr& update_expr_t::left() const { return left_; }
 
     update_expr_ptr& update_expr_t::right() { return right_; }
-
     const update_expr_ptr& update_expr_t::right() const { return right_; }
 
-    update_expr_t::expr_output_t& update_expr_t::output() { return output_; }
-
-    const update_expr_t::expr_output_t& update_expr_t::output() const { return output_; }
+    const vector::vector_t* update_expr_t::output_vec() const noexcept { return output_vec_; }
 
     bool operator==(const update_expr_ptr& lhs, const update_expr_ptr& rhs) {
         if (lhs.get() == rhs.get()) {
-            // same address
             return true;
         }
-        // XOR
         if ((lhs != nullptr) != (rhs != nullptr)) {
-            // only one is nullptr
             return false;
         }
         if (lhs->type() != rhs->type()) {
@@ -98,26 +86,53 @@ namespace components::expressions {
         , key_(std::move(key)) {}
 
     key_t& update_expr_set_t::key() noexcept { return key_; }
-
     const key_t& update_expr_set_t::key() const noexcept { return key_; }
 
     bool update_expr_set_t::operator==(const update_expr_set_t& rhs) const {
         return left_ == rhs.left_ && key_ == rhs.key_;
     }
 
-    bool update_expr_set_t::execute_impl(vector::data_chunk_t& to,
-                                         const vector::data_chunk_t&,
-                                         size_t row_to,
-                                         size_t,
-                                         const logical_plan::storage_parameters*) {
-        if (left_) {
-            assert(key_.path().front() != size_t(-1));
-            auto prev_value = to.value(key_.path(), row_to);
-            auto res = prev_value != left_->output().value();
-            to.set_value(key_.path(), row_to, left_->output().value());
-            return res;
+    std::pmr::vector<bool> update_expr_set_t::execute_impl(std::pmr::memory_resource* resource,
+                                                           vector::data_chunk_t& to,
+                                                           const vector::data_chunk_t&,
+                                                           uint64_t count,
+                                                           const logical_plan::storage_parameters*,
+                                                           core::date::timezone_offset_t) {
+        std::pmr::vector<bool> modified(count, false, resource);
+        if (!left_ || count == 0) {
+            return modified;
         }
-        return false;
+
+        assert(key_.path().front() != size_t(-1));
+        auto* col_vec = to.at(key_.path());
+        auto* new_vec = left_->output_vec();
+
+        // Cast new_vec to col_vec's type if they differ (e.g. DOUBLE→FLOAT after arithmetic).
+        std::optional<vector_t> casted;
+        if (new_vec->type().to_physical_type() != col_vec->type().to_physical_type()) {
+            casted.emplace(vector_ops::cast_vector(resource, *new_vec, col_vec->type(), count));
+            new_vec = &casted.value();
+        }
+
+        // For ARRAY-element paths the parent is an ARRAY vector; element j of row i
+        // lives at i*stride+j in the flat child vector returned by at().
+        if (key_.path().size() > 1) {
+            const vector_t* parent = &to.data[key_.path().front()];
+            for (size_t depth = 1; depth + 1 < key_.path().size(); ++depth) {
+                parent = parent->entries()[key_.path()[depth]].get();
+            }
+            if (parent->type().type() == types::logical_type::ARRAY) {
+                auto stride =
+                    static_cast<const types::array_logical_type_extension*>(parent->type().extension())->size();
+                vector_ops::copy_strided_target(*new_vec, *col_vec, count, stride, key_.path().back());
+                std::fill(modified.begin(), modified.end(), true);
+                return modified;
+            }
+        }
+
+        vector_ops::copy(*new_vec, *col_vec, count, 0, 0);
+        std::fill(modified.begin(), modified.end(), true);
+        return modified;
     }
 
     update_expr_get_value_t::update_expr_get_value_t(key_t key)
@@ -125,28 +140,28 @@ namespace components::expressions {
         , key_(std::move(key)) {}
 
     key_t& update_expr_get_value_t::key() noexcept { return key_; }
-
     const key_t& update_expr_get_value_t::key() const noexcept { return key_; }
 
     bool update_expr_get_value_t::operator==(const update_expr_get_value_t& rhs) const {
         return left_ == rhs.left_ && key_ == rhs.key_ && key_.side() == rhs.key_.side();
     }
 
-    bool update_expr_get_value_t::execute_impl(vector::data_chunk_t& to,
-                                               const vector::data_chunk_t& from,
-                                               size_t row_to,
-                                               size_t row_from,
-                                               const logical_plan::storage_parameters*) {
+    std::pmr::vector<bool> update_expr_get_value_t::execute_impl(std::pmr::memory_resource* resource,
+                                                                 vector::data_chunk_t& to,
+                                                                 const vector::data_chunk_t& from,
+                                                                 uint64_t,
+                                                                 const logical_plan::storage_parameters*,
+                                                                 core::date::timezone_offset_t) {
         auto side = key_.side();
         assert(side != side_t::undefined && "validation must resolve side before execution");
         if (side == side_t::right) {
             assert(key_.path().front() != size_t(-1));
-            output_ = from.value(key_.path(), row_from);
-        } else if (side == side_t::left) {
+            output_vec_ = from.at(key_.path());
+        } else {
             assert(key_.path().front() != size_t(-1));
-            output_ = to.value(key_.path(), row_to);
+            output_vec_ = to.at(key_.path());
         }
-        return false;
+        return std::pmr::vector<bool>(resource);
     }
 
     update_expr_get_const_value_t::update_expr_get_const_value_t(core::parameter_id_t id)
@@ -159,13 +174,19 @@ namespace components::expressions {
         return id_ == rhs.id_;
     }
 
-    bool update_expr_get_const_value_t::execute_impl(vector::data_chunk_t&,
-                                                     const vector::data_chunk_t&,
-                                                     size_t,
-                                                     size_t,
-                                                     const logical_plan::storage_parameters* parameters) {
-        output_ = parameters->parameters.at(id_);
-        return false;
+    std::pmr::vector<bool>
+    update_expr_get_const_value_t::execute_impl(std::pmr::memory_resource* resource,
+                                                vector::data_chunk_t&,
+                                                const vector::data_chunk_t&,
+                                                uint64_t count,
+                                                const logical_plan::storage_parameters* parameters,
+                                                core::date::timezone_offset_t) {
+        const auto& param = parameters->parameters.at(id_);
+        uint64_t vec_count = count > 0 ? count : 1;
+        owned_output_.emplace(resource, param, vec_count);
+        owned_output_->flatten(vec_count);
+        output_vec_ = &owned_output_.value();
+        return std::pmr::vector<bool>(resource);
     }
 
     update_expr_calculate_t::update_expr_calculate_t(update_expr_type type)
@@ -176,75 +197,84 @@ namespace components::expressions {
     }
 
     namespace {
-        // Binary arithmetic dispatch for update expressions.
-        // Covers basic arithmetic (add/sub/mult/div/mod), exponent, and bitwise ops.
-        types::logical_value_t apply_binary_update_op(update_expr_type type,
-                                                      const types::logical_value_t& left,
-                                                      const types::logical_value_t& right) {
+        std::optional<arithmetic_op> to_arith_op(update_expr_type type) {
             switch (type) {
                 case update_expr_type::add:
-                    return types::logical_value_t::sum(left, right);
+                    return arithmetic_op::add;
                 case update_expr_type::sub:
-                    return types::logical_value_t::subtract(left, right);
+                    return arithmetic_op::subtract;
                 case update_expr_type::mult:
-                    return types::logical_value_t::mult(left, right);
+                    return arithmetic_op::multiply;
                 case update_expr_type::div:
-                    return types::logical_value_t::divide(left, right);
+                    return arithmetic_op::divide;
                 case update_expr_type::mod:
-                    return types::logical_value_t::modulus(left, right);
-                case update_expr_type::exp:
-                    return types::logical_value_t::exponent(left, right);
-                case update_expr_type::AND:
-                    return types::logical_value_t::bit_and(left, right);
-                case update_expr_type::OR:
-                    return types::logical_value_t::bit_or(left, right);
-                case update_expr_type::XOR:
-                    return types::logical_value_t::bit_xor(left, right);
-                case update_expr_type::shift_left:
-                    return types::logical_value_t::bit_shift_l(left, right);
-                case update_expr_type::shift_right:
-                    return types::logical_value_t::bit_shift_r(left, right);
+                    return arithmetic_op::mod;
                 default:
-                    throw std::logic_error("apply_binary_update_op: unsupported update_expr_type");
+                    return std::nullopt;
             }
         }
 
-        // Unary ops dispatch for update expressions.
-        types::logical_value_t apply_unary_update_op(update_expr_type type, const types::logical_value_t& operand) {
+        std::optional<vector_ops::unary_vector_op> to_unary_vec_op(update_expr_type type) {
             switch (type) {
                 case update_expr_type::sqr_root:
-                    return types::logical_value_t::sqr_root(operand);
+                    return vector_ops::unary_vector_op::sqr_root;
                 case update_expr_type::cube_root:
-                    return types::logical_value_t::cube_root(operand);
+                    return vector_ops::unary_vector_op::cube_root;
                 case update_expr_type::factorial:
-                    return types::logical_value_t::factorial(operand);
+                    return vector_ops::unary_vector_op::factorial;
                 case update_expr_type::abs:
-                    return types::logical_value_t::absolute(operand);
+                    return vector_ops::unary_vector_op::abs;
                 case update_expr_type::NOT:
-                    return types::logical_value_t::bit_not(operand);
+                    return vector_ops::unary_vector_op::bit_not;
                 default:
-                    throw std::logic_error("apply_unary_update_op: unsupported update_expr_type");
+                    return std::nullopt;
             }
         }
 
-        bool is_unary_update_op(update_expr_type type) {
-            return type == update_expr_type::sqr_root || type == update_expr_type::cube_root ||
-                   type == update_expr_type::factorial || type == update_expr_type::abs ||
-                   type == update_expr_type::NOT;
+        vector_ops::binary_vector_op to_binary_vec_op(update_expr_type type) {
+            switch (type) {
+                case update_expr_type::exp:
+                    return vector_ops::binary_vector_op::exp;
+                case update_expr_type::AND:
+                    return vector_ops::binary_vector_op::bit_and;
+                case update_expr_type::OR:
+                    return vector_ops::binary_vector_op::bit_or;
+                case update_expr_type::XOR:
+                    return vector_ops::binary_vector_op::bit_xor;
+                case update_expr_type::shift_left:
+                    return vector_ops::binary_vector_op::shift_left;
+                case update_expr_type::shift_right:
+                    return vector_ops::binary_vector_op::shift_right;
+                default:
+                    throw std::logic_error("to_binary_vec_op: unsupported update_expr_type");
+            }
         }
     } // anonymous namespace
 
-    bool update_expr_calculate_t::execute_impl(vector::data_chunk_t&,
-                                               const vector::data_chunk_t&,
-                                               size_t,
-                                               size_t,
-                                               const logical_plan::storage_parameters*) {
-        if (is_unary_update_op(type_)) {
-            output_ = apply_unary_update_op(type_, left_->output().value());
+    std::pmr::vector<bool> update_expr_calculate_t::execute_impl(std::pmr::memory_resource* resource,
+                                                                 vector::data_chunk_t&,
+                                                                 const vector::data_chunk_t&,
+                                                                 uint64_t count,
+                                                                 const logical_plan::storage_parameters*,
+                                                                 core::date::timezone_offset_t) {
+        uint64_t vec_count = count > 0 ? count : 1;
+        auto* left_vec = left_->output_vec();
+
+        if (auto unary_op = to_unary_vec_op(type_)) {
+            owned_output_.emplace(vector_ops::apply_unary_vector_op(resource, *unary_op, *left_vec, vec_count));
+        } else if (auto arith_op = to_arith_op(type_)) {
+            owned_output_.emplace(
+                compute_binary_arithmetic(resource, *arith_op, *left_vec, *right_->output_vec(), vec_count));
         } else {
-            output_ = apply_binary_update_op(type_, left_->output().value(), right_->output().value());
+            owned_output_.emplace(vector_ops::apply_binary_vector_op(resource,
+                                                                     to_binary_vec_op(type_),
+                                                                     *left_vec,
+                                                                     *right_->output_vec(),
+                                                                     vec_count));
         }
-        return false;
+
+        output_vec_ = &owned_output_.value();
+        return std::pmr::vector<bool>(resource);
     }
 
 } // namespace components::expressions

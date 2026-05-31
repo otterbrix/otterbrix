@@ -24,27 +24,31 @@ namespace components::operators {
                         vector::data_chunk_t& chunk,
                         const logical_plan::storage_parameters& params,
                         std::pmr::memory_resource* resource,
-                        std::deque<vector::vector_t>& temp_vecs);
+                        std::deque<vector::vector_t>& temp_vecs,
+                        core::date::timezone_offset_t session_tz);
 
         // Resolve a param_storage to logical_value_t for a specific row
         [[nodiscard]] types::logical_value_t resolve_row_value(std::pmr::memory_resource* resource,
                                                                const expressions::param_storage& param,
                                                                const vector::data_chunk_t& chunk,
                                                                const logical_plan::storage_parameters& params,
-                                                               size_t row_idx);
+                                                               size_t row_idx,
+                                                               core::date::timezone_offset_t session_tz);
 
         // Evaluate a compare_expression for a specific row
         [[nodiscard]] bool evaluate_row_condition(std::pmr::memory_resource* resource,
                                                   const expressions::expression_ptr& condition,
                                                   const vector::data_chunk_t& chunk,
                                                   const logical_plan::storage_parameters& params,
-                                                  size_t row_idx);
+                                                  size_t row_idx,
+                                                  core::date::timezone_offset_t session_tz);
 
         // Evaluate a CASE expression per-row on a data_chunk
         [[nodiscard]] vector::vector_t evaluate_case_expr(std::pmr::memory_resource* resource,
                                                           const std::pmr::vector<expressions::param_storage>& operands,
                                                           vector::data_chunk_t& chunk,
-                                                          const logical_plan::storage_parameters& params);
+                                                          const logical_plan::storage_parameters& params,
+                                                          core::date::timezone_offset_t session_tz);
 
     } // namespace detail
 
@@ -54,6 +58,7 @@ namespace components::operators {
                         expressions::scalar_type op,
                         const std::pmr::vector<expressions::param_storage>& operands,
                         vector::data_chunk_t& chunk,
-                        const logical_plan::storage_parameters& params);
+                        const logical_plan::storage_parameters& params,
+                        core::date::timezone_offset_t session_tz);
 
 } // namespace components::operators

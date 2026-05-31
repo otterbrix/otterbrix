@@ -310,14 +310,12 @@ namespace components::compute {
             "substring",
             {5,
              {kernel_signature_t{function_type_t::row,
-                                 {input_type::make_always_true(),
-                                  input_type::make_always_true()},
+                                 {input_type::make_always_true(), input_type::make_always_true()},
                                  {output_type::fixed(types::logical_type::STRING_LITERAL)}},
-              kernel_signature_t{function_type_t::row,
-                                 {input_type::make_always_true(),
-                                  input_type::make_always_true(),
-                                  input_type::make_always_true()},
-                                 {output_type::fixed(types::logical_type::STRING_LITERAL)}}}}},
+              kernel_signature_t{
+                  function_type_t::row,
+                  {input_type::make_always_true(), input_type::make_always_true(), input_type::make_always_true()},
+                  {output_type::fixed(types::logical_type::STRING_LITERAL)}}}}},
         std::pair<std::string, registered_func_id>{
             "length",
             {6,
@@ -327,11 +325,10 @@ namespace components::compute {
         std::pair<std::string, registered_func_id>{
             "regexp_replace",
             {7,
-             {kernel_signature_t{function_type_t::row,
-                                 {input_type::make_always_true(),
-                                  input_type::make_always_true(),
-                                  input_type::make_always_true()},
-                                 {output_type::fixed(types::logical_type::STRING_LITERAL)}}}}}};
+             {kernel_signature_t{
+                 function_type_t::row,
+                 {input_type::make_always_true(), input_type::make_always_true(), input_type::make_always_true()},
+                 {output_type::fixed(types::logical_type::STRING_LITERAL)}}}}}};
 
     void register_default_functions(function_registry_t& registry);
     void register_string_functions(function_registry_t& registry);

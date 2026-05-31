@@ -170,8 +170,12 @@ namespace components::operators {
                     break;
                 }
                 case select_column_t::kind::arithmetic: {
-                    auto result_vec =
-                        evaluate_arithmetic(resource_, col.arith_op, col.operands, input, pipeline_context->parameters);
+                    auto result_vec = evaluate_arithmetic(resource_,
+                                                          col.arith_op,
+                                                          col.operands,
+                                                          input,
+                                                          pipeline_context->parameters,
+                                                          pipeline_context->session_tz);
                     if (result_vec.has_error()) {
                         set_error(result_vec.error());
                         return vector::data_chunk_t(resource_, {}, 0);

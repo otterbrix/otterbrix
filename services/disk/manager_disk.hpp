@@ -17,6 +17,7 @@
 #include <components/catalog/dependency_walker.hpp>
 #include <components/catalog/results/ddl_result.hpp>
 #include <components/catalog/results/resolve_result.hpp>
+#include <components/catalog/session_catalog.hpp>
 #include <components/configuration/configuration.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/context/pg_catalog_swap.hpp>
@@ -203,6 +204,11 @@ namespace services::disk {
         // never collides with on-disk OIDs.
         void restore_oid_generator_sync();
 
+        // Read the value of a named setting from pg_settings. Returns the most recently
+        // appended value for the given name, or empty string if not found.
+        // Synchronous — called at startup before actor schedulers start.
+        std::string read_setting_sync(std::string_view name);
+
         // Public accessor — ddl_* methods take their OIDs from this generator.
         components::catalog::oid_generator& oid_gen() noexcept { return oid_gen_; }
 
@@ -291,9 +297,12 @@ namespace services::disk {
         // tables maintained via operator_computed_field_register_t.
 
         // Synchronous direct replay methods for physical WAL (before schedulers start).
-        uint64_t direct_append_sync(components::catalog::oid_t table_oid, components::vector::data_chunk_t& data);
         uint64_t direct_append_sync(components::catalog::oid_t table_oid,
                                     components::vector::data_chunk_t& data,
+                                    core::date::timezone_offset_t session_tz);
+        uint64_t direct_append_sync(components::catalog::oid_t table_oid,
+                                    components::vector::data_chunk_t& data,
+                                    core::date::timezone_offset_t session_tz,
                                     const components::table::transaction_data& txn);
         void direct_delete_sync(components::catalog::oid_t table_oid,
                                 const std::pmr::vector<int64_t>& row_ids,
@@ -472,6 +481,7 @@ namespace services::disk {
         configuration::config_disk config_;
         std::vector<agent_disk_ptr> agents_;
         components::catalog::oid_generator oid_gen_;
+        components::catalog::session_catalog_t stored_catalog_;
 
         // Storage entries per collection
         struct collection_storage_entry_t {

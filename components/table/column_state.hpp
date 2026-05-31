@@ -1,5 +1,6 @@
 #pragma once
 #include <components/types/types.hpp>
+#include <core/operations_helper.hpp>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -107,8 +108,71 @@ namespace components::table {
 
     template<typename T>
     bool constant_filter_t::compare(T value) const {
-        // TODO: do a proper template here:
-        return compare(types::logical_value_t(constant.resource(), value));
+        T predicate;
+        if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>) {
+            auto const_type = constant.type().type();
+            if (const_type == types::logical_type::DOUBLE) {
+                predicate = static_cast<T>(constant.value<double>());
+            } else if (const_type == types::logical_type::FLOAT) {
+                predicate = static_cast<T>(constant.value<float>());
+            } else if constexpr (sizeof(T) == 4) {
+                // INT32 column (DATE = days since epoch). Widen to µs when constant is a µs-based duration.
+                if (const_type == types::logical_type::TIMESTAMP || const_type == types::logical_type::TIMESTAMP_TZ) {
+                    const int64_t as_us = static_cast<int64_t>(value) * int64_t{86400} * int64_t{1000000};
+                    return compare(as_us);
+                }
+                predicate = constant.value<T>();
+            } else if constexpr (sizeof(T) == 8) {
+                // INT64 column (TIME/TIMESTAMP/TIMESTAMP_TZ = µs). Convert DATE constant (days) to µs.
+                if (const_type == types::logical_type::DATE) {
+                    predicate = static_cast<T>(constant.value<int32_t>()) * T{86400} * T{1000000};
+                } else {
+                    predicate = constant.value<T>();
+                }
+            } else {
+                predicate = constant.value<T>();
+            }
+        } else if constexpr (std::is_floating_point_v<T>) {
+            auto const_type = constant.type().type();
+            if (const_type != types::logical_type::DOUBLE && const_type != types::logical_type::FLOAT) {
+                predicate = static_cast<T>(constant.value<int64_t>());
+            } else {
+                predicate = constant.value<T>();
+            }
+        } else {
+            predicate = constant.value<T>();
+        }
+        if (core::is_equals(value, predicate)) {
+            switch (filter_type) {
+                case expressions::compare_type::eq:
+                case expressions::compare_type::gte:
+                case expressions::compare_type::lte:
+                case expressions::compare_type::all_true:
+                    return true;
+                default:
+                    return false;
+            }
+        } else if (value < predicate) {
+            switch (filter_type) {
+                case expressions::compare_type::ne:
+                case expressions::compare_type::lt:
+                case expressions::compare_type::lte:
+                case expressions::compare_type::all_true:
+                    return true;
+                default:
+                    return false;
+            }
+        } else {
+            switch (filter_type) {
+                case expressions::compare_type::ne:
+                case expressions::compare_type::gt:
+                case expressions::compare_type::gte:
+                case expressions::compare_type::all_true:
+                    return true;
+                default:
+                    return false;
+            }
+        }
     }
 
     class is_null_filter_t : public table_filter_t {

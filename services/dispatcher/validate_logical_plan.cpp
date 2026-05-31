@@ -1,5 +1,6 @@
 #include "validate_logical_plan.hpp"
 
+#include <core/date/date_parse.hpp>
 #include <cstdio>
 
 #include "expressions/function_expression.hpp"
@@ -72,6 +73,23 @@ namespace services::dispatcher {
     using namespace components::catalog;
 
     namespace impl {
+
+        components::vector::arithmetic_op scalar_to_arith_op(components::expressions::scalar_type t) {
+            switch (t) {
+                case components::expressions::scalar_type::add:
+                    return components::vector::arithmetic_op::add;
+                case components::expressions::scalar_type::subtract:
+                    return components::vector::arithmetic_op::subtract;
+                case components::expressions::scalar_type::multiply:
+                    return components::vector::arithmetic_op::multiply;
+                case components::expressions::scalar_type::divide:
+                    return components::vector::arithmetic_op::divide;
+                case components::expressions::scalar_type::mod:
+                    return components::vector::arithmetic_op::mod;
+                default:
+                    return components::vector::arithmetic_op::add;
+            }
+        }
         // plan_resolve_index_t + helpers live in
         // services/dispatcher/plan_resolve_index.hpp so
         // enrich_logical_plan.cpp can use the same probe-then-fallback
@@ -147,6 +165,19 @@ namespace services::dispatcher {
                 }
                 return result;
             }
+            // Handle table-alias wildcard: "table.*" → expand all columns with matching result_alias
+            if (key.storage().size() >= 2 && key.storage().back() == "*") {
+                const auto& table_part = key.storage().at(key.storage().size() - 2);
+                for (size_t i = 0; i < schema.size(); i++) {
+                    if (core::pmr::operator==(schema[i].result_alias, table_part)) {
+                        result.emplace_back(type_path_t{column_path{{i}, resource}, schema[i].type});
+                    }
+                }
+                if (!result.empty()) {
+                    key.set_path(result.front().path);
+                    return result;
+                }
+            }
             // removed '*' at the end, if it has one
             components::expressions::key_t truncated_key = key;
             if (truncated_key.storage().back() == "*") {
@@ -156,9 +187,13 @@ namespace services::dispatcher {
             // Also we store number of keys used to get there and path
             std::pmr::list<type_match_t> matches(resource);
             for (size_t i = 0; i < schema.size(); i++) {
-                if (truncated_key.storage().size() > 1 &&
-                    core::pmr::operator==(schema[i].result_alias, truncated_key.storage().at(0)) &&
-                    core::pmr::operator==(schema[i].type.alias(), truncated_key.storage().at(1))) {
+                if (truncated_key.storage().size() > 2 &&
+                    core::pmr::operator==(schema[i].result_alias, truncated_key.storage().at(1)) &&
+                    core::pmr::operator==(schema[i].type.alias(), truncated_key.storage().at(2))) {
+                    matches.emplace_back(type_match_t{column_path{{i}, resource}, &schema[i].type, 3});
+                } else if (truncated_key.storage().size() > 1 &&
+                           core::pmr::operator==(schema[i].result_alias, truncated_key.storage().at(0)) &&
+                           core::pmr::operator==(schema[i].type.alias(), truncated_key.storage().at(1))) {
                     matches.emplace_back(type_match_t{column_path{{i}, resource}, &schema[i].type, 2});
                 } else if (core::pmr::operator==(schema[i].type.alias(), truncated_key.storage().at(0))) {
                     matches.emplace_back(type_match_t{column_path{{i}, resource}, &schema[i].type, 1});
@@ -230,27 +265,43 @@ namespace services::dispatcher {
                 matches.erase(it);
             }
 
-            // if result contains multiple types, then we have an ambiguous key, which is an error
+            // if result contains multiple types, try to disambiguate via cast_type_ hint
             if (result.size() > 1) {
-                return core::error_t(
-                    core::error_code_t::ambiguous_name,
-                    std::pmr::string{
-                        ("path: \'" + truncated_key.as_string() + "\' is ambiguous. Use aliases or full path").c_str(),
-                        resource});
-            } else {
+                if (truncated_key.has_cast_type()) {
+                    auto cast_lt = truncated_key.cast_type().type();
+                    type_paths filtered{resource};
+                    for (auto& tp : result) {
+                        if (tp.type.type() == cast_lt) {
+                            filtered.emplace_back(std::move(tp));
+                            break;
+                        }
+                    }
+                    result = std::move(filtered);
+                }
+                if (result.size() > 1) {
+                    return core::error_t(core::error_code_t::ambiguous_name,
+                                         std::pmr::string{"path: \'" + truncated_key.as_string() +
+                                                              "\' is ambiguous. Use aliases or full path",
+                                                          resource});
+                }
+            }
+            if (!result.empty()) {
                 if (key.storage().back() == "*") {
+                    if (result.empty()) {
+                        return core::error_t(
+                            core::error_code_t::schema_error,
+                            std::pmr::string{"path: \'" + key.as_string() + "\' was not found", resource});
+                    }
                     if (!result.front().type.is_nested()) {
                         return core::error_t(core::error_code_t::schema_error,
-                                             std::pmr::string{("path: \'" + truncated_key.as_string() +
-                                                               "\' is not nested, and \'*\' can not be applied")
-                                                                  .c_str(),
+                                             std::pmr::string{"path: \'" + truncated_key.as_string() +
+                                                                  "\' is not nested, and \'*\' can not be applied",
                                                               resource});
                     }
                     if (result.front().type.type() == logical_type::LIST) {
                         return core::error_t(core::error_code_t::schema_error,
-                                             std::pmr::string{("path: \'" + truncated_key.as_string() +
-                                                               "\' is a list type, and \'*\' can not be applied")
-                                                                  .c_str(),
+                                             std::pmr::string{"path: \'" + truncated_key.as_string() +
+                                                                  "\' is a list type, and \'*\' can not be applied",
                                                               resource});
                     }
                     if (result.front().type.type() == logical_type::STRUCT) {
@@ -277,9 +328,8 @@ namespace services::dispatcher {
             }
 
             if (result.empty()) {
-                return core::error_t(
-                    core::error_code_t::schema_error,
-                    std::pmr::string{("path: \'" + key.as_string() + "\' was not found").c_str(), resource});
+                return core::error_t(core::error_code_t::schema_error,
+                                     std::pmr::string{"path: \'" + key.as_string() + "\' was not found", resource});
             }
             // Store path inside a key, since we will need it later
             key.set_path(result.front().path);
@@ -299,17 +349,16 @@ namespace services::dispatcher {
                 // find_types sets a path, but if both left and right are valid, this will be an error and won't matter
                 auto column_path_left = find_types(resource, key, schema_left);
                 auto column_path_right = find_types(resource, key, schema_right);
+                // TODO Stop erasing errors from right and left
                 if (column_path_left.has_error() && column_path_right.has_error()) {
-                    return core::error_t{
-                        core::error_code_t::field_not_exists,
-                        std::pmr::string{("path: \'" + key.as_string() + "\' was not found").c_str(), resource}};
+                    return core::error_t(core::error_code_t::field_not_exists,
+                                         std::pmr::string{"path: \'" + key.as_string() + "\' was not found", resource});
                 }
                 if (!same_schema && !column_path_left.has_error() && !column_path_right.has_error()) {
-                    return core::error_t{
+                    return core::error_t(
                         core::error_code_t::ambiguous_name,
-                        std::pmr::string{
-                            ("path: \'" + key.as_string() + "\' is ambiguous. Use aliases or full path").c_str(),
-                            resource}};
+                        std::pmr::string{"path: \'" + key.as_string() + "\' is ambiguous. Use aliases or full path",
+                                         resource});
                 }
                 if (column_path_left.has_error()) {
                     key.set_side(side_t::right);
@@ -321,12 +370,14 @@ namespace services::dispatcher {
             }
         }
 
-        [[nodiscard]] core::result_wrapper_t<named_schema> validate_schema(std::pmr::memory_resource* resource,
-                                                                           function_expression_t* expr,
-                                                                           const storage_parameters& parameters,
-                                                                           const named_schema& schema_left,
-                                                                           const named_schema& schema_right,
-                                                                           bool same_schema) {
+        [[nodiscard]] core::result_wrapper_t<named_schema>
+        validate_schema(std::pmr::memory_resource* resource,
+                        function_expression_t* expr,
+                        const storage_parameters& parameters,
+                        const named_schema& schema_left,
+                        const named_schema& schema_right,
+                        bool same_schema,
+                        components::compute::function_types_mask allowed_function_types) {
             named_schema result(resource);
             std::pmr::vector<complex_logical_type> function_input_types(resource);
             function_input_types.reserve(expr->args().size());
@@ -335,17 +386,30 @@ namespace services::dispatcher {
                     auto& key = std::get<components::expressions::key_t>(field);
                     auto field_res = validate_key(resource, key, schema_left, schema_right, same_schema);
                     if (field_res.has_error()) {
-                        return field_res.error();
+                        return field_res.convert_error<named_schema>();
                     } else {
                         for (const auto& sub_field : field_res.value()) {
                             function_input_types.emplace_back(sub_field.type);
                         }
                     }
                 } else if (std::holds_alternative<components::expressions::expression_ptr>(field)) {
+                    if (std::get<components::expressions::expression_ptr>(field)->group() !=
+                        expression_group::function) {
+                        return core::error_t(
+                            core::error_code_t::incorrect_function_argument,
+
+                            std::pmr::string{"otterbrix functions do not support nesting; except other functions",
+                                             resource});
+                    }
                     auto& sub_expr = reinterpret_cast<components::expressions::function_expression_ptr&>(
                         std::get<components::expressions::expression_ptr>(field));
-                    auto sub_expr_res =
-                        validate_schema(resource, sub_expr.get(), parameters, schema_left, schema_right, same_schema);
+                    auto sub_expr_res = validate_schema(resource,
+                                                        sub_expr.get(),
+                                                        parameters,
+                                                        schema_left,
+                                                        schema_right,
+                                                        same_schema,
+                                                        allowed_function_types);
                     if (sub_expr_res.has_error()) {
                         return sub_expr_res;
                     } else {
@@ -360,22 +424,16 @@ namespace services::dispatcher {
             }
             auto fn_lk = lookup_function(expr->name(), function_input_types);
             if (!fn_lk.name_exists) {
-                return core::error_t{
+                return core::error_t(
                     core::error_code_t::unrecognized_function,
-                    std::pmr::string{("function: \'" + expr->name() + "(...)\' was not found by the name").c_str(),
-                                     resource}};
+                    std::pmr::string{"function: \'" + expr->name() + "(...)\' was not found by the name", resource});
             } else if (fn_lk.match_found) {
                 std::pmr::vector<complex_logical_type> function_output_types(resource);
                 function_output_types.reserve(fn_lk.signature.output_types.size());
                 for (const auto& output_type : fn_lk.signature.output_types) {
                     auto res = output_type.resolve(resource, function_input_types);
                     if (res.has_error()) {
-                        return core::error_t{
-                            core::error_code_t::incorrect_function_argument,
-                            std::pmr::string{("function: \'" + expr->name() +
-                                              "(...)\' was found but there is an error, resolving output types")
-                                                 .c_str(),
-                                             resource}};
+                        return res.convert_error<named_schema>();
                     }
                     function_output_types.emplace_back(res.value());
                 }
@@ -389,11 +447,10 @@ namespace services::dispatcher {
             } else {
                 // function does exist, but can not take this set of arguments
                 // TODO: given arg number and types to error
-                return core::error_t{core::error_code_t::incorrect_function_argument,
-                                     std::pmr::string{("function: \'" + expr->name() +
-                                                       "(...)\' was found but do not except given set of arguments")
-                                                          .c_str(),
-                                                      resource}};
+                return core::error_t(core::error_code_t::incorrect_function_argument,
+                                     std::pmr::string{"function: \'" + expr->name() +
+                                                          "(...)\' was found but do not except given set of arguments",
+                                                      resource});
             }
 
             return result;
@@ -411,7 +468,7 @@ namespace services::dispatcher {
                     auto* set_expr = reinterpret_cast<update_expr_set_t*>(expr);
                     auto type_res = find_types(resource, set_expr->key(), schema_left);
                     if (type_res.has_error()) {
-                        return type_res.error();
+                        return type_res.convert_error<named_schema>();
                     }
                     set_expr->key().set_side(side_t::left);
                     return validate_schema(resource, set_expr->left().get(), schema_left, schema_right, same_schema);
@@ -431,12 +488,12 @@ namespace services::dispatcher {
                     auto left_res =
                         validate_schema(resource, expr->left().get(), schema_left, schema_right, same_schema);
                     if (left_res.has_error()) {
-                        return left_res.error();
+                        return left_res;
                     }
                     auto right_res =
                         validate_schema(resource, expr->right().get(), schema_left, schema_right, same_schema);
                     if (right_res.has_error()) {
-                        return right_res.error();
+                        return right_res;
                     }
                     break;
                 }
@@ -447,7 +504,7 @@ namespace services::dispatcher {
                     auto left_res =
                         validate_schema(resource, expr->left().get(), schema_left, schema_right, same_schema);
                     if (left_res.has_error()) {
-                        return left_res.error();
+                        return left_res;
                     }
                     break;
                 }
@@ -455,7 +512,7 @@ namespace services::dispatcher {
                     auto* get_expr = reinterpret_cast<update_expr_get_value_t*>(expr);
                     auto key_res = validate_key(resource, get_expr->key(), schema_left, schema_right, same_schema);
                     if (key_res.has_error()) {
-                        return key_res.error();
+                        return key_res.convert_error<named_schema>();
                     }
                     break;
                 }
@@ -483,14 +540,14 @@ namespace services::dispatcher {
                                                 schema_right,
                                                 same_schema);
                     if (key_res.has_error()) {
-                        return key_res.error();
+                        return key_res.convert_error<named_schema>();
                     }
                 } else if (std::holds_alternative<core::parameter_id_t>(param)) {
                     if (parameters) {
                         auto id = std::get<core::parameter_id_t>(param);
                         if (parameters->parameters.find(id) == parameters->parameters.end()) {
-                            return core::error_t{core::error_code_t::invalid_parameter,
-                                                 std::pmr::string{"Unknown parameter id in expression", resource}};
+                            return core::error_t(core::error_code_t::invalid_parameter,
+                                                 std::pmr::string{"Unknown parameter id in expression", resource});
                         }
                     }
                 } else if (std::holds_alternative<expression_ptr>(param)) {
@@ -533,9 +590,8 @@ namespace services::dispatcher {
             if (std::holds_alternative<components::expressions::key_t>(param)) {
                 auto& key = std::get<components::expressions::key_t>(param);
                 if (key.storage().empty()) {
-                    return core::error_t{
-                        core::error_code_t::schema_error,
-                        std::pmr::string{("key has empty storage: " + key.as_string()).c_str(), resource}};
+                    return core::error_t(core::error_code_t::schema_error,
+                                         std::pmr::string{"key has empty storage: " + key.as_string(), resource});
                 }
                 return find_types(resource, key, schema);
             } else if (std::holds_alternative<expression_ptr>(param)) {
@@ -582,36 +638,45 @@ namespace services::dispatcher {
                                                                            bool same_schema) {
             named_schema result(resource);
             result.emplace_back(type_from_t{"", logical_type::BOOLEAN});
+            auto allowed_function_types =
+                components::compute::create_mask(components::compute::function_type_t::row,
+                                                 components::compute::function_type_t::vector);
 
             switch (expr->type()) {
                 case compare_type::union_and:
                 case compare_type::union_or:
                 case compare_type::union_not: {
                     for (auto& nested_expr : expr->children()) {
-                        // Children can be compare_expression (e.g. `col = 1`) OR
-                        // function_expression (e.g. `udf(col) returns bool`). Dispatch
-                        // on group so each child gets the right validator — without
-                        // this, key.path() inside function_expression args stays empty
-                        // and create_value_getter fails at runtime with
-                        // "key path is empty".
-                        if (nested_expr->group() == expression_group::function) {
-                            auto* fn = reinterpret_cast<function_expression_t*>(nested_expr.get());
-                            auto nested_res =
-                                validate_schema(resource, fn, parameters, schema_left, schema_right, same_schema);
-                            if (nested_res.has_error()) {
-                                return nested_res;
-                            }
-                        } else {
-                            auto nested_res =
-                                validate_schema(resource,
-                                                reinterpret_cast<compare_expression_t*>(nested_expr.get()),
-                                                parameters,
-                                                schema_left,
-                                                schema_right,
-                                                same_schema);
-                            if (nested_res.has_error()) {
-                                return nested_res;
-                            }
+                        core::error_t expr_error(
+                            core::error_code_t::schema_error,
+                            std::pmr::string{"unsupported expression type in compound predicate", resource});
+
+                        switch (nested_expr->group()) {
+                            case expression_group::function:
+                                expr_error =
+                                    validate_schema(resource,
+                                                    reinterpret_cast<function_expression_t*>(nested_expr.get()),
+                                                    parameters,
+                                                    schema_left,
+                                                    schema_right,
+                                                    same_schema,
+                                                    allowed_function_types)
+                                        .error();
+                                break;
+                            case expression_group::compare:
+                                expr_error = validate_schema(resource,
+                                                             reinterpret_cast<compare_expression_t*>(nested_expr.get()),
+                                                             parameters,
+                                                             schema_left,
+                                                             schema_right,
+                                                             same_schema)
+                                                 .error();
+                                break;
+                            default: // do noting & return unsupported error
+                                break;
+                        }
+                        if (expr_error.contains_error()) {
+                            return expr_error;
                         }
                     }
                     break;
@@ -645,9 +710,10 @@ namespace services::dispatcher {
                                                             parameters,
                                                             schema_left,
                                                             schema_right,
-                                                            same_schema);
+                                                            same_schema,
+                                                            allowed_function_types);
                             if (expr_res.has_error()) {
-                                return expr_res.error();
+                                return expr_res;
                             }
                         } else if (sub_expr->group() == expression_group::scalar) {
                             auto* scalar = static_cast<scalar_expression_t*>(sub_expr.get());
@@ -658,7 +724,7 @@ namespace services::dispatcher {
                                                                   same_schema,
                                                                   &parameters);
                             if (val_res.has_error()) {
-                                return val_res.error();
+                                return val_res;
                             }
                         }
                     }
@@ -670,7 +736,7 @@ namespace services::dispatcher {
                                                     schema_right,
                                                     same_schema);
                         if (key_res.has_error()) {
-                            return key_res.error();
+                            return key_res.convert_error<named_schema>();
                         }
                     } else if (std::holds_alternative<components::expressions::expression_ptr>(expr->right())) {
                         auto& sub_expr = std::get<components::expressions::expression_ptr>(expr->right());
@@ -682,9 +748,10 @@ namespace services::dispatcher {
                                                             parameters,
                                                             schema_left,
                                                             schema_right,
-                                                            same_schema);
+                                                            same_schema,
+                                                            allowed_function_types);
                             if (expr_res.has_error()) {
-                                return expr_res.error();
+                                return expr_res;
                             }
                         } else if (sub_expr->group() == expression_group::scalar) {
                             auto* scalar = static_cast<scalar_expression_t*>(sub_expr.get());
@@ -695,7 +762,7 @@ namespace services::dispatcher {
                                                                   same_schema,
                                                                   &parameters);
                             if (val_res.has_error()) {
-                                return val_res.error();
+                                return val_res;
                             }
                         }
                     }
@@ -710,7 +777,7 @@ namespace services::dispatcher {
                                                     schema_right,
                                                     same_schema);
                         if (key_res.has_error()) {
-                            return key_res.error();
+                            return key_res.convert_error<named_schema>();
                         }
                     }
                     break;
@@ -748,7 +815,7 @@ namespace services::dispatcher {
                     }
                     return result;
                 } else {
-                    return core::error_t{core::error_code_t::table_not_exists, std::pmr::string{"", resource}};
+                    return core::error_t(core::error_code_t::table_not_exists, std::pmr::string{"", resource});
                 }
             } else {
                 assert(node->expressions().size() == 1);
@@ -757,24 +824,33 @@ namespace services::dispatcher {
                     return validate_schema(resource, expr, parameters, schema_left, schema_right, same_schema);
                 } else if (node->expressions()[0]->group() == expression_group::function) {
                     auto* expr = reinterpret_cast<function_expression_t*>(node->expressions()[0].get());
-                    auto expr_res = validate_schema(resource, expr, parameters, schema_left, schema_right, same_schema);
+                    auto allowed_function_types =
+                        components::compute::create_mask(components::compute::function_type_t::row,
+                                                         components::compute::function_type_t::vector);
+                    auto expr_res = validate_schema(resource,
+                                                    expr,
+                                                    parameters,
+                                                    schema_left,
+                                                    schema_right,
+                                                    same_schema,
+                                                    allowed_function_types);
                     if (expr_res.has_error()) {
                         return expr_res;
                     }
                     if (expr_res.value().size() == 1 && expr_res.value().front().type.type() == logical_type::BOOLEAN) {
                         return expr_res;
                     } else {
-                        return core::error_t{core::error_code_t::incorrect_function_return_type,
-                                             std::pmr::string{("function: \'" + expr->name() +
-                                                               "(...)\' was found but can not be used in WHERE clause, "
-                                                               "because return type is not a boolean")
-                                                                  .c_str(),
-                                                              resource}};
+                        return core::error_t(
+                            core::error_code_t::incorrect_function_return_type,
+                            std::pmr::string{"function: \'" + expr->name() +
+                                                 "(...)\' was found but can not be used in WHERE clause, "
+                                                 "because return type is not a boolean",
+                                             resource});
                     }
                 } else {
                     assert(false);
-                    return core::error_t{core::error_code_t::schema_error,
-                                         std::pmr::string{"incorrect expr type in node_group", resource}};
+                    return core::error_t(core::error_code_t::schema_error,
+                                         std::pmr::string{"incorrect expr type in node_group", resource});
                 }
             }
         }
@@ -786,14 +862,14 @@ namespace services::dispatcher {
                     auto* sort_expr = static_cast<sort_expression_t*>(expr.get());
                     auto res = find_types(resource, sort_expr->key(), schema);
                     if (res.has_error()) {
-                        return res.error();
+                        return res.convert_error<named_schema>();
                     }
                 } else if (expr->group() == expression_group::scalar) {
-                    // Arithmetic sort key (ORDER BY expr*-1): resolve column operands against schema.
+                    // Computed arithmetic sort key: resolve column params against schema.
                     auto* scalar_expr = static_cast<scalar_expression_t*>(expr.get());
                     auto res = resolve_key_paths_in_group(resource, scalar_expr->params(), schema);
                     if (res.has_error()) {
-                        return res.error();
+                        return res.convert_error<named_schema>();
                     }
                 }
             }
@@ -809,12 +885,12 @@ namespace services::dispatcher {
                                          const components::catalog::table_id& id) {
         const auto& ns = id.get_namespace();
         if (ns.empty()) {
-            return core::error_t{core::error_code_t::database_not_exists,
-                                 std::pmr::string{"database does not exist", resource}};
+            return core::error_t(core::error_code_t::database_not_exists,
+                                 std::pmr::string{"database does not exist", resource});
         }
         if (impl::ns_oid_for_dbname(idx, std::string_view(ns.front())) == components::catalog::INVALID_OID) {
-            return core::error_t{core::error_code_t::database_not_exists,
-                                 std::pmr::string{"database does not exist", resource}};
+            return core::error_t(core::error_code_t::database_not_exists,
+                                 std::pmr::string{"database does not exist", resource});
         }
         return core::error_t::no_error();
     }
@@ -828,8 +904,8 @@ namespace services::dispatcher {
         const auto* tbl =
             impl::tbl_md_for(idx, std::string_view(id.get_namespace().front()), std::string_view(id.table_name()));
         if (!tbl) {
-            return core::error_t{core::error_code_t::table_not_exists,
-                                 std::pmr::string{"collection does not exist", resource}};
+            return core::error_t(core::error_code_t::table_not_exists,
+                                 std::pmr::string{"collection does not exist", resource});
         }
         return core::error_t::no_error();
     }
@@ -857,9 +933,8 @@ namespace services::dispatcher {
                 }
             }
         }
-        return core::error_t{
-            core::error_code_t::schema_error,
-            std::pmr::string{("type: \'" + alias + "\' is not registered in catalog").c_str(), resource}};
+        return core::error_t(core::error_code_t::schema_error,
+                             std::pmr::string{"type: \'" + alias + "\' is not registered in catalog", resource});
     }
 
     // walk_user_type_refs lives in components/types/user_type_walk.hpp.
@@ -881,8 +956,10 @@ namespace services::dispatcher {
         }
     } // namespace
 
-    core::error_t
-    validate_types(std::pmr::memory_resource* resource, const impl::plan_resolve_index_t* idx, node_t* logical_plan) {
+    core::error_t validate_types(std::pmr::memory_resource* resource,
+                                 const impl::plan_resolve_index_t* idx,
+                                 node_t* logical_plan,
+                                 core::date::timezone_offset_t session_tz) {
         impl::plan_resolve_index_t local_idx;
         if (idx == nullptr) {
             impl::gather_plan_resolve_index(logical_plan, local_idx);
@@ -893,7 +970,7 @@ namespace services::dispatcher {
 
         std::pmr::vector<complex_logical_type> encountered_types{resource};
         std::set<std::string> table_dbnames;
-        core::error_t error = core::error_t::no_error();
+        core::error_t result = core::error_t::no_error();
 
         auto check_node = [&](node_t* node) {
             // Drop-nodes skip existence + type collection here.
@@ -914,8 +991,8 @@ namespace services::dispatcher {
             if (auto oid = node->table_oid(); oid != components::catalog::INVALID_OID) {
                 const auto* tbl = impl::tbl_md_for_oid(idx, oid);
                 if (!tbl) {
-                    error = core::error_t{core::error_code_t::table_not_exists,
-                                          std::pmr::string{"collection does not exist", resource}};
+                    result = core::error_t(core::error_code_t::table_not_exists,
+                                           std::pmr::string{"collection does not exist", resource});
                     return false;
                 }
                 if (tbl->relkind != 'g') {
@@ -949,43 +1026,116 @@ namespace services::dispatcher {
                     // if this is a registered type, then conversion is required
                     bool ty_exists = it != encountered_types.end() && type_visible(std::string_view(it->type_name()));
                     if (ty_exists) {
-                        // try to cast to it
-                        if (it->type() == logical_type::STRUCT) {
+                        if (is_duration(it->type()) && column.type().type() == logical_type::STRING_LITERAL) {
                             components::vector::vector_t new_column(resource, *it, data_node->data_chunk().capacity());
                             for (size_t i = 0; i < data_node->data_chunk().size(); i++) {
-                                auto val = column.value(i).cast_as(*it);
+                                auto str = column.data<std::string_view>()[i];
+                                std::optional<logical_value_t> parsed_val;
+                                switch (it->type()) {
+                                    case logical_type::DATE:
+                                        if (auto parsed = core::date::parse_date(str)) {
+                                            parsed_val = logical_value_t(resource, *parsed);
+                                        }
+                                        break;
+                                    case logical_type::TIME:
+                                        if (auto parsed = core::date::parse_time(str)) {
+                                            parsed_val = logical_value_t(resource, *parsed);
+                                        }
+                                        break;
+                                    case logical_type::TIME_TZ:
+                                        if (auto parsed = core::date::parse_timetz(str)) {
+                                            parsed_val = logical_value_t(resource, *parsed);
+                                        }
+                                        break;
+                                    case logical_type::TIMESTAMP:
+                                        if (auto parsed = core::date::parse_timestamp(str)) {
+                                            parsed_val = logical_value_t(resource, *parsed);
+                                        }
+                                        break;
+                                    case logical_type::TIMESTAMP_TZ:
+                                        if (auto parsed = core::date::parse_timestamptz(str)) {
+                                            parsed_val = logical_value_t(resource, *parsed);
+                                        }
+                                        break;
+                                    case logical_type::INTERVAL:
+                                        if (auto parsed = core::date::parse_interval(str)) {
+                                            parsed_val = logical_value_t(resource, *parsed);
+                                        }
+                                        break;
+                                    default:
+                                        break;
+                                }
+                                if (!parsed_val) {
+                                    result = core::error_t(
+                                        core::error_code_t::schema_error,
+                                        std::pmr::string{"couldn't convert string to date/time type: \'" + it->alias() +
+                                                             "\', value: \'" + std::string(str) + "\'",
+                                                         resource});
+                                    return false;
+                                }
+                                new_column.set_value(i, *parsed_val);
+                            }
+                            column = std::move(new_column);
+                        } else if (it->type() == logical_type::DECIMAL &&
+                                   (is_numeric(column.type().type()) ||
+                                    column.type().type() == logical_type::STRING_LITERAL)) {
+                            components::vector::vector_t new_column(resource, *it, data_node->data_chunk().capacity());
+                            for (size_t i = 0; i < data_node->data_chunk().size(); i++) {
+                                auto val = column.value(i).cast_as(*it, session_tz);
                                 if (val.type().type() == logical_type::NA) {
-                                    error = core::error_t{
-                                        core::error_code_t::schema_error,
-                                        std::pmr::string{
-                                            ("couldn't convert parsed ROW to type: \'" + it->alias() + "\'").c_str(),
-                                            resource}};
+                                    result =
+                                        core::error_t(core::error_code_t::schema_error,
+                                                      std::pmr::string{"couldn't convert value to decimal type: \'" +
+                                                                           it->alias() + "\'",
+                                                                       resource});
                                     return false;
-                                } else {
-                                    new_column.set_value(i, val);
                                 }
+                                new_column.set_value(i, val);
                             }
                             column = std::move(new_column);
-                        } else if (it->type() == logical_type::ENUM) {
-                            components::vector::vector_t new_column(resource, *it, data_node->data_chunk().capacity());
-                            for (size_t i = 0; i < data_node->data_chunk().size(); i++) {
-                                auto val = column.data<std::string_view>()[i];
-                                auto enum_val = logical_value_t::create_enum(resource, *it, val);
-                                if (enum_val.type().type() == logical_type::NA) {
-                                    error = core::error_t{
-                                        core::error_code_t::schema_error,
-                                        std::pmr::string{("enum: \'" + it->alias() + "\' does not contain value: \'" +
-                                                          std::string(val) + "\'")
-                                                             .c_str(),
-                                                         resource}};
-                                    return false;
-                                } else {
-                                    new_column.set_value(i, enum_val);
+                        } else if (!check_type_exists(resource, idx, it->type_name(), std::span<const std::string>())
+                                        .contains_error()) {
+                            // if this is a registered type, then conversion is required
+                            if (it->type() == logical_type::STRUCT) {
+                                components::vector::vector_t new_column(resource,
+                                                                        *it,
+                                                                        data_node->data_chunk().capacity());
+                                for (size_t i = 0; i < data_node->data_chunk().size(); i++) {
+                                    auto val = column.value(i).cast_as(*it, session_tz);
+                                    if (val.type().type() == logical_type::NA) {
+                                        result =
+                                            core::error_t(core::error_code_t::schema_error,
+                                                          std::pmr::string{"couldn't convert parsed ROW to type: \'" +
+                                                                               it->alias() + "\'",
+                                                                           resource});
+                                        return false;
+                                    } else {
+                                        new_column.set_value(i, val);
+                                    }
                                 }
+                                column = std::move(new_column);
+                            } else if (it->type() == logical_type::ENUM) {
+                                components::vector::vector_t new_column(resource,
+                                                                        *it,
+                                                                        data_node->data_chunk().capacity());
+                                for (size_t i = 0; i < data_node->data_chunk().size(); i++) {
+                                    auto val = column.data<std::string_view>()[i];
+                                    auto enum_val = logical_value_t::create_enum(resource, *it, val);
+                                    if (enum_val.type().type() == logical_type::NA) {
+                                        result = core::error_t(core::error_code_t::schema_error,
+                                                               std::pmr::string{"enum: \'" + it->alias() +
+                                                                                    "\' does not contain value: \'" +
+                                                                                    std::string(val) + "\'",
+                                                                                resource});
+                                        return false;
+                                    } else {
+                                        new_column.set_value(i, enum_val);
+                                    }
+                                }
+                                column = std::move(new_column);
+                            } else {
+                                assert(false && "missing type conversion in dispatcher_t::check_collections_format_");
                             }
-                            column = std::move(new_column);
-                        } else {
-                            assert(false && "missing type conversion in dispatcher_t::check_collections_format_");
                         }
                     }
                 }
@@ -1004,7 +1154,7 @@ namespace services::dispatcher {
                 }
                 look_up.pop();
             } else {
-                return error;
+                return result;
             }
         }
 
@@ -1076,8 +1226,7 @@ namespace services::dispatcher {
                            !static_cast<const std::string&>(agg_node->dbname()).empty()) {
                     const auto& agg_dbname_s = static_cast<const std::string&>(agg_node->dbname());
                     const auto& agg_relname_s = static_cast<const std::string&>(agg_node->relname());
-                    const auto& visible_alias =
-                        node->result_alias().empty() ? agg_relname_s : node->result_alias();
+                    const auto& visible_alias = node->result_alias().empty() ? agg_relname_s : node->result_alias();
                     // there will be a scan
                     const auto* tbl = impl::tbl_md_for(idx, agg_dbname_s, agg_relname_s);
                     if (tbl && tbl->relkind != 'g') {
@@ -1093,10 +1242,10 @@ namespace services::dispatcher {
                         // so callers (and tests) get the right error code.
                         if (impl::ns_oid_for_dbname(idx, std::string_view(agg_dbname_s)) ==
                             components::catalog::INVALID_OID) {
-                            return core::error_t{core::error_code_t::database_not_exists,
-                                                 std::pmr::string{"", resource}};
+                            return core::error_t(core::error_code_t::database_not_exists,
+                                                 std::pmr::string{"", resource});
                         }
-                        return core::error_t{core::error_code_t::table_not_exists, std::pmr::string{"", resource}};
+                        return core::error_t(core::error_code_t::table_not_exists, std::pmr::string{"", resource});
                     }
                 }
                 if (table_schema.empty() && incoming_schema.empty()) {
@@ -1153,26 +1302,23 @@ namespace services::dispatcher {
                                         }
                                     }
                                     if (matched.empty()) {
-                                        return core::error_t(
-                                            core::error_code_t::schema_error,
-                                            std::pmr::string{(std::string{"alias '"} + alias.c_str() +
-                                                              "' has no columns in scope")
-                                                                 .c_str(),
-                                                             resource});
+                                        return core::error_t(core::error_code_t::schema_error,
+                                                             std::pmr::string{(std::string{"alias '"} + alias.c_str() +
+                                                                               "' has no columns in scope")
+                                                                                  .c_str(),
+                                                                              resource});
                                     }
                                     exprs.erase(exprs.begin() + static_cast<ptrdiff_t>(expr_index));
                                     for (size_t j = 0; j < matched.size(); j++) {
                                         size_t schema_idx = matched[j];
                                         components::expressions::key_t new_key(resource);
                                         if (incoming_schema[schema_idx].type.has_alias()) {
-                                            new_key.storage().push_back(std::pmr::string(
-                                                incoming_schema[schema_idx].type.alias(), resource));
+                                            new_key.storage().push_back(
+                                                std::pmr::string(incoming_schema[schema_idx].type.alias(), resource));
                                         }
                                         new_key.set_path(column_path{{schema_idx}, resource});
                                         exprs.insert(exprs.begin() + static_cast<ptrdiff_t>(expr_index + j),
-                                                     make_scalar_expression(resource,
-                                                                            scalar_type::get_field,
-                                                                            new_key));
+                                                     make_scalar_expression(resource, scalar_type::get_field, new_key));
                                     }
                                     expr_index += matched.size();
                                     continue;
@@ -1357,7 +1503,10 @@ namespace services::dispatcher {
                                     if (!sub_s->params().empty()) {
                                         auto lt = self(sub_s->params()[0], self);
                                         auto rt = sub_s->params().size() > 1 ? self(sub_s->params()[1], self) : lt;
-                                        return complex_logical_type(promote_type(lt.type(), rt.type()));
+                                        return complex_logical_type(
+                                            arithmetic_result_type(lt.type(),
+                                                                   rt.type(),
+                                                                   impl::scalar_to_arith_op(sub_s->type())));
                                     }
                                 }
                                 assert(false);
@@ -1374,7 +1523,10 @@ namespace services::dispatcher {
                             auto rt = scalar_expr->params().size() > 1
                                           ? resolve_type(scalar_expr->params()[1], resolve_type)
                                           : lt;
-                            result_type = complex_logical_type(promote_type(lt.type(), rt.type()));
+                            result_type = complex_logical_type(
+                                arithmetic_result_type(lt.type(),
+                                                       rt.type(),
+                                                       impl::scalar_to_arith_op(scalar_expr->type())));
                         }
                         if (!scalar_expr->key().is_null()) {
                             result_type.set_alias(scalar_expr->key().as_string());
@@ -1529,7 +1681,10 @@ namespace services::dispatcher {
                                             if (resolve_error.type != core::error_code_t::none) {
                                                 return resolve_error;
                                             }
-                                            function_input_types.emplace_back(promote_type(lt.type(), rt.type()));
+                                            function_input_types.emplace_back(
+                                                arithmetic_result_type(lt.type(),
+                                                                       rt.type(),
+                                                                       impl::scalar_to_arith_op(sub_scalar->type())));
                                         } else {
                                             return core::error_t(
                                                 core::error_code_t::invalid_parameter,
@@ -1544,11 +1699,10 @@ namespace services::dispatcher {
                             }
                             auto agg_lk = impl::lookup_function(agg_expr->function_name(), function_input_types);
                             if (!agg_lk.name_exists) {
-                                return core::error_t{core::error_code_t::unrecognized_function,
-                                                     std::pmr::string{("function: \'" + agg_expr->function_name() +
-                                                                       "(...)\' was not found by the name")
-                                                                          .c_str(),
-                                                                      resource}};
+                                return core::error_t(core::error_code_t::unrecognized_function,
+                                                     std::pmr::string{"function: \'" + agg_expr->function_name() +
+                                                                          "(...)\' was not found by the name",
+                                                                      resource});
                             } else if (agg_lk.match_found) {
                                 std::pmr::vector<complex_logical_type> function_output_types(resource);
                                 function_output_types.reserve(agg_lk.signature.output_types.size());
@@ -1701,6 +1855,12 @@ namespace services::dispatcher {
                 break;
             }
             case node_type::function_t: {
+                if (node->children().empty()) {
+                    return core::error_t(
+                        core::error_code_t::unimplemented_yet,
+                        std::pmr::string{"otterbrix does not support constants as function arguments in this context",
+                                         resource});
+                }
                 auto* function_node = reinterpret_cast<node_function_t*>(node);
                 auto input_schema = validate_schema(resource, idx, node->children().front().get(), parameters);
                 if (input_schema.has_error()) {
@@ -1715,32 +1875,27 @@ namespace services::dispatcher {
                 // Also order could be different
                 auto fn_lk = impl::lookup_function(function_node->name(), function_input);
                 if (!fn_lk.name_exists) {
-                    return core::error_t{
+                    return core::error_t(
                         core::error_code_t::unrecognized_function,
                         std::pmr::string{
                             ("function: \'" + function_node->name() + "(...)\' was not found by the name").c_str(),
-                            resource}};
+                            resource});
                 } else if (fn_lk.match_found) {
                     result.reserve(fn_lk.signature.output_types.size());
                     for (const auto& output_type : fn_lk.signature.output_types) {
                         auto res = output_type.resolve(resource, function_input);
                         if (res.has_error()) {
-                            return core::error_t{
-                                core::error_code_t::incorrect_function_argument,
-                                std::pmr::string{("function: \'" + function_node->name() +
-                                                  "(...)\' was found but there is an error, resolving output types")
-                                                     .c_str(),
-                                                 resource}};
+                            return res.convert_error<named_schema>();
                         }
                         result.emplace_back(type_from_t{node->result_alias(), res.value()});
                         function_node->add_function_uid(fn_lk.uid);
                     }
                 } else {
-                    return core::error_t{core::error_code_t::incorrect_function_argument,
-                                         std::pmr::string{("function: \'" + function_node->name() +
-                                                           "(...)\' was found but do not except given set of arguments")
-                                                              .c_str(),
-                                                          resource}};
+                    return core::error_t(
+                        core::error_code_t::incorrect_function_argument,
+                        std::pmr::string{"function: \'" + function_node->name() +
+                                             "(...)\' was found but do not except given set of arguments",
+                                         resource});
                 }
                 break;
             }
@@ -1773,8 +1928,7 @@ namespace services::dispatcher {
                 auto* insert_node = reinterpret_cast<node_insert_t*>(node);
                 const auto* tbl_ins = impl::tbl_md_for_oid(idx, insert_node->table_oid());
                 if (!tbl_ins) {
-                    return core::error_t(core::error_code_t::table_not_exists,
-                                         std::pmr::string{"collection does not exist", resource});
+                    return core::error_t(core::error_code_t::table_not_exists, std::pmr::string{"", resource});
                 }
 
                 auto incoming_schema = validate_schema(resource, idx, node->children().front().get(), parameters);
@@ -1828,9 +1982,11 @@ namespace services::dispatcher {
                     // literal sources still SIGSEGV; lifting requires deeper
                     // storage layer work.
                     if (is_computed && !is_simple_chunk()) {
-                        return core::error_t{core::error_code_t::schema_error,
-                                             "insert_node: complex types (ARRAY/STRUCT/UNION/LIST/MAP) "
-                                             "are not yet supported on relkind='g' (dynamic-schema) tables"};
+                        return core::error_t(
+                            core::error_code_t::schema_error,
+                            std::pmr::string{"insert_node: complex types (ARRAY/STRUCT/UNION/LIST/MAP) "
+                                             "are not yet supported on relkind='g' (dynamic-schema) tables",
+                                             resource});
                     }
                     if (table_schema.empty()) {
                         // Schemaless table (no columns defined) or computing table with no
@@ -1840,20 +1996,20 @@ namespace services::dispatcher {
                         // checks. operator_computed_field_register registers new attoids
                         // for added/widened columns at execute time.
                     } else if (incoming_schema.value().size() > table_schema.size()) {
-                        return core::error_t{core::error_code_t::schema_error,
-                                             std::pmr::string{"insert_node: too many columns in INSERT", resource}};
+                        return core::error_t(core::error_code_t::schema_error,
+                                             std::pmr::string{"insert_node: too many columns in INSERT", resource});
                     } else {
                         if (insert_node->key_translation().size() != incoming_schema.value().size() &&
                             table_schema.size() != incoming_schema.value().size()) {
-                            return core::error_t{
+                            return core::error_t(
                                 core::error_code_t::schema_error,
-                                std::pmr::string{"insert_node: number of columns do not match", resource}};
+                                std::pmr::string{"insert_node: number of columns do not match", resource});
                         } else {
                             // validate key
                             for (auto& key : insert_node->key_translation()) {
                                 auto key_res = impl::validate_key(resource, key, table_schema, table_schema, true);
                                 if (key_res.has_error()) {
-                                    return key_res.error();
+                                    return key_res.convert_error<named_schema>();
                                 }
                             }
                             // validate corresponding types
@@ -1874,11 +2030,11 @@ namespace services::dispatcher {
                                     incoming_schema.value()[i].type.type() !=
                                         components::types::logical_type::UNKNOWN &&
                                     !incoming_schema.value()[i].type.is_convertable_to(corresponding_table_type)) {
-                                    return core::error_t{core::error_code_t::schema_error,
-                                                         std::pmr::string{("insert_node: can not convert data column[" +
-                                                                           std::to_string(i) + "] type to table type")
-                                                                              .c_str(),
-                                                                          resource}};
+                                    return core::error_t(core::error_code_t::schema_error,
+                                                         std::pmr::string{"insert_node: can not convert data column[" +
+                                                                              std::to_string(i) +
+                                                                              "] type to table type",
+                                                                          resource});
                                 }
                             }
 
@@ -1912,13 +2068,12 @@ namespace services::dispatcher {
                                             : std::vector<components::logical_plan::resolved_column_metadata_t>{};
                                 for (auto index : unchecked_columns) {
                                     if (!cat_columns[index].atthasdefault && cat_columns[index].attnotnull) {
-                                        return core::error_t{
+                                        return core::error_t(
                                             core::error_code_t::schema_error,
                                             std::pmr::string{
-                                                ("insert_node: can not fill column \'" + cat_columns[index].attname +
-                                                 "\', because it lacks a default value and do not except null")
-                                                    .c_str(),
-                                                resource}};
+                                                "insert_node: can not fill column \'" + cat_columns[index].attname +
+                                                    "\', because it lacks a default value and do not except null",
+                                                resource});
                                     }
                                 }
                             }
@@ -2002,24 +2157,28 @@ namespace services::dispatcher {
                                         column.type});
                     }
                 } else {
-                    return core::error_t{core::error_code_t::table_not_exists, std::pmr::string{"", resource}};
+                    return core::error_t(
+                        core::error_code_t::table_not_exists,
+                        std::pmr::string{"could not find table in update/delete validation", resource});
                 }
                 if (node_data) {
                     auto node_data_res = validate_schema(resource, idx, node_data, parameters);
                     if (node_data_res.has_error()) {
-                        return node_data_res.error();
+                        return node_data_res;
                     }
                     incoming_schema = std::move(node_data_res.value());
                     if (incoming_schema.size() != table_schema.size()) {
-                        return core::error_t{
+                        return core::error_t(
                             core::error_code_t::schema_error,
-                            std::pmr::string{"update_node: computed schema and table schema missmatch", resource}};
+                            std::pmr::string{"update_node: computed schema and table schema missmatch", resource});
                     }
                     for (size_t i = 0; i < table_schema.size(); i++) {
                         // ignore aliases, since they do not matter here
                         if (incoming_schema[i].type != table_schema[i].type) {
-                            return core::error_t{core::error_code_t::schema_error,
-                                                 "update_node: computed schema and table schema name missmatch"};
+                            return core::error_t(
+                                core::error_code_t::schema_error,
+                                std::pmr::string{"update_node: computed schema and table schema name missmatch",
+                                                 resource});
                         }
                     }
                 } else {
@@ -2035,12 +2194,12 @@ namespace services::dispatcher {
                                                                 incoming_schema,
                                                                 same_schema);
                     if (node_match_res.has_error()) {
-                        return node_match_res.error();
+                        return node_match_res;
                     }
                 } else {
-                    return core::error_t{
+                    return core::error_t(
                         core::error_code_t::schema_error,
-                        std::pmr::string{"update_node: invalid node, node_match is not present", resource}};
+                        std::pmr::string{"update_node: invalid node, node_match is not present", resource});
                 }
                 if (node->type() == node_type::update_t) {
                     auto* node_update = reinterpret_cast<node_update_t*>(node);
@@ -2059,8 +2218,7 @@ namespace services::dispatcher {
                 auto* idx_node = static_cast<node_create_index_t*>(node);
                 const auto* tbl_idx = impl::tbl_md_for_oid(idx, idx_node->table_oid());
                 if (!tbl_idx) {
-                    return core::error_t(core::error_code_t::table_not_exists,
-                                         std::pmr::string{"collection does not exist", resource});
+                    return core::error_t(core::error_code_t::table_not_exists, std::pmr::string{"", resource});
                 }
 
                 named_schema table_schema{resource};
@@ -2085,7 +2243,7 @@ namespace services::dispatcher {
                 for (auto& key : keys) {
                     auto key_res = impl::validate_key(resource, key, table_schema, table_schema, true);
                     if (key_res.has_error()) {
-                        return key_res.error();
+                        return key_res.convert_error<named_schema>();
                     }
                 }
                 return named_schema{resource};
@@ -2125,6 +2283,8 @@ namespace services::dispatcher {
             default:
                 // TODO: add check to validate schema, if assert is triggered
                 assert(false);
+                return core::error_t(core::error_code_t::unimplemented_yet,
+                                     std::pmr::string{"encountered an unknown state during plan validation", resource});
         }
 
         return result;
@@ -2173,8 +2333,8 @@ namespace services::dispatcher {
             if (visited.count(name)) {
                 return make_cursor(
                     resource,
-                    core::error_t{core::error_code_t::other_error,
-                                  std::pmr::string{("type recursion detected: '" + name + "'").c_str(), resource}});
+                    core::error_t(core::error_code_t::other_error,
+                                  std::pmr::string{("type recursion detected: '" + name + "'").c_str(), resource}));
             }
             visited.insert(name);
 

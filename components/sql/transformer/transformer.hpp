@@ -55,8 +55,7 @@ namespace components::sql::transform {
         // is hoisted to the outer sequence_t front so Pass 1 stamps source's
         // pg_attribute. The planner reads body_plan + stamped source metadata to
         // derive output schema before lowering to physical operators.
-        logical_plan::node_ptr transform_create_matview(CreateTableAsStmt& cs,
-                                                        logical_plan::parameter_node_t* params);
+        logical_plan::node_ptr transform_create_matview(CreateTableAsStmt& cs, logical_plan::parameter_node_t* params);
         // REFRESH MATERIALIZED VIEW [CONCURRENTLY] mv [WITH NO DATA].
         // Wrapped with catalog_resolve_table(mv) so Pass 1 stamps view_sql from
         // pg_rewrite.ev_action (already supported for relkind='m' by Phase A.A2).
@@ -73,6 +72,7 @@ namespace components::sql::transform {
         // node_abort_transaction_t respectively; BEGIN returns nullptr (see
         // impl for rationale).
         logical_plan::node_ptr transform_transaction(TransactionStmt& node);
+        logical_plan::node_ptr transform_set_timezone(VariableSetStmt& node);
 
     private:
         using insert_location_t = std::pair<size_t, std::string>; // position in vector + string key

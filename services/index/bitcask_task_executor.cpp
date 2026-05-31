@@ -5,9 +5,7 @@ namespace services::index {
         worker_ = std::thread([this]() { worker_loop_(); });
     }
 
-    bitcask_task_executor_t::~bitcask_task_executor_t() {
-        stop();
-    }
+    bitcask_task_executor_t::~bitcask_task_executor_t() { stop(); }
 
     void bitcask_task_executor_t::enqueue(std::function<void()> task) {
         {

@@ -1,5 +1,6 @@
 #include "logical_value.hpp"
 #include "operations_helper.hpp"
+#include <core/date/date_cast.hpp>
 
 #include <boost/container_hash/hash.hpp>
 #include <cmath>
@@ -24,6 +25,8 @@ namespace components::types {
             case logical_type::STRING_LITERAL:
                 heap_delete(str_ptr());
                 break;
+            case logical_type::TIME_TZ:
+            case logical_type::INTERVAL:
             case logical_type::LIST:
             case logical_type::ARRAY:
             case logical_type::MAP:
@@ -54,6 +57,8 @@ namespace components::types {
             case logical_type::STRING_LITERAL:
                 data_ = reinterpret_cast<uint64_t>(heap_new<std::string>());
                 break;
+            case logical_type::TIME_TZ:
+            case logical_type::INTERVAL:
             case logical_type::LIST:
             case logical_type::ARRAY:
             case logical_type::MAP:
@@ -90,6 +95,8 @@ namespace components::types {
             case logical_type::STRING_LITERAL:
                 data_ = reinterpret_cast<uint64_t>(heap_new<std::string>(*other.str_ptr()));
                 break;
+            case logical_type::TIME_TZ:
+            case logical_type::INTERVAL:
             case logical_type::LIST:
             case logical_type::ARRAY:
             case logical_type::MAP:
@@ -129,6 +136,8 @@ namespace components::types {
             case logical_type::STRING_LITERAL:
                 data_ = reinterpret_cast<uint64_t>(heap_new<std::string>(*other.str_ptr()));
                 break;
+            case logical_type::TIME_TZ:
+            case logical_type::INTERVAL:
             case logical_type::LIST:
             case logical_type::ARRAY:
             case logical_type::MAP:
@@ -166,6 +175,8 @@ namespace components::types {
                 }
                 break;
             case logical_type::STRING_LITERAL:
+            case logical_type::TIME_TZ:
+            case logical_type::INTERVAL:
             case logical_type::LIST:
             case logical_type::ARRAY:
             case logical_type::MAP:
@@ -205,6 +216,8 @@ namespace components::types {
             case logical_type::STRING_LITERAL:
                 data_ = reinterpret_cast<uint64_t>(heap_new<std::string>(*other.str_ptr()));
                 break;
+            case logical_type::TIME_TZ:
+            case logical_type::INTERVAL:
             case logical_type::LIST:
             case logical_type::ARRAY:
             case logical_type::MAP:
@@ -246,6 +259,8 @@ namespace components::types {
                 }
                 break;
             case logical_type::STRING_LITERAL:
+            case logical_type::TIME_TZ:
+            case logical_type::INTERVAL:
             case logical_type::LIST:
             case logical_type::ARRAY:
             case logical_type::MAP:
@@ -318,9 +333,8 @@ namespace components::types {
         }
     };
 
-    logical_value_t logical_value_t::cast_as(const complex_logical_type& type) const {
-        using namespace std::chrono;
-
+    logical_value_t logical_value_t::cast_as(const complex_logical_type& type,
+                                             core::date::timezone_offset_t session_tz) const {
         if (type_ == type) {
             return logical_value_t(*this);
         }
@@ -419,21 +433,6 @@ namespace components::types {
                 default:
                     assert(false && "incorrect type for conversion to decimal");
             }
-        } else if (is_duration(type_.type()) && is_duration(type.type())) {
-            switch (type.type()) {
-                case logical_type::TIMESTAMP_SEC:
-                    return logical_value_t{resource_, value<seconds>()};
-                case logical_type::TIMESTAMP_MS:
-                    return logical_value_t{resource_, value<milliseconds>()};
-                case logical_type::TIMESTAMP_US:
-                    return logical_value_t{resource_, value<microseconds>()};
-                case logical_type::TIMESTAMP_NS:
-                    return logical_value_t{resource_, value<nanoseconds>()};
-                default:
-                    assert(false && "incorrect type for duration conversion");
-            }
-        } else if (type_.type() == logical_type::STRING_LITERAL && type.type() == logical_type::ENUM) {
-            return create_enum(resource_, type, *str_ptr());
         } else if (type_.type() == logical_type::STRUCT && type.type() == logical_type::STRUCT) {
             if (type_.child_types().size() != type.child_types().size()) {
                 assert(false && "incorrect type");
@@ -443,12 +442,115 @@ namespace components::types {
             std::vector<logical_value_t> fields;
             fields.reserve(children().size());
             for (size_t i = 0; i < children().size(); i++) {
-                fields.emplace_back(children()[i].cast_as(type.child_types()[i]));
+                fields.emplace_back(children()[i].cast_as(type.child_types()[i], session_tz));
             }
 
             return create_struct(resource_, type, fields);
+        } else if (type_.type() == logical_type::ARRAY && type.type() == logical_type::ARRAY) {
+            const auto& target_elem_type = type.child_type();
+            std::vector<logical_value_t> elems;
+            elems.reserve(children().size());
+            for (const auto& child : children()) {
+                elems.emplace_back(child.cast_as(target_elem_type, session_tz));
+            }
+            return create_array(resource_, target_elem_type, elems);
+        } else if (type.type() == logical_type::ENUM) {
+            if (type_.type() == logical_type::STRING_LITERAL) {
+                auto string_val = value<std::string_view>();
+                for (const auto& entry : static_cast<const enum_logical_type_extension*>(type.extension())->entries()) {
+                    if (entry.type().alias() == string_val) {
+                        logical_value_t result(resource_, type);
+                        result.data_ = entry.data_;
+                        return result;
+                    }
+                }
+                return logical_value_t{resource_, complex_logical_type{logical_type::NA}};
+            } else if (is_numeric(type_.type())) {
+                const auto& enum_entries = static_cast<const enum_logical_type_extension*>(type.extension())->entries();
+                auto src_as_enum = double_simple_physical_type_switch<cast_callback_t>(type.to_physical_type(),
+                                                                                       type_.to_physical_type(),
+                                                                                       *this);
+                for (const auto& entry : enum_entries) {
+                    if (src_as_enum.data_ == entry.data_) {
+                        logical_value_t result(resource_, type);
+                        result.data_ = src_as_enum.data_;
+                        return result;
+                    }
+                }
+                return logical_value_t{resource_, complex_logical_type{logical_type::NA}};
+            }
+        } else if (is_duration(type_.type()) && is_duration(type.type())) {
+            using namespace core;
+            switch (type_.type()) {
+                case logical_type::DATE:
+                    switch (type.type()) {
+                        case logical_type::TIMESTAMP:
+                            return logical_value_t{
+                                resource_,
+                                convert_date_time<date::timestamp_t>(value<date::date_t>(), session_tz)};
+                        case logical_type::TIMESTAMP_TZ:
+                            return logical_value_t{
+                                resource_,
+                                convert_date_time<date::timestamptz_t>(value<date::date_t>(), session_tz)};
+                        default:
+                            break;
+                    }
+                    break;
+                case logical_type::TIMESTAMP:
+                    switch (type.type()) {
+                        case logical_type::DATE:
+                            return logical_value_t{
+                                resource_,
+                                convert_date_time<date::date_t>(value<date::timestamp_t>(), session_tz)};
+                        case logical_type::TIME:
+                            return logical_value_t{
+                                resource_,
+                                convert_date_time<date::time_t>(value<date::timestamp_t>(), session_tz)};
+                        case logical_type::TIMESTAMP_TZ:
+                            return logical_value_t{
+                                resource_,
+                                convert_date_time<date::timestamptz_t>(value<date::timestamp_t>(), session_tz)};
+                        default:
+                            break;
+                    }
+                    break;
+                case logical_type::TIMESTAMP_TZ:
+                    switch (type.type()) {
+                        case logical_type::DATE:
+                            return logical_value_t{
+                                resource_,
+                                convert_date_time<date::date_t>(value<date::timestamptz_t>(), session_tz)};
+                        case logical_type::TIME:
+                            return logical_value_t{
+                                resource_,
+                                convert_date_time<date::time_t>(value<date::timestamptz_t>(), session_tz)};
+                        case logical_type::TIMESTAMP:
+                            return logical_value_t{
+                                resource_,
+                                convert_date_time<date::timestamp_t>(value<date::timestamptz_t>(), session_tz)};
+                        case logical_type::TIME_TZ:
+                            return logical_value_t{
+                                resource_,
+                                convert_date_time<date::timetz_t>(value<date::timestamptz_t>(), session_tz)};
+                        default:
+                            break;
+                    }
+                    break;
+                case logical_type::TIME:
+                    if (type.type() == logical_type::TIME_TZ)
+                        return logical_value_t{resource_,
+                                               convert_date_time<date::timetz_t>(value<date::time_t>(), session_tz)};
+                    break;
+                case logical_type::TIME_TZ:
+                    if (type.type() == logical_type::TIME)
+                        return logical_value_t{resource_,
+                                               convert_date_time<date::time_t>(value<date::timetz_t>(), session_tz)};
+                    break;
+                default:
+                    break;
+            }
         }
-        assert(false && "cast to value is not implemented");
+        // assert(false && "cast to value is not implemented");
         return logical_value_t{resource_, complex_logical_type{logical_type::NA}};
     }
 
@@ -487,146 +589,116 @@ namespace components::types {
         return h;
     }
 
-    bool enum_value_matches_string(const logical_value_t& enum_val, std::string_view target) {
-        const auto* ext = static_cast<const enum_logical_type_extension*>(enum_val.type().extension());
-        if (ext == nullptr) {
-            return false;
-        }
-        const auto stored = enum_val.value<int32_t>();
-        for (const auto& entry : ext->entries()) {
-            if (entry.value<int32_t>() == stored) {
-                return entry.type().alias() == target;
-            }
-        }
-        return false;
-    }
-
     bool logical_value_t::operator==(const logical_value_t& rhs) const {
-        if (type_.type() != rhs.type_.type()) {
-            if ((is_numeric(type_.type()) && is_numeric(rhs.type_.type())) ||
-                (is_duration(type_.type()) && is_duration(rhs.type_.type()))) {
-                auto promoted_type = promote_type(type_.type(), rhs.type_.type());
-
-                if (promoted_type == logical_type::FLOAT) {
-                    return core::is_equals(cast_as(promoted_type).value<float>(),
-                                           rhs.cast_as(promoted_type).value<float>());
-                } else if (promoted_type == logical_type::DOUBLE) {
-                    return core::is_equals(cast_as(promoted_type).value<double>(),
-                                           rhs.cast_as(promoted_type).value<double>());
+        assert(type_ == rhs.type_ && "logical_value_t has to be casted to the same type before comparison");
+        switch (type_.type()) {
+            case logical_type::NA:
+                return true;
+            case logical_type::BOOLEAN:
+            case logical_type::TINYINT:
+            case logical_type::SMALLINT:
+            case logical_type::INTEGER:
+            case logical_type::BIGINT:
+            case logical_type::UTINYINT:
+            case logical_type::USMALLINT:
+            case logical_type::UINTEGER:
+            case logical_type::UBIGINT:
+            case logical_type::POINTER:
+            case logical_type::ENUM:
+                return data_ == rhs.data_;
+            case logical_type::FLOAT:
+                return core::is_equals(value<float>(), rhs.value<float>());
+            case logical_type::DOUBLE:
+                return core::is_equals(value<double>(), rhs.value<double>());
+            case logical_type::STRING_LITERAL:
+                return *str_ptr() == *rhs.str_ptr();
+            case logical_type::DECIMAL:
+                if (type_.to_physical_type() == physical_type::INT128) {
+                    return data128_ == rhs.data128_;
                 } else {
-                    return cast_as(promoted_type) == rhs.cast_as(promoted_type);
-                }
-            }
-            if (type_.type() == logical_type::ENUM && rhs.type_.type() == logical_type::STRING_LITERAL) {
-                return enum_value_matches_string(*this, *rhs.str_ptr());
-            }
-            if (rhs.type_.type() == logical_type::ENUM && type_.type() == logical_type::STRING_LITERAL) {
-                return enum_value_matches_string(rhs, *str_ptr());
-            }
-            return false;
-        } else {
-            switch (type_.type()) {
-                case logical_type::NA:
-                    return true;
-                case logical_type::BOOLEAN:
-                case logical_type::TINYINT:
-                case logical_type::SMALLINT:
-                case logical_type::INTEGER:
-                case logical_type::BIGINT:
-                case logical_type::UTINYINT:
-                case logical_type::USMALLINT:
-                case logical_type::UINTEGER:
-                case logical_type::UBIGINT:
-                case logical_type::POINTER:
-                case logical_type::ENUM:
                     return data_ == rhs.data_;
-                case logical_type::FLOAT:
-                    return core::is_equals(value<float>(), rhs.value<float>());
-                case logical_type::DOUBLE:
-                    return core::is_equals(value<double>(), rhs.value<double>());
-                case logical_type::STRING_LITERAL:
-                    return *str_ptr() == *rhs.str_ptr();
-                case logical_type::DECIMAL:
-                    if (type_.to_physical_type() == physical_type::INT128) {
-                        return data128_ == rhs.data128_;
-                    } else {
-                        return data_ == rhs.data_;
-                    }
-                case logical_type::LIST:
-                case logical_type::ARRAY:
-                case logical_type::MAP:
-                case logical_type::STRUCT:
-                    return *vec_ptr() == *rhs.vec_ptr();
-                case logical_type::UNION:
-                case logical_type::VARIANT:
-                    if (!data_ && !rhs.data_)
-                        return true;
-                    if (!data_ || !rhs.data_)
-                        return false;
-                    return *vec_ptr() == *rhs.vec_ptr();
-                default:
+                }
+            case logical_type::DATE:
+            case logical_type::TIME:
+            case logical_type::TIMESTAMP:
+            case logical_type::TIMESTAMP_TZ:
+                return data_ == rhs.data_;
+            case logical_type::TIME_TZ:
+                return value<core::date::timetz_t>() == rhs.value<core::date::timetz_t>();
+            case logical_type::INTERVAL:
+                return value<core::date::interval_t>() == rhs.value<core::date::interval_t>();
+            case logical_type::LIST:
+            case logical_type::ARRAY:
+            case logical_type::MAP:
+            case logical_type::STRUCT:
+                return *vec_ptr() == *rhs.vec_ptr();
+            case logical_type::UNION:
+            case logical_type::VARIANT:
+                if (!data_ && !rhs.data_)
+                    return true;
+                if (!data_ || !rhs.data_)
                     return false;
-            }
+                return *vec_ptr() == *rhs.vec_ptr();
+            default:
+                return false;
         }
     }
 
     bool logical_value_t::operator!=(const logical_value_t& rhs) const { return !(*this == rhs); }
 
     bool logical_value_t::operator<(const logical_value_t& rhs) const {
-        if (type_ != rhs.type_) {
-            if (type_.type() == logical_type::NA)
-                return false;
-            if (rhs.type_.type() == logical_type::NA)
-                return true;
-            if ((is_numeric(type_.type()) && is_numeric(rhs.type_.type())) ||
-                (is_duration(type_.type()) && is_duration(rhs.type_.type()))) {
-                auto promoted_type = promote_type(type_.type(), rhs.type_.type());
-                return cast_as(promoted_type) < rhs.cast_as(promoted_type);
-            }
-            return false;
-        } else {
-            switch (type_.type()) {
-                case logical_type::BOOLEAN:
-                    return static_cast<bool>(data_) < static_cast<bool>(rhs.data_);
-                case logical_type::TINYINT:
-                    return static_cast<int8_t>(data_) < static_cast<int8_t>(rhs.data_);
-                case logical_type::SMALLINT:
-                    return static_cast<int16_t>(data_) < static_cast<int16_t>(rhs.data_);
-                case logical_type::INTEGER:
-                    return static_cast<int32_t>(data_) < static_cast<int32_t>(rhs.data_);
-                case logical_type::BIGINT:
-                    return static_cast<int64_t>(data_) < static_cast<int64_t>(rhs.data_);
-                case logical_type::FLOAT:
-                    return value<float>() < rhs.value<float>();
-                case logical_type::DOUBLE:
-                    return value<double>() < rhs.value<double>();
-                case logical_type::UTINYINT:
-                    return static_cast<uint8_t>(data_) < static_cast<uint8_t>(rhs.data_);
-                case logical_type::USMALLINT:
-                    return static_cast<uint16_t>(data_) < static_cast<uint16_t>(rhs.data_);
-                case logical_type::UINTEGER:
-                    return static_cast<uint32_t>(data_) < static_cast<uint32_t>(rhs.data_);
-                case logical_type::UBIGINT:
+        assert(type_ == rhs.type_ && "logical_value_t has to be casted to the same type before comparison");
+        switch (type_.type()) {
+            case logical_type::BOOLEAN:
+                return static_cast<bool>(data_) < static_cast<bool>(rhs.data_);
+            case logical_type::TINYINT:
+                return static_cast<int8_t>(data_) < static_cast<int8_t>(rhs.data_);
+            case logical_type::SMALLINT:
+                return static_cast<int16_t>(data_) < static_cast<int16_t>(rhs.data_);
+            case logical_type::INTEGER:
+                return static_cast<int32_t>(data_) < static_cast<int32_t>(rhs.data_);
+            case logical_type::BIGINT:
+                return static_cast<int64_t>(data_) < static_cast<int64_t>(rhs.data_);
+            case logical_type::FLOAT:
+                return value<float>() < rhs.value<float>();
+            case logical_type::DOUBLE:
+                return value<double>() < rhs.value<double>();
+            case logical_type::UTINYINT:
+                return static_cast<uint8_t>(data_) < static_cast<uint8_t>(rhs.data_);
+            case logical_type::USMALLINT:
+                return static_cast<uint16_t>(data_) < static_cast<uint16_t>(rhs.data_);
+            case logical_type::UINTEGER:
+                return static_cast<uint32_t>(data_) < static_cast<uint32_t>(rhs.data_);
+            case logical_type::UBIGINT:
+                return data_ < rhs.data_;
+            case logical_type::STRING_LITERAL:
+                return *str_ptr() < *rhs.str_ptr();
+            case logical_type::DECIMAL:
+                if (type_.to_physical_type() == physical_type::INT128) {
+                    return data128_ < rhs.data128_;
+                } else {
                     return data_ < rhs.data_;
-                case logical_type::STRING_LITERAL:
-                    return *str_ptr() < *rhs.str_ptr();
-                case logical_type::DECIMAL:
-                    if (type_.to_physical_type() == physical_type::INT128) {
-                        return data128_ < rhs.data128_;
-                    } else {
-                        return data_ < rhs.data_;
-                    }
-                case logical_type::STRUCT:
-                case logical_type::LIST:
-                case logical_type::ARRAY:
-                case logical_type::MAP: {
-                    auto& lv = *vec_ptr();
-                    auto& rv = *rhs.vec_ptr();
-                    return std::lexicographical_compare(lv.begin(), lv.end(), rv.begin(), rv.end());
                 }
-                default:
-                    return false;
+            case logical_type::DATE:
+                return static_cast<int32_t>(data_) < static_cast<int32_t>(rhs.data_);
+            case logical_type::TIME:
+            case logical_type::TIMESTAMP:
+            case logical_type::TIMESTAMP_TZ:
+                return static_cast<int64_t>(data_) < static_cast<int64_t>(rhs.data_);
+            case logical_type::TIME_TZ:
+                return value<core::date::timetz_t>() < rhs.value<core::date::timetz_t>();
+            case logical_type::INTERVAL:
+                return value<core::date::interval_t>() < rhs.value<core::date::interval_t>();
+            case logical_type::STRUCT:
+            case logical_type::LIST:
+            case logical_type::ARRAY:
+            case logical_type::MAP: {
+                auto& lv = *vec_ptr();
+                auto& rv = *rhs.vec_ptr();
+                return std::lexicographical_compare(lv.begin(), lv.end(), rv.begin(), rv.end());
             }
+            default:
+                return false;
         }
     }
 
@@ -866,6 +938,9 @@ namespace components::types {
         }
     }
 
+    // session timezone cancels out in arithmetics, so we don't have to pass it
+    constexpr auto place_holder_time_zone = core::date::timezone_offset_t{};
+
     logical_value_t logical_value_t::sum(const logical_value_t& value1, const logical_value_t& value2) {
         if (value1.is_null() && value2.is_null()) {
             return value1;
@@ -874,7 +949,8 @@ namespace components::types {
         if (!value1.is_null() && !value2.is_null() && value1.type().type() != value2.type().type() &&
             is_numeric(value1.type().type()) && is_numeric(value2.type().type())) {
             auto promoted = promote_type(value1.type().type(), value2.type().type());
-            return sum(value1.cast_as(complex_logical_type(promoted)), value2.cast_as(complex_logical_type(promoted)));
+            return sum(value1.cast_as(complex_logical_type(promoted), place_holder_time_zone),
+                       value2.cast_as(complex_logical_type(promoted), place_holder_time_zone));
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
@@ -901,14 +977,6 @@ namespace components::types {
                 return op<std::plus<>>(value1, value2, &logical_value_t::value<int128_t>);
             case logical_type::UHUGEINT:
                 return op<std::plus<>>(value1, value2, &logical_value_t::value<uint128_t>);
-            case logical_type::TIMESTAMP_SEC:
-                return op<std::plus<>>(value1, value2, &logical_value_t::value<std::chrono::seconds>);
-            case logical_type::TIMESTAMP_MS:
-                return op<std::plus<>>(value1, value2, &logical_value_t::value<std::chrono::milliseconds>);
-            case logical_type::TIMESTAMP_US:
-                return op<std::plus<>>(value1, value2, &logical_value_t::value<std::chrono::microseconds>);
-            case logical_type::TIMESTAMP_NS:
-                return op<std::plus<>>(value1, value2, &logical_value_t::value<std::chrono::nanoseconds>);
             case logical_type::FLOAT:
                 return op<std::plus<>>(value1, value2, &logical_value_t::value<float>);
             case logical_type::DOUBLE:
@@ -916,8 +984,78 @@ namespace components::types {
             case logical_type::STRING_LITERAL:
                 return op<std::plus<>>(value1, value2, &logical_value_t::value<std::string>);
             default:
-                throw std::runtime_error("logical_value_t::sum unable to process given types");
+                break;
         }
+        // Temporal arithmetic (scalar-scalar path used by predicate evaluation)
+        using namespace core::date;
+        const auto t1 = value1.type().type();
+        const auto t2 = value2.type().type();
+        auto* r = value1.resource() ? value1.resource() : value2.resource();
+        // DATE + INTERVAL → DATE
+        if (t1 == logical_type::DATE && t2 == logical_type::INTERVAL) {
+            const auto d = value1.value<date_t>().value;
+            const auto iv = value2.value<interval_t>();
+            auto sd = pg_epoch + std::chrono::days{d.count()};
+            if (iv.month.count())
+                sd = apply_months(sd, iv.month.count());
+            sd += std::chrono::days{iv.day.count()};
+            return logical_value_t{r, date_t{days{static_cast<int32_t>((sd - pg_epoch).count())}}};
+        }
+        // INTERVAL + DATE → DATE
+        if (t1 == logical_type::INTERVAL && t2 == logical_type::DATE) {
+            return logical_value_t::sum(value2, value1);
+        }
+        // TIMESTAMP/TZ + INTERVAL → TIMESTAMP/TZ
+        if ((t1 == logical_type::TIMESTAMP || t1 == logical_type::TIMESTAMP_TZ) && t2 == logical_type::INTERVAL) {
+            const auto ts = (t1 == logical_type::TIMESTAMP) ? value1.value<timestamp_t>().value
+                                                            : value1.value<timestamptz_t>().value;
+            const auto iv = value2.value<interval_t>();
+            auto [d, tod] = split_timestamp(ts);
+            auto sd = pg_epoch + std::chrono::days{d.count()};
+            if (iv.month.count())
+                sd = apply_months(sd, iv.month.count());
+            sd += std::chrono::days{iv.day.count()};
+            const auto result = from_sys_days_us(sd, tod + iv.time);
+            if (t1 == logical_type::TIMESTAMP) {
+                return logical_value_t{r, timestamp_t{result}};
+            }
+            return logical_value_t{r, timestamptz_t{result}};
+        }
+        // INTERVAL + TIMESTAMP/TZ → TIMESTAMP/TZ
+        if (t1 == logical_type::INTERVAL && (t2 == logical_type::TIMESTAMP || t2 == logical_type::TIMESTAMP_TZ)) {
+            return logical_value_t::sum(value2, value1);
+        }
+        // INTERVAL + INTERVAL → INTERVAL
+        if (t1 == logical_type::INTERVAL && t2 == logical_type::INTERVAL) {
+            const auto iv1 = value1.value<interval_t>();
+            const auto iv2 = value2.value<interval_t>();
+            return logical_value_t{r, interval_t{iv1.time + iv2.time, iv1.day + iv2.day, iv1.month + iv2.month}};
+        }
+        constexpr auto one_day = std::chrono::duration_cast<microseconds>(days{1});
+        // TIME + INTERVAL → TIME (wrap-around)
+        if (t1 == logical_type::TIME && t2 == logical_type::INTERVAL) {
+            auto result = (value1.value<core::date::time_t>().value + value2.value<interval_t>().time) % one_day;
+            if (result.count() < 0)
+                result += one_day;
+            return logical_value_t{r, core::date::time_t{result}};
+        }
+        // INTERVAL + TIME → TIME (commutative)
+        if (t1 == logical_type::INTERVAL && t2 == logical_type::TIME) {
+            return logical_value_t::sum(value2, value1);
+        }
+        // TIME_TZ + INTERVAL → TIME_TZ (apply to local time, preserve offset)
+        if (t1 == logical_type::TIME_TZ && t2 == logical_type::INTERVAL) {
+            const auto tz = value1.value<timetz_t>();
+            auto result = (tz.time + value2.value<interval_t>().time) % one_day;
+            if (result.count() < 0)
+                result += one_day;
+            return logical_value_t{r, timetz_t{result, tz.zone}};
+        }
+        // INTERVAL + TIME_TZ → TIME_TZ (commutative)
+        if (t1 == logical_type::INTERVAL && t2 == logical_type::TIME_TZ) {
+            return logical_value_t::sum(value2, value1);
+        }
+        throw std::runtime_error("logical_value_t::sum unable to process given types");
     }
 
     logical_value_t logical_value_t::subtract(const logical_value_t& value1, const logical_value_t& value2) {
@@ -928,8 +1066,8 @@ namespace components::types {
         if (!value1.is_null() && !value2.is_null() && value1.type().type() != value2.type().type() &&
             is_numeric(value1.type().type()) && is_numeric(value2.type().type())) {
             auto promoted = promote_type(value1.type().type(), value2.type().type());
-            return subtract(value1.cast_as(complex_logical_type(promoted)),
-                            value2.cast_as(complex_logical_type(promoted)));
+            return subtract(value1.cast_as(complex_logical_type(promoted), place_holder_time_zone),
+                            value2.cast_as(complex_logical_type(promoted), place_holder_time_zone));
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
@@ -956,21 +1094,96 @@ namespace components::types {
                 return op<std::minus<>>(value1, value2, &logical_value_t::value<int128_t>);
             case logical_type::UHUGEINT:
                 return op<std::minus<>>(value1, value2, &logical_value_t::value<uint128_t>);
-            case logical_type::TIMESTAMP_SEC:
-                return op<std::minus<>>(value1, value2, &logical_value_t::value<std::chrono::seconds>);
-            case logical_type::TIMESTAMP_MS:
-                return op<std::minus<>>(value1, value2, &logical_value_t::value<std::chrono::milliseconds>);
-            case logical_type::TIMESTAMP_US:
-                return op<std::minus<>>(value1, value2, &logical_value_t::value<std::chrono::microseconds>);
-            case logical_type::TIMESTAMP_NS:
-                return op<std::minus<>>(value1, value2, &logical_value_t::value<std::chrono::nanoseconds>);
             case logical_type::FLOAT:
                 return op<std::minus<>>(value1, value2, &logical_value_t::value<float>);
             case logical_type::DOUBLE:
                 return op<std::minus<>>(value1, value2, &logical_value_t::value<double>);
             default:
-                throw std::runtime_error("logical_value_t::subtract unable to process given types");
+                break;
         }
+        using namespace core::date;
+        const auto t1 = value1.type().type();
+        const auto t2 = value2.type().type();
+        auto* r = value1.resource() ? value1.resource() : value2.resource();
+        constexpr auto one_day = std::chrono::duration_cast<microseconds>(days{1});
+        // DATE - INTERVAL → DATE
+        if (t1 == logical_type::DATE && t2 == logical_type::INTERVAL) {
+            const auto iv = value2.value<interval_t>();
+            auto sd = pg_epoch + std::chrono::days{value1.value<date_t>().value.count()};
+            if (iv.month.count())
+                sd = apply_months(sd, -iv.month.count());
+            sd -= std::chrono::days{iv.day.count()};
+            return logical_value_t{r, date_t{days{static_cast<int32_t>((sd - pg_epoch).count())}}};
+        }
+        // TIMESTAMP/TZ - INTERVAL → TIMESTAMP/TZ
+        if ((t1 == logical_type::TIMESTAMP || t1 == logical_type::TIMESTAMP_TZ) && t2 == logical_type::INTERVAL) {
+            const auto ts = (t1 == logical_type::TIMESTAMP) ? value1.value<timestamp_t>().value
+                                                            : value1.value<timestamptz_t>().value;
+            const auto iv = value2.value<interval_t>();
+            auto [d, tod] = split_timestamp(ts);
+            auto sd = pg_epoch + std::chrono::days{d.count()};
+            if (iv.month.count())
+                sd = apply_months(sd, -iv.month.count());
+            sd -= std::chrono::days{iv.day.count()};
+            const auto result = from_sys_days_us(sd, tod - iv.time);
+            if (t1 == logical_type::TIMESTAMP) {
+                return logical_value_t{r, timestamp_t{result}};
+            }
+            return logical_value_t{r, timestamptz_t{result}};
+        }
+        // TIME - INTERVAL → TIME (wrap-around)
+        if (t1 == logical_type::TIME && t2 == logical_type::INTERVAL) {
+            auto result = (value1.value<core::date::time_t>().value - value2.value<interval_t>().time) % one_day;
+            if (result.count() < 0)
+                result += one_day;
+            return logical_value_t{r, core::date::time_t{result}};
+        }
+        // TIME_TZ - INTERVAL → TIME_TZ (wrap-around, preserve offset)
+        if (t1 == logical_type::TIME_TZ && t2 == logical_type::INTERVAL) {
+            const auto tz = value1.value<timetz_t>();
+            auto result = (tz.time - value2.value<interval_t>().time) % one_day;
+            if (result.count() < 0)
+                result += one_day;
+            return logical_value_t{r, timetz_t{result, tz.zone}};
+        }
+        // INTERVAL - INTERVAL → INTERVAL
+        if (t1 == logical_type::INTERVAL && t2 == logical_type::INTERVAL) {
+            const auto iv1 = value1.value<interval_t>();
+            const auto iv2 = value2.value<interval_t>();
+            return logical_value_t{r, interval_t{iv1.time - iv2.time, iv1.day - iv2.day, iv1.month - iv2.month}};
+        }
+        // DATE - DATE → INTERVAL (days component)
+        if (t1 == logical_type::DATE && t2 == logical_type::DATE) {
+            return logical_value_t{
+                r,
+                interval_t{microseconds{0}, value1.value<date_t>().value - value2.value<date_t>().value, months{0}}};
+        }
+        // TIMESTAMP/TZ - TIMESTAMP/TZ → INTERVAL (µs component)
+        if ((t1 == logical_type::TIMESTAMP || t1 == logical_type::TIMESTAMP_TZ) &&
+            (t2 == logical_type::TIMESTAMP || t2 == logical_type::TIMESTAMP_TZ)) {
+            const auto ts1 = (t1 == logical_type::TIMESTAMP) ? value1.value<timestamp_t>().value
+                                                             : value1.value<timestamptz_t>().value;
+            const auto ts2 = (t2 == logical_type::TIMESTAMP) ? value2.value<timestamp_t>().value
+                                                             : value2.value<timestamptz_t>().value;
+            return logical_value_t{r, interval_t{ts1 - ts2, days{0}, months{0}}};
+        }
+        // TIME - TIME → INTERVAL
+        if (t1 == logical_type::TIME && t2 == logical_type::TIME) {
+            return logical_value_t{
+                r,
+                interval_t{value1.value<core::date::time_t>().value - value2.value<core::date::time_t>().value,
+                           days{0},
+                           months{0}}};
+        }
+        // TIME_TZ - TIME_TZ → INTERVAL (UTC-normalized)
+        if (t1 == logical_type::TIME_TZ && t2 == logical_type::TIME_TZ) {
+            const auto tz1 = value1.value<timetz_t>();
+            const auto tz2 = value2.value<timetz_t>();
+            const auto utc1 = tz1.time - std::chrono::duration_cast<microseconds>(tz1.zone);
+            const auto utc2 = tz2.time - std::chrono::duration_cast<microseconds>(tz2.zone);
+            return logical_value_t{r, interval_t{utc1 - utc2, days{0}, months{0}}};
+        }
+        throw std::runtime_error("logical_value_t::subtract unable to process given types");
     }
 
     logical_value_t logical_value_t::mult(const logical_value_t& value1, const logical_value_t& value2) {
@@ -981,7 +1194,8 @@ namespace components::types {
         if (!value1.is_null() && !value2.is_null() && value1.type().type() != value2.type().type() &&
             is_numeric(value1.type().type()) && is_numeric(value2.type().type())) {
             auto promoted = promote_type(value1.type().type(), value2.type().type());
-            return mult(value1.cast_as(complex_logical_type(promoted)), value2.cast_as(complex_logical_type(promoted)));
+            return mult(value1.cast_as(complex_logical_type(promoted), place_holder_time_zone),
+                        value2.cast_as(complex_logical_type(promoted), place_holder_time_zone));
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
@@ -1013,8 +1227,53 @@ namespace components::types {
             case logical_type::DOUBLE:
                 return op<std::multiplies<>>(value1, value2, &logical_value_t::value<double>);
             default:
-                throw std::runtime_error("logical_value_t::mult unable to process given types");
+                break;
         }
+        auto* r = value1.resource() ? value1.resource() : value2.resource();
+        const auto t1 = value1.type().type();
+        const auto t2 = value2.type().type();
+        auto as_double = [](const logical_value_t& v) -> double {
+            switch (v.type().type()) {
+                case logical_type::TINYINT:
+                    return static_cast<double>(v.value<int8_t>());
+                case logical_type::UTINYINT:
+                    return static_cast<double>(v.value<uint8_t>());
+                case logical_type::SMALLINT:
+                    return static_cast<double>(v.value<int16_t>());
+                case logical_type::USMALLINT:
+                    return static_cast<double>(v.value<uint16_t>());
+                case logical_type::INTEGER:
+                    return static_cast<double>(v.value<int32_t>());
+                case logical_type::UINTEGER:
+                    return static_cast<double>(v.value<uint32_t>());
+                case logical_type::BIGINT:
+                    return static_cast<double>(v.value<int64_t>());
+                case logical_type::UBIGINT:
+                    return static_cast<double>(v.value<uint64_t>());
+                case logical_type::FLOAT:
+                    return static_cast<double>(v.value<float>());
+                case logical_type::DOUBLE:
+                    return v.value<double>();
+                default:
+                    return 0.0;
+            }
+        };
+        using namespace core::date;
+        // INTERVAL * numeric → INTERVAL
+        if (t1 == logical_type::INTERVAL && is_numeric(t2)) {
+            const double f = as_double(value2);
+            const auto iv = value1.value<interval_t>();
+            return logical_value_t{
+                r,
+                interval_t{microseconds{std::llround(static_cast<double>(iv.time.count()) * f)},
+                           days{static_cast<int32_t>(std::llround(static_cast<double>(iv.day.count()) * f))},
+                           months{static_cast<int32_t>(std::llround(static_cast<double>(iv.month.count()) * f))}}};
+        }
+        // numeric * INTERVAL → INTERVAL (commutative)
+        if (is_numeric(t1) && t2 == logical_type::INTERVAL) {
+            return logical_value_t::mult(value2, value1);
+        }
+        throw std::runtime_error("logical_value_t::mult unable to process given types");
     }
 
     logical_value_t logical_value_t::divide(const logical_value_t& value1, const logical_value_t& value2) {
@@ -1035,8 +1294,8 @@ namespace components::types {
         if (!value1.is_null() && !value2.is_null() && value1.type().type() != value2.type().type() &&
             is_numeric(value1.type().type()) && is_numeric(value2.type().type())) {
             auto promoted = promote_type(value1.type().type(), value2.type().type());
-            return divide(value1.cast_as(complex_logical_type(promoted)),
-                          value2.cast_as(complex_logical_type(promoted)));
+            return divide(value1.cast_as(complex_logical_type(promoted), place_holder_time_zone),
+                          value2.cast_as(complex_logical_type(promoted), place_holder_time_zone));
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
@@ -1068,8 +1327,49 @@ namespace components::types {
             case logical_type::DOUBLE:
                 return op<std::divides<>>(value1, value2, &logical_value_t::value<double>);
             default:
-                throw std::runtime_error("logical_value_t::divide unable to process given types");
+                break;
         }
+        // INTERVAL / numeric → INTERVAL
+        // (division by zero already handled above — value2 == zero returns null)
+        const auto t1 = value1.type().type();
+        const auto t2 = value2.type().type();
+        if (t1 == logical_type::INTERVAL && is_numeric(t2)) {
+            auto* r = value1.resource() ? value1.resource() : value2.resource();
+            const double f = [&]() -> double {
+                switch (t2) {
+                    case logical_type::TINYINT:
+                        return static_cast<double>(value2.value<int8_t>());
+                    case logical_type::UTINYINT:
+                        return static_cast<double>(value2.value<uint8_t>());
+                    case logical_type::SMALLINT:
+                        return static_cast<double>(value2.value<int16_t>());
+                    case logical_type::USMALLINT:
+                        return static_cast<double>(value2.value<uint16_t>());
+                    case logical_type::INTEGER:
+                        return static_cast<double>(value2.value<int32_t>());
+                    case logical_type::UINTEGER:
+                        return static_cast<double>(value2.value<uint32_t>());
+                    case logical_type::BIGINT:
+                        return static_cast<double>(value2.value<int64_t>());
+                    case logical_type::UBIGINT:
+                        return static_cast<double>(value2.value<uint64_t>());
+                    case logical_type::FLOAT:
+                        return static_cast<double>(value2.value<float>());
+                    case logical_type::DOUBLE:
+                        return value2.value<double>();
+                    default:
+                        return 0.0;
+                }
+            }();
+            using namespace core::date;
+            const auto iv = value1.value<interval_t>();
+            return logical_value_t{
+                r,
+                interval_t{microseconds{std::llround(static_cast<double>(iv.time.count()) / f)},
+                           days{static_cast<int32_t>(std::llround(static_cast<double>(iv.day.count()) / f))},
+                           months{static_cast<int32_t>(std::llround(static_cast<double>(iv.month.count()) / f))}}};
+        }
+        throw std::runtime_error("logical_value_t::divide unable to process given types");
     }
 
     logical_value_t logical_value_t::modulus(const logical_value_t& value1, const logical_value_t& value2) {
@@ -1080,8 +1380,8 @@ namespace components::types {
         if (!value1.is_null() && !value2.is_null() && value1.type().type() != value2.type().type() &&
             is_numeric(value1.type().type()) && is_numeric(value2.type().type())) {
             auto promoted = promote_type(value1.type().type(), value2.type().type());
-            return modulus(value1.cast_as(complex_logical_type(promoted)),
-                           value2.cast_as(complex_logical_type(promoted)));
+            return modulus(value1.cast_as(complex_logical_type(promoted), place_holder_time_zone),
+                           value2.cast_as(complex_logical_type(promoted), place_holder_time_zone));
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
@@ -1108,14 +1408,6 @@ namespace components::types {
                 return op<std::modulus<>>(value1, value2, &logical_value_t::value<int128_t>);
             case logical_type::UHUGEINT:
                 return op<std::modulus<>>(value1, value2, &logical_value_t::value<uint128_t>);
-            case logical_type::TIMESTAMP_SEC:
-                return op<std::modulus<>>(value1, value2, &logical_value_t::value<std::chrono::seconds>);
-            case logical_type::TIMESTAMP_MS:
-                return op<std::modulus<>>(value1, value2, &logical_value_t::value<std::chrono::milliseconds>);
-            case logical_type::TIMESTAMP_US:
-                return op<std::modulus<>>(value1, value2, &logical_value_t::value<std::chrono::microseconds>);
-            case logical_type::TIMESTAMP_NS:
-                return op<std::modulus<>>(value1, value2, &logical_value_t::value<std::chrono::nanoseconds>);
             default:
                 throw std::runtime_error("logical_value_t::divide unable to process given types");
         }
@@ -1497,6 +1789,20 @@ namespace components::types {
             return true;
         }
         return expected_type == actual_type;
+    }
+
+    bool enum_value_matches_string(const logical_value_t& enum_val, std::string_view target) {
+        const auto* ext = static_cast<const enum_logical_type_extension*>(enum_val.type().extension());
+        if (ext == nullptr) {
+            return false;
+        }
+        const auto stored = enum_val.value<int32_t>();
+        for (const auto& entry : ext->entries()) {
+            if (entry.value<int32_t>() == stored) {
+                return entry.type().alias() == target;
+            }
+        }
+        return false;
     }
 
 } // namespace components::types

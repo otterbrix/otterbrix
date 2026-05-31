@@ -142,11 +142,12 @@ namespace components::index {
     void index_engine_t::insert_row(const vector::data_chunk_t& chunk,
                                     size_t chunk_row,
                                     int64_t storage_row,
-                                    uint64_t txn_id) {
+                                    uint64_t txn_id,
+                                    core::date::timezone_offset_t local_timezone) {
         for (auto& index : storage_) {
             if (is_match_column(index, chunk)) {
                 auto key = get_value_by_index(index, chunk, chunk_row);
-                index->insert(key, storage_row, txn_id);
+                index->insert(key, storage_row, txn_id, local_timezone);
             }
         }
     }
@@ -154,11 +155,12 @@ namespace components::index {
     void index_engine_t::mark_delete_row(const vector::data_chunk_t& chunk,
                                          size_t chunk_row,
                                          int64_t storage_row,
-                                         uint64_t txn_id) {
+                                         uint64_t txn_id,
+                                         core::date::timezone_offset_t local_timezone) {
         for (auto& index : storage_) {
             if (is_match_column(index, chunk)) {
                 auto key = get_value_by_index(index, chunk, chunk_row);
-                index->mark_delete(key, storage_row, txn_id);
+                index->mark_delete(key, storage_row, txn_id, local_timezone);
             }
         }
     }

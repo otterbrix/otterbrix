@@ -5,11 +5,10 @@
 #include <charconv>
 #include <cstring>
 #include <fstream>
-#include <mutex>
 #include <iomanip>
-#include <sstream>
-#include <string_view>
+#include <mutex>
 #include <shared_mutex>
+#include <sstream>
 #include <stdexcept>
 #include <string_view>
 #include <vector>
@@ -290,13 +289,9 @@ namespace services::index {
         open_active_segment();
     }
 
-    bitcask_index_disk_t::~bitcask_index_disk_t() {
-        force_flush();
-    }
+    bitcask_index_disk_t::~bitcask_index_disk_t() { force_flush(); }
 
-    void bitcask_index_disk_t::enqueue_task(std::function<void()> task) {
-        task_executor_->enqueue(std::move(task));
-    }
+    void bitcask_index_disk_t::enqueue_task(std::function<void()> task) { task_executor_->enqueue(std::move(task)); }
 
     void bitcask_index_disk_t::initialize_storage() {
         if (!std::filesystem::exists(path_)) {
@@ -360,11 +355,7 @@ namespace services::index {
                 if (static_cast<record_kind_t>(header.kind) == record_kind_t::tombstone) {
                     erase_state(key);
                 } else if (static_cast<record_kind_t>(header.kind) == record_kind_t::value) {
-                    upsert_state(key,
-                                 rows,
-                                 keydir_entry_t{segment.id,
-                                                payload_offset,
-                                                header.timestamp});
+                    upsert_state(key, rows, keydir_entry_t{segment.id, payload_offset, header.timestamp});
                 } else {
                     break;
                 }
@@ -424,9 +415,7 @@ namespace services::index {
         write_current_segment_id(path_, active_segment_id_);
     }
 
-    uint64_t bitcask_index_disk_t::allocate_next_segment_id() {
-        return next_segment_id_.fetch_add(1);
-    }
+    uint64_t bitcask_index_disk_t::allocate_next_segment_id() { return next_segment_id_.fetch_add(1); }
 
     void bitcask_index_disk_t::rotate_active_segment() {
         force_flush_unlocked();
@@ -435,9 +424,7 @@ namespace services::index {
         active_segment_records_ = 0;
         active_data_file_path_ = segment_file_path(path_, active_segment_id_);
         open_active_segment();
-        enqueue_task([this]() {
-            merge_immutable_segments();
-        });
+        enqueue_task([this]() { merge_immutable_segments(); });
     }
 
     void bitcask_index_disk_t::rotate_active_segment_if_needed() {
@@ -525,10 +512,9 @@ namespace services::index {
             const auto offset = merged_file->seek_position();
             write_record(*merged_file, static_cast<uint8_t>(record_kind_t::value), entry.timestamp, payload);
 
-            updated_entries.emplace(value_t(resource_, key),
-                                    keydir_entry_t{merged_segment_id,
-                                                   offset + sizeof(record_header_t),
-                                                   entry.timestamp});
+            updated_entries.emplace(
+                value_t(resource_, key),
+                keydir_entry_t{merged_segment_id, offset + sizeof(record_header_t), entry.timestamp});
         }
 
         merged_file->sync();
@@ -576,11 +562,7 @@ namespace services::index {
 
         write_record(*file_, static_cast<uint8_t>(record_kind_t::value), ++next_timestamp_, payload);
 
-        upsert_state(key,
-                     rows,
-                     keydir_entry_t{active_segment_id_,
-                                    offset + sizeof(record_header_t),
-                                    next_timestamp_});
+        upsert_state(key, rows, keydir_entry_t{active_segment_id_, offset + sizeof(record_header_t), next_timestamp_});
         ++active_segment_records_;
     }
 

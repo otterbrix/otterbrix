@@ -167,8 +167,7 @@ TEST_CASE("integration::cpp::correctness_bugs::star_prefix") {
 
         {
             auto session = otterbrix::session_id_t();
-            auto cur =
-                dispatcher->execute_sql(session, "SELECT t.x.* FROM t.x INNER JOIN t.y ON t.x.id=t.y.id;");
+            auto cur = dispatcher->execute_sql(session, "SELECT t.x.* FROM t.x INNER JOIN t.y ON t.x.id=t.y.id;");
             INFO("table-qualified star error: " << (cur->is_error() ? cur->get_error().what : "none"));
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
@@ -239,16 +238,16 @@ TEST_CASE("integration::cpp::correctness_bugs::count_case_no_else") {
     }
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher
-                    ->execute_sql(session,
-                                  "INSERT INTO t.x (status) VALUES ('paid'),('paid'),('paid'),('cancelled'),('cancelled');")
-                    ->is_success());
+        REQUIRE(
+            dispatcher
+                ->execute_sql(session,
+                              "INSERT INTO t.x (status) VALUES ('paid'),('paid'),('paid'),('cancelled'),('cancelled');")
+                ->is_success());
     }
 
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(
-            session, "SELECT COUNT(CASE WHEN status='paid' THEN 1 END) AS n FROM t.x;");
+        auto cur = dispatcher->execute_sql(session, "SELECT COUNT(CASE WHEN status='paid' THEN 1 END) AS n FROM t.x;");
         INFO("COUNT(CASE) error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
@@ -258,8 +257,8 @@ TEST_CASE("integration::cpp::correctness_bugs::count_case_no_else") {
 
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(
-            session, "SELECT SUM(CASE WHEN status='paid' THEN 1 ELSE 0 END) AS n FROM t.x;");
+        auto cur =
+            dispatcher->execute_sql(session, "SELECT SUM(CASE WHEN status='paid' THEN 1 ELSE 0 END) AS n FROM t.x;");
         INFO("SUM(CASE) error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
@@ -325,8 +324,8 @@ TEST_CASE("integration::cpp::correctness_bugs::min_max_avg_case_no_else") {
 
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           "SELECT MIN(CASE WHEN score >= 70 THEN score ELSE 999999 END) FROM t.y;");
+        auto cur =
+            dispatcher->execute_sql(session, "SELECT MIN(CASE WHEN score >= 70 THEN score ELSE 999999 END) FROM t.y;");
         INFO("baseline MIN(CASE ELSE) error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
@@ -356,8 +355,10 @@ TEST_CASE("integration::cpp::correctness_bugs::enum_scan_predicate") {
     }
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "INSERT INTO t.e (n, kind) VALUES (1,'odd'),(2,'even'),(3,'odd'),(4,'even');")
-                    ->is_success());
+        REQUIRE(
+            dispatcher
+                ->execute_sql(session, "INSERT INTO t.e (n, kind) VALUES (1,'odd'),(2,'even'),(3,'odd'),(4,'even');")
+                ->is_success());
     }
 
     SECTION("6a scan-pushed STRING compare to ENUM") {
@@ -378,8 +379,8 @@ TEST_CASE("integration::cpp::correctness_bugs::enum_scan_predicate") {
 
     SECTION("6c JOIN baseline") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(
-            session, "SELECT a.* FROM t.e a INNER JOIN t.e b ON a.n=b.n WHERE a.kind='even';");
+        auto cur =
+            dispatcher->execute_sql(session, "SELECT a.* FROM t.e a INNER JOIN t.e b ON a.n=b.n WHERE a.kind='even';");
         INFO("6c error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);

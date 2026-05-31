@@ -7,9 +7,9 @@
 #include <actor-zeta/detail/future.hpp>
 
 #include "index_agent_disk.hpp"
-#include "index_result.hpp"
 
 #include <core/executor.hpp>
+#include <core/result_wrapper.hpp>
 
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
@@ -54,7 +54,7 @@ namespace services::index {
     //   only fire for oids that have not yet been migrated (e.g. runtime
     //   CREATE TABLE before its agent gets spawned).
     //
-    // Block D Pass 9 dec 2 + dec 46: search / search_with_preferred_type /
+    // + dec 46: search / search_with_preferred_type /
     // has_index hot-path handlers are now declared here and routed through
     // manager_index_t::enqueue_impl delegation forward (Option D mailbox). Like
     // the DML handlers, their bodies are no-op stubs (empty vector / false)
@@ -63,11 +63,11 @@ namespace services::index {
     // via the empty-result fallback in the router (see manager_index.cpp
     // ::search and ::has_index).
     //
-    // Block D Step 4: get_indexed_keys / get_indexed_descriptions metadata-read
+    // get_indexed_keys / get_indexed_descriptions metadata-read
     // handlers are also declared here and routed via per_table_agents_ with the
     // same empty-vector fallback pattern as search/has_index.
     //
-    // Block D DDL routing: create_index_local / drop_index_local /
+    // DDL routing: create_index_local / drop_index_local /
     // apply_wal_record_for_index_local now live here as well. The manager-side
     // create_index / drop_index / apply_wal_record_for_index handlers forward
     // to the agent when per_table_agents_ has an entry; they fall back to
@@ -98,7 +98,7 @@ namespace services::index {
         // for the engine ownership migration path.
         void set_engine_sync(components::index::index_engine_t* engine) noexcept { engine_ptr_ = engine; }
 
-        // Block D Final cleanup — engine ownership migration entry point.
+        // Final cleanup — engine ownership migration entry point.
         // Direct (non-mailbox) call, valid only during base_spaces Phase 3.5
         // before scheduler start. Transfers ownership of the per-table
         // index_engine_t to this agent: engine_owned_ takes the unique_ptr and
@@ -118,7 +118,7 @@ namespace services::index {
             engine_ptr_ = engine_owned_.get();
         }
 
-        // Block D DDL routing — direct (non-mailbox) bootstrap setter for the
+        // DDL routing — direct (non-mailbox) bootstrap setter for the
         // disk-spawn configuration required by create_index_local / drop_index_local.
         // base_spaces Phase 3.5 invokes this right after set_engine_owned_sync so
         // every agent leaves bootstrap ready to handle DDL traffic for its oid.
@@ -167,10 +167,11 @@ namespace services::index {
                                         std::pmr::vector<int64_t> row_ids,
                                         int64_t new_start_row_id);
 
-        // MVCC commit/revert.
-        unique_future<result_t>
+        // MVCC commit/revert. core::error_t is returned directly
+        // (no_error() = success, contains_error() = failure).
+        unique_future<core::error_t>
         commit_insert(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id);
-        unique_future<result_t>
+        unique_future<core::error_t>
         commit_delete(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id);
         unique_future<void> revert_insert(execution_context_t ctx, components::catalog::oid_t table_oid);
 
@@ -208,7 +209,7 @@ namespace services::index {
         unique_future<bool>
         has_index(session_id_t session, components::catalog::oid_t table_oid, index_name_t index_name);
 
-        // Block D Step 4 — index metadata-read handlers. Same mailbox-routed
+        // index metadata-read handlers. Same mailbox-routed
         // shape as search/has_index: manager_index forwards via per_table_agents_
         // when an agent is registered, takes the agent answer when non-empty,
         // and otherwise falls through to its engines_ body. Bodies are stubs
@@ -221,7 +222,7 @@ namespace services::index {
         unique_future<std::pmr::vector<components::index::index_description_t>>
         get_indexed_descriptions(session_id_t session, components::catalog::oid_t table_oid);
 
-        // Block D Step 6 (Pass 9 Variant 2) — per-table maintenance handlers.
+        // (Pass 9 Variant 2) — per-table maintenance handlers.
         // The broadcast wrappers on manager_index_t (cleanup_all_versions /
         // flush_all_indexes) fan one of these messages out per registered
         // per-table agent and collect their futures; rebuild_indexes is the
@@ -241,7 +242,7 @@ namespace services::index {
         unique_future<void> flush_indexes(session_id_t session,
                                           components::catalog::oid_t table_oid);
 
-        // Block D DDL routing — per-table DDL handlers. The regression closed
+        // DDL routing — per-table DDL handlers. The regression closed
         // here: after engine ownership migration (Phase 3.5), manager_index_t::
         // engines_ has no entry for bootstrap-bound oids, so the legacy
         // engines_-based DDL bodies on manager fall through silently for every
@@ -305,7 +306,7 @@ namespace services::index {
         log_t log_;
         components::catalog::oid_t table_oid_;
 
-        // Block D Final cleanup — engine ownership migration.
+        // Final cleanup — engine ownership migration.
         //
         // engine_owned_ is the agent's owned index_engine_t (populated by
         // set_engine_owned_sync during base_spaces Phase 3.5). When held, it is
@@ -330,7 +331,7 @@ namespace services::index {
         components::index::index_engine_ptr engine_owned_;
         components::index::index_engine_t* engine_ptr_{nullptr};
 
-        // Block D DDL routing — per-table disk-agent config + storage.
+        // DDL routing — per-table disk-agent config + storage.
         // path_db_/threshold fields mirror the manager_index_t::* values; they
         // are populated once by set_disk_config_sync during base_spaces
         // Phase 3.5 bootstrap and stay immutable for the agent's lifetime.
@@ -344,7 +345,7 @@ namespace services::index {
         actor_zeta::scheduler_raw scheduler_{nullptr};
         std::vector<index_agent_disk_ptr> disk_agents_;
 
-        // Block D DDL routing — small helper mirroring manager_index_t::
+        // DDL routing — small helper mirroring manager_index_t::
         // schedule_agent. Walks disk_agents_ and calls scheduler_->enqueue on
         // the matching disk actor when needs_sched is true. No-op when the
         // address is no longer in disk_agents_ (already dropped) or when the

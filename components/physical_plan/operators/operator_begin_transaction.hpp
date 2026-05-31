@@ -4,7 +4,7 @@
 
 namespace components::operators {
 
-    // BEGIN / START TRANSACTION operator (Block C §3.5 dec 22 Central accumulation).
+    // BEGIN / START TRANSACTION operator.
     //
     // Synchronous: looks up or starts the session's transaction via
     // ctx->txn_manager->begin_transaction (idempotent — returns the existing

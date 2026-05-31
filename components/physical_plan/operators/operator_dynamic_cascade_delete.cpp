@@ -110,7 +110,7 @@ namespace components::operators {
 
         constexpr catalog::oid_t kPgDepend = catalog::well_known_oid::pg_depend_table;
 
-        // Step 1 — async BFS over pg_depend(refclassid, refobjid). The walk
+        // async BFS over pg_depend(refclassid, refobjid). The walk
         // is identical to the four copies in services/dispatcher/ddl.cpp
         // (drop_database / drop_collection / drop_sequence|view|macro).
         //
@@ -162,7 +162,7 @@ namespace components::operators {
             dep_graph.insert_or_assign(k, std::move(deps));
         }
 
-        // Step 2 — feed the closure into catalog::plan_drop. For RESTRICT,
+        // feed the closure into catalog::plan_drop. For RESTRICT,
         // plan_drop returns immediately with status=restrict_blocked when a
         // 'n' (normal external) dependency is present. For CASCADE it
         // computes the topological drop order; cycles are surfaced via
@@ -203,7 +203,7 @@ namespace components::operators {
             co_return;
         }
 
-        // Step 3 — for every pg_class object we are about to drop that
+        // for every pg_class object we are about to drop that
         // backs an actual table (relkind='r'/'g'), record the table_oid
         // BEFORE we delete its pg_class row. The pg_class scan happens
         // here (rather than after the deletes) because once the row is
@@ -251,7 +251,7 @@ namespace components::operators {
             pending_storage_drops.push_back({step.objid});
         }
 
-        // Step 4 — execute the catalog-row deletes in the planned order.
+        // execute the catalog-row deletes in the planned order.
         // Over-deletion is safe: scans that find no matching rows for a
         // given (table, col, oid) tuple are silent no-ops. This matches
         // build_drop_sequence's behaviour in the old dispatcher path.
@@ -269,15 +269,15 @@ namespace components::operators {
             }
         }
 
-        // Step 5 — for each table we identified above, drop the on-disk
+        // for each table we identified above, drop the on-disk
         // storage and unregister the in-memory index entry. Order matters:
         //   (a) mark_table_dropped / mark_storage_dropped record the (oid,
         //       commit_id) pairs into manager_index_t::dropped_table_agents_
         //       and the per-agent dropped_storages_ slices owned by
-        //       agent_disk_t (Version B* Step 8.11: manager-side mirror
-        //       deleted; mark_storage_dropped routes the entry into the
-        //       owning agent slice) for the next horizon-advance GC sweep
-        //       (dec 33 V1). They must run BEFORE unregister_collection /
+        //       agent_disk_t (the manager-side mirror is deleted;
+        //       mark_storage_dropped routes the entry into the owning agent
+        //       slice) for the next horizon-advance GC sweep.
+        //       They must run BEFORE unregister_collection /
         //       drop_storage because mark_storage_dropped reads the live
         //       storages_ entry to derive the .otbx path + sidecars — once
         //       drop_storage erases that entry the path is lost.
@@ -287,11 +287,11 @@ namespace components::operators {
         //       the storage actor frees it.
         // We pass ctx->txn.transaction_id as the dropped_at_commit_id. The
         // real post-commit id is not known at execute time; the txn_id is a
-        // monotone upper-bound that the dec 33 GC predicate
+        // monotone upper-bound that the GC predicate
         // (dropped_at < new_horizon) treats correctly — the horizon eventually
         // crosses the txn_id once all snapshots that started before this DROP
         // have closed. For txn=0 (auto-commit / bootstrap path) we record 0,
-        // matching the dec 37 V1 catalog scan rebuild convention.
+        // matching the catalog scan rebuild convention.
         const uint64_t dropped_at = ctx->txn.transaction_id;
         bool any_storage_drop = false;
         for (auto& sd : pending_storage_drops) {
@@ -322,7 +322,7 @@ namespace components::operators {
             co_await std::move(dsf);
         }
 
-        // Step 6 — flip the dispatcher's selective-broadcast flags so the next
+        // flip the dispatcher's selective-broadcast flags so the next
         // horizon advance fans on_horizon_advanced out to disk + index, which
         // drain the dropped_storages_ / dropped_table_agents_ queues we just
         // populated. Fire-and-forget: dispatcher acks the receipt by setting

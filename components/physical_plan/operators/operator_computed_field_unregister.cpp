@@ -54,7 +54,7 @@ namespace components::operators {
         // attoid (the pre-existing attoid path remains a fast path for
         // callers that do stamp it).
 
-        // Step 1: scan pg_computed_column rows for this relid (table is small
+        // scan pg_computed_column rows for this relid (table is small
         // per-table, perf OK), filter by attoid in-callback. Cannot read by
         // attoid alone because the same logical (relid, attoid) row may have
         // multiple version entries; we still need max(attversion).
@@ -73,7 +73,7 @@ namespace components::operators {
                                          std::move(r_vals));
         auto rows = co_await std::move(rf);
 
-        // Step 2: pick the latest live row matching attoid_ (max attversion AND attrefcount > 0).
+        // pick the latest live row matching attoid_ (max attversion AND attrefcount > 0).
         std::int64_t max_version = -1;
         catalog::oid_t live_attoid = catalog::INVALID_OID;
         catalog::oid_t live_atttypid = catalog::INVALID_OID;
@@ -113,7 +113,7 @@ namespace components::operators {
             co_return;
         }
 
-        // Step 3: append a tombstone row (same attoid + same atttypid, version =
+        // append a tombstone row (same attoid + same atttypid, version =
         // max + 1, refcount = 0). Reusing the live attoid keeps any pg_depend
         // attrefs valid; the reader filters this row out via the refcount<=0
         // gate.

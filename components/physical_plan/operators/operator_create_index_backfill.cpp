@@ -36,7 +36,7 @@ namespace components::operators {
             co_return;
         }
 
-        // Step 1 + 2: ensure the engine knows about the collection, then create
+        // + 2: ensure the engine knows about the collection, then create
         // the index entry. register_collection is idempotent.
         auto [_rc, rcf] = actor_zeta::send(ctx->index_address,
                                            &services::index::manager_index_t::register_collection,
@@ -60,7 +60,7 @@ namespace components::operators {
             co_return;
         }
 
-        // Block F (Pass 11): WAL retention guard. Capture build_start_wal_position
+        // WAL retention guard. Capture build_start_wal_position
         // (current wal_id) and register it with manager_wal_replicate so a
         // concurrent checkpoint+truncate cannot drop records the Phase 2.5
         // catchup loop still needs. We route through the mailbox (rule 11: the
@@ -87,7 +87,7 @@ namespace components::operators {
             build_start_registered = true;
         }
 
-        // Step 3: backfill — scan table contents and feed them into the index.
+        // backfill — scan table contents and feed them into the index.
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             auto [_tr, trf] = actor_zeta::send(ctx->disk_address,
                                                &services::disk::manager_disk_t::storage_total_rows,
@@ -126,7 +126,7 @@ namespace components::operators {
                     // committed data rows to the CREATE INDEX commit_id, which
                     // is harmless when no concurrent reader sits between the
                     // INSERT and the CREATE INDEX commits (typical case).
-                    // Phase 2.5 (dec 31 V1.a) now handles this via catchup loop below; see TODO V1.c for WAL-based path.
+                    // Phase 2.5 now handles this via catchup loop below; see TODO for WAL-based path.
                     ctx->dml_append_row_start = 0;
                     ctx->dml_append_row_count = count;
                     ctx->dml_table_oid = table_oid_;
@@ -134,10 +134,10 @@ namespace components::operators {
             }
         }
 
-        // Block C §3.5 dec 31 V1.c CREATE INDEX Phase 2.5 bounded-retry catchup.
+        // c CREATE INDEX Phase 2.5 bounded-retry catchup.
         // Snapshot scan (Phase 2) may have missed rows committed concurrently with
         // the build. We scan WAL records produced after build_start_wal_position
-        // (captured at Phase 2 start, retention-guarded by Block F) and re-apply
+        // (captured at Phase 2 start, retention-guarded by WAL) and re-apply
         // every PHYSICAL_{INSERT,DELETE,UPDATE} targeting this build's table_oid
         // to the in-memory index. Bounded retry guards against pathological
         // high-write workloads that never quiesce; each iteration advances
@@ -304,11 +304,11 @@ namespace components::operators {
             catchup_start_wal = max_wal_id_seen;
         }
         if (!converged) {
-            // Block C §3.5 dec 31 V1.a graceful-fail path: emit a typed error
+            // a graceful-fail path: emit a typed error
             // cursor via the operator's existing set_error helper and co_return.
-            // dec 34 V3+V1 expedited cleanup runs because ready_since=0 — index
+            // +V1 expedited cleanup runs because ready_since=0 — index
             // never published, no snapshot ever referenced it, safe to GC.
-            // Block F (Pass 11): release the WAL retention guard before exiting
+            // release the WAL retention guard before exiting
             // so the next checkpoint can truncate freely.
             if (build_start_registered) {
                 auto [_u, uf] = actor_zeta::send(ctx->wal_address,
@@ -323,12 +323,12 @@ namespace components::operators {
                 std::pmr::string{
                     "CREATE INDEX failed to converge after MAX_CATCHUP_ITERATIONS "
                     "on high-write table. Retry during low-traffic window. "
-                    "Future: CREATE INDEX CONCURRENTLY (WAL-based, dec 31 V1.c).",
+                    "Future: CREATE INDEX CONCURRENTLY (WAL-based).",
                     resource_}});
             co_return;
         }
 
-        // Block F (Pass 11): catchup converged — release retention guard. We do
+        // catchup converged — release retention guard. We do
         // this BEFORE the pg_index flip / mark_executed so a later truncate
         // after this operator returns is unblocked. The flip step below only
         // touches the catalog, not the WAL records we were protecting.
@@ -341,7 +341,7 @@ namespace components::operators {
             build_start_registered = false;
         }
 
-        // Step 4: flip pg_index.indisvalid → true. The metadata operator wrote
+        // flip pg_index.indisvalid → true. The metadata operator wrote
         // an indisvalid=false row earlier; replace it now that the engine is
         // populated. Skipping is safe if we have no disk actor (test harness).
         if (ctx->disk_address != actor_zeta::address_t::empty_address() &&

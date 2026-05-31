@@ -18,7 +18,7 @@ TEST_CASE("components::table::transaction_manager::begin_commit") {
     REQUIRE(txn.session() == session);
 
     auto commit_id = mgr.commit(session);
-    mgr.publish(commit_id);  // Block E ProcArray barrier
+    mgr.publish(commit_id);
     REQUIRE(commit_id > 0);
     REQUIRE(!mgr.has_active_transaction(session));
 }
@@ -54,12 +54,12 @@ TEST_CASE("components::table::transaction_manager::two_sessions_independent") {
     REQUIRE(mgr.has_active_transactions());
 
     auto cid1 = mgr.commit(s1);
-    mgr.publish(cid1);  // Block E ProcArray barrier
+    mgr.publish(cid1);
     REQUIRE(mgr.has_active_transaction(s2));
     REQUIRE(!mgr.has_active_transaction(s1));
 
     auto cid2 = mgr.commit(s2);
-    mgr.publish(cid2);  // Block E ProcArray barrier
+    mgr.publish(cid2);
     REQUIRE(!mgr.has_active_transactions());
 }
 
@@ -77,7 +77,7 @@ TEST_CASE("components::table::transaction_manager::find_transaction") {
     REQUIRE(mgr.find_transaction(missing) == nullptr);
 
     auto cid = mgr.commit(session);
-    mgr.publish(cid);  // Block E ProcArray barrier
+    mgr.publish(cid);
     REQUIRE(mgr.find_transaction(session) == nullptr);
 }
 
@@ -99,7 +99,7 @@ TEST_CASE("components::table::transaction_manager::lowest_active_start_time") {
     REQUIRE(mgr.lowest_active_start_time() == t1);
 
     auto cid = mgr.commit(s1);
-    mgr.publish(cid);  // Block E ProcArray barrier
+    mgr.publish(cid);
     REQUIRE(mgr.lowest_active_start_time() > t1);
 }
 
@@ -116,7 +116,7 @@ TEST_CASE("components::table::transaction_manager::id_monotonicity") {
         REQUIRE(txn.transaction_id() > prev_id);
         prev_id = txn.transaction_id();
         auto cid = mgr.commit(session);
-        mgr.publish(cid);  // Block E ProcArray barrier
+        mgr.publish(cid);
     }
 }
 
@@ -139,5 +139,5 @@ TEST_CASE("components::table::transaction_manager::append_tracking") {
     REQUIRE(txn.appends()[1].count == 50);
 
     auto cid = mgr.commit(session);
-    mgr.publish(cid);  // Block E ProcArray barrier
+    mgr.publish(cid);
 }

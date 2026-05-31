@@ -8,7 +8,7 @@
 
 namespace components::operators {
 
-    // dec 22 explicit BEGIN..COMMIT — abort-on-statement-error semantics:
+    // explicit BEGIN..COMMIT — abort-on-statement-error semantics:
     //
     // When any DML statement INSIDE an explicit txn fails (cursor returns error),
     // the executor's abort path runs storage_revert_append + revert_insert +
@@ -24,8 +24,8 @@ namespace components::operators {
     //     advance
     //
     // This matches Postgres semantics (the entire txn is rolled back observably,
-    // residual dead rows are VACUUM-eligible). Constraint #6 (no fallback): the
-    // executor's abort path handles cleanup explicitly via revert_append +
+    // residual dead rows are VACUUM-eligible). No fallback: the executor's
+    // abort path handles cleanup explicitly via revert_append +
     // revert_insert — no silent "leave data in place" hack.
     //
     // ROLLBACK (TRANS_STMT_ROLLBACK) goes through operator_abort_transaction_t
@@ -52,9 +52,9 @@ namespace components::operators {
                 co_await std::move(ff);
             }
             if (ctx->wal_address != actor_zeta::address_t::empty_address() && txn_id_ != 0) {
-                // Block F (Pass 9 dec 47): commit_id isn't allocated yet — the
-                // DDL-commit prefix writes the WAL marker BEFORE mgr.commit()
-                // returns it. Pass 0 here; the canonical COMMIT record carrying
+                // commit_id isn't allocated yet — the DDL-commit prefix writes
+                // the WAL marker BEFORE mgr.commit() returns it. Pass 0 here;
+                // the canonical COMMIT record carrying
                 // the real commit_id is written by the executor commit-phase
                 // path (services/collection/executor.cpp).
                 auto [_c, cf] = actor_zeta::send(ctx->wal_address,
@@ -78,12 +78,11 @@ namespace components::operators {
             txn_t ? txn_t->data() : components::table::transaction_data{0, 0};
         std::vector<components::pg_catalog_append_range_t> swap_appends;
         std::set<components::catalog::oid_t> swap_deletes;
-        // Block C §3.5 dec 32 V2 OPTION X: drained pg_attribute commit_id
         // backfill markers (added by operator_alter_column_{add,drop,rename}
         // and accumulated onto transaction_t by the executor's explicit-txn
         // branch). Patched after commit_id_ is allocated below.
         std::vector<components::pg_attribute_commit_id_backfill_t> swap_backfills;
-        // Block C §3.5 dec 22 Central accumulation: drain the explicit-txn
+        // Central accumulation: drain the explicit-txn
         // base-table DML ranges parked by the executor commit phase. These
         // are batched into storage_publish_* alongside the pg_catalog ranges
         // BEFORE the ProcArray publish() barrier so the flip is atomic from
@@ -92,7 +91,7 @@ namespace components::operators {
         std::vector<components::pg_catalog_append_range_t> base_appends;
         std::set<components::catalog::oid_t> base_delete_tables;
         if (txn_t) {
-            // Block C §3.5 dec 22 EXTENSION — pg_catalog accumulation API.
+            // EXTENSION — pg_catalog accumulation API.
             // drain_pg_catalog_pending wraps the move-out + clear of the
             // pg_catalog_appends / pg_catalog_delete_tables fields. The
             // explicit-txn branch in services/collection/executor.cpp parks
@@ -120,11 +119,10 @@ namespace components::operators {
             }
         }
 
-        // Step 2: commit the transaction in the txn_manager. Synchronous —
+        // commit the transaction in the txn_manager. Synchronous —
         // returns the commit_id used to flip MVCC on pg_catalog appends.
         commit_id_ = tm ? tm->commit(ctx->session) : 0;
 
-        // Block C §3.5 dec 32 V2 OPTION X — pg_attribute commit_id backfill.
         // operator_alter_column_{add,drop,rename} stamp pg_attribute rows
         // with added_at_commit_id = dropped_at_commit_id = 0 at execute time
         // (commit_id is not allocated until tm->commit(ctx->session) on the
@@ -159,10 +157,10 @@ namespace components::operators {
                   commit_id_);
         }
 
-        // Step 3: flip MVCC state on pg_catalog rows appended/deleted under this
+        // flip MVCC state on pg_catalog rows appended/deleted under this
         // explicit transaction. Uses the batched APIs that consume the
-        // per-txn swap-info aggregated by the dispatcher. Block C §3.5 dec 22:
-        // the same batched APIs also flush the explicit-txn base-table DML
+        // per-txn swap-info aggregated by the dispatcher. The same batched APIs
+        // also flush the explicit-txn base-table DML
         // ranges drained above — one publish_commits / publish_deletes call
         // per category covers all tables touched between BEGIN and COMMIT.
         if (txn_data.transaction_id != 0 && commit_id_ > 0 &&
@@ -202,7 +200,7 @@ namespace components::operators {
             }
         }
 
-        // Step 4: Block E ProcArray publish barrier (Pass 9 dec 46). Moves the
+        // ProcArray publish barrier. Moves the
         // commit_id out of in_flight_commits_ and advances published_horizon_,
         // so subsequent snapshots see this txn as visible. Must run after
         // storage_publish_commits / storage_publish_deletes so reading any
@@ -211,7 +209,7 @@ namespace components::operators {
             tm->publish(commit_id_);
         }
 
-        // dec 22 explicit BEGIN..COMMIT durability: emit WAL commit_txn marker
+        // explicit BEGIN..COMMIT durability: emit WAL commit_txn marker
         // for the explicit txn. DDL-commit branch already emits at lines 32-44;
         // skip if that path ran.
         if (!is_ddl_commit_ && ctx->wal_address != actor_zeta::address_t::empty_address() &&

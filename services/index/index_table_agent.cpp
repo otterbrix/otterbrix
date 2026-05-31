@@ -21,7 +21,7 @@
 namespace {
     using namespace core::b_plus_tree;
 
-    // Block D DDL routing — local copies of the btree key/id getters used by
+    // DDL routing — local copies of the btree key/id getters used by
     // create_index_local's persistent-storage replay. Mirrors the anon-namespace
     // helpers in manager_index.cpp so the agent body can stay self-contained;
     // both copies are byte-equivalent and operate on the same on-disk format.
@@ -152,7 +152,7 @@ namespace services::index {
     }
 
     // ---------------------------------------------------------------------------
-    // Block D Final cleanup — engine_ptr_ guard dispatch.
+    // Final cleanup — engine_ptr_ guard dispatch.
     //
     // Each handler is structured around a guard on engine_ptr_:
     //   * engine_ptr_ == nullptr  -> no-op success (un-migrated oid: agent was
@@ -176,7 +176,7 @@ namespace services::index {
                                      uint64_t start_row_id,
                                      uint64_t count) {
         if (engine_ptr_ == nullptr) {
-            // Block D engine ownership migration not yet activated for this oid.
+            // engine ownership migration not yet activated for this oid.
             // Returning success preserves the existing feature-flag fallback in
             // manager_index — manager handles DML through its own engines_ entry.
             trace(log_,
@@ -184,7 +184,7 @@ namespace services::index {
                   static_cast<unsigned>(table_oid_));
             co_return;
         }
-        // Block D engine_ptr_ branch — mirror of manager_index_t::insert_rows
+        // engine_ptr_ branch — mirror of manager_index_t::insert_rows
         // body (lines 628-636). The manager router already early-returns after
         // forwarding to the agent (manager_index.cpp::insert_rows), so this is
         // the sole writer for the engine when an agent is registered — no
@@ -211,7 +211,7 @@ namespace services::index {
                                      std::unique_ptr<components::vector::data_chunk_t> data,
                                      std::pmr::vector<int64_t> row_ids) {
         if (engine_ptr_ == nullptr) {
-            // Block D engine ownership migration not yet activated for this oid.
+            // engine ownership migration not yet activated for this oid.
             // Returning success preserves the existing feature-flag fallback in
             // manager_index — manager handles DML through its own engines_ entry.
             trace(log_,
@@ -219,7 +219,7 @@ namespace services::index {
                   static_cast<unsigned>(table_oid_));
             co_return;
         }
-        // Block D engine_ptr_ branch — mirror of manager_index_t::delete_rows
+        // engine_ptr_ branch — mirror of manager_index_t::delete_rows
         // body (lines 662-670). Manager router already early-returns after
         // forwarding to the agent, so this is the sole writer when an agent is
         // registered — no double-work risk.
@@ -243,7 +243,7 @@ namespace services::index {
                                      std::pmr::vector<int64_t> row_ids,
                                      int64_t new_start_row_id) {
         if (engine_ptr_ == nullptr) {
-            // Block D engine ownership migration not yet activated for this oid.
+            // engine ownership migration not yet activated for this oid.
             // Returning success preserves the existing feature-flag fallback in
             // manager_index — manager handles DML through its own engines_ entry.
             trace(log_,
@@ -251,7 +251,7 @@ namespace services::index {
                   static_cast<unsigned>(table_oid_));
             co_return;
         }
-        // Block D engine_ptr_ branch — mirror of manager_index_t::update_rows
+        // engine_ptr_ branch — mirror of manager_index_t::update_rows
         // body (lines 700-715). Manager router already early-returns after
         // forwarding to the agent, so this is the sole writer when an agent is
         // registered — no double-work risk. No disk mirroring: uncommitted
@@ -275,20 +275,20 @@ namespace services::index {
         co_return;
     }
 
-    index_table_agent_t::unique_future<result_t>
+    index_table_agent_t::unique_future<core::error_t>
     index_table_agent_t::commit_insert(execution_context_t ctx,
                                        components::catalog::oid_t /*table_oid*/,
                                        uint64_t commit_id) {
         if (engine_ptr_ == nullptr) {
-            // Block D engine ownership migration not yet activated for this oid.
+            // engine ownership migration not yet activated for this oid.
             // Returning success preserves the existing feature-flag fallback in
             // manager_index — manager handles DML through its own engines_ entry.
             trace(log_,
                   "index_table_agent::commit_insert[{}] engine not bound; no-op",
                   static_cast<unsigned>(table_oid_));
-            co_return result_t::success();
+            co_return core::error_t::no_error();
         }
-        // Block D follow-up wiring — in-memory MVCC flip via engine_ptr_.
+        // follow-up wiring — in-memory MVCC flip via engine_ptr_.
         // Disk persistence fanout (for_each_pending_disk_insert ->
         // index_agent_disk_t batched insert_many) is still owned by
         // manager_index_t::commit_insert because the disk_agents lifetime
@@ -307,23 +307,23 @@ namespace services::index {
               static_cast<unsigned>(table_oid_),
               txn_id,
               commit_id);
-        co_return result_t::success();
+        co_return core::error_t::no_error();
     }
 
-    index_table_agent_t::unique_future<result_t>
+    index_table_agent_t::unique_future<core::error_t>
     index_table_agent_t::commit_delete(execution_context_t ctx,
                                        components::catalog::oid_t /*table_oid*/,
                                        uint64_t commit_id) {
         if (engine_ptr_ == nullptr) {
-            // Block D engine ownership migration not yet activated for this oid.
+            // engine ownership migration not yet activated for this oid.
             // Returning success preserves the existing feature-flag fallback in
             // manager_index — manager handles DML through its own engines_ entry.
             trace(log_,
                   "index_table_agent::commit_delete[{}] engine not bound; no-op",
                   static_cast<unsigned>(table_oid_));
-            co_return result_t::success();
+            co_return core::error_t::no_error();
         }
-        // Block D follow-up wiring — in-memory MVCC flip via engine_ptr_.
+        // follow-up wiring — in-memory MVCC flip via engine_ptr_.
         // Same disk-fanout deferral as commit_insert: the
         // for_each_pending_disk_delete -> index_agent_disk_t batched
         // remove_many step stays with manager_index until disk_agents
@@ -340,14 +340,14 @@ namespace services::index {
               static_cast<unsigned>(table_oid_),
               txn_id,
               commit_id);
-        co_return result_t::success();
+        co_return core::error_t::no_error();
     }
 
     index_table_agent_t::unique_future<void>
     index_table_agent_t::revert_insert(execution_context_t ctx,
                                        components::catalog::oid_t /*table_oid*/) {
         if (engine_ptr_ == nullptr) {
-            // Block D engine ownership migration not yet activated for this oid.
+            // engine ownership migration not yet activated for this oid.
             // Returning success preserves the existing feature-flag fallback in
             // manager_index — manager handles DML through its own engines_ entry.
             trace(log_,
@@ -355,7 +355,7 @@ namespace services::index {
                   static_cast<unsigned>(table_oid_));
             co_return;
         }
-        // Block D follow-up wiring — revert is a pure in-memory drop of the
+        // follow-up wiring — revert is a pure in-memory drop of the
         // txn's pending entries. Uncommitted entries never reached disk, so
         // no disk-agent fanout is required (matches manager_index body).
         const auto txn_id = ctx.txn.transaction_id;
@@ -368,7 +368,7 @@ namespace services::index {
     }
 
     // ---------------------------------------------------------------------------
-    // Block D Pass 9 dec 2 + dec 46 — search hot-path routes through
+    // + dec 46 — search hot-path routes through
     // manager_index_t::enqueue_impl delegation forward (Option D mailbox).
     //
     // Each handler:
@@ -400,7 +400,7 @@ namespace services::index {
                                 core::date::timezone_offset_t session_tz) {
         std::pmr::vector<int64_t> result(resource());
         if (engine_ptr_ == nullptr) {
-            // Block D engine ownership migration not yet activated for this oid.
+            // engine ownership migration not yet activated for this oid.
             // Returning empty preserves the existing manager_index engines_ body
             // via the router fallback (see manager_index.cpp::search).
             trace(log_,
@@ -408,7 +408,7 @@ namespace services::index {
                   static_cast<unsigned>(table_oid_));
             co_return result;
         }
-        // Block D engine_ptr_ dispatch — mirror of manager_index_t::search body
+        // engine_ptr_ dispatch — mirror of manager_index_t::search body
         // (matching(keys) -> index->search(compare, value, start_time, txn_id,
         // session_tz)). search_index() helper takes an index_engine_ptr&; here
         // we hold a raw engine_ptr_ so we call engine_ptr_->matching() directly.
@@ -436,7 +436,6 @@ namespace services::index {
                   static_cast<unsigned>(table_oid_));
             co_return result;
         }
-        // Block D engine_ptr_ dispatch — mirror of
         // manager_index_t::search_with_preferred_type body: prefer the index
         // matching the requested type, fall back to any index over the same keys,
         // then index->search(compare, value, start_time, txn_id, session_tz).
@@ -460,13 +459,13 @@ namespace services::index {
                   static_cast<unsigned>(table_oid_));
             co_return false;
         }
-        // Block D engine_ptr_ dispatch — mirror of manager_index_t::has_index
+        // engine_ptr_ dispatch — mirror of manager_index_t::has_index
         // body (engine->has_index(name)).
         co_return engine_ptr_->has_index(index_name);
     }
 
     // ---------------------------------------------------------------------------
-    // Block D Step 4 — index metadata-read handlers (get_indexed_keys /
+    // index metadata-read handlers (get_indexed_keys /
     // get_indexed_descriptions). Same engine_ptr_ guard pattern as the search
     // handlers above:
     //   * engine_ptr_ == nullptr  -> empty pmr vector. manager_index's router
@@ -488,7 +487,6 @@ namespace services::index {
                   static_cast<unsigned>(table_oid_));
             co_return std::pmr::vector<components::index::keys_base_storage_t>(resource());
         }
-        // Block D engine_ptr_ dispatch — mirror of
         // manager_index_t::get_indexed_keys body (engine->all_indexed_keys()).
         co_return engine_ptr_->all_indexed_keys();
     }
@@ -502,14 +500,13 @@ namespace services::index {
                   static_cast<unsigned>(table_oid_));
             co_return std::pmr::vector<components::index::index_description_t>(resource());
         }
-        // Block D engine_ptr_ dispatch — mirror of
         // manager_index_t::get_indexed_descriptions body
         // (engine->all_indexed_descriptions()).
         co_return engine_ptr_->all_indexed_descriptions();
     }
 
     // ---------------------------------------------------------------------------
-    // Block D Step 6 (Pass 9 Variant 2) — per-table maintenance handlers.
+    // (Pass 9 Variant 2) — per-table maintenance handlers.
     // cleanup_versions and flush_indexes are the per-oid building blocks that
     // manager_index_t::cleanup_all_versions / flush_all_indexes fan out to via
     // per_table_agents_. rebuild_indexes is the per-oid route mirror of
@@ -541,7 +538,7 @@ namespace services::index {
                   static_cast<unsigned>(table_oid_));
             co_return;
         }
-        // Block D engine_ptr_ branch — mirror of manager_index_t::cleanup_all_versions
+        // engine_ptr_ branch — mirror of manager_index_t::cleanup_all_versions
         // per-oid body (engine->cleanup_versions(lowest_active)). Manager-side
         // broadcast wrapper awaits the per-table agent future before walking its
         // engines_ map, so a single in-memory cleanup pass runs per oid.
@@ -562,7 +559,7 @@ namespace services::index {
                   static_cast<unsigned>(table_oid_));
             co_return;
         }
-        // Block D engine_ptr_ branch — mirror of manager_index_t::rebuild_indexes
+        // engine_ptr_ branch — mirror of manager_index_t::rebuild_indexes
         // body (lines 947-953). Walk each named index in the engine and clear
         // it via clean_memory_to_new_elements(0). The executor re-populates by
         // streaming scan data back to manager_index for rebuild — that step is
@@ -590,7 +587,7 @@ namespace services::index {
                   static_cast<unsigned>(table_oid_));
             co_return;
         }
-        // Block D engine_ptr_ branch — flush is a disk-agent concern, not an
+        // engine_ptr_ branch — flush is a disk-agent concern, not an
         // index_engine_t concern. manager_index_t::flush_all_indexes iterates
         // disk_agents_ and calls force_flush_sync per agent; the in-memory
         // index_engine_t has no flush semantics of its own. Until disk_agents_
@@ -612,7 +609,7 @@ namespace services::index {
     }
 
     // ---------------------------------------------------------------------------
-    // Block D DDL routing — per-table DDL handlers. Closes the regression
+    // DDL routing — per-table DDL handlers. Closes the regression
     // introduced by the Phase 3.5 engine ownership migration: after migration,
     // manager_index_t::engines_ has no entry for bootstrap-bound oids, so the
     // legacy engines_-based DDL bodies on manager_index_t::create_index /

@@ -2,8 +2,8 @@
 
 namespace components::table {
 
-    // Block C §3.5 dec 22 + Block E (Pass 9 dec 46): the resource is REQUIRED
-    // for the per-txn pending_base_* and in_flight_snapshot pmr containers.
+    // The resource is REQUIRED for the per-txn pending_base_* and
+    // in_flight_snapshot pmr containers.
     // null_memory_resource default keeps the literal {id, time, session}
     // construct compilable for legacy tests, but any allocation on those
     // vectors aborts — production callers MUST pass the manager's resource.

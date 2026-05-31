@@ -36,7 +36,6 @@ namespace services::collection::executor {
         // Dispatcher merges these into transaction_t when txn_id != 0.
         std::vector<components::pg_catalog_append_range_t> pg_catalog_appends{};
         std::set<components::catalog::oid_t> pg_catalog_delete_tables{};
-        // Block C §3.5 dec 32 V2 OPTION X: pg_attribute commit_id backfill
         // markers emitted by ALTER COLUMN ADD/DROP/RENAME. Dispatcher pushes
         // them onto transaction_t so operator_commit_transaction can patch
         // the rows after commit_id allocation.
@@ -89,7 +88,6 @@ namespace services::collection::executor {
         // execute_result_t so the dispatcher can push them onto transaction_t.
         std::vector<components::pg_catalog_append_range_t> pg_catalog_appends;
         std::set<components::catalog::oid_t> pg_catalog_delete_tables;
-        // Block C §3.5 dec 32 V2 OPTION X: see execute_result_t comment above.
         std::vector<components::pg_attribute_commit_id_backfill_t> pg_attribute_commit_id_backfills;
     };
 
@@ -113,7 +111,7 @@ namespace services::collection::executor {
                                                      services::context_storage_t context_storage,
                                                      components::table::transaction_data txn);
 
-        // Variant E.3 (Pass 9): executor takes over manager_dispatcher_t::execute_plan
+        // executor takes over manager_dispatcher_t::execute_plan
         // pipeline — Pass 1 catalog resolve, validate, enrich, planner.rewrite,
         // optimizer, physical_plan_generator, then operator pipeline. The current
         // execute_plan method runs the operator pipeline only; execute_plan_full
@@ -133,12 +131,11 @@ namespace services::collection::executor {
         unique_future<std::unique_ptr<function_result_t>> register_udf(components::session::session_id_t session,
                                                                        components::compute::function_ptr function);
 
-        // Variant E.3 (Pass 9 dec 1) collections_ partition.
         // dispatcher fans these out (single send, NOT broadcast) to the executor
         // whose index == hash(oid) % executor_pool_size_ (= oid % 4). Each
         // executor owns its slice of the global table map in `local_collections_`.
         //
-        // Step 2 (this revision): replaced the raw `collection_t*` placeholder
+        // (this revision): replaced the raw `collection_t*` placeholder
         // with a value-type POD entry that the executor copy-stores in its own
         // map. This deliberately avoids the constraint #11 trap of sharing a
         // mutable `collection_t` between actor and dispatcher — the entry is a
@@ -148,7 +145,7 @@ namespace services::collection::executor {
         // intra-partition DML / DDL can probe `find_local_collection(oid)`
         // before paying that mailbox hop.
         //
-        // Step 3+ (deferred): erase `dispatcher.collections_` entirely. That
+        // + (deferred): erase `dispatcher.collections_` entirely. That
         // requires migrating the 8 physical_plan_generator membership probes
         // that read it indirectly through enrich/validate, and is intentionally
         // out of scope here — see executor.cpp Pass 1/2/3 Serial track.
@@ -204,7 +201,7 @@ namespace services::collection::executor {
                                                            plan_t plan_data,
                                                            components::table::transaction_data txn);
 
-        // Variant E.3 (Pass 9 dec 1 + Pass 12 LoC bump) collections_ partition:
+        // + Pass 12 LoC bump) collections_ partition:
         // FUTURE WORK — manager_dispatcher_t::collections_ map currently owns all
         // tables. Variant E.3 partitions this across 4 executors by hash:
         //   pool_idx = oid % executor_pool_size_ = oid % 4
@@ -234,7 +231,7 @@ namespace services::collection::executor {
         // Keeps fire-and-forget WAL flush futures alive until they resolve.
         std::pmr::vector<unique_future<void>> pending_void_;
 
-        // Variant E.3 (Pass 9 dec 1) collections_ partition — Step 2 field.
+        // collections_ partition — Step 2 field.
         // Owned slice of the global table map; this executor owns oids where
         // (oid % executor_pool_size_) == own_index. Populated by
         // register_collection_local mailbox handler, cleared by

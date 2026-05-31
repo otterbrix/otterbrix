@@ -22,7 +22,7 @@
 #include <utility>
 #include <vector>
 
-namespace components::catalog::dec43 {
+namespace components::catalog::alter_column_validators {
 
     // Reject duplicate column names. Performs a linear scan of the visible
     // column-name set on the target relation; if `new_column_name` already
@@ -69,4 +69,4 @@ namespace components::catalog::dec43 {
                                          const std::optional<components::types::logical_value_t>& default_value,
                                          std::pmr::string& out_spec);
 
-} // namespace components::catalog::dec43
+} // namespace components::catalog::alter_column_validators

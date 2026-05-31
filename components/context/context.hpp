@@ -42,25 +42,25 @@ namespace components::pipeline {
         // future GC operator) to gate cleanup_versions / cleanup_all_versions.
         uint64_t lowest_active_start_time{0};
         // Transaction manager back-reference for operators that need to
-        // mutate the global txn map (Phase 4 #56: operator_commit_transaction_t
-        // / operator_abort_transaction_t — invoked from manager_dispatcher_t
+        // mutate the global txn map (operator_commit_transaction_t /
+        // operator_abort_transaction_t — invoked from manager_dispatcher_t
         // where the txn_manager_t lives, not from the executor pipeline).
         // Null whenever the operator does not need it (DML/DDL paths leave it
         // unset).
         table::transaction_manager_t* txn_manager{nullptr};
 
-        // Phase 5b: aggregated by operators that touch pg_catalog. Drained by
+        // Aggregated by operators that touch pg_catalog. Drained by
         // execute_sub_plan_ into result_tracking after pipeline runs.
         std::vector<pg_catalog_append_range_t> pg_catalog_appends;
         std::set<catalog::oid_t> pg_catalog_delete_tables;
 
-        // Block C §3.5 dec 32 V2 OPTION X: pg_attribute commit_id backfill
-        // markers. operator_alter_column_{add,drop,rename} push entries here;
+        // pg_attribute commit_id backfill markers.
+        // operator_alter_column_{add,drop,rename} push entries here;
         // operator_commit_transaction drains them after commit_id allocation
         // and patches the rows. Empty in implicit-txn / non-ALTER paths.
         std::vector<pg_attribute_commit_id_backfill_t> pg_attribute_commit_id_backfills;
 
-        // Phase 5: DML operators (operator_insert / operator_delete /
+        // DML operators (operator_insert / operator_delete /
         // operator_update) record their MVCC swap-info here from inside
         // await_async_and_resume. The executor's commit-side block then drives
         // storage_publish_commit / storage_publish_delete after

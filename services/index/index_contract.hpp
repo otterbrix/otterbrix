@@ -15,7 +15,7 @@
 #include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
 
-#include "index_result.hpp"
+#include <core/result_wrapper.hpp>
 
 namespace services::index {
 
@@ -50,12 +50,14 @@ namespace services::index {
                                         int64_t new_start_row_id);
 
         // MVCC commit/revert/cleanup
-        // Block B Parallel A.B3: commit_insert / commit_delete now return a
-        // typed result_t so callers can branch on a future C §3.1 index-side
-        // abort path without another signature migration.
-        unique_future<result_t>
+        // Parallel A.B3: commit_insert / commit_delete now return a
+        // core::error_t directly (project-wide convention — error_t::no_error()
+        // means success, contains_error() flags failure). Lets callers branch
+        // on a future C §3.1 index-side abort path without another signature
+        // migration.
+        unique_future<core::error_t>
         commit_insert(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id);
-        unique_future<result_t>
+        unique_future<core::error_t>
         commit_delete(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id);
         unique_future<void> revert_insert(execution_context_t ctx, components::catalog::oid_t table_oid);
         unique_future<void> cleanup_all_versions(session_id_t session, uint64_t lowest_active);
@@ -101,7 +103,7 @@ namespace services::index {
         unique_future<std::pmr::vector<components::index::index_description_t>>
         get_indexed_descriptions(session_id_t session, components::catalog::oid_t table_oid);
 
-        // dec 33 V1 event-driven GC subscriber. Stub today; real body lands
+        // event-driven GC subscriber. Stub today; real body lands
         // with Block D DML (cleanup per-table agents whose pinned start_time
         // < new_horizon).
         unique_future<void> on_horizon_advanced(uint64_t new_horizon);
@@ -115,7 +117,7 @@ namespace services::index {
                                                components::catalog::oid_t table_oid,
                                                uint64_t dropped_at_commit_id);
 
-        // Block C §3.5 dec 31 V1.d — CREATE INDEX Phase 2.5 catchup. Called per
+        // d — CREATE INDEX Phase 2.5 catchup. Called per
         // matching WAL record by operator_create_index_backfill to apply a
         // PHYSICAL_{INSERT,DELETE,UPDATE} effect to the build's in-memory
         // index_engine_t. The chunk + row metadata are shipped over the

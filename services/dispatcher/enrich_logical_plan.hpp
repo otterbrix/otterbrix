@@ -28,7 +28,7 @@
 namespace services::dispatcher {
 
     // name->OID lookup table built from catalog_resolve_*_t logical-plan leaves
-    // AFTER they were stamped by operator_resolve_*_t (Pass 1). enrich_plan walks
+    // AFTER they were stamped by operator_resolve_*_t. enrich_plan walks
     // this map directly, so no async catalog actor messages from validate/enrich/
     // planner. Empty when the plan has no resolve wrap (DDL paths, disk-less
     // harnesses). Also stores pointers to full table metadata
@@ -82,7 +82,7 @@ namespace services::dispatcher {
 
 } // namespace services::dispatcher
 
-// Variant E.3 Pass 1 catalog-resolve helpers. Promoted out of
+// catalog-resolve helpers. Promoted out of
 // `services::dispatcher::impl` (and out of dispatcher.cpp's anonymous
 // namespace, for the Phase 1.5 trio) so `executor_t::execute_plan_full`
 // can call them without depending on manager_dispatcher_t internals. Pure

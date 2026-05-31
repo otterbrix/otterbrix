@@ -5,7 +5,7 @@
 // the operator pipeline drives txn_manager / disk side effects.
 //
 // Coverage decisions:
-//   * BEGIN/START → node_begin_transaction_t (Block C §3.5 dec 22)
+//   * BEGIN/START → node_begin_transaction_t
 //   * COMMIT      → node_commit_transaction_t
 //   * ROLLBACK    → node_abort_transaction_t
 //   * SAVEPOINT / RELEASE / ROLLBACK TO / 2PC variants are unsupported and

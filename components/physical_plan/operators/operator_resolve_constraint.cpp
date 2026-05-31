@@ -75,7 +75,7 @@ namespace components::operators {
         std::vector<catalog::fk_info_t> fks;
         std::vector<std::pair<std::string, std::string>> check_exprs;
 
-        // Step 1: scan pg_constraint by (conrelid|confrelid).
+        // scan pg_constraint by (conrelid|confrelid).
         types::logical_value_t table_lv(resource_, table_oid);
         std::pmr::vector<std::string> con_keys(resource_);
         con_keys.emplace_back(key_col);

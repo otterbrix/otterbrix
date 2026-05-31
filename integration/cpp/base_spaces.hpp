@@ -79,12 +79,12 @@ namespace otterbrix {
         std::unique_ptr<otterbrix::wrapper_dispatcher_t, actor_zeta::pmr::deleter_t> wrapper_dispatcher_;
         actor_zeta::scheduler_ptr scheduler_disk_;
 
-        // Block D V4 bootstrap — owning collection of per-table index agents
-        // spawned in Phase 3.5. manager_index_t::per_table_agents_ only stores
-        // addresses; the agents themselves live here for the lifetime of
-        // base_otterbrix_t so the addresses remain valid (rule 10: no shared
-        // mutable state between actors — manager_index never owns the agent
-        // memory, only references it by address).
+        // Bootstrap — owning collection of per-table index agents.
+        // manager_index_t::per_table_agents_ only stores addresses; the
+        // agents themselves live here for the lifetime of base_otterbrix_t
+        // so the addresses remain valid (no shared mutable state between
+        // actors — manager_index never owns the agent memory, only
+        // references it by address).
         std::pmr::vector<services::index::index_table_agent_ptr> index_table_agents_;
 
     private:

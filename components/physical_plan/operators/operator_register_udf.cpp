@@ -73,7 +73,7 @@ namespace components::operators {
         //    serial pattern) while preserving the "router co_awaits all four
         //    executor acks before returning success" SYNCHRONOUS contract:
         //    UDF visibility is still atomic across executors from the
-        //    caller's perspective. Pass 12 USER DECISION (Variant E.3).
+        //    caller's perspective.
         std::pmr::vector<actor_zeta::unique_future<std::unique_ptr<executor_register_result_t>>> acks(resource_);
         acks.reserve(executor_count_);
         for (std::size_t i = 0; i < executor_count_; ++i) {

@@ -73,7 +73,7 @@ namespace {
             return std::move(future).get();
         }
 
-        // Block E ProcArray test helpers: bypass txn_manager — set snapshot_horizon
+        // ProcArray test helpers: bypass txn_manager — set snapshot_horizon
         // to UINT64_MAX so committed catalog rows (commit_id=1000 etc.) are visible.
         components::execution_context_t auto_ctx() {
             transaction_data td(0, 0);

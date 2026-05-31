@@ -16,7 +16,7 @@ namespace services::disk {
                                                 components::vector::data_chunk_t& data,
                                                 core::date::timezone_offset_t session_tz,
                                                 const components::table::transaction_data& txn) {
-        // Step 8.12 (2026-05-31): manager-side `storages_` map is gone. The
+        // (2026-05-31): manager-side `storages_` map is gone. The
         // routed agent slice owns every entry, so this body probes the
         // agent via storage_entry_sync and applies the append directly.
         // The pre-§8.12 manager-side fallback `get_storage(...)` has been
@@ -115,7 +115,7 @@ namespace services::disk {
                                             const std::pmr::vector<int64_t>& row_ids,
                                             uint64_t count,
                                             const components::table::transaction_data& txn) {
-        // Step 8.12 (2026-05-31): pure forward to the routed agent slice.
+        // (2026-05-31): pure forward to the routed agent slice.
         // The pre-§8.12 manager-side mirror against `get_storage(...)` has
         // been removed — `get_storage` returned nullptr unconditionally
         // after §8.11.
@@ -128,7 +128,7 @@ namespace services::disk {
     void manager_disk_t::direct_update_sync(catalog::oid_t table_oid,
                                             const std::pmr::vector<int64_t>& row_ids,
                                             components::vector::data_chunk_t& new_data) {
-        // Step 8.12 (2026-05-31): pure forward to the routed agent slice.
+        // (2026-05-31): pure forward to the routed agent slice.
         // The pre-§8.12 manager-side mirror against `get_storage(...)` has
         // been removed — `get_storage` returned nullptr unconditionally
         // after §8.11.
@@ -140,7 +140,7 @@ namespace services::disk {
 
     // --- Storage management ---
     //
-    // Step 8.12 (2026-05-31): `manager_disk_t::get_storage()` has been
+    // (2026-05-31): `manager_disk_t::get_storage()` has been
     // DELETED along with `manager_disk_t::storages_`. Every storage read /
     // write site now probes the routed agent slice via
     // `agents_[pool_idx_for_oid(oid)]->storage_entry_sync(oid)` (or routes
@@ -153,7 +153,7 @@ namespace services::disk {
               "manager_disk_t::create_storage , session : {} , oid : {}",
               session.data(),
               static_cast<unsigned>(table_oid));
-        // Step 8.11 wrap (2026-05-31): manager.storages_ deleted. Route the
+        // wrap (2026-05-31): manager.storages_ deleted. Route the
         // CREATE through the agent slice — agents_[pool_idx_for_oid] is the
         // canonical owner. Safety contract:
         //   1. No agent mailbox handler MUTATES storages_ (find-only).
@@ -184,7 +184,7 @@ namespace services::disk {
               "manager_disk_t::create_storage_with_columns , session : {} , oid : {}",
               session.data(),
               static_cast<unsigned>(table_oid));
-        // Step 8.11 wrap (2026-05-31): manager.storages_ deleted. Route the
+        // wrap (2026-05-31): manager.storages_ deleted. Route the
         // CREATE through the agent slice — agents_[pool_idx_for_oid] is the
         // canonical owner (catalog → agents_[0], user → agents_[1..N-1]).
         // Safety contract: see create_storage above.
@@ -215,7 +215,7 @@ namespace services::disk {
         auto otbx_path = config_.path / std::to_string(static_cast<unsigned>(database_oid)) /
                          std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
         std::filesystem::create_directories(otbx_path.parent_path());
-        // Version B* Step 8.1.C runtime gap closure (2026-05-31).
+        // * Step 8.1.C runtime gap closure (2026-05-31).
         //
         // Pre-closure this handler emplaced the SFBM-owning entry into
         // manager.storages_ only. After §8.1.C migrated the bootstrap
@@ -257,7 +257,7 @@ namespace services::disk {
         // gone — the only collision would be a programmer-level double-
         // CREATE).
         //
-        // Step 8.11 wrap (2026-05-31): manager.storages_ deleted. agents_[pool_idx]
+        // wrap (2026-05-31): manager.storages_ deleted. agents_[pool_idx]
         // is the sole SFBM owner; no-agents test fixture (path-empty config) no
         // longer reaches this handler since manager_disk_t's constructor
         // unconditionally calls create_agent() when config_.path is set.
@@ -287,7 +287,7 @@ namespace services::disk {
               "manager_disk_t::drop_storage , session : {} , oid : {}",
               session.data(),
               static_cast<unsigned>(table_oid));
-        // Version B* Step 8.4.B (DELETED 2026-05-31): the manager-side
+        // * Step 8.4.B (DELETED 2026-05-31): the manager-side
         // storages_.find + erase + filesystem remove sequence has been moved
         // to agent_disk_t::drop_storage_inner. The agent's slice is now the
         // sole writer for runtime DROP TABLE — manager_disk_t::storages_
@@ -327,7 +327,7 @@ namespace services::disk {
 
     manager_disk_t::unique_future<std::pmr::vector<components::types::complex_logical_type>>
     manager_disk_t::storage_types(session_id_t /*session*/, catalog::oid_t table_oid) {
-        // Step 8.11 wrap (2026-05-31): manager.storages_ deleted; the routed
+        // wrap (2026-05-31): manager.storages_ deleted; the routed
         // agent slice is the sole source of truth. Agent returns an empty
         // pmr-vector for not-owned / schema-less twins — propagate as-is.
         if (!agents_.empty()) {
@@ -346,7 +346,7 @@ namespace services::disk {
 
     manager_disk_t::unique_future<uint64_t> manager_disk_t::storage_total_rows(session_id_t /*session*/,
                                                                                catalog::oid_t table_oid) {
-        // Step 8.11 wrap (2026-05-31): manager.storages_ deleted; the routed
+        // wrap (2026-05-31): manager.storages_ deleted; the routed
         // agent slice is the sole source of truth. 0 from the agent now means
         // "not owned" OR "empty twin" — both equivalent for this caller.
         if (!agents_.empty()) {
@@ -371,7 +371,7 @@ namespace services::disk {
                                  std::unique_ptr<components::table::table_filter_t> filter,
                                  int limit,
                                  components::table::transaction_data txn) {
-        // Step 8.11 wrap (2026-05-31): manager.storages_ deleted; the routed
+        // wrap (2026-05-31): manager.storages_ deleted; the routed
         // agent slice is the sole source of truth. Agent returns nullptr for
         // not-owned OIDs — propagate as-is.
         if (!agents_.empty()) {
@@ -399,7 +399,7 @@ namespace services::disk {
                                          int64_t limit,
                                          std::vector<size_t> projected_cols,
                                          components::table::transaction_data txn) {
-        // Step 8.11 wrap (2026-05-31): manager.storages_ deleted; the routed
+        // wrap (2026-05-31): manager.storages_ deleted; the routed
         // agent slice is the sole source of truth. Agent returns an empty
         // pmr-vector for not-owned / empty twins — propagate as-is.
         if (!agents_.empty()) {
@@ -425,7 +425,7 @@ namespace services::disk {
                                   catalog::oid_t table_oid,
                                   components::vector::vector_t row_ids,
                                   uint64_t count) {
-        // Step 8.12 (2026-05-31): manager-side `storages_` and
+        // (2026-05-31): manager-side `storages_` and
         // `get_storage()` deleted; the routed agent slice is the sole source
         // of truth. Agent returns nullptr for not-owned OIDs — propagate
         // as-is.
@@ -450,7 +450,7 @@ namespace services::disk {
                                          catalog::oid_t table_oid,
                                          int64_t start,
                                          uint64_t count) {
-        // Step 8.12 (2026-05-31): manager-side `storages_` and
+        // (2026-05-31): manager-side `storages_` and
         // `get_storage()` deleted; the routed agent slice is the sole source
         // of truth. Agent returns nullptr for not-owned OIDs — propagate
         // as-is.
@@ -475,7 +475,7 @@ namespace services::disk {
                                    catalog::oid_t table_oid,
                                    std::unique_ptr<components::vector::data_chunk_t> data) {
         auto& txn = ctx.txn;
-        // Step 8.11 wrap (2026-05-31): manager.storages_ deleted. Probe the
+        // wrap (2026-05-31): manager.storages_ deleted. Probe the
         // routed agent's slice via storage_entry_sync to get the canonical
         // storage_t (Constraint #11 carve-out — agent mailbox idle vs. this
         // sync probe inside the manager mailbox handler). Manager body
@@ -710,7 +710,7 @@ namespace services::disk {
             start_row = s->append(*data);
         }
 
-        // Step 8.11 wrap (2026-05-31): the previous post-write router fanout
+        // wrap (2026-05-31): the previous post-write router fanout
         // to agent_disk_t::storage_append_inner is GONE — `s` above already
         // points at the agent-owned storage_t (via storage_entry_sync), so
         // `s->append(*data, txn)` IS the canonical write against the agent
@@ -724,7 +724,7 @@ namespace services::disk {
                                    catalog::oid_t table_oid,
                                    components::vector::vector_t row_ids,
                                    std::unique_ptr<components::vector::data_chunk_t> data) {
-        // Step 8.11 wrap (2026-05-31): manager.storages_ deleted; route via
+        // wrap (2026-05-31): manager.storages_ deleted; route via
         // the agent's storage_entry_sync borrow. The agent fanout is gone —
         // the update IS the canonical write.
         components::storage::storage_t* s = nullptr;
@@ -747,7 +747,7 @@ namespace services::disk {
                                                                                 catalog::oid_t table_oid,
                                                                                 components::vector::vector_t row_ids,
                                                                                 uint64_t count) {
-        // Step 8.11 wrap (2026-05-31): manager.storages_ deleted; route via
+        // wrap (2026-05-31): manager.storages_ deleted; route via
         // the agent's storage_entry_sync borrow. The agent fanout is gone —
         // the delete IS the canonical write.
         components::storage::storage_t* s = nullptr;
@@ -779,7 +779,7 @@ namespace services::disk {
                                                                               uint64_t commit_id,
                                                                               int64_t row_start,
                                                                               uint64_t count) {
-        // Step 8.11 wrap (2026-05-31): manager.storages_ deleted; probe the
+        // wrap (2026-05-31): manager.storages_ deleted; probe the
         // agent slice for the canonical storage_t and apply commit_append
         // directly. No prior agent fanout existed for this single-OID
         // mailbox handler.
@@ -800,7 +800,7 @@ namespace services::disk {
                                                                               catalog::oid_t table_oid,
                                                                               int64_t row_start,
                                                                               uint64_t count) {
-        // Step 8.12 (2026-05-31): pure forward to the routed agent slice.
+        // (2026-05-31): pure forward to the routed agent slice.
         // The pre-§8.12 manager-side `get_storage(...)->revert_append`
         // mirror has been removed — `get_storage` returned nullptr
         // unconditionally after §8.11.
@@ -822,7 +822,7 @@ namespace services::disk {
 
     manager_disk_t::unique_future<void>
     manager_disk_t::storage_publish_delete(execution_context_t ctx, catalog::oid_t table_oid, uint64_t commit_id) {
-        // Step 8.11 wrap (2026-05-31): manager.storages_ deleted; probe the
+        // wrap (2026-05-31): manager.storages_ deleted; probe the
         // agent slice for the canonical storage_t and apply
         // commit_all_deletes directly. No prior agent fanout existed.
         if (agents_.empty())
@@ -842,7 +842,7 @@ namespace services::disk {
     manager_disk_t::storage_publish_commits(execution_context_t /*ctx*/,
                                            uint64_t commit_id,
                                            std::vector<components::pg_catalog_append_range_t> ranges) {
-        // Step 8.12 (2026-05-31): pure router fanout. Per-agent payload is a
+        // (2026-05-31): pure router fanout. Per-agent payload is a
         // PMR vector (Constraint #11). Manager-side `get_storage(...)`
         // loop has been removed — `get_storage` returned nullptr
         // unconditionally after §8.11. ranges may carry both catalog and
@@ -893,7 +893,7 @@ namespace services::disk {
         if (txn_id == 0)
             co_return;
 
-        // Step 8.12 (2026-05-31): pure router fanout. Same partition-by-
+        // (2026-05-31): pure router fanout. Same partition-by-
         // agent pattern as storage_publish_commits: user OIDs partition
         // into agents_[1..N-1] alongside catalog OIDs on agents_[0].
         // Manager-side `get_storage(...)` loop has been removed —
@@ -936,7 +936,7 @@ namespace services::disk {
     manager_disk_t::unique_future<void>
     manager_disk_t::storage_revert_appends(execution_context_t /*ctx*/,
                                            std::vector<components::pg_catalog_append_range_t> ranges) {
-        // Step 8.12 (2026-05-31): pure router fanout for batched abort.
+        // (2026-05-31): pure router fanout for batched abort.
         // Same partition-by-agent pattern as storage_publish_commits: user
         // OIDs partition into agents_[1..N-1] alongside catalog OIDs on
         // agents_[0]. Manager-side reverse-iterate `get_storage(...)` loop

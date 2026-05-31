@@ -216,7 +216,7 @@ namespace components::table {
     void data_table_t::append_lock(table_append_state& state) {
         state.append_lock = std::unique_lock(append_lock_);
         // Recoverable: concurrent DDL altered table. TODO: return core::error_t for graceful
-        // txn abort (Block B-MVCC follow-up — full plumb via state.error or signature change).
+        // txn abort (full plumb via state.error or signature change).
         // Current fix: assert+abort eliminates actor-zeta UB (-fno-exceptions swallows throws
         // silently inside coroutines). For DDL-DML race detection this is conservative-fail.
         assert(is_root_ && "Transaction conflict: adding entries to a table that has been altered!");

@@ -28,7 +28,7 @@ namespace components::table {
         uint64_t transaction_id{0};
         uint64_t start_time{0};
 
-        // Block E ProcArray (Pass 9 dec 46): snapshot of MVCC state captured at
+        // ProcArray: snapshot of MVCC state captured at
         // begin_transaction by transaction_manager_t::take_snapshot().
         //
         // snapshot_horizon = published_horizon_ at capture time. Any commit_id
@@ -80,7 +80,7 @@ namespace components::table {
         virtual uint64_t indexing_vector(transaction_data transaction,
                                          vector::indexing_vector_t& indexing_vector,
                                          uint64_t max_count) = 0;
-        // Block E (BLOCKER 7): committed-scan path now takes a full transaction_data
+        // (BLOCKER 7): committed-scan path now takes a full transaction_data
         // snapshot — same shape as indexing_vector — so DDL resolves respect
         // ProcArray published_horizon + in_flight_snapshot.
         virtual uint64_t committed_indexing_vector(const transaction_data& txn,

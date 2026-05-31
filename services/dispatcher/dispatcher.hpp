@@ -69,7 +69,7 @@ namespace services::dispatcher {
 
         void sync(sync_pack pack);
 
-        // Block F (Pass 9 dec 47) — bootstrap-time hook called from base_spaces
+        // ) — bootstrap-time hook called from base_spaces
         // after WAL replay scans all records and finds the maximum durable
         // commit_id. Advances published_horizon_ past everything already on
         // disk so post-recovery snapshots observe the right MVCC visibility.
@@ -78,7 +78,7 @@ namespace services::dispatcher {
         // publish() is monotonic and ignores stale ids.
         void set_replay_horizon_sync(uint64_t commit_id);
 
-        // Block C §3.5 dec 37 V1 catalog scan rebuild — base_spaces Phase 2c
+        // catalog scan rebuild — base_spaces Phase 2c
         // calls these after rebuilding dropped_storages_ / dropped_table_agents_
         // so the very first post-start horizon advance broadcasts
         // on_horizon_advanced to the affected subscribers and finishes the GC
@@ -106,7 +106,7 @@ namespace services::dispatcher {
         unique_future<uint64_t> commit_transaction(components::session::session_id_t session);
         unique_future<void> abort_transaction(components::session::session_id_t session);
 
-        // Variant E.3 (Constraint #11): low-level transaction-manager wrappers
+        // (Constraint #11): low-level transaction-manager wrappers
         // for the executor. The executor currently dereferences a raw
         // `transaction_manager_t*` shared from this dispatcher (anti-pattern —
         // mutable state shared across actors). These handlers replay the same
@@ -130,7 +130,7 @@ namespace services::dispatcher {
         unique_future<void> txn_publish_msg(uint64_t commit_id);
         unique_future<uint64_t> txn_lowest_active_msg();
 
-        // Variant E.3 (Constraint #11): SET TIME ZONE mailbox handler. The
+        // (Constraint #11): SET TIME ZONE mailbox handler. The
         // dispatcher owns default_tz_cat_ (session-shared mutable state); the
         // executor cannot mutate it directly without violating the no-shared-
         // state rule, so it routes SET TIME ZONE through this handler. The
@@ -141,7 +141,7 @@ namespace services::dispatcher {
         unique_future<components::cursor::cursor_t_ptr>
         set_default_timezone_msg(components::session::session_id_t session, std::pmr::string tz_name);
 
-        // dec 38/40 selective broadcast — DROP TABLE / DROP INDEX path marks the
+        // selective broadcast — DROP TABLE / DROP INDEX path marks the
         // owning subscriber as "has dropped resources pending GC" via this
         // mailbox handler. Cleared by on_subscriber_empty once the subscriber's
         // dropped_storages_ queue is empty. These are mailbox handlers invoked
@@ -149,7 +149,7 @@ namespace services::dispatcher {
         // return unique_future<void> because actor_zeta::dispatch requires all
         // actor methods to return unique_future<T> or generator<T>.
         unique_future<void> on_drop_resource_marked(uint8_t subscriber_kind);
-        // dec 38/40 subscriber-empty ack — subscriber sends this back once its
+        // subscriber-empty ack — subscriber sends this back once its
         // dropped_storages_ queue drained (i.e. nothing left to GC for that kind),
         // which clears the corresponding broadcast flag and stops further
         // on_horizon_advanced broadcasts to that subscriber.
@@ -172,7 +172,7 @@ namespace services::dispatcher {
                                                             &manager_dispatcher_t::on_subscriber_empty>;
 
     private:
-        // dec 38/40 cleanup-trigger helper. Called INLINE from the commit_txn /
+        // cleanup-trigger helper. Called INLINE from the commit_txn /
         // abort_txn handler bodies (Variant E.3 work; not wired yet). This is a
         // regular private member function — NOT a std::function callback (rule
         // 13) — so the call site stays a direct method call without indirection.
@@ -190,7 +190,6 @@ namespace services::dispatcher {
 
         static constexpr std::size_t executor_pool_size_ = 4;
 
-        // Variant E.3 (Pass 9 dec 1) collections_ partition:
         // FUTURE: this map will be partitioned across 4 executors by `oid % 4`.
         // Until that migration, collections_ stays here and is the source of truth.
         // See services/collection/executor.hpp Variant E.3 docstring for the
@@ -208,7 +207,7 @@ namespace services::dispatcher {
         actor_zeta::address_t disk_address_ = actor_zeta::address_t::empty_address();
         actor_zeta::address_t index_address_ = actor_zeta::address_t::empty_address();
 
-        // dec 38/40 selective broadcast flags. Set when DROP TABLE / DROP INDEX
+        // selective broadcast flags. Set when DROP TABLE / DROP INDEX
         // marks a resource dropped (via on_drop_resource_marked); cleared by the
         // subscriber's on_subscriber_empty ack. Single-actor private state — no
         // atomic / no shared (rule 10).

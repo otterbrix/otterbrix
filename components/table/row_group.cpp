@@ -306,7 +306,7 @@ namespace components::table {
 
             uint64_t count;
             if (TYPE == table_scan_type::REGULAR) {
-                // Block E (Pass 9 dec 46): state.txn carries the snapshot fields
+                // ): state.txn carries the snapshot fields
                 // — there is no synth fallback. Callers must initialize state.txn
                 // with a real transaction_data captured by transaction_manager.
                 count = state.row_group->indexing_vector(state.txn,
@@ -679,7 +679,7 @@ namespace components::table {
 
     uint64_t row_group_t::calculate_size() {
         vector::indexing_vector_t temp_indexing(collection().resource(), count);
-        // Block E (Pass 9 dec 46): calculate_size reads all committed rows
+        // ): calculate_size reads all committed rows
         // (no transaction context, no in-flight set). Explicit "see everything"
         // snapshot — UINT64_MAX horizon + empty in_flight passes the visibility
         // filter for every committed insert_id < TRANSACTION_ID_START. This is
@@ -690,7 +690,6 @@ namespace components::table {
         return indexing_vector(td, index, temp_indexing, count);
     }
 
-    // Block E (Pass 9 dec 46): the legacy synth overload
     //   indexing_vector(uint64_t vector_idx, ...)
     // was removed per constraint #6 (no backwards compatibility). Every scan
     // must supply a real transaction_data — boot/init code that previously

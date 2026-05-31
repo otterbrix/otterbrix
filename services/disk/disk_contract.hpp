@@ -74,7 +74,7 @@ namespace services::disk {
                                                                std::int64_t oid_col_idx,
                                                                components::catalog::oid_t target_oid);
 
-        // Block C §3.5 dec 32 V2 OPTION X: patch the pg_attribute row identified by
+        // patch the pg_attribute row identified by
         // `attoid` with `commit_id` written into the added_at or dropped_at column
         // (selected by `kind`). Drained by operator_commit_transaction_t once the
         // commit_id is allocated; pairs with a physical_update WAL record.
@@ -192,7 +192,7 @@ namespace services::disk {
         actor_zeta::unique_future<void>
         storage_revert_appends(execution_context_t ctx, std::vector<components::pg_catalog_append_range_t> ranges);
 
-        // dec 33 V1 event-driven GC subscriber. Stub today; real body lands
+        // event-driven GC subscriber. Stub today; real body lands
         // with Block D DML (walk dropped_storages_ + GC entries whose
         // pinned start_time < new_horizon).
         actor_zeta::unique_future<void> on_horizon_advanced(uint64_t new_horizon);

@@ -114,7 +114,7 @@ namespace components::operators {
             co_return;
         }
 
-        // Step 0 (name-form only): when only (namespace_oid, relname) is known,
+        // (name-form only): when only (namespace_oid, relname) is known,
         // first resolve table_oid via pg_class scan by (relname, relnamespace).
         // If relname_ is empty we cannot resolve — emit empty output.
         if (table_oid_ == catalog::INVALID_OID) {
@@ -149,7 +149,7 @@ namespace components::operators {
             table_oid_ = static_cast<catalog::oid_t>(lookup_rows[0][0].value<std::uint32_t>());
         }
 
-        // Step 1: read pg_class by oid to determine relkind and relnamespace.
+        // read pg_class by oid to determine relkind and relnamespace.
         // pg_class layout: [0=oid, 1=relname, 2=relnamespace, 3=relkind,
         // 4=relstoragemode]. We key by "oid" so we get a single row at most.
         {
@@ -180,7 +180,7 @@ namespace components::operators {
         }
 
         // Stamp resolved oids onto the logical-plan node so
-        // the dispatcher's Pass 2 (validate / enrich / planner) reads them
+        // the dispatcher's validate / enrich / planner passes read them
         // via plan_resolve_index_t.
         // Stamped unconditionally (even when !found_) so callers can detect
         // "name did not resolve" by checking node->table_oid() == INVALID_OID.
@@ -197,7 +197,7 @@ namespace components::operators {
             co_return;
         }
 
-        // Step 2: for relkind 'v' (regular view) or 'm' (matview), read
+        // for relkind 'v' (regular view) or 'm' (matview), read
         // pg_rewrite.ev_action so dispatcher Phase 1.5 rewrite_views can
         // re-parse the body. pg_rewrite layout: [0=oid, 1=rulename,
         // 2=ev_class, 3=ev_type, 4=ev_action]. Matview body is also stored
@@ -378,7 +378,7 @@ namespace components::operators {
                                                std::move(pa_vals));
             auto pa_rows = co_await std::move(paf);
 
-            // Block C §3.5 dec 32 V2: column visibility under this txn's snapshot.
+            // column visibility under this txn's snapshot.
             // Column visible iff added_at_commit_id <= snapshot.start_time AND
             // (dropped_at_commit_id == 0 OR dropped_at_commit_id > snapshot.start_time).
             // attisdropped boolean tombstone is retained as a structural backup
@@ -390,7 +390,7 @@ namespace components::operators {
                 // Drop tombstones (attisdropped=true).
                 if (!row[7].is_null() && row[7].value<bool>())
                     continue;
-                // dec 32 V2: filter by MVCC commit-id fields if present.
+                // filter by MVCC commit-id fields if present.
                 if (row.size() > 10 && !row[10].is_null()) {
                     auto added_at = static_cast<uint64_t>(row[10].value<std::int64_t>());
                     if (added_at > snapshot_start_time)
@@ -474,7 +474,7 @@ namespace components::operators {
             target_node_->set_resolved_metadata(std::move(md));
         }
 
-        // Step 4: materialize into output chunk. Position is a synthetic
+        // materialize into output chunk. Position is a synthetic
         // 1-based ordinal (matches manager_disk_resolve.cpp's synthetic
         // attnum for relkind='g').
         const auto row_count = rows.size();

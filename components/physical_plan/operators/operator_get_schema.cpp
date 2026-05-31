@@ -206,7 +206,7 @@ namespace components::operators {
                 // copying full row vectors.
                 std::pmr::vector<std::pair<std::int32_t, std::size_t>> ordering(resource_);
                 ordering.reserve(pa_rows.size());
-                // Block C §3.5 dec 32 V2: column visibility under this txn's snapshot.
+                // column visibility under this txn's snapshot.
                 // Same predicate as operator_resolve_table — visible iff
                 // added_at_commit_id <= snapshot.start_time AND
                 // (dropped_at_commit_id == 0 OR dropped_at_commit_id > snapshot).

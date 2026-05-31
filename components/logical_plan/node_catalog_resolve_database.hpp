@@ -9,11 +9,11 @@
 
 namespace components::logical_plan {
 
-    // CATALOG_RESOLVE_DATABASE (Pass 9 B14.C): logical-plan leaf carrying the
+    // CATALOG_RESOLVE_DATABASE: logical-plan leaf carrying the
     // catalog dependency "resolve database 'X'". pg_database (OID=19) is
     // distinct from pg_namespace (OID=20) — a database name resolves to a row
-    // in pg_database whose oid is the routing key for Variant C multi-database
-    // WAL workers. Default value is INVALID_OID so "not yet resolved" is
+    // in pg_database whose oid is the routing key for multi-database WAL
+    // workers. Default value is INVALID_OID so "not yet resolved" is
     // observable downstream.
     class node_catalog_resolve_database_t final : public node_t {
     public:

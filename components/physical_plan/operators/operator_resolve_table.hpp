@@ -52,7 +52,7 @@ namespace components::operators {
 
         // back-pointer form. After resolving, the operator stamps
         // namespace_oid + table_oid onto target_node so the dispatcher's
-        // Pass 2 (validate / enrich) can read it via plan_resolve_index_t.
+        // (validate / enrich) can read it via plan_resolve_index_t.
         operator_resolve_table_t(std::pmr::memory_resource* resource,
                                  log_t log,
                                  components::catalog::oid_t namespace_oid,

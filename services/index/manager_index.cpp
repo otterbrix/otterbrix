@@ -333,7 +333,7 @@ namespace services::index {
                                                                               components::catalog::oid_t table_oid) {
         trace(log_, "manager_index_t::register_collection: oid={}", static_cast<unsigned>(table_oid));
 
-        // Block D Final cleanup — engine ownership migration. If a per-table
+        // Final cleanup — engine ownership migration. If a per-table
         // agent is already registered for this oid (base_spaces Phase 3.5 ran
         // and handed engine ownership to the agent via take_engine_ownership_sync
         // -> set_engine_owned_sync), engines_ has no entry by design. Skip the
@@ -369,7 +369,7 @@ namespace services::index {
                                                                            core::date::timezone_offset_t session_tz) {
         trace(log_, "manager_index_t::create_index: {} on oid={}", index_name, static_cast<unsigned>(table_oid));
 
-        // Block D DDL routing — closes the regression introduced by the engine
+        // DDL routing — closes the regression introduced by the engine
         // ownership migration. After base_spaces Phase 3.5 hands ownership of
         // the per-table index_engine_t to the agent via set_engine_owned_sync,
         // engines_[oid] is empty for every bootstrap-bound oid. The legacy
@@ -517,7 +517,7 @@ namespace services::index {
             }
         }
 
-        // Block D Step 5 — Routing observability post-DDL. Trace whether the
+        // Routing observability post-DDL. Trace whether the
         // per-table agent already exists (path (a) above) or whether we just
         // created an index for an oid not yet known to per_table_agents_
         // (path (b) — router fallback covers DML correctness for now).
@@ -537,7 +537,7 @@ namespace services::index {
     manager_index_t::drop_index(session_id_t session, components::catalog::oid_t table_oid, index_name_t index_name) {
         trace(log_, "manager_index_t::drop_index: {} on oid={}", index_name, static_cast<unsigned>(table_oid));
 
-        // Block D DDL routing — same regression fix as create_index. After
+        // DDL routing — same regression fix as create_index. After
         // engine ownership migration, engines_[oid] is empty for bootstrap-
         // bound oids, so the legacy body below would no-op silently. Forward
         // to the agent's drop_index_local handler when registered; otherwise
@@ -588,7 +588,7 @@ namespace services::index {
             components::index::drop_index(engine, index);
         }
 
-        // Block D Step 5 — DDL routing observability. Trace the per-table
+        // DDL routing observability. Trace the per-table
         // agent's continued binding state: DROP INDEX must NOT clear it.
         const bool has_agent = per_table_agents_.find(table_oid) != per_table_agents_.end();
         trace(log_,
@@ -604,7 +604,7 @@ namespace services::index {
     manager_index_t::unique_future<bool> manager_index_t::has_index(session_id_t session,
                                                                     components::catalog::oid_t table_oid,
                                                                     index_name_t index_name) {
-        // Block D Pass 9 dec 2 + dec 46 — per-table router. Forward via mailbox
+        // + dec 46 — per-table router. Forward via mailbox
         // to the owning index_table_agent_t when one is registered. The agent's
         // body is a stub today (engine_ptr_ stays null in steady state) so the
         // truthful answer still comes from the engines_ fallback below; once
@@ -638,7 +638,7 @@ namespace services::index {
         if (!data || count == 0)
             co_return;
 
-        // Block D DML migration — feature-flag router. If a per-table agent is
+        // DML migration — feature-flag router. If a per-table agent is
         // registered for this oid (via register_table_agent_sync during V4
         // bootstrap), forward the message and await its future. Today the agent
         // body is a no-op stub; the actual engine_ work still happens below
@@ -678,7 +678,7 @@ namespace services::index {
         if (!data || row_ids.empty())
             co_return;
 
-        // Block D DML migration — feature-flag router (see insert_rows).
+        // DML migration — feature-flag router (see insert_rows).
         if (auto agent_it = per_table_agents_.find(table_oid); agent_it != per_table_agents_.end()) {
             auto [_, fut] = actor_zeta::send(agent_it->second,
                                              &index_table_agent_t::delete_rows,
@@ -714,7 +714,7 @@ namespace services::index {
         if (!old_data || !new_data || row_ids.empty())
             co_return;
 
-        // Block D DML migration — feature-flag router (see insert_rows).
+        // DML migration — feature-flag router (see insert_rows).
         if (auto agent_it = per_table_agents_.find(table_oid); agent_it != per_table_agents_.end()) {
             auto [_, fut] = actor_zeta::send(agent_it->second,
                                              &index_table_agent_t::update_rows,
@@ -750,11 +750,11 @@ namespace services::index {
 
     // --- MVCC commit/revert/cleanup ---
 
-    manager_index_t::unique_future<result_t>
+    manager_index_t::unique_future<core::error_t>
     manager_index_t::commit_insert(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id) {
-        // Block D DML migration — feature-flag router (see insert_rows). The
-        // agent's result_t is forwarded back so the executor commit-path keeps
-        // its typed-error contract.
+        // DML migration — feature-flag router (see insert_rows). The
+        // agent's core::error_t is forwarded back so the executor commit-path
+        // keeps its typed-error contract.
         if (auto agent_it = per_table_agents_.find(table_oid); agent_it != per_table_agents_.end()) {
             auto [_, fut] = actor_zeta::send(agent_it->second,
                                              &index_table_agent_t::commit_insert,
@@ -769,11 +769,11 @@ namespace services::index {
         auto txn_id = ctx.txn.transaction_id;
         auto it = engines_.find(table_oid);
         if (it == engines_.end())
-            co_return result_t::success();
+            co_return core::error_t::no_error();
 
         auto& engine = it->second;
 
-        // Block B Parallel A.B3: two-phase fan-out. Phase 1 — gather pending
+        // Parallel A.B3: two-phase fan-out. Phase 1 — gather pending
         // disk inserts from BOTH the txn-local pending map and the global
         // pending map (txn_id == 0 path), batch per disk-agent, then send all
         // insert_many messages without intervening co_await. Phase 2 — collect
@@ -823,12 +823,12 @@ namespace services::index {
             engine->commit_insert(0, commit_id);
         }
 
-        co_return result_t::success();
+        co_return core::error_t::no_error();
     }
 
-    manager_index_t::unique_future<result_t>
+    manager_index_t::unique_future<core::error_t>
     manager_index_t::commit_delete(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id) {
-        // Block D DML migration — feature-flag router (see insert_rows).
+        // DML migration — feature-flag router (see insert_rows).
         if (auto agent_it = per_table_agents_.find(table_oid); agent_it != per_table_agents_.end()) {
             auto [_, fut] = actor_zeta::send(agent_it->second,
                                              &index_table_agent_t::commit_delete,
@@ -843,11 +843,11 @@ namespace services::index {
         auto txn_id = ctx.txn.transaction_id;
         auto it = engines_.find(table_oid);
         if (it == engines_.end())
-            co_return result_t::success();
+            co_return core::error_t::no_error();
 
         auto& engine = it->second;
 
-        // Block B Parallel A.B3: two-phase fan-out (mirror of commit_insert).
+        // Parallel A.B3: two-phase fan-out (mirror of commit_insert).
         // Phase 1 batches pending disk deletes from both the txn-local pending
         // map and the global (txn_id == 0) map, then sends every remove_many
         // message before any co_await. Phase 2 awaits the collected futures.
@@ -892,12 +892,12 @@ namespace services::index {
             engine->commit_delete(0, commit_id);
         }
 
-        co_return result_t::success();
+        co_return core::error_t::no_error();
     }
 
     manager_index_t::unique_future<void> manager_index_t::revert_insert(execution_context_t ctx,
                                                                         components::catalog::oid_t table_oid) {
-        // Block D DML migration — feature-flag router (see insert_rows).
+        // DML migration — feature-flag router (see insert_rows).
         if (auto agent_it = per_table_agents_.find(table_oid); agent_it != per_table_agents_.end()) {
             auto [_, fut] = actor_zeta::send(agent_it->second,
                                              &index_table_agent_t::revert_insert,
@@ -920,7 +920,7 @@ namespace services::index {
 
     manager_index_t::unique_future<void> manager_index_t::cleanup_all_versions(session_id_t session,
                                                                                uint64_t lowest_active) {
-        // Block D Step 6 (Pass 9 Variant 2) — broadcast wrapper. For every
+        // (Pass 9 Variant 2) — broadcast wrapper. For every
         // registered per-table agent send cleanup_versions(ctx, oid,
         // lowest_active) and collect the futures, then co_await them all in
         // a second pass so the fan-out runs in parallel (mailbox-only per
@@ -955,7 +955,7 @@ namespace services::index {
 
     manager_index_t::unique_future<void> manager_index_t::rebuild_indexes(session_id_t session,
                                                                           components::catalog::oid_t table_oid) {
-        // Block D Step 6 (Pass 9 Variant 2) — per-oid router. Same shape as
+        // (Pass 9 Variant 2) — per-oid router. Same shape as
         // insert_rows: when a per-table agent is registered for this oid,
         // forward via mailbox and await its future. Agent body is a no-op
         // stub today (engine_ptr_ null in steady state); the truthful
@@ -1002,7 +1002,7 @@ namespace services::index {
                                                 uint64_t start_time,
                                                 uint64_t txn_id,
                                                 core::date::timezone_offset_t session_tz) {
-        // Block D Pass 9 dec 2 + dec 46 — search hot-path router. Forward via
+        // + dec 46 — search hot-path router. Forward via
         // mailbox to the owning index_table_agent_t when one is registered.
         // The agent stub returns an empty vector while engine_ptr_ stays null
         // (the engine ownership migration hasn't run yet), so when the agent
@@ -1053,7 +1053,7 @@ namespace services::index {
                             uint64_t start_time,
                             uint64_t txn_id,
                             core::date::timezone_offset_t session_tz) {
-        // Block D Pass 9 dec 2 + dec 46 — search hot-path router. See the
+        // + dec 46 — search hot-path router. See the
         // longer comment in search_with_preferred_type above. Mailbox-only
         // delegation per constraint #11; manager engines_ body remains the
         // truthful source until engine ownership migrates onto the per-table
@@ -1091,7 +1091,7 @@ namespace services::index {
 
     manager_index_t::unique_future<std::pmr::vector<components::index::keys_base_storage_t>>
     manager_index_t::get_indexed_keys(session_id_t session, components::catalog::oid_t table_oid) {
-        // Block D Step 4 — metadata-read router. Forward via mailbox to the
+        // metadata-read router. Forward via mailbox to the
         // owning index_table_agent_t when one is registered. The agent stub
         // returns an empty vector while engine_ptr_ stays null (engine
         // ownership migration hasn't run), so an empty agent answer is treated
@@ -1119,7 +1119,7 @@ namespace services::index {
 
     manager_index_t::unique_future<std::pmr::vector<components::index::index_description_t>>
     manager_index_t::get_indexed_descriptions(session_id_t session, components::catalog::oid_t table_oid) {
-        // Block D Step 4 — metadata-read router. See get_indexed_keys above
+        // metadata-read router. See get_indexed_keys above
         // for the empty-result fallback contract.
         if (auto agent_it = per_table_agents_.find(table_oid); agent_it != per_table_agents_.end()) {
             auto [_, fut] = actor_zeta::send(agent_it->second,
@@ -1143,7 +1143,7 @@ namespace services::index {
     manager_index_t::unique_future<void> manager_index_t::flush_all_indexes(session_id_t session) {
         trace(log_, "manager_index_t::flush_all_indexes, session: {}", session.data());
 
-        // Block D Step 6 (Pass 9 Variant 2) — broadcast wrapper. Fan a
+        // (Pass 9 Variant 2) — broadcast wrapper. Fan a
         // flush_indexes message out to every registered per-table agent,
         // collect futures, then co_await them in a second pass so the
         // fan-out runs in parallel (mailbox-only per rule 11, no shared
@@ -1177,7 +1177,7 @@ namespace services::index {
         co_return;
     }
 
-    // dec 33 V1 event-driven GC subscriber. Walks dropped_table_agents_ and
+    // event-driven GC subscriber. Walks dropped_table_agents_ and
     // erases the routing entry for any table whose dropped_at_commit_id is now
     // strictly below the snapshot floor (new_horizon). Address-only entry
     // erase: the owning unique_ptr<index_table_agent_t> lives in base_spaces
@@ -1187,13 +1187,13 @@ namespace services::index {
     // cleanup once the address is no longer referenced). No double-free is
     // possible from this path.
     //
-    // dec 33 V1 event-driven GC subscriber. On drain (queue empty) sends
+    // event-driven GC subscriber. On drain (queue empty) sends
     // on_subscriber_empty(INDEX_KIND) ack to dispatcher so the
     // selective-broadcast flag clears and no further on_horizon_advanced
     // broadcasts arrive until a new DROP TABLE re-marks the subscriber.
     manager_index_t::unique_future<void> manager_index_t::on_horizon_advanced(uint64_t new_horizon) {
         trace(log_, "manager_index_t::on_horizon_advanced , horizon : {}", new_horizon);
-        // dec 33 V1 symmetric GC pass: erase dropped per-table agents whose
+        // symmetric GC pass: erase dropped per-table agents whose
         // dropped_at_commit_id is now below the snapshot floor.
         for (auto it = dropped_table_agents_.begin(); it != dropped_table_agents_.end();) {
             if (it->second < new_horizon) {
@@ -1210,7 +1210,7 @@ namespace services::index {
             }
         }
         if (dropped_table_agents_.empty() && manager_dispatcher_ != actor_zeta::address_t::empty_address()) {
-            // dec 38 ack flag flip — dispatcher clears index_has_dropped_ on
+            // ack flag flip — dispatcher clears index_has_dropped_ on
             // receipt so no further on_horizon_advanced broadcasts arrive
             // until a new DROP TABLE re-marks the subscriber.
             constexpr uint8_t INDEX_KIND = 2;
@@ -1221,7 +1221,7 @@ namespace services::index {
         co_return;
     }
 
-    // Block C §3.5 dec 31 V1.d — apply a single WAL record's effect to the
+    // d — apply a single WAL record's effect to the
     // build's in-memory index_engine_t during CREATE INDEX Phase 2.5 catchup.
     //
     // The handler mirrors the steady-state DML path (insert_rows / delete_rows
@@ -1254,7 +1254,7 @@ namespace services::index {
                                                 uint64_t physical_row_start,
                                                 uint64_t txn_id,
                                                 core::date::timezone_offset_t session_tz) {
-        // Block D DDL routing — closes the regression for CREATE INDEX WAL
+        // DDL routing — closes the regression for CREATE INDEX WAL
         // catchup (operator_create_index_backfill Phase 2.5 loop). After
         // engine ownership migration the manager-side engines_ map is empty
         // for bootstrap-bound oids; the legacy body below would log "no

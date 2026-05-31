@@ -6,8 +6,7 @@ namespace components::logical_plan {
 
     // BEGIN / START TRANSACTION — leaf node, carries no fields.
     //
-    // Block C §3.5 dec 22 Central accumulation: lowered to
-    // operator_begin_transaction_t which (a) ensures an active transaction
+    // Lowered to operator_begin_transaction_t which (a) ensures an active transaction
     // exists for the session via txn_manager_->begin_transaction (idempotent)
     // and (b) calls transaction_t::mark_explicit(). The executor's commit
     // phase then consults transaction_t::is_explicit() to decide whether DML

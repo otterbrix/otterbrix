@@ -149,8 +149,8 @@ namespace services::planner::impl {
         // on insert having processed the chunk first.
         if (!node->children().empty()) {
             // Skip catalog_resolve_*_t children when they appear alongside
-            // a non-resolve consumer (DML/SELECT). Pass 1 has already run
-            // them and stamped OIDs on the logical nodes (visible to
+            // a non-resolve consumer (DML/SELECT). They have already run
+            // upstream and stamped OIDs on the logical nodes (visible to
             // validate/enrich via plan-tree gather). Putting them in the
             // executor's left-chain would chain a resolve operator as
             // `left_` of the DML consumer — operator_insert reads
@@ -159,8 +159,8 @@ namespace services::planner::impl {
             // storage_append gets the wrong shape and inserts 0 rows.
             //
             // EXCEPTION: when the sequence_t contains ONLY resolve nodes
-            // (Pass 1's own sub-plan), don't skip — we'd produce an empty
-            // chain. Pass 1 explicitly wants the resolves executed.
+            // (resolve-only sub-plan), don't skip — we'd produce an empty
+            // chain. The caller explicitly wants the resolves executed.
             auto is_catalog_resolve = [](node_type t) {
                 return t == node_type::catalog_resolve_namespace_t || t == node_type::catalog_resolve_database_t ||
                        t == node_type::catalog_resolve_table_t || t == node_type::catalog_resolve_type_t ||

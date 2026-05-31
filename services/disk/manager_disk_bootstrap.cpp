@@ -136,11 +136,10 @@ namespace services::disk {
     } // namespace
 
     // ----------------------------------------------------------------------
-    // Version B* Step 8.8 — Path A (decided in docs/version-b-step8-roadmap.md
-    // §8.8). All bootstrap helpers below remain manager-side and continue to
-    // mutate `manager_disk_t::storages_` directly. Routing into the agent
-    // slice happens IMPLICITLY via Step 8.2 (creation) and Step 4
-    // (direct_append) dual-write fanouts that were wired earlier:
+    // * Step 8.8 — Path A. All bootstrap helpers below remain manager-side
+    // and continue to mutate `manager_disk_t::storages_` directly. Routing
+    // into the agent slice happens IMPLICITLY via Step 8.2 (creation) and
+    // Step 4 (direct_append) dual-write fanouts that were wired earlier:
     //
     //   - create_storage_with_columns_sync  (manager_disk_io.cpp:288-320)
     //     fans the newly created entry to agents_[pool_idx_for_oid] via
@@ -161,12 +160,11 @@ namespace services::disk {
     //
     // Path B (future, post-Step 8.11) — move these bodies onto agent 0
     // (catalog agent) and delete the manager-side map. Tracked under
-    // Step 8.1.C / Step 8.11; intentionally NOT attempted here to keep
-    // Step 8 incremental.
+    // C / Step 8.11; intentionally NOT attempted here to keep
     // ----------------------------------------------------------------------
 
     void manager_disk_t::bootstrap_system_tables_sync() {
-        // Step 8.8 Path A contract: this helper still emplaces into
+        // Path A contract: this helper still emplaces into
         // manager.storages_ via {create,load}_storage_*_sync. Those helpers
         // do the agent-side fanout themselves (see Step 8.2 dual-write
         // comment in manager_disk_io.cpp:292-305), so the agent slice ends
@@ -187,7 +185,7 @@ namespace services::disk {
             const auto tbl_oid = well_known_oid_for_system_table(def.name);
             if (tbl_oid == catalog::INVALID_OID)
                 return false;
-            // Step 8.11 wrap (2026-05-31): manager.storages_ deleted.
+            // wrap (2026-05-31): manager.storages_ deleted.
             // agents_[0] (CATALOG agent) is the sole source of truth — its
             // has_storage_sync probe reports true for both IN_MEMORY twins
             // (from bootstrap_inner_sync) and DISK record-only markers (from
@@ -254,7 +252,7 @@ namespace services::disk {
             freshly_created == std::unordered_set<catalog::oid_t>{catalog::well_known_oid::pg_settings_table}) {
             // Only pg_settings was freshly created — still need to checkpoint it if disk-backed.
             //
-            // Step 8.4.A unblocker — agent-first entry probe (mirrors the
+            // A unblocker — agent-first entry probe (mirrors the
             // bootstrap_one skip-if-present migration). pg_settings DISK
             // storage is currently a record-only marker on agent 0 (the
             // SFBM still lives on manager.storages_ until 8.1.B/8.1.C
@@ -346,7 +344,7 @@ namespace services::disk {
 
         if (disk_backed) {
             for (auto tbl_oid : freshly_created) {
-                // Step 8.4.A unblocker — agent-first checkpoint target
+                // A unblocker — agent-first checkpoint target
                 // probe (same rationale as the pg_settings early-checkpoint
                 // branch above). Catalog OIDs all live on agent 0; DISK
                 // record-only markers (current state for catalog DISK
@@ -369,7 +367,7 @@ namespace services::disk {
     }
 
     void manager_disk_t::load_system_tables_sync() {
-        // Step 8.11 wrap (2026-05-31): manager.storages_ deleted. Walks the
+        // wrap (2026-05-31): manager.storages_ deleted. Walks the
         // on-disk sys_dir and re-hydrates every pg_* catalog table via
         // load_storage_disk_sync, which constructs the SFBM directly on
         // agents_[0] (catalog agent). Skip-if-present probe uses
@@ -404,7 +402,7 @@ namespace services::disk {
     }
 
     void manager_disk_t::restore_oid_generator_sync() {
-        // Step 8.11 wrap (2026-05-31): manager.storages_ deleted; agents_[0]
+        // wrap (2026-05-31): manager.storages_ deleted; agents_[0]
         // (catalog agent) is the sole owner of catalog SFBM entries.
         // Pre-scheduler-start, single-threaded — Constraint #11 carve-out.
         if (agents_.empty() || agents_[0] == nullptr) {
@@ -461,7 +459,7 @@ namespace services::disk {
     }
 
     void manager_disk_t::load_user_table_storages_sync() {
-        // Step 8.8 Path A contract: walks ${config_.path}/${db_oid}/${tbl_oid}
+        // Path A contract: walks ${config_.path}/${db_oid}/${tbl_oid}
         // for every user table directory and calls load_storage_disk_sync,
         // which (per Step 8.2 + Step 8.1.A) emplaces into manager.storages_
         // AND records the OID on the routed agent slice
@@ -529,7 +527,7 @@ namespace services::disk {
     }
 
     std::unordered_set<components::catalog::oid_t> manager_disk_t::alive_user_oids_sync() const {
-        // Step 8.11 wrap (2026-05-31): manager.storages_ deleted; agents_[0]
+        // wrap (2026-05-31): manager.storages_ deleted; agents_[0]
         // (catalog agent) is the sole owner of pg_class. Pre-scheduler-start,
         // single-threaded — Constraint #11 carve-out (see header comment on
         // agent_disk_t::storage_entry_sync).
@@ -573,12 +571,12 @@ namespace services::disk {
 
     std::pmr::vector<std::pair<components::catalog::oid_t, std::uint64_t>>
     manager_disk_t::scan_dropped_oids_sync() {
-        // Step 8.8 Path A contract: pure READ of manager.storages_[pg_class]
+        // Path A contract: pure READ of manager.storages_[pg_class]
         // with COMMITTED_ROWS scan to surface tombstoned user OIDs.
         // Pre-scheduler-start, single-threaded; agent-side migration is
         // covered by Step 8.9 risk register entry #3.
         //
-        // dec 37 V1 catalog scan rebuild. Walk pg_class twice — once with
+        // catalog scan rebuild. Walk pg_class twice — once with
         // COMMITTED_ROWS (sees every committed row, including tombstoned
         // ones) to collect every user OID ever recorded, then compute the
         // set-difference against alive_user_oids_sync (which uses
@@ -588,7 +586,7 @@ namespace services::disk {
         // into dropped_storages_ so a post-restart horizon advance can
         // finish removing their .otbx files.
         std::pmr::vector<std::pair<components::catalog::oid_t, std::uint64_t>> result{resource_};
-        // Step 8.11 wrap (2026-05-31): manager.storages_ deleted; agents_[0]
+        // wrap (2026-05-31): manager.storages_ deleted; agents_[0]
         // (catalog agent) is the sole owner of pg_class. Pre-scheduler-start,
         // single-threaded — Constraint #11 carve-out.
         if (agents_.empty() || agents_[0] == nullptr) {
@@ -650,7 +648,7 @@ namespace services::disk {
     }
 
     std::string manager_disk_t::read_setting_sync(std::string_view name) {
-        // Step 8.11 wrap (2026-05-31): manager.storages_ deleted; agents_[0]
+        // wrap (2026-05-31): manager.storages_ deleted; agents_[0]
         // (catalog agent) is the sole owner of pg_settings. Pre-scheduler-
         // start, single-threaded — Constraint #11 carve-out.
         const auto settings_oid = catalog::well_known_oid::pg_settings_table;

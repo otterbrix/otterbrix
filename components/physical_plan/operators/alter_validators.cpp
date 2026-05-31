@@ -1,4 +1,4 @@
-// Block C §3.5 dec 43 V1 — ALTER 3-phase atomic validation helpers (Phase 2).
+// ALTER 3-phase atomic validation helpers (Phase 2).
 // See alter_validators.hpp for the design contract.
 
 #include "alter_validators.hpp"
@@ -40,7 +40,6 @@ namespace components::operators::alter_validators {
         //   [5]=attnotnull, [6]=atthasdefault, [7]=attisdropped, [8]=atttypspec,
         //   [9]=attdefspec, [10]=added_at_commit_id, [11]=dropped_at_commit_id.
         //
-        // dec 32 V2 visibility filter:
         //   added_at_commit_id <= snapshot_horizon AND
         //   (dropped_at_commit_id == 0 OR dropped_at_commit_id > snapshot_horizon).
         //
@@ -60,13 +59,12 @@ namespace components::operators::alter_validators {
             // attisdropped boolean tombstone (fast reject)
             if (!row[7].is_null() && row[7].value<bool>())
                 continue;
-            // dec 32 V2 added_at_commit_id <= snapshot_horizon
             if (!row[10].is_null()) {
                 const auto added_at = static_cast<std::uint64_t>(row[10].value<std::int64_t>());
                 if (added_at > horizon)
                     continue;
             }
-            // dec 32 V2 dropped_at_commit_id == 0 OR > snapshot_horizon
+            // dropped_at_commit_id == 0 OR > snapshot_horizon
             if (!row[11].is_null()) {
                 const auto dropped_at = static_cast<std::uint64_t>(row[11].value<std::int64_t>());
                 if (dropped_at != 0 && dropped_at <= horizon)

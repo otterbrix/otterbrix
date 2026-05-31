@@ -7,7 +7,7 @@ namespace services::disk {
     using namespace detail;
 
     // ----------------------------------------------------------------------
-    // Version B* Step 8.11 Path B (ddl) — partial. Three read-then-mutate
+    // * Step 8.11 Path B (ddl) — partial. Three read-then-mutate
     // DDL sites in this file:
     //
     //   * `delete_pg_catalog_rows`              (catalog table_oid)
@@ -90,7 +90,7 @@ namespace services::disk {
                                                                                components::catalog::oid_t table_oid,
                                                                                std::int64_t oid_col_idx,
                                                                                components::catalog::oid_t target_oid) {
-        // Step 8.11.C Path B — catalog OIDs only. Every caller of
+        // C Path B — catalog OIDs only. Every caller of
         // delete_pg_catalog_rows passes a pg_catalog table_oid (pg_class,
         // pg_attribute, pg_depend, pg_type, pg_namespace, pg_index) — all
         // catalog OIDs (oid < FIRST_USER_OID) route to agents_[0] via
@@ -149,7 +149,6 @@ namespace services::disk {
         co_return;
     }
 
-    // Block C §3.5 dec 32 V2 OPTION X — pg_attribute commit_id backfill.
     // Locates the pg_attribute row by `attoid` (column index 0) and writes
     // `commit_id` into column index 10 (added_at_commit_id) or 11
     // (dropped_at_commit_id) per `kind`. Called from operator_commit_
@@ -174,7 +173,7 @@ namespace services::disk {
         components::pg_attribute_commit_id_backfill_t::kind_t kind,
         std::uint64_t commit_id) {
         constexpr auto pg_attr_oid = components::catalog::well_known_oid::pg_attribute_table;
-        // Step 8.11.C Path B — pg_attribute is a catalog OID
+        // C Path B — pg_attribute is a catalog OID
         // (oid < FIRST_USER_OID), so pool_idx_for_oid lands on agents_[0]
         // (CATALOG agent). Step 8.1.B moved catalog SFBM ownership onto
         // that agent and manager_disk_t::storages_ no longer holds the
@@ -195,7 +194,7 @@ namespace services::disk {
             co_return;
         }
 
-        // Step 1 — scan all columns for the row with attoid == target. Build
+        // scan all columns for the row with attoid == target. Build
         // both the row_id list AND a per-row snapshot of every column value.
         // attoid is the unique identity of pg_attribute (assigned by oid_gen
         // and never reused), so at most one row matches.
@@ -234,7 +233,7 @@ namespace services::disk {
             co_return;
         }
 
-        // Step 2 — patch the target column in the read-back snapshot. Column
+        // patch the target column in the read-back snapshot. Column
         // 10 = added_at_commit_id, column 11 = dropped_at_commit_id (see
         // components/catalog/system_table_schemas.cpp pg_attribute_columns()).
         const std::size_t patch_col_idx =
@@ -249,7 +248,7 @@ namespace services::disk {
         row_values[patch_col_idx] =
             components::types::logical_value_t(resource(), static_cast<std::int64_t>(commit_id));
 
-        // Step 3 — build a full-width update chunk. Every column carries its
+        // build a full-width update chunk. Every column carries its
         // pre-existing value (taken from the scan); only column patch_col_idx
         // carries the new commit_id. Aliases mirror the table's column names
         // so direct_update_sync's name-match routing maps each vector to the
@@ -272,7 +271,7 @@ namespace services::disk {
             }
         }
 
-        // Step 4 — WAL physical_update emission. Paired with the matching
+        // WAL physical_update emission. Paired with the matching
         // physical_insert already written by operator_alter_column_{add,drop,
         // rename}; replay applies them in WAL order so the column commit_id
         // materializes alongside the row. Note: the WAL chunk mirrors the
@@ -305,7 +304,7 @@ namespace services::disk {
             }
         }
 
-        // Step 5 — apply the in-place full-row update. The storage::update
+        // apply the in-place full-row update. The storage::update
         // call rewrites every column in `row_ids`; we've staged all
         // pre-existing values plus the patched commit_id field.
         direct_update_sync(pg_attr_oid, row_ids, patch);
@@ -316,7 +315,7 @@ namespace services::disk {
     manager_disk_t::compact_relkind_g_storage(execution_context_t /*ctx*/,
                                               components::catalog::oid_t table_oid,
                                               std::set<std::string> live_attnames) {
-        // Step 8.11 wrap (2026-05-31): manager.storages_ deleted. The routed
+        // wrap (2026-05-31): manager.storages_ deleted. The routed
         // agent slice owns the canonical IN_MEMORY twin for relkind 'g'
         // computed-column carriers. Read the column list via the agent's
         // storage_entry_sync (Constraint #11 carve-out — borrow is safe

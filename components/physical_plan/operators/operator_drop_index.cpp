@@ -26,7 +26,7 @@ namespace components::operators {
     void operator_drop_index_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
 
     actor_zeta::unique_future<void> operator_drop_index_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // Step 1: scrub pg_class / pg_index / pg_depend rows that reference the
+        // scrub pg_class / pg_index / pg_depend rows that reference the
         // dropped index. Order matches rewrite_drop_index: dependants first,
         // then pg_class. Each delete is keyed by (oid_col_idx, target_oid) so
         // partial-row rewrites in mixed catalogs (e.g. pg_depend has objid AND
@@ -46,7 +46,7 @@ namespace components::operators {
             }
         }
 
-        // Step 2: drop the in-memory index entry. Skipped when no index actor
+        // drop the in-memory index entry. Skipped when no index actor
         // is wired (some test harnesses run without one). drop_index is
         // tolerant of an unknown name → no error if the engine never saw the
         // index (e.g. because the metadata existed but backfill never ran).

@@ -15,8 +15,8 @@ namespace components {
         uint64_t count{0};
     };
 
-    // Block C §3.5 dec 32 V2 OPTION X: backfill marker for pg_attribute MVCC
-    // commit_id fields. operator_alter_column_{add,drop,rename} cannot stamp
+    // Backfill marker for pg_attribute MVCC commit_id fields.
+    // operator_alter_column_{add,drop,rename} cannot stamp
     // added_at_commit_id / dropped_at_commit_id at execute time because the
     // commit_id is allocated by transaction_manager_t::commit() later in the
     // pipeline (see operator_commit_transaction.cpp). The operators write the

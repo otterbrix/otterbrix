@@ -660,9 +660,9 @@ namespace components::planner {
                 case node_type::create_matview_t:
                     return rewrite_create_matview(r, node, oid_batch);
                 case node_type::refresh_matview_t:
-                    // First iteration: REFRESH not lowered; planner returns node
-                    // unchanged. Future PR wires DELETE + INSERT(re-parsed body)
-                    // using Phase A's dispatcher Pass 1 re-run infra.
+                    // REFRESH not lowered; planner returns node unchanged.
+                    // Future PR wires DELETE + INSERT(re-parsed body) using
+                    // the dispatcher's resolve re-run infrastructure.
                     return node;
                 case node_type::create_constraint_t:
                     return rewrite_create_constraint(r, node, oid_batch);

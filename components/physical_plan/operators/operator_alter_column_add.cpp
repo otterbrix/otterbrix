@@ -6,7 +6,7 @@
 #include "alter_validators.hpp"
 
 #include <components/catalog/ddl_metadata_builder.hpp>
-#include <components/catalog/dec43_alter_validators.hpp>
+#include <components/catalog/alter_column_validators.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
 #include <services/disk/manager_disk.hpp>
@@ -28,39 +28,42 @@ namespace components::operators {
     actor_zeta::unique_future<void> operator_alter_column_add_t::await_async_and_resume(pipeline::context_t* ctx) {
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
-        // dec 43 V1 Phase 1 validation: pure pre-execute checks. Any failure → error
+        // validation: pure pre-execute checks. Any failure → error
         // cursor + co_return BEFORE any catalog mutation (atomic-rollback semantics).
 
         // Validate column name not duplicate against currently-visible column list.
-        // dec 43 Phase 2: visible_column_names populated by async pg_attribute
-        // scan (filtered by dec 32 V2 MVCC visibility — see alter_validators.cpp).
+        // visible_column_names populated by async pg_attribute
+        // scan (filtered by MVCC visibility — see alter_validators.cpp).
         auto vc_fut = alter_validators::visible_column_names(resource_, ctx->disk_address, exec_ctx, table_oid_);
         auto visible_column_names = co_await std::move(vc_fut);
-        auto ec_dup = components::catalog::dec43::validate_column_not_duplicate(resource_,
-                                                                                visible_column_names,
-                                                                                std::string(column_.name()));
+        auto ec_dup =
+            components::catalog::alter_column_validators::validate_column_not_duplicate(resource_,
+                                                                                        visible_column_names,
+                                                                                        std::string(column_.name()));
         if (ec_dup.contains_error()) {
             set_error(std::move(ec_dup));
             co_return;
         }
 
         // Validate default value type / evaluability if present.
-        auto ec_type = components::catalog::dec43::validate_default_value_type(resource_,
-                                                                               column_.type(),
-                                                                               column_.default_value_opt());
+        auto ec_type =
+            components::catalog::alter_column_validators::validate_default_value_type(resource_,
+                                                                                      column_.type(),
+                                                                                      column_.default_value_opt());
         if (ec_type.contains_error()) {
             set_error(std::move(ec_type));
             co_return;
         }
 
         auto ec_eval =
-            components::catalog::dec43::validate_default_value_evaluatable(resource_, column_.default_value_opt());
+            components::catalog::alter_column_validators::validate_default_value_evaluatable(resource_,
+                                                                                             column_.default_value_opt());
         if (ec_eval.contains_error()) {
             set_error(std::move(ec_eval));
             co_return;
         }
 
-        // Step 1: scan pg_attribute for max(attnum) for this table.
+        // scan pg_attribute for max(attnum) for this table.
         constexpr catalog::oid_t pg_attr_oid = catalog::well_known_oid::pg_attribute_table;
         components::types::logical_value_t toid_lv(resource_, table_oid_);
         std::pmr::vector<std::string> pa_keys(resource_);
@@ -83,21 +86,18 @@ namespace components::operators {
                 next_attnum = n + 1;
         }
 
-        // Step 2: allocate attoid.
         auto [_oa, oaf] =
             actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::allocate_oids_batch, std::size_t{1});
         catalog::oid_batch_t att_batch;
         att_batch.oids = co_await std::move(oaf);
         const catalog::oid_t attoid = att_batch.allocate();
 
-        // Step 3: build + write pg_attribute row.
         const std::string typspec = catalog::encode_type_spec(column_.type());
         const std::string defspec =
             column_.has_default_value() ? catalog::encode_default_spec(column_.default_value()) : std::string{};
         const catalog::oid_t atttypid = (column_.atttypid() != catalog::INVALID_OID)
                                             ? column_.atttypid()
                                             : catalog::builtin_type_to_oid(column_.type().type());
-        // Block C §3.5 dec 32 V2 OPTION X:
         // added_at_commit_id / dropped_at_commit_id are stamped as 0 here
         // (placeholder) because the commit_id is not allocated until
         // operator_commit_transaction_t calls txn_manager.commit() later in

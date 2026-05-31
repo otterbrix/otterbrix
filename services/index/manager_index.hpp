@@ -12,7 +12,6 @@
 #include <actor-zeta/detail/queue/enqueue_result.hpp>
 
 #include "index_agent_disk.hpp"
-#include "index_result.hpp"
 #include "index_table_agent.hpp"
 #include <components/catalog/catalog_codes.hpp>
 #include <components/index/index_engine.hpp>
@@ -56,12 +55,12 @@ namespace services::index {
 
         void sync(address_pack pack);
 
-        // Block D V4 bootstrap helper — called from base_spaces Phase 3.5 before
+        // V4 bootstrap helper — called from base_spaces Phase 3.5 before
         // scheduler start. NOT a regular message handler; direct call only
         // during bootstrap (rule 11 base_spaces exception).
         void register_table_agent_sync(components::catalog::oid_t oid, actor_zeta::address_t addr);
 
-        // Block D V4 bootstrap helper — exposes the per-oid index_engine_t raw
+        // V4 bootstrap helper — exposes the per-oid index_engine_t raw
         // pointer so base_spaces Phase 3.5 can hand it to the matching
         // index_table_agent_t via set_engine_sync. Returns nullptr when no
         // engine has been registered for the oid yet (engines_ is populated
@@ -73,7 +72,7 @@ namespace services::index {
         // bootstrap before scheduler start (rule 11 exception).
         components::index::index_engine_t* engine_for_oid_sync(components::catalog::oid_t oid) const noexcept;
 
-        // Block D Final cleanup — engine ownership migration. Pops the
+        // Final cleanup — engine ownership migration. Pops the
         // index_engine_t for `oid` out of engines_ (creating one on demand if
         // the entry was absent, mirroring register_collection's lazy-init
         // semantics) and returns it as a core::pmr::unique_ptr. The caller
@@ -131,15 +130,17 @@ namespace services::index {
                                         int64_t new_start_row_id);
 
         // MVCC commit/revert/cleanup
-        // Block B Parallel A.B3: commit_insert / commit_delete now carry their
-        // error state in a typed result_t (kept as `success` today because the
-        // underlying bitcask write path is assert+abort terminal — see
-        // index_result.hpp). The signature is the long-term shape so the
-        // executor commit-path can already start handling `result.failed()`
-        // without a second migration once core::error_t propagates upward.
-        unique_future<result_t>
+        // Parallel A.B3: commit_insert / commit_delete now carry their
+        // error state in core::error_t (project-wide convention —
+        // error_t::no_error() means success; contains_error() flags failure).
+        // Kept as no_error today because the underlying bitcask write path is
+        // assert+abort terminal. The signature is the long-term shape so the
+        // executor commit-path can already start handling
+        // `result.contains_error()` without a second migration once
+        // core::error_t propagates upward.
+        unique_future<core::error_t>
         commit_insert(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id);
-        unique_future<result_t>
+        unique_future<core::error_t>
         commit_delete(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id);
         unique_future<void> revert_insert(execution_context_t ctx, components::catalog::oid_t table_oid);
         unique_future<void> cleanup_all_versions(session_id_t session, uint64_t lowest_active);
@@ -182,7 +183,7 @@ namespace services::index {
 
         unique_future<void> flush_all_indexes(session_id_t session);
 
-        // dec 33 V1 event-driven GC subscriber. Walks dropped_table_agents_
+        // event-driven GC subscriber. Walks dropped_table_agents_
         // and erases routing entries whose dropped_at_commit_id is below the
         // new snapshot floor. On drain sends on_subscriber_empty(INDEX_KIND)
         // ack to dispatcher via manager_dispatcher_ (wired by base_spaces
@@ -191,7 +192,7 @@ namespace services::index {
         // new DROP TABLE re-marks the subscriber.
         unique_future<void> on_horizon_advanced(uint64_t new_horizon);
 
-        // Block C §3.5 dec 31 V1.d — mailbox handler called per-WAL-record by
+        // d — mailbox handler called per-WAL-record by
         // operator_create_index_backfill during Phase 2.5 catchup. Locates the
         // index engine for the (table_oid, index_oid) pair and applies the
         // record's effect (insert / delete / update key) on the build's
@@ -268,7 +269,7 @@ namespace services::index {
 
         // Per-collection in-memory index engines (keyed by table oid).
         //
-        // Block D Final cleanup — engine ownership migration STATUS: partial.
+        // Final cleanup — engine ownership migration STATUS: partial.
         // The agent now exposes set_engine_owned_sync and this manager exposes
         // take_engine_ownership_sync; base_spaces Phase 3.5 calls the pair so
         // every oid known at bootstrap has its engine moved into the owning
@@ -291,13 +292,13 @@ namespace services::index {
         // has handed it off.
         std::pmr::unordered_map<components::catalog::oid_t, components::index::index_engine_ptr> engines_;
 
-        // Block D: per-table agent addresses (keyed by table oid). Populated via
+        // per-table agent addresses (keyed by table oid). Populated via
         // register_table_agent_sync during base_spaces bootstrap. Used by later
-        // Block D commits to route per-table DML/search messages to the owning
+        // commits to route per-table DML/search messages to the owning
         // index_table_agent_t.
         std::pmr::unordered_map<components::catalog::oid_t, actor_zeta::address_t> per_table_agents_;
 
-        // dec 33 V1 symmetric GC — oids whose owning table has been dropped,
+        // symmetric GC — oids whose owning table has been dropped,
         // keyed by the commit_id at which the drop became visible. Populated
         // by mark_table_dropped_sync (catalog scan rebuild + DROP TABLE
         // operator). Drained by on_horizon_advanced once the snapshot floor
@@ -314,7 +315,7 @@ namespace services::index {
         // Address of manager_disk_t (for scan_segment when populating indexes)
         actor_zeta::address_t disk_address_ = actor_zeta::address_t::empty_address();
 
-        // dec 33/38 selective broadcast — base_spaces wires this before
+        // selective broadcast — base_spaces wires this before
         // scheduler.start via set_manager_dispatcher_sync. Used by
         // on_horizon_advanced to send on_subscriber_empty(INDEX_KIND) ack once
         // dropped_table_agents_ has drained.

@@ -4,7 +4,7 @@
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/ddl_metadata_builder.hpp>
-#include <components/catalog/dec43_alter_validators.hpp>
+#include <components/catalog/alter_column_validators.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
 #include <services/disk/manager_disk.hpp>
@@ -46,7 +46,7 @@ namespace components::operators {
         constexpr catalog::oid_t pg_class_oid = catalog::well_known_oid::pg_class_table;
         constexpr catalog::oid_t pg_con_oid = catalog::well_known_oid::pg_constraint_table;
 
-        // Step 1 — read the live pg_attribute row by attoid (keyed single-row
+        // read the live pg_attribute row by attoid (keyed single-row
         // lookup). attoid_ was pre-stamped by enrich_logical_plan from the
         // resolved column metadata; if INVALID we simply no-op (matches the
         // legacy "column not found" behavior of the prior attname scan).
@@ -97,7 +97,7 @@ namespace components::operators {
             co_return;
         }
 
-        // Step 2 — read pg_depend for refclassid=pg_attribute, refobjid=attoid.
+        // read pg_depend for refclassid=pg_attribute, refobjid=attoid.
         components::types::logical_value_t att_cls_lv(resource_, catalog::well_known_oid::pg_attribute_table);
         components::types::logical_value_t att_oid_lv(resource_, attoid);
         std::pmr::vector<std::string> pd_keys(resource_);
@@ -114,10 +114,10 @@ namespace components::operators {
                                            std::move(pd_vals));
         auto dep_rows = co_await std::move(pdf);
 
-        // dec 43 V1 Phase 2: build the dependents vector from the pg_depend rows
+        // build the dependents vector from the pg_depend rows
         // we just read, then funnel it through the pure validator. This is the
         // ABORT-on-error gate — any failure here must surface BEFORE the first
-        // mutating delete/append below (atomic-rollback semantics dec 22).
+        // mutating delete/append below (atomic-rollback semantics).
         std::pmr::vector<std::pair<int, catalog::oid_t>> dependents{resource_};
         dependents.reserve(dep_rows.size());
         for (const auto& dep_row : dep_rows) {
@@ -127,14 +127,15 @@ namespace components::operators {
             const auto dep_oid = static_cast<catalog::oid_t>(dep_row[1].value<std::uint32_t>());
             dependents.emplace_back(static_cast<int>(dep_cls), dep_oid);
         }
-        auto ec_cascade = components::catalog::dec43::validate_cascade_dependencies(resource_, dependents);
+        auto ec_cascade =
+            components::catalog::alter_column_validators::validate_cascade_dependencies(resource_, dependents);
         if (ec_cascade.contains_error()) {
             set_error(std::move(ec_cascade));
             mark_executed();
             co_return;
         }
 
-        // Step 3 — for RESTRICT, abort if any non-internal dep exists. For CASCADE,
+        // for RESTRICT, abort if any non-internal dep exists. For CASCADE,
         // drop each dependent object.
         if (behavior_ == catalog::drop_behavior_t::restrict_) {
             if (!dependents.empty()) {
@@ -222,7 +223,7 @@ namespace components::operators {
             }
         }
 
-        // Step 4 — soft-delete the column: drop original pg_attribute row,
+        // soft-delete the column: drop original pg_attribute row,
         // then append a tombstone with attisdropped=true. The tombstone keeps
         // attnum so existing rows on disk that reference this slot remain
         // self-describing for MVCC visibility.
@@ -236,7 +237,6 @@ namespace components::operators {
         if (ctx->txn.transaction_id != 0)
             ctx->pg_catalog_delete_tables.insert(pg_attr_oid);
 
-        // Block C §3.5 dec 32 V2 OPTION X:
         // dropped_at_commit_id is stamped as 0 here (placeholder) because the
         // commit_id is not allocated until operator_commit_transaction_t calls
         // txn_manager.commit() later in the pipeline. We record a backfill
@@ -246,8 +246,8 @@ namespace components::operators {
         // stamped with the executing transaction_id at write and flipped to
         // commit_id by storage_publish_commits at COMMIT.
         //
-        // dec 43 V1 Phase 2: cascade dependency validation already ran in
-        // Phase 1 (above, BEFORE Step 3 mutations) — ABORT-on-error dec 22.
+        // cascade dependency validation already ran above, BEFORE mutations —
+        // ABORT-on-error.
 
         auto tombstone = catalog::build_pg_attribute_row(resource_,
                                                          attoid,

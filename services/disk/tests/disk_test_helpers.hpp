@@ -21,7 +21,7 @@ namespace disk_test_helpers {
     namespace catalog = components::catalog;
     using session_id_t = components::session::session_id_t;
 
-    // Block E ProcArray test helper: visibility filter requires snapshot_horizon
+    // ProcArray test helper: visibility filter requires snapshot_horizon
     // to cover the commit_ids the test reads (typically 1000 from storage_publish_*
     // calls in disk_test_helpers). Set horizon to UINT64_MAX so every committed
     // row is visible — these helpers bypass transaction_manager entirely so

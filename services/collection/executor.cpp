@@ -35,7 +35,6 @@
 #include <components/physical_plan/operators/predicates/predicate.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
 #include <core/executor.hpp>
-// Variant E.3 Pass 1 catalog-resolve helpers promoted to
 // services::catalog_resolve so the executor can drive them without a
 // dispatcher dependency. enrich_logical_plan.hpp declares
 // stamp_oids_from_resolves / find_first_view_resolve / expand_view_body /
@@ -47,7 +46,7 @@
 #include <services/dispatcher/enrich_logical_plan.hpp>
 #include <services/dispatcher/plan_resolve_index.hpp>
 #include <services/dispatcher/validate_logical_plan.hpp>
-// Variant E.3 Pass 2 enrich/validate migration: post_validate_optimize +
+// enrich/validate migration: post_validate_optimize +
 // pg_name_to_logical_type + table_id used by the original_type switch
 // copied from manager_dispatcher_t::execute_plan_impl.
 #include <components/catalog/catalog_codes.hpp>
@@ -220,7 +219,7 @@ namespace services::collection::executor {
         bool is_dml = (effective_type == node_type::insert_t || effective_type == node_type::update_t ||
                        effective_type == node_type::delete_t);
 
-        // Variant E.3 (Pass 9 dec 1) collections_ partition — Step 2 hot-path
+        // collections_ partition — Step 2 hot-path
         // probe. Resolve the routing oid the same way dispatcher.execute_plan_impl
         // does (logical_plan root, then first child for wrapper nodes), then
         // probe local_collections_. Hit  → this executor owns the table slice
@@ -251,8 +250,7 @@ namespace services::collection::executor {
             }
         }
 
-        // Step 1: Begin transaction for DML (executor owns full lifecycle).
-        // Variant E.3 Constraint #11: route through the dispatcher's
+        // Begin transaction for DML (executor owns full lifecycle).
         // txn_begin_msg mailbox handler instead of dereferencing the shared
         // txn_manager_ pointer directly. The dispatcher serializes the
         // txn_manager_ mutation in its own actor context.
@@ -300,7 +298,6 @@ namespace services::collection::executor {
 
         if (!plan) {
             if (is_dml) {
-                // Variant E.3 Constraint #11: mailbox-route the abort.
                 auto [_ta, taf] = actor_zeta::send(parent_address_,
                                                    &services::dispatcher::manager_dispatcher_t::txn_abort_msg,
                                                    session);
@@ -316,7 +313,6 @@ namespace services::collection::executor {
         auto plan_data = traverse_plan_(std::move(plan), std::move(parameters), std::move(context_storage));
         plan_data.limit = limit;
 
-        // Step 2: Execute physical plan
         auto result = co_await execute_sub_plan_(session, std::move(plan_data), txn_data);
 
         if (is_dml && result.cursor->is_success()) {
@@ -330,7 +326,6 @@ namespace services::collection::executor {
             // The flush future is pushed onto pipeline_context.pending_disk_futures
             // and awaited by execute_sub_plan_, ordering guarantees stay identical.
 
-            // Block C §3.5 dec 22 Central accumulation: if a BEGIN
             // operator marked this session's txn explicit, DML statements
             // park their ranges on the transaction_t and skip the per-statement
             // commit / publish / WAL barrier here. operator_commit_transaction
@@ -346,7 +341,6 @@ namespace services::collection::executor {
                     current_txn->accumulate_base_delete(
                         components::table::dml_delete_range_t{del.table_oid, del.txn_id});
                 }
-                // Block C §3.5 dec 22 EXTENSION — pg_catalog accumulation for
                 // explicit BEGIN..COMMIT. Per-statement fragments produce
                 // pg_catalog appends/deletes (e.g. operator_computed_field_register_t,
                 // operator_create_collection_t, operator_register_udf_t). For
@@ -371,7 +365,6 @@ namespace services::collection::executor {
                     std::move(result.pg_catalog_delete_tables));
                 result.pg_catalog_appends.clear();
                 result.pg_catalog_delete_tables.clear();
-                // Block C §3.5 dec 32 V2 OPTION X: park pg_attribute commit_id
                 // backfill markers on the txn for operator_commit_transaction
                 // to drain after commit_id allocation.
                 std::size_t bf_n = result.pg_attribute_commit_id_backfills.size();
@@ -387,7 +380,6 @@ namespace services::collection::executor {
                       pgc_appends_n,
                       pgc_deletes_n,
                       bf_n);
-                // Block C §3.5 dec 32 V2 OPTION X: forward pg_attribute backfill
                 // markers down. They were accumulated onto current_txn via the
                 // mark below before this co_return; see drain in
                 // operator_commit_transaction_t.
@@ -398,8 +390,7 @@ namespace services::collection::executor {
                                            std::move(result.pg_attribute_commit_id_backfills)};
             }
 
-            // Step 4: Commit transaction (implicit / auto-commit txn path).
-            // Variant E.3 Constraint #11: route through dispatcher mailbox.
+            // Commit transaction (implicit / auto-commit txn path).
             // txn_commit_msg is the low-level alloc-commit_id wrapper — it
             // does NOT run the operator pipeline / WAL / storage_publish /
             // publish() barrier. Those side-effects continue to run inline in
@@ -413,7 +404,7 @@ namespace services::collection::executor {
             }
             trace(log_, "executor::execute_plan: committed txn {}, commit_id {}", txn_data.transaction_id, commit_id);
 
-            // Step 5: Commit side-effects on storage and index.
+            // Commit side-effects on storage and index.
             // Routing is by table_oid only — never read cfn from
             // logical_plan, since wrappers (sequence_t etc.) have no cfn and
             // would shadow the inner DML node's identity. Each range's table_oid
@@ -442,14 +433,13 @@ namespace services::collection::executor {
                                                            ctx,
                                                            app.table_oid,
                                                            commit_id);
-                        // Block B Parallel A.B3: commit_insert now returns a
-                        // typed result_t carrying its error state. Bitcask is
-                        // assert+abort terminal today so failed() never trips,
-                        // but the branch is plumbed in for the future C §3.1
-                        // index-side abort path.
+                        // Parallel A.B3: commit_insert now returns a
+                        // core::error_t carrying its error state. Bitcask is
+                        // assert+abort terminal today so contains_error()
+                        // never trips, but the branch is plumbed in for the
+                        // future C §3.1 index-side abort path.
                         auto ci_result = co_await std::move(cif);
-                        if (ci_result.failed()) {
-                            // Block C §3.1 (Pass 9): index commit failed →
+                        if (ci_result.contains_error()) {
                             // propagate via cursor and route through the
                             // existing abort path below. publish() is NOT
                             // called: the commit_id stays in
@@ -462,8 +452,8 @@ namespace services::collection::executor {
                             // storage and index still run uniformly.
                             result.cursor = make_cursor(
                                 resource(),
-                                core::error_t(ci_result.error.type,
-                                              std::pmr::string{ci_result.error.what.c_str(), resource()}));
+                                core::error_t(ci_result.type,
+                                              std::pmr::string{ci_result.what.c_str(), resource()}));
                             goto __block_c_3_1_abort_label;
                         }
                     }
@@ -485,24 +475,22 @@ namespace services::collection::executor {
                                                              del_ctx,
                                                              del.table_oid,
                                                              commit_id);
-                        // Block B Parallel A.B3: commit_delete now returns a
-                        // typed result_t. Same assert+abort terminal
+                        // Parallel A.B3: commit_delete now returns a
+                        // core::error_t. Same assert+abort terminal
                         // semantics as commit_insert apply today.
                         auto cd_result = co_await std::move(cdif);
-                        if (cd_result.failed()) {
-                            // Block C §3.1 (Pass 9): mirror of commit_insert
+                        if (cd_result.contains_error()) {
                             // failure path. Goto routes execution to the
                             // shared revert + abort block; publish() stays
                             // unreached so the commit_id remains in-flight.
                             result.cursor = make_cursor(
                                 resource(),
-                                core::error_t(cd_result.error.type,
-                                              std::pmr::string{cd_result.error.what.c_str(), resource()}));
+                                core::error_t(cd_result.type,
+                                              std::pmr::string{cd_result.what.c_str(), resource()}));
                             goto __block_c_3_1_abort_label;
                         }
                     }
                     // Fire-and-forget auto-GC check (single per call — uses last range's ctx).
-                    // Variant E.3 Constraint #11: mailbox-route the
                     // lowest_active_start_time read so the executor stays
                     // free of the shared txn_manager_ pointer.
                     auto [_tl, tlf] = actor_zeta::send(parent_address_,
@@ -523,7 +511,6 @@ namespace services::collection::executor {
             // invisible (since txn_manager has already removed the active
             // txn entry by the time of return).
             if (commit_id > 0) {
-                // Block C §3.5 dec 32 V2 OPTION X: backfill pg_attribute
                 // added_at_commit_id / dropped_at_commit_id BEFORE
                 // storage_publish_commits so the published row already
                 // carries the correct visibility endpoints.
@@ -566,13 +553,12 @@ namespace services::collection::executor {
                 }
             }
 
-            // Step 6: WAL COMMIT marker
             if (wal_address_ != actor_zeta::address_t::empty_address()) {
                 // WAL workers keyed by database_oid. Single-worker model uses
                 // main_database for all DML; multi-database routing follows
                 // once CREATE DATABASE allocates per-namespace workers.
                 constexpr auto db_oid = components::catalog::well_known_oid::main_database;
-                // Block F: commit_id carried into the COMMIT record so
+                // commit_id carried into the COMMIT record so
                 // snapshot-aware replay restores published_horizon_ without
                 // re-running business logic.
                 auto [_wc, wcf] = actor_zeta::send(wal_address_,
@@ -585,12 +571,11 @@ namespace services::collection::executor {
                 co_await std::move(wcf);
             }
 
-            // Step 7: Block E ProcArray publish barrier (Pass 9 dec 46). After WAL
+            // ProcArray publish barrier. After WAL
             // FULL fsync + storage_publish_* + commit_insert, advance
             // published_horizon_ so the next snapshot sees this commit_id as
             // visible. Until this call, the commit_id sits in in_flight_commits_
             // and is filtered out of every concurrent reader's snapshot.
-            // Variant E.3 Constraint #11: mailbox-route the publish() call.
             if (commit_id > 0) {
                 auto [_tp, tpf] = actor_zeta::send(parent_address_,
                                                    &services::dispatcher::manager_dispatcher_t::txn_publish_msg,
@@ -606,7 +591,7 @@ namespace services::collection::executor {
 
         } else if (is_dml && result.cursor->is_error()) {
         __block_c_3_1_abort_label:
-            // Block C §3.1 (Pass 9): label reached both from the existing
+            // label reached both from the existing
             // operator-error abort path (cursor flipped to error inside
             // execute_sub_plan_) and from the commit-phase index failure
             // branches above. Sharing one label keeps revert+abort logic in
@@ -654,7 +639,6 @@ namespace services::collection::executor {
             // that were just reverted above (same pg_catalog_appends batch),
             // so the markers are moot on abort. Drop them.
             result.pg_attribute_commit_id_backfills.clear();
-            // Variant E.3 Constraint #11: mailbox-route the abort.
             {
                 auto [_ta, taf] = actor_zeta::send(parent_address_,
                                                    &services::dispatcher::manager_dispatcher_t::txn_abort_msg,
@@ -676,22 +660,22 @@ namespace services::collection::executor {
                                    components::logical_plan::storage_parameters parameters,
                                    services::context_storage_t context_storage,
                                    components::table::transaction_data txn) {
-        // Variant E.3 Pass 1 catalog resolve — skeleton wiring for migration
-        // from manager_dispatcher_t::execute_plan_impl. After Pass 1 completes
-        // (all OIDs resolved/stamped onto the plan tree), control delegates to
+        // Catalog resolve — wiring for migration from
+        // manager_dispatcher_t::execute_plan_impl. After all OIDs are
+        // resolved/stamped onto the plan tree, control delegates to
         // execute_plan which drives the operator pipeline.
         //
-        // 1. begin_transaction for the resolve scope. Variant E.3 Constraint
-        //    #11: route through the dispatcher's txn_begin_msg mailbox
-        //    handler instead of dereferencing the raw txn_manager_ pointer
-        //    (which is shared with the dispatcher actor — forbidden as
-        //    actor↔actor shared mutable state). The dispatcher serializes
-        //    the txn_manager_.begin_transaction call in its own actor
-        //    context. begin_transaction is idempotent per session (returns
-        //    the existing active txn if one is already started — which is
-        //    the case while the dispatcher's own Pass 1 still runs
-        //    upstream). Once the dispatcher Pass 1 is retired, this call
-        //    becomes the authoritative resolve-scope txn.
+        // 1. begin_transaction for the resolve scope. Route through the
+        //    dispatcher's txn_begin_msg mailbox handler instead of
+        //    dereferencing the raw txn_manager_ pointer (which is shared
+        //    with the dispatcher actor — forbidden as actor↔actor shared
+        //    mutable state). The dispatcher serializes the
+        //    txn_manager_.begin_transaction call in its own actor context.
+        //    begin_transaction is idempotent per session (returns the
+        //    existing active txn if one is already started — which is the
+        //    case while the dispatcher's own resolve still runs upstream).
+        //    Once the dispatcher's resolve is retired, this call becomes
+        //    the authoritative resolve-scope txn.
         components::table::transaction_data resolve_txn;
         {
             auto [_tb, tbf] = actor_zeta::send(parent_address_,
@@ -700,7 +684,7 @@ namespace services::collection::executor {
             resolve_txn = co_await std::move(tbf);
         }
         trace(log_,
-              "executor::execute_plan_full: Pass 1 resolve-scope txn {}, session: {}",
+              "executor::execute_plan_full: resolve-scope txn {}, session: {}",
               resolve_txn.transaction_id,
               session.data());
 
@@ -713,55 +697,37 @@ namespace services::collection::executor {
         //    the SAME logical nodes that remain in the parent plan tree, so
         //    validate / enrich downstream see the stamped OIDs.
         //
-        // FOR NOW: this iteration only wires the begin_transaction skeleton +
-        // delegation. The dispatcher's Pass 1
-        // (services/dispatcher/dispatcher.cpp lines 738-803, plus the
-        // post-Pass-1 stamp_oids_from_resolves / gather_plan_resolve_index at
-        // lines 808-813 and the Phase 1.5 view expansion at lines 815-869)
-        // continues to run upstream and is fully responsible for OID stamping
-        // before the plan reaches us here.
+        // The dispatcher's resolve continues to run upstream and is fully
+        // responsible for OID stamping before the plan reaches us here.
         //
-        // Variant E.3 Pass 1 migration — blocker catalogue (all resolved):
-        //   (a) RESOLVED — recursion uses `co_await this->execute_plan` for
-        //       the resolve sub-plan instead of dispatcher.execute_plan_impl
-        //       (which would have been a forbidden sync inter-actor call).
-        //       Safe because operator_resolve_*_t only talks to disk_address_
-        //       via async mailbox sends.
-        //   (b) RESOLVED — Pass 1 helpers were promoted out of
-        //       services::dispatcher::impl into services::catalog_resolve
-        //       (enrich_logical_plan.hpp / plan_resolve_index.hpp). The
-        //       executor calls catalog_resolve::{stamp_oids_from_resolves,
+        // Migration notes:
+        //   (a) Recursion uses `co_await this->execute_plan` for the resolve
+        //       sub-plan instead of dispatcher.execute_plan_impl (which would
+        //       have been a forbidden sync inter-actor call). Safe because
+        //       operator_resolve_*_t only talks to disk_address_ via async
+        //       mailbox sends.
+        //   (b) Resolve helpers were promoted out of services::dispatcher::impl
+        //       into services::catalog_resolve (enrich_logical_plan.hpp /
+        //       plan_resolve_index.hpp). The executor calls
+        //       catalog_resolve::{stamp_oids_from_resolves,
         //       gather_plan_resolve_index, find_first_view_resolve,
         //       expand_view_body, extract_unresolved_resolves} directly.
-        //   (c) RESOLVED — Pass 1 builds a fresh, lightweight
-        //       services::context_storage_t for the sub-plan so the caller's
-        //       `context_storage` (std::move'd into the final delegate at the
-        //       end of this method) is not consumed by the Pass 1 call.
-        //   (d) RESOLVED — `resolve_txn` (begun above) is forwarded both into
-        //       the Pass 1 sub-plan and into the final `execute_plan` delegate,
-        //       mirroring the dispatcher's `ctx = {..., pass1_txn, ...}`
-        //       propagation (dispatcher.cpp:684).
+        //   (c) A fresh, lightweight services::context_storage_t is built for
+        //       the sub-plan so the caller's `context_storage` (std::move'd
+        //       into the final delegate at the end of this method) survives.
+        //   (d) `resolve_txn` (begun above) is forwarded both into the resolve
+        //       sub-plan and into the final `execute_plan` delegate, mirroring
+        //       the dispatcher's `ctx = {..., resolve_txn, ...}` propagation.
         //
-        // === Variant E.3 Pass 1 partial copy (iteration 2) ===
-        // Copies the Pass 1 resolve-loop body from
-        // services/dispatcher/dispatcher.cpp lines ~641-692. The dispatcher
-        // recursion `execute_plan_impl(...)` (dispatcher.cpp:673) is replaced
-        // with an in-actor `co_await this->execute_plan(...)` call, which is
-        // safe because:
-        //   * The pass1 sub-plan contains only catalog_resolve_*_t children;
+        // Resolve-loop body. The dispatcher's recursion `execute_plan_impl`
+        // is replaced with an in-actor `co_await this->execute_plan(...)`
+        // call, which is safe because:
+        //   * The resolve sub-plan contains only catalog_resolve_*_t children;
         //     their physical counterparts (operator_resolve_*_t) talk to
         //     disk_address_ via async mailbox sends only — no cross-actor
-        //     synchronous calls, no shared mutable state (Constraint #11).
+        //     synchronous calls, no shared mutable state.
         //   * `this->execute_plan` runs in the same actor coroutine context
         //     so there is no inter-actor round-trip.
-        //
-        // Iteration-1 stamp+gather block (previously inlined here for the
-        // smoke-test) is now performed AFTER the resolve-loop, matching the
-        // dispatcher's ordering (dispatcher.cpp:697-702 runs immediately
-        // after the resolve loop).
-        //
-        // Iteration 3 will copy the Phase 1.5 view expansion block
-        // (dispatcher.cpp lines ~704-759).
         if (logical_plan && logical_plan->type() == components::logical_plan::node_type::sequence_t) {
             auto& kids = logical_plan->children();
             auto is_resolve = [](components::logical_plan::node_type t) {
@@ -777,11 +743,11 @@ namespace services::collection::executor {
                 ++resolve_count;
             }
             if (resolve_count > 0) {
-                // Build the Pass 1 sub-plan as a sequence_t containing the
+                // Build the resolve sub-plan as a sequence_t containing the
                 // resolve front children. operator_resolve_*_t carries a
                 // raw pointer to the logical node — those are the SAME
                 // node objects shared with the parent's sequence_t, so
-                // OIDs stamped during Pass 1 become visible to the parent
+                // OIDs stamped during resolve become visible to the parent
                 // plan's validate/enrich pass that follows.
                 auto pass1_root = boost::intrusive_ptr<components::logical_plan::node_t>(
                     new components::logical_plan::node_sequence_t(resource()));
@@ -789,8 +755,8 @@ namespace services::collection::executor {
                     pass1_root->append_child(kids[i]);
                 }
                 auto pass1_params = components::logical_plan::make_parameter_node(resource());
-                // Iteration 2 — recursive sub-plan execute via this->execute_plan
-                // (not execute_plan_impl). Build a lightweight, throw-away
+                // Recursive sub-plan execute via this->execute_plan (not
+                // execute_plan_impl). Build a lightweight, throw-away
                 // context_storage_t so the caller's `context_storage` (which
                 // is move-consumed by the final delegate at the bottom of
                 // execute_plan_full) survives untouched. The fresh storage
@@ -808,30 +774,27 @@ namespace services::collection::executor {
                                                                  resolve_txn);
                 if (pass1_result.cursor->is_error()) {
                     trace(log_,
-                          "executor::execute_plan_full: Pass 1 resolve failed: {}",
+                          "executor::execute_plan_full: resolve failed: {}",
                           pass1_result.cursor->get_error().what);
                     co_return execute_result_t{std::move(pass1_result.cursor)};
                 }
                 // Note: resolves stay in plan tree so validate/enrich's
                 // gather walks find them. create_plan_sequence skips
                 // catalog_resolve_*_t children when building the executor's
-                // left-chain (they have already run in Pass 1; putting
-                // them in operator_insert.left_ would corrupt insert's
-                // data input — see create_plan_sequence.cpp note).
+                // left-chain (they have already run; putting them in
+                // operator_insert.left_ would corrupt insert's data input —
+                // see create_plan_sequence.cpp note).
                 //
-                // Dispatcher mirror dispatcher.cpp:684 also does
-                //   ctx = execution_context_t{session, pass1_txn, ...};
-                // for its own downstream consumers. The executor's
-                // downstream `execute_plan` delegate already receives
-                // `resolve_txn` directly as the `txn` parameter, so no
-                // ctx rebuild is required here.
+                // The executor's downstream `execute_plan` delegate already
+                // receives `resolve_txn` directly as the `txn` parameter,
+                // so no ctx rebuild is required here.
             }
         }
-        // Post-Pass-1 stamp + index gather — dispatcher.cpp lines ~697-702.
-        // Both helpers are pure tree-walks with no actor / mailbox
-        // dependency, idempotent against the dispatcher's own Pass 1 that
-        // still runs upstream (stamping writes the same oid_t twice;
-        // gather skips nodes whose oid is still INVALID_OID).
+        // Post-resolve stamp + index gather. Both helpers are pure tree-walks
+        // with no actor / mailbox dependency, idempotent against the
+        // dispatcher's own resolve that still runs upstream (stamping writes
+        // the same oid_t twice; gather skips nodes whose oid is still
+        // INVALID_OID).
         //
         // local_idx is built but not yet consumed — kept as a self-check
         // until validate/enrich migrate into the executor (then they will
@@ -842,7 +805,7 @@ namespace services::collection::executor {
             services::catalog_resolve::plan_resolve_index_t local_idx;
             services::catalog_resolve::gather_plan_resolve_index(logical_plan.get(), local_idx);
             trace(log_,
-                  "executor::execute_plan_full: Pass 1 stamp+gather — "
+                  "executor::execute_plan_full: stamp+gather — "
                   "ns_by_dbname={}, tbl_ns_by_qname={}, type_oid_by_qname={}, fn_oid_by_qname={}",
                   local_idx.ns_by_dbname.size(),
                   local_idx.tbl_ns_by_qname.size(),
@@ -850,24 +813,22 @@ namespace services::collection::executor {
                   local_idx.fn_oid_by_qname.size());
             (void)local_idx;
         }
-        // === Variant E.3 Pass 1 partial copy (iteration 3) ===
-        // Phase 1.5 SELECT-time view expansion + Phase 1.6 fresh-resolve
-        // sub-execute. Mirrors services/dispatcher/dispatcher.cpp
-        // lines ~704-759. After Pass 1 stamped resolved_metadata.view_sql
-        // on catalog_resolve_table_t nodes with relkind=='v', re-parse +
+        // SELECT-time view expansion + fresh-resolve sub-execute. After
+        // resolve stamped resolved_metadata.view_sql on
+        // catalog_resolve_table_t nodes with relkind=='v', re-parse +
         // re-transform the view body and splice the resulting sub-plan
         // in place. First-iteration scope: only top-level passthrough
         // plans (`SELECT * FROM v`) — replace the entire logical_plan
         // with the sub-plan. More elaborate compositions (extra
-        // filters/projections/joins on top of v) are followup #1.
+        // filters/projections/joins on top of v) are followup work.
         //
         // The dispatcher recursion `execute_plan_impl(...)` for the
-        // sub-plan's fresh resolves (Phase 1.6) is replaced with
-        // `co_await this->execute_plan(...)`, same routing pattern used
-        // in iteration 2 — safe by the same reasoning (resolve sub-plan
-        // contains only catalog_resolve_*_t children whose operators
-        // talk to disk_address_ via async mailbox sends only;
-        // Constraint #11 respected).
+        // sub-plan's fresh resolves is replaced with
+        // `co_await this->execute_plan(...)` — safe by the same reasoning
+        // as the outer resolve loop (resolve sub-plan contains only
+        // catalog_resolve_*_t children whose operators talk to
+        // disk_address_ via async mailbox sends only; no shared mutable
+        // state).
         if (logical_plan) {
             if (auto* view_node = services::catalog_resolve::find_first_view_resolve(logical_plan.get())) {
                 auto exp = services::catalog_resolve::expand_view_body(resource(),
@@ -900,7 +861,7 @@ namespace services::collection::executor {
                         }
                     }
 
-                    // === Phase 1.6: Pass 1 on sub-plan's fresh resolves ===
+                    // === Resolve sub-plan's fresh resolves ===
                     auto fresh = services::catalog_resolve::extract_unresolved_resolves(logical_plan.get());
                     if (!fresh.empty()) {
                         auto pass2_root = boost::intrusive_ptr<components::logical_plan::node_t>(
@@ -909,13 +870,12 @@ namespace services::collection::executor {
                             pass2_root->append_child(n);
                         }
                         auto pass2_params = components::logical_plan::make_parameter_node(resource());
-                        // Iteration-3 recursive sub-plan execute via
-                        // this->execute_plan (NOT execute_plan_impl).
-                        // Fresh, throw-away context_storage_t mirrors
-                        // the iteration-2 Pass 1 sub-plan call — the
-                        // caller's `context_storage` survives untouched
-                        // for the final delegate at the bottom of
-                        // execute_plan_full.
+                        // Recursive sub-plan execute via this->execute_plan
+                        // (NOT execute_plan_impl). Fresh, throw-away
+                        // context_storage_t mirrors the outer resolve
+                        // sub-plan call — the caller's `context_storage`
+                        // survives untouched for the final delegate at the
+                        // bottom of execute_plan_full.
                         services::context_storage_t pass2_context_storage{resource(),
                                                                           log_.clone(),
                                                                           context_storage.session_timezone};
@@ -926,26 +886,25 @@ namespace services::collection::executor {
                                                                          resolve_txn);
                         if (pass2_result.cursor->is_error()) {
                             trace(log_,
-                                  "executor::execute_plan_full: view sub-plan Pass 1 "
-                                  "resolve failed: {}",
+                                  "executor::execute_plan_full: view sub-plan resolve failed: {}",
                                   pass2_result.cursor->get_error().what);
                             co_return execute_result_t{std::move(pass2_result.cursor)};
                         }
                     }
 
-                    // === Phase 1.7: rebuild idx for re-validate ===
+                    // === Rebuild idx for re-validate ===
                     // After splicing, freshly-stamped OIDs on the
                     // sub-plan's resolves must be propagated onto their
                     // consumer nodes; the local_idx self-check above
                     // was built against the pre-splice plan, so rebuild
                     // it here against the new plan tree to keep the
-                    // post-Pass-1 invariant (validate / enrich see
+                    // post-resolve invariant (validate / enrich see
                     // consistent OIDs on consumer nodes).
                     services::catalog_resolve::stamp_oids_from_resolves(logical_plan.get());
                     services::catalog_resolve::plan_resolve_index_t post_view_idx;
                     services::catalog_resolve::gather_plan_resolve_index(logical_plan.get(), post_view_idx);
                     trace(log_,
-                          "executor::execute_plan_full: Phase 1.7 post-view stamp+gather — "
+                          "executor::execute_plan_full: post-view stamp+gather — "
                           "ns_by_dbname={}, tbl_ns_by_qname={}, type_oid_by_qname={}, fn_oid_by_qname={}",
                           post_view_idx.ns_by_dbname.size(),
                           post_view_idx.tbl_ns_by_qname.size(),
@@ -955,13 +914,12 @@ namespace services::collection::executor {
                 }
             }
         }
-        // === Variant E.3 Pass 2 enrich/validate migration ===
-        // Mirrors services/dispatcher/dispatcher.cpp lines ~782-1176:
+        // === Enrich/validate migration ===
         //   * Build the post-view dispatcher_idx (already built above as
         //     local_idx / post_view_idx — gather once more here for
         //     parity with the dispatcher ordering after view splice).
         //   * Build qualified_name_t for the effective consumer node via
-        //     build_id_cfn (closure mirrors dispatcher.cpp lines 787-865).
+        //     build_id_cfn.
         //   * Switch on original_type → namespace / table / type existence
         //     checks via catalog_resolve helpers (no async / no member
         //     state on the executor besides resource()).
@@ -990,17 +948,15 @@ namespace services::collection::executor {
 
         // Rebuild dispatcher_idx against the (possibly view-spliced) plan
         // tree so validate / enrich / build_id_cfn see fully-stamped OIDs.
-        // Mirrors dispatcher.cpp:723-724 (and the Phase 1.7 rebuild at 778).
         services::catalog_resolve::plan_resolve_index_t dispatcher_idx;
         if (logical_plan) {
             services::catalog_resolve::stamp_oids_from_resolves(logical_plan.get());
             services::catalog_resolve::gather_plan_resolve_index(logical_plan.get(), dispatcher_idx);
         }
 
-        // Closure mirror of dispatcher.cpp:787-865. Builds qualified_name_t
-        // from the effective consumer node; nodes that don't carry user-
-        // typed names pull (db, rel) from the sibling resolve_* nodes via
-        // drop_target_names_from_resolves.
+        // Build qualified_name_t from the effective consumer node; nodes
+        // that don't carry user-typed names pull (db, rel) from the
+        // sibling resolve_* nodes via drop_target_names_from_resolves.
         const auto* plan_root_for_drop_names = logical_plan.get();
         auto build_id_cfn = [plan_root_for_drop_names](const components::logical_plan::node_t* n) -> qualified_name_t {
             using components::logical_plan::node_create_database_t;
@@ -1169,7 +1125,6 @@ namespace services::collection::executor {
                 break;
             }
             case node_type::drop_collection_t: {
-                // Variant E.3 Section 1 cut-over: parity with dispatcher.cpp
                 // drop_collection_t branch (dispatcher.cpp:895-910). The
                 // dispatcher does TWO checks in order:
                 //   1) collections_.count(qualified_name_t{db, rel}) — its
@@ -1294,13 +1249,12 @@ namespace services::collection::executor {
                 break;
             }
             case node_type::set_timezone_t: {
-                // Variant E.3 Constraint #11: SET TIME ZONE mutates the
                 // dispatcher's default_tz_cat_ (single-owner, mailbox-only)
                 // and appends a ("TimeZone", <name>) row to pg_settings via
                 // disk_address_. Both happen inside set_default_timezone_msg
                 // on the dispatcher's actor context. The executor just
                 // forwards the timezone name string and awaits the result
-                // cursor; on error it's surfaced via the standard Pass 2
+                // cursor; on error it's surfaced via the standard validate
                 // `error` channel.
                 const auto& tz_node =
                     reinterpret_cast<components::logical_plan::node_set_timezone_ptr&>(logical_plan);
@@ -1329,7 +1283,6 @@ namespace services::collection::executor {
                 break;
             case node_type::alter_table_t:
                 // ALTER TABLE metadata already stamped on plan-tree by
-                // Pass 1; nothing to verify here.
                 break;
             case node_type::create_constraint_t: {
                 if (auto err = services::dispatcher::check_collection_exists(resource(), &dispatcher_idx, id);
@@ -1401,12 +1354,12 @@ namespace services::collection::executor {
 
         if (error) {
             trace(log_,
-                  "executor::execute_plan_full: Pass 2 validation error: {}",
+                  "executor::execute_plan_full: validation error: {}",
                   error->get_error().what);
             co_return execute_result_t{std::move(error)};
         }
 
-        // === Destructive Pass 2 rewrites — gated ===
+        // === Destructive rewrites — gated ===
         // post_validate_optimize, enrich_plan, and planner.create_plan
         // mutate logical_plan in ways that are NOT safely idempotent:
         //   * post_validate_optimize rewrites node_join_t into
@@ -1418,30 +1371,27 @@ namespace services::collection::executor {
         //     check_constraint_t / fk_check_t. Running it twice would
         //     re-wrap on top of the previous wrap — broken plan.
         // The dispatcher upstream currently runs the SAME three passes
-        // (dispatcher.cpp:1164-1176) before forwarding to the executor.
-        // Until the dispatcher's Pass 2 is removed, gate the executor's
-        // copy off by default. The code stays compiled so the migration
-        // path is wired and tested by the unit-test follow-up; flipping
+        // before forwarding to the executor. Until the dispatcher's
+        // pre-execute pass is removed, gate the executor's copy off by
+        // default. The code stays compiled so the migration path is wired
+        // and tested by the unit-test follow-up; flipping
         // `enable_pass2_rewrites` to true here is the final cut-over step.
         //
-        // Variant E.3 Section-0 cut-over: this flag is paired with
-        // `use_executor_full_pipeline` in dispatcher.cpp's anonymous
-        // namespace (~line 138). See the SAFETY MATRIX comment there for
-        // the four-state correctness table. Target state for the atomic
-        // flip commit: both flags `true` PLUS dispatcher.cpp:543-1313
-        // (Pass 1/2/3 block) deleted in the same commit, otherwise Pass
-        // 1/2/3 runs twice and produces a double-wrapped plan. See
-        // docs/variant-e3-cutover-checklist.md Section 0 and Section 6.
+        // `use_executor_full_pipeline` lives in dispatcher.cpp's anonymous
+        // namespace. See the SAFETY MATRIX comment there for the
+        // four-state correctness table. Target state for the atomic flip
+        // commit: both flags `true` PLUS the dispatcher's pre-execute
+        // block deleted in the same commit, otherwise it runs twice and
+        // produces a double-wrapped plan.
         constexpr bool enable_pass2_rewrites = true;
         if (enable_pass2_rewrites) {
-            // Late logical optimization. Mirrors dispatcher.cpp:1164.
+            // Late logical optimization.
             logical_plan = components::planner::post_validate_optimize(resource(), std::move(logical_plan));
 
             // Enrich DML node fields with catalog metadata (NOT NULL,
             // DEFAULT, CHECK exprs). enrich reads exclusively from the
-            // plan-tree idx. Mirrors dispatcher.cpp:1169 — ctx carries
-            // the resolve_txn so enrich sees the same MVCC snapshot
-            // Pass 1 used.
+            // plan-tree idx. ctx carries the resolve_txn so enrich sees
+            // the same MVCC snapshot
             components::execution_context_t enrich_ctx{session,
                                                        resolve_txn,
                                                        context_storage.session_timezone};
@@ -1453,19 +1403,18 @@ namespace services::collection::executor {
                                                          &context_storage);
             co_await std::move(ef);
             // Logical plan rewrite: insert constraint wrapper nodes driven
-            // by enriched fields. Mirrors dispatcher.cpp:1173-1176.
+            // by enriched fields.
             components::planner::planner_t planner;
             logical_plan = planner.create_plan(resource(), std::move(logical_plan));
 
-            // === Variant E.3 Pass 3: INSERT relkind='g' wrap + DDL OID-batch
-            //                          allocation ===
-            // Mirrors dispatcher.cpp:1076-1310. Lives inside the same
-            // enable_pass2_rewrites gate because Pass 3 mutates the
-            // logical_plan in ways that conflict with the dispatcher's
-            // upstream Pass 3 (would double-wrap INSERT for relkind='g'
-            // and re-emit DDL primitive_writes from already-rewritten
-            // sequence_t roots). Final cut-over flips both passes off in
-            // dispatcher and on here in a single step.
+            // === INSERT relkind='g' wrap + DDL OID-batch allocation ===
+            // Lives inside the same enable_pass2_rewrites gate because
+            // this stage mutates the logical_plan in ways that conflict
+            // with the dispatcher's upstream version (would double-wrap
+            // INSERT for relkind='g' and re-emit DDL primitive_writes
+            // from already-rewritten sequence_t roots). Final cut-over
+            // flips both off in the dispatcher and on here in a single
+            // step.
 
             // Option A (chosen): inline OID allocation via the same
             // pipeline-routed node_allocate_oids_t leaf the dispatcher
@@ -1473,11 +1422,10 @@ namespace services::collection::executor {
             // (resource(), disk_address_, txn_manager_, log_,
             // function_registry_).
             //
-            // Variant E.3 Constraint #11 note on `pctx.txn_manager =
-            // txn_manager_` below: the assignment exposes the raw
+            // txn_manager_ below: the assignment exposes the raw
             // txn_manager_ pointer to the operator pipeline (pctx /
-            // pipeline_context_t). Per Constraint #11 this is NOT an
-            // actor↔actor share — the operator runs SYNCHRONOUSLY inside
+            // pipeline_context_t). This is NOT an actor↔actor share —
+            // the operator runs SYNCHRONOUSLY inside
             // this executor's coroutine (single-threaded actor mailbox
             // semantics), so the txn_manager access happens on the same
             // logical thread as any other executor work. The
@@ -1753,33 +1701,28 @@ namespace services::collection::executor {
                 logical_plan = ddl_planner.create_plan(resource(), std::move(logical_plan), std::move(oid_batch));
             }
         }
-        // For now Pass 3 rewrites stay gated; the dispatcher upstream
+        // The destructive rewrites stay gated; the dispatcher upstream
         // continues to perform them before forwarding to execute_plan_full.
-        // Flipping enable_pass2_rewrites above is the cut-over for both
-        // Pass 2 and Pass 3 in a single step.
+        // Flipping enable_pass2_rewrites above is the cut-over.
         //
-        // Variant E.3 blocker (e) — RESOLVED for the cross-actor
-        // boundary. The begin_transaction at the top of
-        // execute_plan_full is now mailbox-routed via
-        // manager_dispatcher_t::txn_begin_msg (Constraint #11). The
+        // The begin_transaction at the top of execute_plan_full is now
+        // mailbox-routed via manager_dispatcher_t::txn_begin_msg. The
         // remaining `pctx.txn_manager = txn_manager_` and
         // `pipeline_context.txn_manager = txn_manager_` assignments in
-        // allocate_oids_inline (Pass 3, gated) and execute_sub_plan_
-        // are NOT actor↔actor shares: the operator pipeline runs
-        // synchronously inside this executor's coroutine, so the
-        // txn_manager touches happen on the same single-threaded actor
-        // mailbox. The cross-actor mutation hazard (executor and
-        // dispatcher both racing on txn_manager_) is closed by the
-        // dispatcher-owned txn_*_msg handlers that serialize
+        // allocate_oids_inline (gated) and execute_sub_plan_ are NOT
+        // actor↔actor shares: the operator pipeline runs synchronously
+        // inside this executor's coroutine, so the txn_manager touches
+        // happen on the same single-threaded actor mailbox. The
+        // cross-actor mutation hazard (executor and dispatcher both
+        // racing on txn_manager_) is closed by the dispatcher-owned
+        // txn_*_msg handlers that serialize
         // begin/commit/abort/publish/lowest-active through the
-        // dispatcher's mailbox. See the Option-A note above
-        // allocate_oids_inline for the per-call-site rationale.
+        // dispatcher's mailbox.
         trace(log_,
-              "executor::execute_plan_full: Pass 1 stub — delegating to execute_plan, "
-              "session: {}",
+              "executor::execute_plan_full: delegating to execute_plan, session: {}",
               session.data());
         // Delegate to the operator-pipeline entry. The dispatcher already
-        // stamped OIDs via its own Pass 1; we forward the resolve_txn so the
+        // stamped OIDs via its own resolve; we forward the resolve_txn so the
         // DML/DDL operator path observes the same MVCC snapshot the resolves
         // saw. execute_plan treats `txn` as the externally-managed scope txn
         // for non-DML and begins its own for DML — both modes are correct
@@ -1857,7 +1800,7 @@ namespace services::collection::executor {
             pipeline_context.wal_address = wal_address_;
             pipeline_context.txn = txn;
             pipeline_context.session_tz = plan_data.context_storage_.session_timezone;
-            // Block C §3.5 dec 22: pipeline operators that need to mutate the
+            // pipeline operators that need to mutate the
             // global txn map (operator_begin_transaction_t marks the session's
             // txn explicit; operator_commit_transaction_t drains and publishes
             // accumulated ranges) consult ctx->txn_manager. Wire the executor's
@@ -2012,7 +1955,6 @@ namespace services::collection::executor {
             for (auto& d : pipeline_context.pg_catalog_delete_tables) {
                 result_tracking.pg_catalog_delete_tables.insert(std::move(d));
             }
-            // Block C §3.5 dec 32 V2 OPTION X: lift pg_attribute commit_id
             // backfill markers emitted by ALTER COLUMN ADD/DROP/RENAME so they
             // propagate alongside pg_catalog_appends down to transaction_t /
             // operator_commit_transaction.
@@ -2025,7 +1967,7 @@ namespace services::collection::executor {
 
             // Lift DML swap-info recorded by operator_insert /
             // operator_delete / operator_update inside await_async_and_resume.
-            // B33 (Pass 9): accumulate per-table ranges across sub-plans —
+            // B33: accumulate per-table ranges across sub-plans —
             // previously overwriting silently dropped non-last FK cascade child
             // table publishes. execute_plan iterates the vectors below to drive
             // storage_publish_commit / storage_publish_delete for each range.
@@ -2054,7 +1996,6 @@ namespace services::collection::executor {
 
     // HEAD: intercept_dml_io_ removed — DML I/O now happens inside each operator's await_async_and_resume.
 
-    // Variant E.3 (Pass 9 dec 1) collections_ partition — Step 2.
     // dispatcher.cpp fans `register_collection_local` to executor[hash(oid) % 4]
     // after `collections_.insert(...)`. The partition invariant is enforced by
     // the dispatcher's hash routing; we do not re-validate it here. The entry

@@ -301,7 +301,7 @@ namespace components::operators {
         // 3. WAL physical_update.
         if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
             auto upd_count = static_cast<uint64_t>(wal_row_ids.size());
-            // Variant C: see operator_insert comment on db_oid temporary hardcode.
+            // See operator_insert comment on db_oid temporary hardcode.
             constexpr auto db_oid = components::catalog::well_known_oid::main_database;
             auto [_w, wf] = actor_zeta::send(ctx->wal_address,
                                              &services::wal::manager_wal_replicate_t::write_physical_update,

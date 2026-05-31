@@ -1,11 +1,11 @@
 // Block C §3.5 dec 43 V1 — ALTER 3-phase atomic validation helpers (Phase 1).
-// Implementation notes: see dec43_alter_validators.hpp for the design contract.
+// Implementation notes: see alter_column_validators.hpp for the design contract.
 
-#include "dec43_alter_validators.hpp"
+#include "alter_column_validators.hpp"
 
 #include "system_table_schemas.hpp"
 
-namespace components::catalog::dec43 {
+namespace components::catalog::alter_column_validators {
 
     core::error_t validate_column_not_duplicate(std::pmr::memory_resource* resource,
                                                 const std::pmr::vector<std::string>& visible_column_names,
@@ -81,4 +81,4 @@ namespace components::catalog::dec43 {
         return core::error_t::no_error();
     }
 
-} // namespace components::catalog::dec43
+} // namespace components::catalog::alter_column_validators

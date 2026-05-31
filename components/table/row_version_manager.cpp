@@ -7,7 +7,7 @@
 
 namespace components::table {
 
-    // Block E ProcArray (Pass 9 dec 46 + BLOCKER 7/8). Canonical visibility filter:
+    // ProcArray canonical visibility filter:
     //   1. If id == this txn's own transaction_id → self-write, always visible.
     //   2. If id >= TRANSACTION_ID_START → another txn's pending write, not visible.
     //   3. If id > snapshot_horizon → committed after our snapshot, not visible.
@@ -36,9 +36,9 @@ namespace components::table {
         }
     };
 
-    // BLOCKER 7 (Pass 2): the committed-scan operator (used by DDL resolves /
-    // committed-only scans) must also respect ProcArray. Rule semantics identical
-    // — both operators fold into the same filter under Block E.
+    // The committed-scan operator (used by DDL resolves /
+    // committed-only scans) must also respect ProcArray. Rule semantics
+    // identical — both operators fold into the same filter.
     struct committed_version_operator {
         static bool use_inserted_version(const transaction_data& txn, uint64_t id) {
             return transaction_version_operator::use_inserted_version(txn, id);

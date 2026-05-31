@@ -693,7 +693,7 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
         return chunk;
     };
 
-    // Step 1: register column "a" then storage_append a row with just "a".
+    // register column "a" then storage_append a row with just "a".
     auto attoid_a = test_computed_register(fx, table_oid, "a", components::catalog::well_known_oid::int64_type);
     REQUIRE(attoid_a >= FIRST_USER_OID);
     {
@@ -707,7 +707,7 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
         (void) start;
     }
 
-    // Step 2: register column "b" and storage_append a row with both "a" and "b".
+    // register column "b" and storage_append a row with both "a" and "b".
     // Expected (per task #91 premise): storage now has 2 columns; row 1 has b=NULL.
     // Actual: storage's schema was frozen at 1 column when the first chunk was
     // appended (adopt_schema is one-shot). The "b" column in the incoming chunk
@@ -744,7 +744,7 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
         REQUIRE(rows->size() == 2);
     }
 
-    // Step 3: register "c" and storage_append a row with all three columns.
+    // register "c" and storage_append a row with all three columns.
     auto attoid_c = test_computed_register(fx, table_oid, "c", components::catalog::well_known_oid::float64_type);
     REQUIRE(attoid_c >= FIRST_USER_OID);
     {

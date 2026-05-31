@@ -12,7 +12,7 @@
 
 namespace components::table {
 
-    // Block C §3.5 dec 22 Central accumulation: explicit BEGIN..COMMIT txns
+    // Central accumulation: explicit BEGIN..COMMIT txns
     // accumulate DML ranges across statements instead of publishing per-statement.
     // The dispatcher / operator_commit_transaction drains these vectors in
     // batched storage_publish_* calls at COMMIT, producing single-atom visibility
@@ -35,7 +35,7 @@ namespace components::table {
                       session::session_id_t session,
                       std::pmr::memory_resource* resource = std::pmr::null_memory_resource());
 
-        // Block E (Pass 9 dec 46 + BLOCKER 8): data() returns the cached snapshot
+        // + BLOCKER 8): data() returns the cached snapshot
         // by value-copy. The snapshot is set once by transaction_manager during
         // begin_transaction(); subsequent reads avoid re-locking the manager. The
         // vector copy is O(active in-flight commits) — typically <100, amortized
@@ -59,7 +59,7 @@ namespace components::table {
         void mark_committed();
         void mark_aborted();
 
-        // Block E (Pass 9 dec 46): transaction_manager calls this during
+        // ): transaction_manager calls this during
         // begin_transaction after capturing the snapshot under its lock. The
         // vector is moved in — the caller transfers ownership of the resource.
         void set_snapshot(uint64_t horizon, std::pmr::vector<uint64_t> in_flight) {
@@ -67,7 +67,7 @@ namespace components::table {
             in_flight_snapshot_ = std::move(in_flight);
         }
 
-        // Block C §3.5 dec 22 Central accumulation API. operator_begin_transaction
+        // Central accumulation API. operator_begin_transaction
         // marks an explicit txn; executor consults is_explicit() in the commit
         // phase to decide between per-statement publish (implicit) and accumulate
         // (explicit). operator_commit_transaction drains the vectors at COMMIT.
@@ -92,7 +92,7 @@ namespace components::table {
             return out;
         }
 
-        // Block C §3.5 dec 22 EXTENSION — pg_catalog accumulation for explicit
+        // EXTENSION — pg_catalog accumulation for explicit
         // BEGIN..COMMIT. Each per-statement fragment inside an explicit txn
         // produces a vector of pg_catalog append-ranges and a set of
         // delete-tables (from operator_primitive_write_t / register_udf /
@@ -125,7 +125,6 @@ namespace components::table {
             pg_catalog_delete_tables.clear();
         }
 
-        // Block C §3.5 dec 32 V2 OPTION X: pg_attribute commit_id backfill
         // accumulation/drain for explicit BEGIN..ALTER..COMMIT. Each per-
         // statement fragment that runs an ALTER COLUMN inside the explicit
         // txn parks its markers here; operator_commit_transaction_t drains
@@ -157,7 +156,6 @@ namespace components::table {
         // storage_revert_appends after the swap point.
         std::vector<components::pg_catalog_append_range_t> pg_catalog_appends;
         std::set<components::catalog::oid_t> pg_catalog_delete_tables;
-        // Block C §3.5 dec 32 V2 OPTION X — explicit-txn parked markers.
         // Drained by operator_commit_transaction_t at COMMIT.
         std::vector<components::pg_attribute_commit_id_backfill_t> pg_attribute_commit_id_backfills;
 
@@ -171,13 +169,13 @@ namespace components::table {
         bool is_explicit_{false};
         std::vector<append_info> appends_;
 
-        // Block E ProcArray cached snapshot — set once by transaction_manager
+        // ProcArray cached snapshot — set once by transaction_manager
         // during begin_transaction; never mutated thereafter. Returned by value
         // from data() each call.
         uint64_t snapshot_horizon_{0};
         std::pmr::vector<uint64_t> in_flight_snapshot_{std::pmr::null_memory_resource()};
 
-        // Block C §3.5 dec 22 Central accumulation: explicit BEGIN..COMMIT txns
+        // Central accumulation: explicit BEGIN..COMMIT txns
         // park DML ranges here until COMMIT drains them in a single atomic
         // publish batch. Implicit txns never touch these (is_explicit_ false).
         std::pmr::vector<dml_append_range_t> pending_base_appends_{std::pmr::null_memory_resource()};

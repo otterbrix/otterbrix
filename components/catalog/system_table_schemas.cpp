@@ -110,8 +110,8 @@ namespace components::catalog {
             // (pg_attrdef-equivalent inlined into pg_attribute). Empty when
             // atthasdefault=false.
             c.emplace_back("attdefspec", str_col(), false);
-            // Block C §3.5 dec 32 V2 — ALTER TABLE lazy backfill: MVCC versioning
-            // for columns. added_at_commit_id = commit_id of the ALTER TABLE ADD
+            // ALTER TABLE lazy backfill: MVCC versioning for columns.
+            // added_at_commit_id = commit_id of the ALTER TABLE ADD
             // COLUMN that introduced this column. dropped_at_commit_id = commit_id
             // of the matching DROP COLUMN (0 = still alive). Visibility:
             // snapshot sees column iff added_at_commit_id <= snapshot.horizon

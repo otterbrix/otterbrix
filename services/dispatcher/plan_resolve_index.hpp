@@ -3,7 +3,7 @@
 // Plan-tree catalog lookup index.
 //
 // The transformer wraps DML/DDL plans with catalog_resolve_*_t leaf nodes.
-// Pass 1 in the dispatcher runs those leaves through operator_resolve_*_t
+// in the dispatcher runs those leaves through operator_resolve_*_t
 // (which queries pg_catalog via the standard executor pipeline) and stamps
 // the resolved OID + metadata onto each leaf via back-pointer.
 //
@@ -248,7 +248,7 @@ namespace services::catalog_resolve {
 // sites use `impl::plan_resolve_index_t`, `impl::gather_plan_resolve_index`,
 // `impl::tbl_md_for`, etc. The using-declarations below let those continue
 // to resolve without touching every call site. Only NEW code (executor-side
-// Pass 1 migration) needs to spell `catalog_resolve::` directly.
+// migration) needs to spell `catalog_resolve::` directly.
 namespace services::dispatcher::impl {
     using catalog_resolve::gather_plan_resolve_index;
     using catalog_resolve::ns_oid_for;

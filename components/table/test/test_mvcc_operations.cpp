@@ -105,7 +105,7 @@ TEST_CASE("components::table::mvcc::append_commit_visible") {
     append_rows_txn(*table, env, 0, 10, txn.data());
 
     auto commit_id = mgr.commit(session);
-    mgr.publish(commit_id);  // Block E ProcArray barrier
+    mgr.publish(commit_id);
     table->commit_append(commit_id, 0, 10);
 
     auto count = scan_count(*table, env);
@@ -149,7 +149,7 @@ TEST_CASE("components::table::mvcc::cleanup_versions") {
 
     append_rows_txn(*table, env, 0, 10, txn.data());
     auto commit_id = mgr.commit(session);
-    mgr.publish(commit_id);  // Block E ProcArray barrier
+    mgr.publish(commit_id);
     table->commit_append(commit_id, 0, 10);
 
     auto lowest = mgr.lowest_active_start_time();
@@ -170,7 +170,7 @@ TEST_CASE("components::table::mvcc::multiple_txn_appends") {
     auto& txn1 = mgr.begin_transaction(s1);
     append_rows_txn(*table, env, 0, 10, txn1.data());
     auto cid1 = mgr.commit(s1);
-    mgr.publish(cid1);  // Block E ProcArray barrier
+    mgr.publish(cid1);
     table->commit_append(cid1, 0, 10);
 
     // Transaction 2: append 5 more rows
@@ -178,7 +178,7 @@ TEST_CASE("components::table::mvcc::multiple_txn_appends") {
     auto& txn2 = mgr.begin_transaction(s2);
     append_rows_txn(*table, env, 10, 5, txn2.data());
     auto cid2 = mgr.commit(s2);
-    mgr.publish(cid2);  // Block E ProcArray barrier
+    mgr.publish(cid2);
     table->commit_append(cid2, 10, 5);
 
     auto count = scan_count(*table, env);
@@ -215,7 +215,7 @@ TEST_CASE("components::table::mvcc::delete_rows_txn_commit_all_deletes") {
     // Commit: finalize all deletes for this txn
     // Note: mgr.commit() erases txn from active_ map, so txn ref becomes dangling
     auto commit_id = mgr.commit(session);
-    mgr.publish(commit_id);  // Block E ProcArray barrier
+    mgr.publish(commit_id);
     table->commit_all_deletes(txn_id, commit_id);
 
     // Scan should see only 5 rows
@@ -282,7 +282,7 @@ TEST_CASE("components::table::mvcc::cleanup_committed_deletes") {
     table->delete_rows(del_state, row_ids_chunk.data[0], 10, txn_id);
 
     auto commit_id = mgr.commit(session);
-    mgr.publish(commit_id);  // Block E ProcArray barrier
+    mgr.publish(commit_id);
     table->commit_all_deletes(txn_id, commit_id);
 
     // After commit, scan should see 0 rows
@@ -323,7 +323,7 @@ TEST_CASE("components::table::mvcc::cleanup_partial_deletes") {
     table->delete_rows(del_state, row_ids_chunk.data[0], 5, txn_id);
 
     auto commit_id = mgr.commit(session);
-    mgr.publish(commit_id);  // Block E ProcArray barrier
+    mgr.publish(commit_id);
     table->commit_all_deletes(txn_id, commit_id);
 
     // 5 rows visible
@@ -363,7 +363,7 @@ TEST_CASE("components::table::mvcc::compact_after_delete") {
     table->delete_rows(del_state, row_ids_chunk.data[0], 50, txn_id);
 
     auto commit_id = mgr.commit(session);
-    mgr.publish(commit_id);  // Block E ProcArray barrier
+    mgr.publish(commit_id);
     table->commit_all_deletes(txn_id, commit_id);
 
     // 50 rows visible
@@ -397,7 +397,7 @@ TEST_CASE("components::table::mvcc::uncommitted_rows_invisible_to_other_txn") {
 
     // Commit txn1
     auto commit_id = mgr.commit(s1);
-    mgr.publish(commit_id);  // Block E ProcArray barrier
+    mgr.publish(commit_id);
     table->commit_append(commit_id, 0, 10);
 
     // Txn3 scans — should see 10 rows
@@ -443,7 +443,7 @@ TEST_CASE("components::table::mvcc::delete_not_visible_until_commit") {
 
     // Commit delete
     auto commit_id = mgr.commit(s1);
-    mgr.publish(commit_id);  // Block E ProcArray barrier
+    mgr.publish(commit_id);
     table->commit_all_deletes(txn_id, commit_id);
 
     // Txn3 scans — should see 5 rows

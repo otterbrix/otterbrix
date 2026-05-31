@@ -4,9 +4,9 @@
 #include <algorithm>
 #include <memory_resource>
 
-// Block E ProcArray test outlines (Pass 9 dec 46 + BLOCKER 7/8/9).
-// Tests are SKELETONS — they document what each should verify and
-// forward-declare the assertion shape. Subsequent agents fill in test logic.
+// ProcArray test outlines.
+// Tests document what each should verify and forward-declare the assertion
+// shape.
 
 namespace components::table::test_block_e {
 
@@ -93,18 +93,18 @@ TEST_CASE("Block E transaction_t::data() snapshot caching",
 
 TEST_CASE("Block E cross-agent atomic visibility (Version B*)",
           "[block_e][procarray]") {
-    // BLOCKER 22 (Pass 9): cross-agent atomic visibility under Version B*
-    // manager_disk routing (catalog→agent_0, user→hash-routed). A reader
-    // observing the partial-publish window must NOT see one half of the
-    // transaction without the other.
+    // Cross-agent atomic visibility under manager_disk routing
+    // (catalog→agent_0, user→hash-routed). A reader observing the
+    // partial-publish window must NOT see one half of the transaction without
+    // the other.
     //
     // Pragmatic node-level verification: we drive transaction_manager_t's
     // publish() + take_snapshot() directly. The canonical visibility filter
     // (transaction_version_operator::use_inserted_version) is internal to
     // row_version_manager.cpp, so we inline its rules here per the contract
     // documented on transaction_data in row_version_manager.hpp. This locks
-    // down the manager-level contract that Version B* routing relies upon
-    // — full pipeline integration is exercised by higher-level E2E tests.
+    // down the manager-level contract that routing relies upon — full
+    // pipeline integration is exercised by higher-level E2E tests.
     using namespace components::table;
     using namespace components::session;
 
@@ -183,7 +183,7 @@ TEST_CASE("Block E cross-agent atomic visibility (Version B*)",
 
 TEST_CASE("Block E db_oid resolve via catalog_resolve_database",
           "[block_e][b14c]") {
-    // Pragmatic B14.C verification: exercise node_catalog_resolve_database_t's
+    // Pragmatic verification: exercise node_catalog_resolve_database_t's
     // set/get mechanism in isolation. operator_resolve_database stamps the
     // resolved oid via set_database_oid — verifying the stamping contract at
     // the node level avoids spinning up a full pipeline (executor / disk /
@@ -206,7 +206,7 @@ TEST_CASE("Block E db_oid resolve via catalog_resolve_database",
     REQUIRE(node->database_oid() == well_known_oid::main_database);
 
     // 3. Multiple sets are allowed (last-write-wins) — useful when planner
-    //    re-runs Pass 1 after invalidation.
+    //    re-runs resolve after invalidation.
     node->set_database_oid(oid_t{42});
     REQUIRE(node->database_oid() == 42);
 }

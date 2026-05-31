@@ -88,8 +88,8 @@ namespace components::operators {
         // (txn_manager_) lives outside the per-collection executor.
         commit_transaction,
         abort_transaction,
-        // BEGIN / START TRANSACTION (Block C §3.5 dec 22 Central accumulation):
-        // ensures an active transaction exists for the session and marks it as
+        // BEGIN / START TRANSACTION: ensures an active transaction exists for
+        // the session and marks it as
         // explicit. The executor's commit phase then accumulates DML ranges on
         // the transaction instead of publishing per statement; operator_commit
         // drains them in a batched publish at COMMIT.
@@ -118,9 +118,9 @@ namespace components::operators {
         // data_chunk (col 0 = UINTEGER oid). Used by name-resolution
         // pipelines that need to avoid the dispatcher's cached catalog snapshot.
         resolve_namespace,
-        // RESOLVE_DATABASE (B14.C) — analogous leaf operator that scans
+        // RESOLVE_DATABASE — analogous leaf operator that scans
         // pg_database (well_known_oid=19) by datname and emits the resolved
-        // database_oid. Routing key for Variant C multi-database WAL workers.
+        // database_oid. Routing key for multi-database WAL workers.
         resolve_database,
         // RESOLVE_TYPE — leaf operator that scans pg_type by
         // (typname, typnamespace) and emits the matching row as a single-row
@@ -144,8 +144,8 @@ namespace components::operators {
         // plan_resolve_index.
         resolve_constraint,
         // ALLOCATE_OIDS — pipeline replacement for inline
-        // manager_disk_t::allocate_oids_batch from the dispatcher. At Pass 1
-        // execute time, sends one allocate batch request to the disk actor's
+        // manager_disk_t::allocate_oids_batch from the dispatcher. At resolve
+        // time, sends one allocate batch request to the disk actor's
         // oid_generator and stamps the resulting vector on the back-pointed
         // node so the DDL planner can read it via oids().
         allocate_oids,

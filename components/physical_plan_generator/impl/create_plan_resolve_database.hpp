@@ -6,7 +6,7 @@
 
 namespace services::planner::impl {
 
-    // B14.C: translate a logical CATALOG_RESOLVE_DATABASE leaf into its
+    // Translate a logical CATALOG_RESOLVE_DATABASE leaf into its
     // physical counterpart (operator_resolve_database_t).
     components::operators::operator_ptr create_plan_resolve_database(const context_storage_t& context,
                                                                      const components::logical_plan::node_ptr& node);

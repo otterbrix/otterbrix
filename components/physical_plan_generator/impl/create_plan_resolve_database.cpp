@@ -10,7 +10,7 @@ namespace services::planner::impl {
         auto* n = static_cast<components::logical_plan::node_catalog_resolve_database_t*>(node.get());
         // Back-pointer form: operator stamps database_oid onto the logical
         // node after a successful pg_database scan; enrich_logical_plan reads
-        // it via stamp_oids_from_resolves() in Pass 2.
+        // it via stamp_oids_from_resolves() in the enrich pass.
         return boost::intrusive_ptr(new components::operators::operator_resolve_database_t(context.resource,
                                                                                            context.log.clone(),
                                                                                            n->dbname(),

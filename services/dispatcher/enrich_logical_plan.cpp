@@ -10,7 +10,6 @@
 //
 // No disk I/O of its own — all catalog data comes from the plan-tree idx, so
 // all catalog metadata comes from the resolve idx materialized in-plan by
-// Pass 1.
 
 #include "enrich_logical_plan.hpp"
 
@@ -213,7 +212,7 @@ namespace services::dispatcher {
         }
 
         // Walk the plan tree, harvest namespace_oid / table_oid stamped
-        // by operator_resolve_*_t (Pass 1) into a flat hashmap. Empty when
+        // by operator_resolve_*_t into a flat hashmap. Empty when
         // the plan has no resolve wrap (DDL paths, disk-less harnesses).
         // The caller (enrich_plan top-level) builds this once and threads
         // the const-ptr through recursive calls.
@@ -319,7 +318,7 @@ namespace services::dispatcher {
 
 } // namespace services::dispatcher
 
-// Variant E.3 Pass 1 helpers — promoted out of services::dispatcher::impl /
+// helpers — promoted out of services::dispatcher::impl /
 // dispatcher.cpp anonymous namespace into services::catalog_resolve so
 // services::collection::executor_t::execute_plan_full can call the same
 // primitives. Definitions stay physically in this file (Option A).
@@ -332,7 +331,7 @@ namespace services::catalog_resolve {
     // — the planner will surface this as an error (no fallback).
     //
     // Moved out of dispatcher's anonymous namespace as part of Variant E.3
-    // Pass 1 so its sole caller (stamp_oids_from_resolves below) keeps
+    // so its sole caller (stamp_oids_from_resolves below) keeps
     // finding it via unqualified lookup after the namespace promotion.
     static std::vector<components::table::column_definition_t>
     derive_matview_output_schema(const components::logical_plan::node_t* body_plan,
@@ -646,7 +645,7 @@ namespace services::catalog_resolve {
 
     // --- Phase 1.5 SELECT-time view expansion helpers (moved from
     // services/dispatcher/dispatcher.cpp anonymous namespace as part of
-    // Variant E.3 Pass 1 promotion). Pure functions over plan trees +
+    // promotion). Pure functions over plan trees +
     // raw SQL strings — no manager_dispatcher_t state. ---
 
     components::logical_plan::node_catalog_resolve_table_t*

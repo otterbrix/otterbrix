@@ -90,14 +90,14 @@ using namespace components::types;
 namespace services::dispatcher {
 
     namespace catalog = components::catalog;
-    // Variant E.3 Pass 1: the helpers below (find_first_view_resolve,
+    // the helpers below (find_first_view_resolve,
     // expand_view_body, extract_unresolved_resolves, stamp_oids_from_resolves,
     // plan_resolve_index_t, gather_plan_resolve_index, …) were promoted to
-    // services::catalog_resolve so the executor-side Pass 1 migration can
+    // services::catalog_resolve so the executor-side resolve migration can
     // call them. This alias keeps dispatcher.cpp call sites short.
     namespace catalog_resolve = services::catalog_resolve;
 
-    // Variant E.3 Pass 2: probe_type_in_path / build_type_search_path_str /
+    // probe_type_in_path / build_type_search_path_str /
     // effective_root_node / drop_target_names_from_resolves were promoted out
     // of this anonymous namespace into services::catalog_resolve (declared in
     // enrich_logical_plan.hpp, defined in enrich_logical_plan.cpp) so the
@@ -115,20 +115,20 @@ namespace services::dispatcher {
             return r ? r->type() : components::logical_plan::node_type::unused;
         }
 
-        // === Phase 1.5: SELECT-time view expansion ===
+        // === SELECT-time view expansion ===
         //
         // The helpers (`view_expansion_result_t`, `find_first_view_resolve`,
         // `expand_view_body`, `extract_unresolved_resolves`) were promoted
         // out of this anonymous namespace into `services::catalog_resolve`
         // (declared in services/dispatcher/enrich_logical_plan.hpp, defined
-        // in services/dispatcher/enrich_logical_plan.cpp) as part of
-        // Variant E.3 Pass 1 so executor_t::execute_plan_full can reuse
-        // them. Dispatcher call sites below reach them through the
+        // in services/dispatcher/enrich_logical_plan.cpp) so
+        // executor_t::execute_plan_full can reuse them. Dispatcher call
+        // sites below reach them through the
         // `namespace catalog_resolve = services::catalog_resolve` alias
         // declared at the top of the enclosing `services::dispatcher`
         // namespace.
 
-        // dec 38/40 subscriber-kind discriminator. Shared between
+        // subscriber-kind discriminator. Shared between
         // on_drop_resource_marked / on_subscriber_empty (dispatcher side) and the
         // subscriber's `on_horizon_advanced` ack send back to the dispatcher.
         // Two kinds today (disk + index); future subscribers (e.g. matview
@@ -136,30 +136,25 @@ namespace services::dispatcher {
         constexpr uint8_t DISK_KIND = 1;
         constexpr uint8_t INDEX_KIND = 2;
 
-        // Variant E.3 cut-over feature flag (Section 0 of
-        // docs/variant-e3-cutover-checklist.md).
+        // cut-over feature flag.
         //
         // When `false` (current production default), `execute_plan_impl`
         // routes the resolved/enriched logical plan to the operator-pipeline
         // entry point `executor_t::execute_plan`. The dispatcher continues
-        // to run Pass 1 (resolve + stamp + view expansion), Pass 2
-        // (validation switch) and Pass 3 (post_validate_optimize +
-        // enrich_plan + planner.create_plan + DDL OID-batch allocation)
-        // upstream of the executor; see `manager_dispatcher_t::execute_plan`
-        // lines ~543-1313.
+        // to run resolve+stamp+view expansion, validation, and
+        // post_validate_optimize + enrich_plan + planner.create_plan + DDL
+        // OID-batch allocation upstream of the executor.
         //
         // When flipped to `true`, the dispatcher will instead send the
         // unrewritten logical plan to `executor_t::execute_plan_full`, and
-        // the executor's gated Pass 1/2/3 implementation (executor.cpp ~677-
-        // 1729, behind `enable_pass2_rewrites`) takes over the work. At that
-        // point the dispatcher-side Pass 1/2/3 blocks in `execute_plan`
-        // become dead code and are scheduled for deletion per Section 4 of
-        // the checklist.
+        // the executor's gated implementation (behind
+        // `enable_pass2_rewrites`) takes over the work. At that point the
+        // dispatcher-side pre-execute blocks in `execute_plan` become dead
+        // code and are scheduled for deletion.
         //
         // SAFETY MATRIX (paired with executor.cpp's `enable_pass2_rewrites`):
         //   (this=false, executor=false) — CURRENT PRODUCTION. Dispatcher
-        //                                  runs Pass 1/2/3 upstream
-        //                                  (execute_plan lines 543-1313),
+        //                                  runs pre-execute upstream,
         //                                  executor runs operator pipeline
         //                                  only. Correct, single-rewrite.
         //   (this=true,  executor=false) — Equivalent to production: routes
@@ -168,17 +163,17 @@ namespace services::dispatcher {
         //                                  executor falls through to the
         //                                  same operator pipeline. Safe for
         //                                  smoke-testing the routing path.
-        //   (this=false, executor=true)  — NO-OP: executor's gated Pass 2/3
-        //                                  is unreachable (still routed to
-        //                                  execute_plan). Dispatcher Pass
-        //                                  1/2/3 still drives correctness.
-        //   (this=true,  executor=true)  — TARGET STATE. Dispatcher Pass
-        //                                  1/2/3 MUST be deleted (Section
-        //                                  4) in the same commit, else
-        //                                  Pass 1/2/3 runs TWICE
-        //                                  (broken-plan double-wrap).
-        // The atomic-flip commit therefore: (a) flips both flags here +
-        // executor.cpp, (b) deletes dispatcher.cpp:543-1313 per Section 4.
+        //   (this=false, executor=true)  — NO-OP: executor's gated rewrites
+        //                                  are unreachable (still routed to
+        //                                  execute_plan). Dispatcher
+        //                                  pre-execute still drives
+        //                                  correctness.
+        //   (this=true,  executor=true)  — TARGET STATE. Dispatcher
+        //                                  pre-execute MUST be deleted in
+        //                                  the same commit, else it runs
+        //                                  TWICE (broken-plan double-wrap).
+        // The atomic-flip commit therefore flips both flags here +
+        // executor.cpp and deletes the dispatcher's pre-execute block.
         constexpr bool use_executor_full_pipeline = true;
     } // namespace
 
@@ -255,7 +250,6 @@ namespace services::dispatcher {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::abort_transaction, msg);
                 break;
             }
-            // Variant E.3 Constraint #11: low-level txn_manager wrappers for
             // the executor. See declarations in dispatcher.hpp.
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_begin_msg>: {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::txn_begin_msg, msg);
@@ -318,8 +312,8 @@ namespace services::dispatcher {
         trace(log_, "manager_dispatcher_t: spawned {} executors with WAL/Disk/Index addresses", executor_pool_size_);
     }
 
-    // dec 38/40 selective-broadcast helper. Called inline from commit_txn /
-    // abort_txn handler bodies (Variant E.3 wires that — NOT this PR). When
+    // selective-broadcast helper. Called inline from commit_txn /
+    // abort_txn handler bodies (wiring deferred to follow-up). When
     // the lowest_active_start_time advances past the cached
     // `last_broadcast_horizon_`, fan out `on_horizon_advanced(new_lowest)` to
     // every subscriber whose dropped-resource flag is set. Subscribers without
@@ -443,7 +437,7 @@ namespace services::dispatcher {
             // Collect resolves that already exist in the plan tree so we don't
             // re-emit them. Operates on the immediate front children of
             // sequence_t (where the transformer puts its resolves); a deeper
-            // walk is unnecessary because Pass 1 only consumes front-children.
+            // walk is unnecessary because resolve only consumes front-children.
             std::set<std::string> existing_dbs;
             std::set<std::pair<std::string, std::string>> existing_tbls;
             if (logic_plan->type() == node_type::sequence_t) {
@@ -651,7 +645,6 @@ namespace services::dispatcher {
                 for (auto& d : exec_result.pg_catalog_delete_tables) {
                     txn_t->pg_catalog_delete_tables.insert(std::move(d));
                 }
-                // Block C §3.5 dec 32 V2 OPTION X: merge pg_attribute commit_id
                 // backfill markers onto the txn so operator_commit_transaction
                 // can drain them after commit_id allocation.
                 txn_t->accumulate_pg_attribute_commit_id_backfills(
@@ -730,7 +723,7 @@ namespace services::dispatcher {
                                         ->commit_id();
                     }
                 }
-                // Step 7 (only): drive index commit_insert for CREATE INDEX.
+                // (only): drive index commit_insert for CREATE INDEX.
                 if (commit_id > 0 && original_type == node_type::create_index_t &&
                     index_address_ != actor_zeta::address_t::empty_address()) {
                     auto* root_after_plan = effective_root_node(logic_plan.get());
@@ -749,14 +742,13 @@ namespace services::dispatcher {
                                                            swap_ctx,
                                                            indexed_tbl_oid,
                                                            commit_id);
-                        // Block B Parallel A.B3: commit_insert returns
-                        // result_t. Today bitcask is assert+abort terminal so
-                        // failed() never trips on the CREATE INDEX path.
+                        // core::error_t. Today bitcask is assert+abort
+                        // terminal so contains_error() never trips on the
+                        // CREATE INDEX path.
                         auto ci_result = co_await std::move(cif);
-                        if (ci_result.failed()) {
-                            // TODO Block C §3.1: index-side abort path for
-                            // CREATE INDEX failure (revert pg_index row,
-                            // drop disk agent).
+                        if (ci_result.contains_error()) {
+                            // TODO: index-side abort path for CREATE INDEX
+                            // failure (revert pg_index row, drop disk agent).
                         }
                     }
                 }
@@ -770,7 +762,6 @@ namespace services::dispatcher {
                         auto* cm = static_cast<const node_create_matview_t*>(mv_node);
                         auto names = drop_target_names_from_resolves(logic_plan.get());
                         collections_.insert(qualified_name_t{names.first, cm->matviewname()});
-                        // Variant E.3 (Pass 9 dec 1) collections_ partition — Step 2.
                         // Fan-out the new oid to the owning executor slice
                         // (single send, NOT broadcast) so it can populate its
                         // local_collections_ slot with a by-value POD entry —
@@ -810,11 +801,10 @@ namespace services::dispatcher {
                             static_cast<node_create_collection_t*>(root_after_plan->children().front().get());
                         auto names = drop_target_names_from_resolves(logic_plan.get());
                         collections_.insert(qualified_name_t{names.first, cc_child->relname()});
-                        // Variant E.3 (Pass 9 dec 1) collections_ partition — Step 2.
                         // See create_matview_t fanout above. The planner stamps
                         // the freshly-allocated oid on the create_collection_t
                         // node via set_table_oid; OID allocation now lives in
-                        // executor_t::execute_plan_full (Section 4 flip).
+                        // executor_t::execute_plan_full.
                         // Entry is a by-value POD — no shared collection_t
                         // pointer between dispatcher and executor (constraint #11).
                         const auto cc_oid = cc_child->table_oid();
@@ -1121,7 +1111,7 @@ namespace services::dispatcher {
         // so plan generators can build transfer_scan with the right
         // projection mask instead of inlining pg_class / pg_computed_column
         // scans. Gather a local index from the plan tree (execute_plan_impl
-        // is callable from Pass 1 sub-plan execution where the caller's
+        // is callable from sub-plan execution where the caller's
         // dispatcher_idx isn't visible).
         {
             catalog_resolve::plan_resolve_index_t local_idx;
@@ -1150,7 +1140,6 @@ namespace services::dispatcher {
               "manager_dispatcher_t:execute_plan_impl: calling executor[{}] (full_pipeline={})",
               pool_idx,
               use_executor_full_pipeline ? "yes" : "no");
-        // Variant E.3 Section-0 cut-over routing. Both targets share the
         // exact same call signature (executor.hpp:110-114 vs 125-130) so
         // they have identical member-function-pointer types. The constexpr
         // ternary collapses at compile time to a single pointer — no
@@ -1185,7 +1174,7 @@ namespace services::dispatcher {
         co_return txn.data();
     }
 
-    // Variant E.3 Constraint #11 low-level wrappers. Each handler runs inside
+    // low-level wrappers. Each handler runs inside
     // the dispatcher's actor context, so the underlying txn_manager_ mutation
     // happens on a single owner — the executor only ever talks via mailbox.
     manager_dispatcher_t::unique_future<components::table::transaction_data>
@@ -1220,7 +1209,7 @@ namespace services::dispatcher {
         co_return txn_manager_.lowest_active_start_time();
     }
 
-    // Variant E.3 Constraint #11 SET TIME ZONE mailbox handler. Body extracted
+    // SET TIME ZONE mailbox handler. Body extracted
     // from execute_plan_impl's set_timezone_t case (dispatcher.cpp ~941-967):
     // mutates default_tz_cat_ in this actor's context, then appends a
     // ("TimeZone", <name>) row to pg_settings via disk_address_. The executor

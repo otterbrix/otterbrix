@@ -744,7 +744,7 @@ namespace components::catalog {
             set_bool(c, 7, 0, is_dropped);
             set_str(c, 8, 0, typspec, r);
             set_str(c, 9, 0, defspec, r);
-            // Block C §3.5 dec 32 V2 lazy backfill MVCC versioning.
+            // Lazy backfill MVCC versioning.
             set_i64(c, 10, 0, added_at_commit_id);
             set_i64(c, 11, 0, dropped_at_commit_id);
         });

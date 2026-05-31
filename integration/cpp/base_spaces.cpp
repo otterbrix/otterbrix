@@ -124,7 +124,7 @@ namespace otterbrix {
         wal_ptr->sync(std::make_tuple(actor_zeta::address_t(manager_disk_address), manager_dispatcher_->address()));
 
         // Publish the dispatcher address back into manager_disk / manager_index so the
-        // dec 33 GC-ack path (manager_disk → dispatcher → manager_wal truncate) has a
+        // GC-ack path (manager_disk → dispatcher → manager_wal truncate) has a
         // destination. Bootstrap-time sync direct call — rule 11 base_spaces exception.
         if (disk_ptr) {
             disk_ptr->set_manager_dispatcher_sync(manager_dispatcher_->address());
@@ -293,7 +293,7 @@ namespace otterbrix {
             disk_ptr->restore_oid_generator_sync();
         }
 
-        // Block C §3.5 dec 37 V1 catalog scan rebuild — pg_class rows tombstoned
+        // catalog scan rebuild — pg_class rows tombstoned
         // by a pre-crash DROP TABLE that didn't get to physically remove the
         // .otbx are recovered here, BEFORE scheduler.start. The scan returns
         // (oid, sentinel delete_id=1) pairs; we rebuild dropped_storages_ on
@@ -348,7 +348,7 @@ namespace otterbrix {
             }
         }
 
-        // Block F (Pass 9 dec 47) — snapshot-aware WAL replay horizon.
+        // ) — snapshot-aware WAL replay horizon.
         // Scan COMMIT records (already filtered by 2-pass committed-txn filter in
         // wal_reader_t) for the maximum commit_id and publish it once so the
         // post-recovery txn_manager_'s published_horizon_ matches the durable
@@ -369,7 +369,7 @@ namespace otterbrix {
             }
         }
 
-        // Block D V4 Phase 3.5 — spawn a per-table index_table_agent_t for every
+        // V4 Phase 3.5 — spawn a per-table index_table_agent_t for every
         // known table_oid (well-known catalog tables + user tables loaded by
         // Phase 3) and register its address with manager_index. After
         // registration, manager_index_t's DML feature-flag router forwards
@@ -391,7 +391,7 @@ namespace otterbrix {
             // pg_settings). Driven off the same all_system_tables() registry
             // used by bootstrap_system_tables_sync so the two sets cannot
             // drift.
-            // Block D Final cleanup — engine ownership migration.
+            // Final cleanup — engine ownership migration.
             // For each spawned agent, transfer ownership of its per-table
             // index_engine_t from manager_index_t::engines_ into the agent
             // via take_engine_ownership_sync -> set_engine_owned_sync. The
@@ -405,7 +405,7 @@ namespace otterbrix {
                 auto agent = actor_zeta::spawn<services::index::index_table_agent_t>(&resource, log_, oid);
                 manager_index_->register_table_agent_sync(oid, agent->address());
                 agent->set_engine_owned_sync(manager_index_->take_engine_ownership_sync(oid));
-                // Block D DDL routing — hand the agent the disk-spawn config
+                // DDL routing — hand the agent the disk-spawn config
                 // mirroring manager_index_t's own constants so create_index_local
                 // / drop_index_local can own the disk_agents_ lifecycle.
                 agent->set_disk_config_sync(config.disk.path,
@@ -417,7 +417,7 @@ namespace otterbrix {
                 ++system_count;
             }
             // User-table oids — the set of pg_class rows whose oid >=
-            // FIRST_USER_OID and that survived dec 37 dropped-oid filtering.
+            // FIRST_USER_OID and that survived dropped-oid filtering.
             // Phase 3 (load_user_table_storages_sync) and Phase 2c (catalog
             // scan rebuild) have already settled pg_class, so this scan
             // reflects the final alive set.
@@ -429,7 +429,7 @@ namespace otterbrix {
                 // pull the engine out of manager.engines_ (or mint one) and
                 // give it to the agent.
                 agent->set_engine_owned_sync(manager_index_->take_engine_ownership_sync(oid));
-                // Block D DDL routing — see system-table loop above.
+                // DDL routing — see system-table loop above.
                 agent->set_disk_config_sync(config.disk.path,
                                             config.disk.bitcask_flush_threshold,
                                             config.disk.bitcask_segment_record_limit,

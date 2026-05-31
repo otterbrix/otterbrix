@@ -14,29 +14,26 @@
 #include <services/wal/manager_wal_replicate.hpp>
 
 // ============================================================================
-// Variant E.3 cut-over differential test scaffold
 // ----------------------------------------------------------------------------
-// Per docs/variant-e3-cutover-checklist.md Section 5:
-//   "Differential test: same SQL fixture, run once through
-//    dispatcher::execute_plan (current) and once with enable_pass2_rewrites
-//    =true + force routing to execute_plan_full. Compare cursor + side
-//    effects (pg_catalog state, collections_ map)."
+// Variant E.3 differential test scaffold:
+//   Same SQL fixture, run once through dispatcher::execute_plan (current) and
+//   once with enable_pass2_rewrites=true + force routing to execute_plan_full.
+//   Compare cursor + side effects (pg_catalog state, collections_ map).
 //
 // CURRENT ROUTING (see dispatcher.cpp anonymous-namespace flag
 // `use_executor_full_pipeline`, default `false`): every dispatcher
 // invocation still goes through the legacy Pass 1/2/3 in dispatcher.cpp
 // lines 543-1313, so for now both "old" and "new" path drive the same
 // code. The scaffold is structured so that when the flag flips to `true`
-// in the atomic cut-over commit (Section 6 step 3), the SAME test bodies
-// re-run against executor_t::execute_plan_full with no edits required —
-// only the build-time wiring changes.
+// in the atomic cut-over commit, the SAME test bodies re-run against
+// executor_t::execute_plan_full with no edits required — only the
+// build-time wiring changes.
 //
-// This file covers ALL FOURTEEN scaffolded cases enumerated by Section 5
-// (SELECT, INSERT static, INSERT relkind='g', CREATE TABLE, DROP TABLE,
-// DROP DATABASE, CREATE INDEX, ALTER TABLE ADD COLUMN, CREATE TYPE STRUCT,
-// CREATE VIEW, CREATE CONSTRAINT FK, CREATE MATERIALIZED VIEW,
-// CREATE CONSTRAINT CHECK, SET TIME ZONE). Section 5 is therefore fully
-// scaffolded; see the trailing FOLLOW-UPS block for the post-cut-over
+// This file covers FOURTEEN scaffolded cases (SELECT, INSERT static,
+// INSERT relkind='g', CREATE TABLE, DROP TABLE, DROP DATABASE,
+// CREATE INDEX, ALTER TABLE ADD COLUMN, CREATE TYPE STRUCT, CREATE VIEW,
+// CREATE CONSTRAINT FK, CREATE MATERIALIZED VIEW, CREATE CONSTRAINT CHECK,
+// SET TIME ZONE). See the trailing FOLLOW-UPS block for post-cut-over
 // follow-ups (re-run under flag=true to confirm parity).
 // ============================================================================
 
@@ -212,8 +209,7 @@ TEST_CASE("variant-e3 differential: SELECT pass-through") {
 // TEST_CASE 2 — CREATE TABLE basic differential
 // ----------------------------------------------------------------------------
 // CREATE TABLE through dispatcher → manager_disk pg_class row exists with
-// matching relkind / column shape. Section 5 explicitly lists CREATE TABLE
-// as a target category; the columns-by-attname loop mirrors
+// matching relkind / column shape. The columns-by-attname loop mirrors
 // test_dispatcher_catalog.cpp::schemeful_operations to keep the assertion
 // stable across the flip.
 // ============================================================================
@@ -252,7 +248,7 @@ TEST_CASE("variant-e3 differential: CREATE TABLE basic") {
 // ----------------------------------------------------------------------------
 // INSERT static-shape rows then SELECT — verifies the data path: row
 // allocation, ETL into vector::data_chunk_t, cursor materialization.
-// Section 5 calls out INSERT (static + relkind='g'); this scaffold covers
+// calls out INSERT (static + relkind='g'); this scaffold covers
 // the static case. The relkind='g' (computed-column adoption) variant is
 // listed in FOLLOW-UPS below.
 // ============================================================================
@@ -298,9 +294,9 @@ TEST_CASE("variant-e3 differential: INSERT + SELECT round-trip") {
 // tables (see integration/.../test_clean_break_startup.cpp::index_round_trip —
 // "relkind 'i' shares the pg_class namespace with 'r'"), so we resolve_table
 // the index by name and assert relkind=='i'. That single fact transitively
-// covers Section 5's pg_index entry + pg_depend ('a' parent edge) + index OID
-// stamp — without those side effects the pg_class row would not appear
-// under the requested name in the same namespace.
+// covers the pg_index entry + pg_depend ('a' parent edge) + index OID stamp
+// — without those side effects the pg_class row would not appear under the
+// requested name in the same namespace.
 // ============================================================================
 TEST_CASE("variant-e3 differential: CREATE INDEX") {
     auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
@@ -340,8 +336,8 @@ TEST_CASE("variant-e3 differential: CREATE INDEX") {
 // ----------------------------------------------------------------------------
 // CREATE TABLE → DROP TABLE. After the drop, resolve_table by the same
 // (namespace_oid, name) must return found=false. That's the externally
-// observable contract of Section 5's "pg_class delete_id set + dropped storage
-// list" requirement: the runtime DROP TABLE path (manager_disk.cpp ~line 606,
+// observable contract of "pg_class delete_id set + dropped storage list":
+// the runtime DROP TABLE path (manager_disk.cpp ~line 606,
 // agent_disk.cpp ~line 384 "storages_ erase fanout") is what causes
 // resolve_table to flip; the differential check is therefore the visibility
 // transition, mirrored from test_dispatcher_catalog.cpp::schemeful_operations
@@ -382,8 +378,8 @@ TEST_CASE("variant-e3 differential: DROP TABLE") {
 // ============================================================================
 // TEST_CASE 6 — ALTER TABLE ADD COLUMN differential
 // ----------------------------------------------------------------------------
-// CREATE TABLE → ALTER TABLE ADD COLUMN. Section 5 requires a fresh
-// pg_attribute row with added_at_commit_id stamped. The columns vector
+// CREATE TABLE → ALTER TABLE ADD COLUMN. Requires a fresh pg_attribute
+// row with added_at_commit_id stamped. The columns vector
 // returned by resolve_table is reconstructed from pg_attribute, so observing
 // the new column name there transitively guarantees the row was inserted
 // (otherwise the rebuild would not surface it). Default-value DDL is
@@ -559,8 +555,8 @@ TEST_CASE("variant-e3 differential: INSERT relkind='g' computed-column adoption"
 // ----------------------------------------------------------------------------
 // CREATE DATABASE → resolve_namespace.found=true → DROP DATABASE →
 // resolve_namespace.found=false. This is the externally observable contract
-// of Section 5's "pg_database row tombstoned + namespace_oid removed from
-// catalog cache" requirement. Mirrors test_dispatcher_catalog.cpp lines
+// of "pg_database row tombstoned + namespace_oid removed from catalog
+// cache". Mirrors test_dispatcher_catalog.cpp lines
 // 193–199 (in-order DROP TABLE then DROP DATABASE). The CASCADE wipe of
 // child pg_class rows is implicitly covered: after the namespace is gone,
 // no resolve_table call can succeed regardless of the stored relkind.
@@ -591,8 +587,8 @@ TEST_CASE("variant-e3 differential: DROP DATABASE") {
 // ============================================================================
 // TEST_CASE 10 — CREATE VIEW differential
 // ----------------------------------------------------------------------------
-// CREATE TABLE → CREATE VIEW v AS SELECT ... FROM table. Per Section 5 the
-// VIEW must land a pg_class row with relkind='v' plus a pg_rewrite ev_action
+// CREATE TABLE → CREATE VIEW v AS SELECT ... FROM table. The VIEW must
+// land a pg_class row with relkind='v' plus a pg_rewrite ev_action
 // row carrying the body SQL. The view shares the pg_class namespace with
 // 'r'/'i', so resolve_table by view name returns relkind='v'. The pg_rewrite
 // side effect is not directly exposed via resolve_table_result_t (no
@@ -644,8 +640,8 @@ TEST_CASE("variant-e3 differential: CREATE VIEW") {
 // logical-plan node emitted is node_create_constraint_t — that's the
 // "CREATE CONSTRAINT" planner rewrite referenced in dispatcher.cpp:1339
 // ("CREATE CONSTRAINT → planner rewrite в sequence_t(primitive_write
-// pg_constraint+pg_depend)"). Section 5 requires pg_constraint contype='f'
-// + pg_depend edges, but manager_disk exposes no public resolve_constraint
+// pg_constraint+pg_depend)"). Requires pg_constraint contype='f' +
+// pg_depend edges, but manager_disk exposes no public resolve_constraint
 // API (services/disk/manager_disk.hpp). The behavioural proxy used by the
 // integration suite is FK enforcement on INSERT (rejects orphan child rows,
 // accepts valid ones) — that pathway can only succeed if both pg_constraint
@@ -781,8 +777,8 @@ TEST_CASE("variant-e3 differential: CREATE MATERIALIZED VIEW") {
 // ============================================================================
 // TEST_CASE 13 — CREATE CONSTRAINT CHECK differential
 // ----------------------------------------------------------------------------
-// CREATE TABLE → ALTER TABLE ... ADD CONSTRAINT ... CHECK (expr). Section 5
-// calls out pg_constraint contype='c' as the side effect (distinct from the
+// CREATE TABLE → ALTER TABLE ... ADD CONSTRAINT ... CHECK (expr).
+// pg_constraint contype='c' is the side effect (distinct from the
 // FK case in TEST_CASE 11 which is contype='f'). manager_disk exposes no
 // public resolve_constraint API, so the behavioural proxy mirrors the FK
 // pattern: a CHECK constraint that is in force WILL reject a violating row
@@ -844,7 +840,7 @@ TEST_CASE("variant-e3 differential: CREATE CONSTRAINT CHECK") {
 // TEST_CASE 14 — SET TIME ZONE differential
 // ----------------------------------------------------------------------------
 // SET TIMEZONE TO 'UTC' goes through manager_dispatcher_t::execute_plan_msg's
-// set_timezone_t case (dispatcher.cpp lines 990-1017). Section 5 requires a
+// set_timezone_t case (dispatcher.cpp lines 990-1017). Requires a
 // pg_settings row append ('TimeZone', <tz>) plus an in-memory default_tz_cat_
 // mutation (single-owner per actor rule 10 — no shared mutable state). The
 // pg_settings append is fan-out through disk_address_->append_pg_catalog_row;
@@ -899,9 +895,9 @@ TEST_CASE("variant-e3 differential: SET TIME ZONE") {
 }
 
 // ============================================================================
-// FOLLOW-UPS — Section 5 is fully scaffolded across 14 TEST_CASEs above.
+// FOLLOW-UPS — fully scaffolded across 14 TEST_CASEs above.
 // Post-cut-over follow-ups (after the use_executor_full_pipeline flag flips
-// to `true` per Section 6 step 3):
+// to `true`):
 //   - re-run this file under the flipped flag and confirm every assertion
 //     above still passes (no edits required — the differential contract is
 //     deliberately routing-agnostic).

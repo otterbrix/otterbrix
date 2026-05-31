@@ -15,14 +15,13 @@ namespace components::table {
         }
         auto txn_id = next_transaction_id_.fetch_add(1);
         auto start_time = current_timestamp_.fetch_add(1);
-        // Block C §3.5 dec 22 + Block E: pass the manager's resource so the
-        // per-txn pmr containers (in_flight_snapshot + pending_base_*) can
-        // allocate from it.
+        // Pass the manager's resource so the per-txn pmr containers
+        // (in_flight_snapshot + pending_base_*) can allocate from it.
         auto txn = std::make_unique<transaction_t>(txn_id, start_time, session, resource_);
-        // Block E ProcArray (Pass 9 dec 46): snapshot captured atomically under
+        // ProcArray: snapshot captured atomically under
         // lock_, then cached on the transaction_t. Subsequent transaction_t::data()
-        // calls return the cached snapshot by value-copy (BLOCKER 8 mitigation —
-        // the vector copy is O(active in-flight commits), typically <100).
+        // calls return the cached snapshot by value-copy — the vector copy is
+        // O(active in-flight commits), typically <100.
         auto horizon = published_horizon_.load(std::memory_order_relaxed);
         std::pmr::vector<uint64_t> in_flight(in_flight_commits_.begin(),
                                              in_flight_commits_.end(),
@@ -46,7 +45,7 @@ namespace components::table {
         it->second->mark_committed();
         active_start_times_.erase(it->second->start_time());
         active_.erase(it);
-        // Block E ProcArray: the commit_id is allocated but not yet visible. It
+        // ProcArray: the commit_id is allocated but not yet visible. It
         // becomes visible only after a matching publish(commit_id) is called by
         // executor / operator_commit_transaction at the end of the commit
         // pipeline (after WAL fsync + storage_publish_*).

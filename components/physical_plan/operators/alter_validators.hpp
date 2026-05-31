@@ -1,18 +1,18 @@
 #pragma once
 
-// Block C §3.5 dec 43 V1 — ALTER 3-phase atomic validation helpers (Phase 2).
+// ALTER atomic validation helpers (async data-gathering layer).
 //
-// Phase 1 (catalog/dec43_alter_validators.{hpp,cpp}) provides pure, actor-free
-// validators that take pre-materialised inputs by const-reference. Phase 2
-// (THIS FILE) provides the async, actor-aware data-gathering helpers that
-// populate those inputs by mailbox-sending to manager_disk_t. The split keeps
-// the pure validators trivially testable (no actor harness needed) while still
-// allowing ALTER operators to short-circuit on validation failure BEFORE any
-// pg_catalog mutation.
+// The pure, actor-free validators in catalog/alter_column_validators.{hpp,cpp}
+// take pre-materialised inputs by const-reference. This file provides the
+// async, actor-aware data-gathering helpers that populate those inputs by
+// mailbox-sending to manager_disk_t. The split keeps the pure validators
+// trivially testable (no actor harness needed) while still allowing ALTER
+// operators to short-circuit on validation failure BEFORE any pg_catalog
+// mutation.
 //
 // Helpers in this file:
-//   1. visible_column_names — pg_attribute scan filtered by dec 32 V2 MVCC
-//      visibility (added_at_commit_id <= snapshot AND
+//   1. visible_column_names — pg_attribute scan filtered by MVCC visibility
+//      (added_at_commit_id <= snapshot AND
 //      (dropped_at_commit_id == 0 OR dropped_at_commit_id > snapshot)).
 //   2. scan_cascade_dependents — pg_depend scan for entries that reference a
 //      specific (refclassid, refobjid, refobjsubid) tuple. Returns the list of
@@ -20,21 +20,20 @@
 //      RESTRICT caller — drives a non-empty result into a cascade_required-style
 //      error.
 //
-// Constraint #11 (no shared state between actors): both helpers are NOT actors,
-// they are coroutine functions invoked from within an operator's
+// No shared state between actors: both helpers are NOT actors; they are
+// coroutine functions invoked from within an operator's
 // await_async_and_resume — they piggy-back on the operator's existing async
 // frame and only ever talk to manager_disk_t through the standard
 // actor_zeta::send mailbox API.
 //
-// Constraint #1 (no exceptions): all failures are surfaced via core::error_t
-// returned through unique_future<core::result<T>>-equivalent shape. The current
-// disk API does not yet propagate errors (read_rows_by_key returns the row
-// vector directly), so wrapper-level failures degrade to empty result + the
-// downstream pure validator reporting the appropriate code (e.g.
-// already_exists / other_error).
+// No exceptions: all failures are surfaced via core::error_t returned through
+// unique_future<core::result<T>>-equivalent shape. The current disk API does
+// not yet propagate errors (read_rows_by_key returns the row vector directly),
+// so wrapper-level failures degrade to empty result + the downstream pure
+// validator reporting the appropriate code (e.g. already_exists / other_error).
 
 #include <components/catalog/catalog_oids.hpp>
-#include <components/catalog/dec43_alter_validators.hpp>
+#include <components/catalog/alter_column_validators.hpp>
 #include <components/context/context.hpp>
 #include <components/context/execution_context.hpp>
 #include <core/result_wrapper.hpp>
@@ -52,11 +51,11 @@ namespace components::operators::alter_validators {
     // Async pg_attribute scan: returns the list of currently-visible column
     // names for the given relation, filtered by:
     //   * attisdropped boolean tombstone == false, AND
-    //   * dec 32 V2 MVCC snapshot: added_at_commit_id <= snapshot_horizon AND
+    //   * MVCC snapshot: added_at_commit_id <= snapshot_horizon AND
     //     (dropped_at_commit_id == 0 OR dropped_at_commit_id > snapshot_horizon).
     //
     // The returned vector is allocated against `resource` and consumed by
-    // dec43::validate_column_not_duplicate (Phase 1 pure validator). Returns
+    // alter_column_validators::validate_column_not_duplicate (pure validator). Returns
     // an empty vector on a scan-side failure — operators MUST treat empty as
     // "no known visible columns" (worst case: duplicate column slips through
     // Phase 1 and surfaces as a later consistency error). This degrades
@@ -76,7 +75,7 @@ namespace components::operators::alter_validators {
     // depend on (refclassid, refobjid, refobjsubid). The refobjsubid is the
     // pg_attribute.attnum of the column being altered (0 = whole-relation
     // dependency). The returned vector is allocated against `resource` and
-    // consumed by dec43::validate_cascade_dependencies (Phase 1 pure validator)
+    // consumed by alter_column_validators::validate_cascade_dependencies (pure validator)
     // when the caller is RESTRICT, or fed into the cascade execution loop when
     // the caller is CASCADE.
     //
@@ -96,16 +95,17 @@ namespace components::operators::alter_validators {
                             components::catalog::oid_t ref_objid,
                             std::int32_t ref_objsubid);
 
-    // Convenience re-exports of the Phase 1 pure validators (defined in
-    // components/catalog/dec43_alter_validators.hpp). Brought into this
+    // Convenience re-exports of the pure validators (defined in
+    // components/catalog/alter_column_validators.hpp). Brought into this
     // namespace so ALTER operator callsites can `using namespace
     // alter_validators;` and reach the full 5-helper surface uniformly,
-    // without having to remember which validators are pure (catalog::dec43::)
-    // and which are async (operators::alter_validators::).
-    using components::catalog::dec43::encode_default_spec_ec;
-    using components::catalog::dec43::validate_cascade_dependencies;
-    using components::catalog::dec43::validate_column_not_duplicate;
-    using components::catalog::dec43::validate_default_value_evaluatable;
-    using components::catalog::dec43::validate_default_value_type;
+    // without having to remember which validators are pure
+    // (catalog::alter_column_validators::) and which are async
+    // (operators::alter_validators::).
+    using components::catalog::alter_column_validators::encode_default_spec_ec;
+    using components::catalog::alter_column_validators::validate_cascade_dependencies;
+    using components::catalog::alter_column_validators::validate_column_not_duplicate;
+    using components::catalog::alter_column_validators::validate_default_value_evaluatable;
+    using components::catalog::alter_column_validators::validate_default_value_type;
 
 } // namespace components::operators::alter_validators

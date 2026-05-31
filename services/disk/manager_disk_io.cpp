@@ -12,12 +12,12 @@ namespace services::disk {
     }
 
     void manager_disk_t::create_agent(int count_agents) {
-        // Version B* Step 1: assign roles aligned with pool_idx_for_oid contract.
+        // * Step 1: assign roles aligned with pool_idx_for_oid contract.
         //   agent at slot 0 → CATALOG (pg_* system tables home, post-migration)
         //   agents at slot 1..N-1 → USER_POOL (user tables hashed by oid % (N-1))
         // The storages_ slice itself is added in Step 2; for Step 1 the role
         // assignment is the only behavioural change — it lets the router fanout
-        // (Step 5) compile against a stable identity without any ownership
+        // compile against a stable identity without any ownership
         // transfer having happened yet.
         for (int i = 0; i < count_agents; i++) {
             const std::size_t slot = agents_.size();
@@ -38,12 +38,12 @@ namespace services::disk {
                                                                             wal::id_t current_wal_id) {
         trace(log_, "manager_disk_t::checkpoint_all , session : {} , wal_id : {}", session.data(), current_wal_id);
 
-        // Version B* Step 6 — router fanout. Send checkpoint_inner to every
+        // * Step 6 — router fanout. Send checkpoint_inner to every
         // agent in parallel; collect their futures into a std::pmr::vector so
         // we can aggregate their min(prev_id) tallies into the manager-side
         // tally after the manager body runs. The agent inner handler is a
         // placeholder today (returns max() sentinel) because DISK entries are
-        // record-only markers on the agent side (Step 3) — only the manager
+        // record-only markers on the agent side — only the manager
         // owns the live single_file_block_manager_t. Step 8 makes the agent
         // slice authoritative; until then the manager body remains the
         // canonical checkpoint writer.
@@ -61,7 +61,7 @@ namespace services::disk {
             agent_futures.emplace_back(std::move(fut));
         }
 
-        // Step 8.11 wrap (2026-05-31): manager.storages_ deleted; the agent
+        // wrap (2026-05-31): manager.storages_ deleted; the agent
         // slice owns every SFBM and IN_MEMORY twin. Aggregate the per-agent
         // checkpoint results — agent_disk_t::checkpoint_inner does the full
         // compact + checkpoint + sidecar atomic-write sequence per DISK entry
@@ -74,7 +74,7 @@ namespace services::disk {
         }
 
         if (!agents_.empty()) {
-            // Step 8.12 — restore pre-cutover IN_MEMORY suppression semantics.
+            // restore pre-cutover IN_MEMORY suppression semantics.
             //
             // Pre-cutover: the manager's checkpoint_all body walked its own
             // canonical storages_ map and returned `wal::id_t{0}` (skipping
@@ -133,7 +133,7 @@ namespace services::disk {
                                                                    uint64_t lowest_active_start_time) {
         trace(log_, "manager_disk_t::vacuum_all , session : {}", session.data());
 
-        // Step 8.11 wrap (2026-05-31): manager.storages_ deleted; per-agent
+        // wrap (2026-05-31): manager.storages_ deleted; per-agent
         // vacuum_inner is the canonical cleanup_versions + compact path.
         // Constraint #11: mailbox-only fanout, std::pmr vector for futures.
         std::pmr::vector<unique_future<void>> agent_futures{resource()};
@@ -166,7 +166,7 @@ namespace services::disk {
             co_return;
         }
 
-        // Step 8.11 wrap (2026-05-31): manager.storages_ deleted; the routed
+        // wrap (2026-05-31): manager.storages_ deleted; the routed
         // agent slice is the sole source of truth. Probe the owning agent via
         // storage_entry_sync (Constraint #11 carve-out — maybe_cleanup is a
         // mailbox handler, agent mailbox is idle vs. this sync read; see
@@ -218,7 +218,7 @@ namespace services::disk {
             table.compact();
         }
 
-        // Step 8.7 forward — owning agent runs the same threshold check
+        // forward — owning agent runs the same threshold check
         // against its IN_MEMORY twin. The agent body is a dual-write maint
         // call (manager-side compact above remains authoritative until
         // 8.11/12); INVALID_OID is already filtered above, so agent gets a
@@ -246,7 +246,7 @@ namespace services::disk {
                                                           components::catalog::oid_t /*database_oid*/,
                                                           std::vector<components::table::column_definition_t> columns) {
         trace(log_, "manager_disk_t::create_storage_with_columns_sync , oid : {}", static_cast<unsigned>(table_oid));
-        // Step 8.11 wrap (2026-05-31): manager.storages_ deleted. The routed
+        // wrap (2026-05-31): manager.storages_ deleted. The routed
         // agent slice (catalog → agents_[0], user → agents_[1..N-1] via
         // pool_idx_for_oid) is the canonical owner for ALL OIDs. The IN_MEMORY
         // entry is constructed on the agent's resource() and ownership is
@@ -274,7 +274,7 @@ namespace services::disk {
               "manager_disk_t::create_storage_disk_sync , oid : {} , path : {}",
               static_cast<unsigned>(table_oid),
               otbx_path.string());
-        // Step 8.11 wrap (2026-05-31): manager.storages_ deleted. The routed
+        // wrap (2026-05-31): manager.storages_ deleted. The routed
         // agent slice (catalog → agents_[0], user → agents_[1..N-1] via
         // pool_idx_for_oid) is the canonical SFBM owner. The
         // single_file_block_manager_t is constructed on the agent thread via
@@ -308,8 +308,8 @@ namespace services::disk {
               static_cast<unsigned>(table_oid),
               otbx_path.string());
 
-        // Version B* Step 8.1.B APPLIED for CATALOG OIDs (2026-05-31).
-        // Version B* Step 8.1.C APPLIED for USER OIDs   (2026-05-31).
+        // * Step 8.1.B APPLIED for CATALOG OIDs (2026-05-31).
+        // * Step 8.1.C APPLIED for USER OIDs   (2026-05-31).
         //
         // The SFBM ownership cutover is HIGH-RISK because
         // single_file_block_manager_t holds an exclusive WRITE_LOCK on the
@@ -330,7 +330,7 @@ namespace services::disk {
         // Readers in resolve / bootstrap / direct_append / maybe_cleanup
         // probe `agents_[idx]->storage_entry_sync(oid)` first and fall back
         // to the manager map only for legacy / no-agents test-fixture paths.
-        // Step 8.11 wrap (2026-05-31): manager.storages_ deleted. Diagnostic
+        // wrap (2026-05-31): manager.storages_ deleted. Diagnostic
         // trace marks the new invariant — agent slice is the sole SFBM owner.
         const std::size_t pool_idx =
             agents_.empty() ? 0 : pool_idx_for_oid(table_oid, agents_.size());
@@ -447,7 +447,7 @@ namespace services::disk {
 
     wal::id_t manager_disk_t::peek_checkpoint_wal_id_from_disk(components::catalog::oid_t table_oid,
                                                                components::catalog::oid_t database_oid) const noexcept {
-        // Step 8.11 wrap (2026-05-31): manager.storages_ deleted. Probe the
+        // wrap (2026-05-31): manager.storages_ deleted. Probe the
         // routed agent slice (canonical SFBM owner); if the agent has not
         // yet loaded the entry, fall back to reading the sidecar directly
         // (Phase 2c bootstrap path).

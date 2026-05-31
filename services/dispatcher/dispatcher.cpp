@@ -1237,7 +1237,7 @@ namespace services::dispatcher {
             logic_plan = ddl_planner.create_plan(resource(), std::move(logic_plan), std::move(oid_batch));
         }
 
-        // CREATE DATABASE → planner rewrite в sequence_t(primitive_write на pg_namespace).
+        // CREATE DATABASE → planner rewrite to sequence_t(primitive_write on pg_namespace).
         if (original_type == node_type::create_database_t && disk_address_ != actor_zeta::address_t::empty_address()) {
             catalog::oid_batch_t oid_batch;
             oid_batch.oids = co_await allocate_oids_via_pipeline(session, std::size_t{1});
@@ -1278,7 +1278,7 @@ namespace services::dispatcher {
             logic_plan = ddl_planner.create_plan(resource(), std::move(logic_plan), std::move(oid_batch));
         }
 
-        // CREATE MATERIALIZED VIEW → standard DDL pattern (как CREATE TABLE):
+        // CREATE MATERIALIZED VIEW → standard DDL pattern (like CREATE TABLE):
         // allocate OIDs → planner stamps mv_oid + catalog_writes on the matview node →
         // physical_plan_generator produces composite operator_create_matview_t that
         // does heap+catalog+populate atomically in one async coroutine.
@@ -1362,7 +1362,7 @@ namespace services::dispatcher {
             logic_plan = ddl_planner.create_plan(resource(), std::move(logic_plan), std::move(oid_batch));
         }
 
-        // CREATE CONSTRAINT → planner rewrite в sequence_t(primitive_write на pg_constraint+pg_depend).
+        // CREATE CONSTRAINT → planner rewrite to sequence_t(primitive_write on pg_constraint+pg_depend).
         // Resolved attoids/table_oid/ref_table_oid populated by enrich_plan above.
         if (original_type == node_type::create_constraint_t &&
             disk_address_ != actor_zeta::address_t::empty_address()) {

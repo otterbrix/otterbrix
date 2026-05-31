@@ -5,12 +5,12 @@ import pytest
 def spark():
     from otterbrix.experimental.spark.sql import SparkSession
 
-    # Создание SparkSession для тестов
+    # Create a SparkSession for the tests
     spark = SparkSession.builder \
         .master("local[2]") \
         .appName("pytest-spark") \
         .getOrCreate()
     
-    yield spark  # предоставляем сессию тестам
+    yield spark  # provide the session to the tests
     
-    spark.stop()  # останавливаем после всех тестов
+    spark.stop()  # stop after all tests

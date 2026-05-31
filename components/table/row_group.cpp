@@ -306,9 +306,9 @@ namespace components::table {
 
             uint64_t count;
             if (TYPE == table_scan_type::REGULAR) {
-                // ): state.txn carries the snapshot fields
-                // — there is no synth fallback. Callers must initialize state.txn
-                // with a real transaction_data captured by transaction_manager.
+                // state.txn carries the snapshot fields — there is no synth
+                // fallback. Callers must initialize state.txn with a real
+                // transaction_data captured by transaction_manager.
                 count = state.row_group->indexing_vector(state.txn,
                                                          state.vector_index,
                                                          state.valid_indexing,
@@ -679,22 +679,22 @@ namespace components::table {
 
     uint64_t row_group_t::calculate_size() {
         vector::indexing_vector_t temp_indexing(collection().resource(), count);
-        // ): calculate_size reads all committed rows
-        // (no transaction context, no in-flight set). Explicit "see everything"
-        // snapshot — UINT64_MAX horizon + empty in_flight passes the visibility
-        // filter for every committed insert_id < TRANSACTION_ID_START. This is
-        // metadata accounting, not a user-facing scan — constraint #6 (no
-        // fallback) does not apply here as the semantic is an explicit choice.
+        // calculate_size reads all committed rows (no transaction context,
+        // no in-flight set). Explicit "see everything" snapshot — UINT64_MAX
+        // horizon + empty in_flight passes the visibility filter for every
+        // committed insert_id < TRANSACTION_ID_START. This is metadata
+        // accounting, not a user-facing scan — the no-fallback rule does not
+        // apply here as the semantic is an explicit choice.
         transaction_data td(0, 0);
         td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
         return indexing_vector(td, index, temp_indexing, count);
     }
 
-    //   indexing_vector(uint64_t vector_idx, ...)
-    // was removed per constraint #6 (no backwards compatibility). Every scan
-    // must supply a real transaction_data — boot/init code that previously
-    // relied on {current_version_, current_version_} now takes the txn-aware
-    // signature directly.
+    // The legacy `indexing_vector(uint64_t vector_idx, ...)` overload was
+    // removed (no backwards-compat). Every scan must supply a real
+    // transaction_data — boot/init code that previously relied on
+    // {current_version_, current_version_} now takes the txn-aware signature
+    // directly.
     uint64_t row_group_t::indexing_vector(transaction_data txn,
                                           uint64_t vector_idx,
                                           vector::indexing_vector_t& indexing_vector,

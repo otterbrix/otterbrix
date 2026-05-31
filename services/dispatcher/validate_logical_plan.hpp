@@ -17,10 +17,10 @@ namespace components::catalog {
     class table_id;
 }
 
-// Forward-declare in the canonical location. validate_logical_plan's
-// public API still spells the type as `impl::plan_resolve_index_t`
-// (back-compat re-export in plan_resolve_index.hpp's tail makes that name
-// an alias for the services::catalog_resolve definition).
+// validate_logical_plan's public API still spells the type as
+// `impl::plan_resolve_index_t`; the back-compat re-export in
+// plan_resolve_index.hpp aliases it to the services::catalog_resolve
+// definition.
 namespace services::catalog_resolve {
     struct plan_resolve_index_t;
 } // namespace services::catalog_resolve
@@ -63,7 +63,7 @@ namespace services::dispatcher {
     // Walk a complex_logical_type tree and visit every nested UDT reference.
     using ::components::types::walk_user_type_refs;
 
-    // Validate plan node types against the plan-tree idx (populated by Pass 1).
+    // Validate plan node types against the plan-tree idx.
     [[nodiscard]] core::error_t validate_types(std::pmr::memory_resource* resource,
                                                const impl::plan_resolve_index_t* idx,
                                                components::logical_plan::node_t* node,

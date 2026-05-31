@@ -36,8 +36,8 @@ namespace components::operators {
             co_return;
         }
 
-        // + 2: ensure the engine knows about the collection, then create
-        // the index entry. register_collection is idempotent.
+        // Ensure the engine knows about the collection, then create the
+        // index entry. register_collection is idempotent.
         auto [_rc, rcf] = actor_zeta::send(ctx->index_address,
                                            &services::index::manager_index_t::register_collection,
                                            ctx->session,
@@ -62,11 +62,11 @@ namespace components::operators {
 
         // WAL retention guard. Capture build_start_wal_position
         // (current wal_id) and register it with manager_wal_replicate so a
-        // concurrent checkpoint+truncate cannot drop records the Phase 2.5
-        // catchup loop still needs. We route through the mailbox (rule 11: the
-        // operator runs inside the executor actor, sync inter-actor calls are
-        // forbidden). The matching unregister fires at every exit point below
-        // (success after catchup, fail when catchup doesn't converge).
+        // concurrent checkpoint+truncate cannot drop records the catchup loop
+        // still needs. We route through the mailbox (the operator runs inside
+        // the executor actor, sync inter-actor calls are forbidden). The
+        // matching unregister fires at every exit point below (success after
+        // catchup, fail when catchup doesn't converge).
         // build_start_registered_ tracks whether we still owe an unregister;
         // it's only set after a successful register so accidental double-unreg
         // is impossible. No RAII helper is used: a coroutine-local guard would
@@ -113,20 +113,20 @@ namespace components::operators {
                         uint64_t{0},
                         count);
                     co_await std::move(irf);
-                    // Group 3 fix: insert_rows tags index entries with the
-                    // current txn_id but leaves them PENDING. They become
-                    // visible only after commit_insert is called with the
-                    // commit_id. The executor's post-pipeline commit block
-                    // (executor.cpp:215-232) fires commit_insert when
-                    // dml_append_row_count > 0 && dml_table_oid set — record
-                    // those here so backfilled index entries get committed
-                    // alongside the CREATE INDEX txn. Reusing
-                    // dml_append_row_count also drives storage_publish_commit
-                    // (executor.cpp:217-224): that re-commits the already-
-                    // committed data rows to the CREATE INDEX commit_id, which
-                    // is harmless when no concurrent reader sits between the
-                    // INSERT and the CREATE INDEX commits (typical case).
-                    // Phase 2.5 now handles this via catchup loop below; see TODO for WAL-based path.
+                    // insert_rows tags index entries with the current txn_id
+                    // but leaves them PENDING. They become visible only after
+                    // commit_insert is called with the commit_id. The
+                    // executor's post-pipeline commit block fires commit_insert
+                    // when dml_append_row_count > 0 && dml_table_oid set —
+                    // record those here so backfilled index entries get
+                    // committed alongside the CREATE INDEX txn. Reusing
+                    // dml_append_row_count also drives storage_publish_commit:
+                    // that re-commits the already-committed data rows to the
+                    // CREATE INDEX commit_id, which is harmless when no
+                    // concurrent reader sits between the INSERT and the
+                    // CREATE INDEX commits (typical case). Concurrent rows
+                    // committed during the snapshot scan are picked up by the
+                    // bounded-retry catchup loop below.
                     ctx->dml_append_row_start = 0;
                     ctx->dml_append_row_count = count;
                     ctx->dml_table_oid = table_oid_;
@@ -134,24 +134,25 @@ namespace components::operators {
             }
         }
 
-        // c CREATE INDEX Phase 2.5 bounded-retry catchup.
-        // Snapshot scan (Phase 2) may have missed rows committed concurrently with
-        // the build. We scan WAL records produced after build_start_wal_position
-        // (captured at Phase 2 start, retention-guarded by WAL) and re-apply
-        // every PHYSICAL_{INSERT,DELETE,UPDATE} targeting this build's table_oid
-        // to the in-memory index. Bounded retry guards against pathological
+        // CREATE INDEX bounded-retry WAL catchup.
+        // The snapshot scan above may have missed rows committed concurrently
+        // with the build. We scan WAL records produced after
+        // build_start_wal_position (captured before the snapshot scan,
+        // retention-guarded by WAL) and re-apply every
+        // PHYSICAL_{INSERT,DELETE,UPDATE} targeting this build's table_oid to
+        // the in-memory index. Bounded retry guards against pathological
         // high-write workloads that never quiesce; each iteration advances
         // catchup_start_wal to the max wal_id seen, so the loop terminates as
         // soon as load() reports no new records past the watermark.
         //
-        // V1.d engine apply (full): INSERT, DELETE, and UPDATE are all wired.
+        // Engine apply (full): INSERT, DELETE, and UPDATE are all wired.
         //   - PHYSICAL_INSERT — forwarded with rec.physical_data directly.
         //   - PHYSICAL_DELETE — WAL records carry only row_ids, so we
         //     recover the key chunk via storage_fetch(row_ids) on the
         //     operator side, then forward the recovered chunk as
         //     physical_data to apply_wal_record_for_index. Best-effort:
         //     if storage_fetch returns null/empty (rows physically gone)
-        //     we forward nullptr; manager_index logs+skips and the V1.a
+        //     we forward nullptr; manager_index logs+skips and the
         //     bounded-retry convergence guard catches persistent divergence.
         //   - PHYSICAL_UPDATE — split into TWO messages: the original
         //     PHYSICAL_UPDATE message (NEW-insert half) followed by a
@@ -179,14 +180,13 @@ namespace components::operators {
             }
 
             services::wal::id_t max_wal_id_seen = catchup_start_wal;
-            // V1.d real-impl: non-const iteration so we can move
-            // rec.physical_data (unique_ptr<data_chunk_t>) into the
-            // apply_wal_record_for_index message. The chunk and
-            // physical_row_start are required by the engine's insert_row API
-            // (see services/index/manager_index.cpp). Replayed entries are
-            // tagged with the CREATE INDEX txn_id so they stay PENDING until
-            // the post-pipeline commit_insert publishes them alongside the
-            // Phase 2 snapshot rows.
+            // Non-const iteration so we can move rec.physical_data
+            // (unique_ptr<data_chunk_t>) into the apply_wal_record_for_index
+            // message. The chunk and physical_row_start are required by the
+            // engine's insert_row API (see services/index/manager_index.cpp).
+            // Replayed entries are tagged with the CREATE INDEX txn_id so they
+            // stay PENDING until the post-pipeline commit_insert publishes
+            // them alongside the snapshot-scan rows.
             //
             // PHYSICAL_DELETE / PHYSICAL_UPDATE handling: the WAL record
             // ships only row_ids for the deleted rows, but the engine's
@@ -218,8 +218,8 @@ namespace components::operators {
                 // row_ids from storage. If the fetch can't run (no disk
                 // address in test harness) or returns null/empty (rows
                 // physically gone), we forward nullptr — the manager_index
-                // handler logs+skips and the V1.a convergence guard catches
-                // persistent divergence on the next iteration.
+                // handler logs+skips and the bounded-retry convergence guard
+                // catches persistent divergence on the next iteration.
                 std::unique_ptr<components::vector::data_chunk_t> old_chunk;
                 const bool needs_old_chunk =
                     (rec.record_type == services::wal::wal_record_type::PHYSICAL_DELETE ||

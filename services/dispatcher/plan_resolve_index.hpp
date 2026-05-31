@@ -3,7 +3,7 @@
 // Plan-tree catalog lookup index.
 //
 // The transformer wraps DML/DDL plans with catalog_resolve_*_t leaf nodes.
-// in the dispatcher runs those leaves through operator_resolve_*_t
+// The dispatcher/executor runs those leaves through operator_resolve_*_t
 // (which queries pg_catalog via the standard executor pipeline) and stamps
 // the resolved OID + metadata onto each leaf via back-pointer.
 //
@@ -27,17 +27,11 @@
 #include <string_view>
 #include <unordered_map>
 
-// NOTE (Variant E.3 Pass 1): the helpers below were originally defined under
-// `services::dispatcher::impl` because only manager_dispatcher_t consumed
-// them. Pass 1's executor-side migration (`executor_t::execute_plan_full`)
-// needs to call the same gather + lookup primitives, so the canonical
-// namespace is now `services::catalog_resolve`. The trailing
-// `services::dispatcher::impl { using ... }` re-export block keeps existing
-// dispatcher/validate/resolve_type call sites compiling unchanged — they keep
-// writing `impl::plan_resolve_index_t`. New (executor) callers should spell
-// out `services::catalog_resolve::plan_resolve_index_t` (or pull in a local
-// alias). No signatures changed; pure namespace promotion. (Option A from
-// the task brief — physical location preserved.)
+// The helpers live under `services::catalog_resolve` so both the dispatcher
+// and the executor can use the same gather + lookup primitives. The trailing
+// `services::dispatcher::impl { using ... }` block re-exports them for
+// existing dispatcher/validate/resolve_type call sites that still spell the
+// type as `impl::plan_resolve_index_t`.
 namespace services::catalog_resolve {
 
     struct plan_resolve_index_t {
@@ -81,7 +75,7 @@ namespace services::catalog_resolve {
 
     // Walk plan tree once; collect every node_catalog_resolve_*_t leaf
     // and populate the index. Leaves whose oid is still INVALID_OID
-    // (Pass 1 did not stamp them — name did not resolve) are skipped.
+    // (resolve operator did not stamp them — name did not resolve) are skipped.
     inline void gather_plan_resolve_index(components::logical_plan::node_t* root, plan_resolve_index_t& out) {
         using namespace components::logical_plan;
         if (!root)
@@ -247,8 +241,8 @@ namespace services::catalog_resolve {
 // Back-compat re-export. Existing dispatcher / validate / resolve_type call
 // sites use `impl::plan_resolve_index_t`, `impl::gather_plan_resolve_index`,
 // `impl::tbl_md_for`, etc. The using-declarations below let those continue
-// to resolve without touching every call site. Only NEW code (executor-side
-// migration) needs to spell `catalog_resolve::` directly.
+// to resolve without touching every call site. Executor-side code spells
+// `catalog_resolve::` directly.
 namespace services::dispatcher::impl {
     using catalog_resolve::gather_plan_resolve_index;
     using catalog_resolve::ns_oid_for;

@@ -12,7 +12,6 @@
 #include <actor-zeta/detail/queue/enqueue_result.hpp>
 
 #include "index_agent_disk.hpp"
-#include "index_table_agent.hpp"
 #include <components/catalog/catalog_codes.hpp>
 #include <components/index/index_engine.hpp>
 #include <components/log/log.hpp>
@@ -50,49 +49,23 @@ namespace services::index {
         auto make_type() const noexcept -> const char*;
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
+        // Cooperative driver for actor_mixin + coroutine behavior(). The driver
+        // holds current_behavior_ across mailbox iterations and pumps resumable
+        // continuations under mutex_. mutex_ protects ACTOR SCHEDULING ONLY,
+        // not DML/DDL data coordination — Pure MVCC rule #12 (no locks for
+        // DML/DDL) remains satisfied.
         [[nodiscard]] std::pair<bool, actor_zeta::detail::enqueue_result>
         enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
+        template<typename ReturnType, typename... Args>
+        requires(actor_zeta::type_traits::is_unique_future_v<ReturnType>) [[nodiscard]] ReturnType
+            enqueue_impl(actor_zeta::actor::address_t sender, actor_zeta::mailbox::message_id cmd, Args&&... args);
+
         void sync(address_pack pack);
 
-        // V4 bootstrap helper — called from base_spaces Phase 3.5 before
-        // scheduler start. NOT a regular message handler; direct call only
-        // during bootstrap (rule 11 base_spaces exception).
-        void register_table_agent_sync(components::catalog::oid_t oid, actor_zeta::address_t addr);
-
-        // V4 bootstrap helper — exposes the per-oid index_engine_t raw
-        // pointer so base_spaces Phase 3.5 can hand it to the matching
-        // index_table_agent_t via set_engine_sync. Returns nullptr when no
-        // engine has been registered for the oid yet (engines_ is populated
-        // lazily by register_collection). The returned pointer is heap-stable
-        // because engines_ stores core::pmr::unique_ptr<index_engine_t>: the
-        // engine object lives behind the unique_ptr, not in the map slot, so
-        // unordered_map rehashes do not invalidate the address.
-        // NOT a mailbox handler — direct call only during base_spaces
-        // bootstrap before scheduler start (rule 11 exception).
-        components::index::index_engine_t* engine_for_oid_sync(components::catalog::oid_t oid) const noexcept;
-
-        // Final cleanup — engine ownership migration. Pops the
-        // index_engine_t for `oid` out of engines_ (creating one on demand if
-        // the entry was absent, mirroring register_collection's lazy-init
-        // semantics) and returns it as a core::pmr::unique_ptr. The caller
-        // (today: base_spaces Phase 3.5) is expected to immediately hand the
-        // result to the matching index_table_agent_t::set_engine_owned_sync.
-        //
-        // After this call, engines_[oid] has no entry and the manager-side
-        // engines_ fallbacks for routed DML / query handlers will miss. That
-        // is INTENTIONAL — for migrated oids the per_table_agents_ router path
-        // owns the engine and answers all requests; the engines_ fallback only
-        // remains for oids that have not yet been migrated (e.g. runtime
-        // CREATE TABLE before its agent is spawned).
-        //
-        // NOT a mailbox handler — direct call only during base_spaces
-        // bootstrap before scheduler start (rule 11 exception).
-        components::index::index_engine_ptr take_engine_ownership_sync(components::catalog::oid_t oid);
-
-        // Bootstrap helper — dec 37 catalog scan rebuild populates this. Also
-        // called internally by the mark_table_dropped mailbox handler. NOT a
-        // mailbox handler — single-threaded callers only.
+        // Bootstrap helper — catalog scan rebuild populates this. Also called
+        // internally by the mark_table_dropped mailbox handler. NOT a mailbox
+        // handler — single-threaded callers only.
         void mark_table_dropped_sync(components::catalog::oid_t oid, uint64_t dropped_at_commit_id);
 
         /// Runtime DROP TABLE path — sent from operator_dynamic_cascade_delete
@@ -107,6 +80,34 @@ namespace services::index {
         /// scheduler.start. Used for on_subscriber_empty ack after
         /// dropped_table_agents_ empties.
         void set_manager_dispatcher_sync(actor_zeta::address_t address);
+
+        // Bootstrap helpers — called from base_spaces::bootstrap_indexes_sync
+        // BEFORE scheduler.start, single-threaded by construction (rule 11
+        // base_spaces exception). They populate the manager's owned data
+        // structures (engines_, disk_agents_owned_, disk_agents_per_oid_,
+        // dropped_table_agents_) from the catalog scan results so the manager
+        // starts steady state with a complete view.
+
+        // Create an empty in-memory index_engine_t for an oid. Called once per
+        // live table oid discovered by the catalog scan.
+        void bootstrap_engine_sync(components::catalog::oid_t oid);
+
+        // Register a single existing on-disk index. Called once per alive
+        // pg_index row. Spawns/owns the disk persistence actor (the owning
+        // pointer is passed in to keep spawn responsibility in base_spaces)
+        // and wires its address into engines_[oid] + the disk_agents_per_oid_
+        // fan-out map.
+        void bootstrap_index_sync(components::catalog::oid_t table_oid,
+                                  std::pmr::string name,
+                                  components::logical_plan::index_type type,
+                                  components::index::keys_base_storage_t keys,
+                                  actor_zeta::address_t disk_agent_addr,
+                                  index_agent_disk_ptr disk_agent_owned);
+
+        // Restore a dropped-table entry recovered from pg_class.delete_id.
+        // Alias of mark_table_dropped_sync kept under the bootstrap_* naming
+        // so the bootstrap call site reads consistently.
+        void bootstrap_dropped_sync(components::catalog::oid_t oid, uint64_t delete_id);
 
         // Collection lifecycle
         unique_future<void> register_collection(session_id_t session, components::catalog::oid_t table_oid);
@@ -129,15 +130,12 @@ namespace services::index {
                                         std::pmr::vector<int64_t> row_ids,
                                         int64_t new_start_row_id);
 
-        // MVCC commit/revert/cleanup
-        // Parallel A.B3: commit_insert / commit_delete now carry their
-        // error state in core::error_t (project-wide convention —
-        // error_t::no_error() means success; contains_error() flags failure).
-        // Kept as no_error today because the underlying bitcask write path is
-        // assert+abort terminal. The signature is the long-term shape so the
-        // executor commit-path can already start handling
-        // `result.contains_error()` without a second migration once
-        // core::error_t propagates upward.
+        // MVCC commit/revert/cleanup. core::error_t carries terminal error
+        // state for the commit path (no_error() ↔ success). The underlying
+        // bitcask write path is assert+abort terminal today, but the
+        // signature is the long-term shape so the executor commit-path can
+        // already start handling result.contains_error() without a second
+        // migration once core::error_t propagates upward.
         unique_future<core::error_t>
         commit_insert(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id);
         unique_future<core::error_t>
@@ -192,30 +190,11 @@ namespace services::index {
         // new DROP TABLE re-marks the subscriber.
         unique_future<void> on_horizon_advanced(uint64_t new_horizon);
 
-        // d — mailbox handler called per-WAL-record by
-        // operator_create_index_backfill during Phase 2.5 catchup. Locates the
-        // index engine for the (table_oid, index_oid) pair and applies the
-        // record's effect (insert / delete / update key) on the build's
-        // in-memory index_engine_t.
-        //
-        // V1.d real-impl: the chunk + storage-row metadata travel with the
-        // message so the handler can call engine->insert_row /
-        // mark_delete_row directly. INSERT, DELETE, and UPDATE are all
-        // fully wired:
-        //   - INSERT: physical_data carries the WAL chunk; insert each row
-        //     starting at physical_row_start.
-        //   - DELETE: WAL ships only row_ids, so the operator pre-fetches
-        //     the OLD key chunk via storage_fetch(row_ids) and forwards it
-        //     as physical_data; the handler loops mark_delete_row over the
-        //     recovered chunk.
-        //   - UPDATE: operator splits into two messages — original UPDATE
-        //     (NEW-insert half, uses rec.physical_data) followed by a
-        //     synthesized DELETE carrying the recovered OLD chunk
-        //     (OLD-delete half, same recovery pattern as standalone DELETE).
-        // Best-effort fall-through when storage_fetch can't recover rows
-        // (rows physically gone, no disk in test harness): handler logs +
-        // skips; the V1.a bounded-retry guard in the operator catches
-        // persistent divergence.
+        // Mailbox handler called per-WAL-record by
+        // operator_create_index_backfill during the CREATE INDEX catchup
+        // loop. Locates the index engine for the (table_oid, index_oid) pair
+        // and applies the record's effect (insert / delete / update key) on
+        // the build's in-memory index_engine_t.
         unique_future<void> apply_wal_record_for_index(session_id_t session,
                                                        components::catalog::oid_t table_oid,
                                                        components::catalog::oid_t index_oid,
@@ -265,48 +244,34 @@ namespace services::index {
         uint64_t bitcask_flush_threshold_{1000};
         uint64_t bitcask_segment_record_limit_{100};
         uint64_t btree_flush_threshold_{1000};
-        std::mutex mutex_;
 
-        // Per-collection in-memory index engines (keyed by table oid).
-        //
-        // Final cleanup — engine ownership migration STATUS: partial.
-        // The agent now exposes set_engine_owned_sync and this manager exposes
-        // take_engine_ownership_sync; base_spaces Phase 3.5 calls the pair so
-        // every oid known at bootstrap has its engine moved into the owning
-        // index_table_agent_t. For migrated oids this map has no entry —
-        // routed DML/query handlers reach the agent via per_table_agents_ and
-        // never look up engines_.
-        //
-        // The map is still populated lazily by register_collection for
-        // oids without a registered per-table agent (e.g. runtime CREATE
-        // TABLE before base_spaces has had a chance to bootstrap an agent
-        // for the new oid). The engines_-based DDL handlers (create_index /
-        // drop_index / apply_wal_record_for_index) continue to operate on
-        // engines_[oid] for those legacy paths. Migrating DDL to forward
-        // through the per-table agent is the next cleanup step — after that,
-        // engines_ can be removed entirely.
-        //
-        // Constraint #11 (no shared mutable state between actors): for the
-        // migrated oids the per-table agent is the sole owner; nothing in
-        // manager_index touches the engine_t once take_engine_ownership_sync
-        // has handed it off.
+        // Per-collection in-memory index engines (keyed by table oid). The
+        // single, authoritative owner — manager_index_t is the sole holder
+        // (rule 10: no shared mutable state between actors). The map is
+        // populated either by bootstrap_engine_sync at base_spaces Phase 4
+        // (for catalog-known tables) or lazily by register_collection (for
+        // runtime CREATE TABLE).
         std::pmr::unordered_map<components::catalog::oid_t, components::index::index_engine_ptr> engines_;
 
-        // per-table agent addresses (keyed by table oid). Populated via
-        // register_table_agent_sync during base_spaces bootstrap. Used by later
-        // commits to route per-table DML/search messages to the owning
-        // index_table_agent_t.
-        std::pmr::unordered_map<components::catalog::oid_t, actor_zeta::address_t> per_table_agents_;
-
-        // symmetric GC — oids whose owning table has been dropped,
-        // keyed by the commit_id at which the drop became visible. Populated
-        // by mark_table_dropped_sync (catalog scan rebuild + DROP TABLE
-        // operator). Drained by on_horizon_advanced once the snapshot floor
-        // passes the recorded commit_id.
+        // Dropped per-table marker map. Populated by mark_table_dropped_sync
+        // (catalog scan rebuild) and mark_table_dropped (runtime DROP TABLE
+        // path). Drained by on_horizon_advanced once the snapshot floor passes
+        // the recorded commit_id; the corresponding engine in engines_ is
+        // erased and disk_agents_per_oid_ entry is sent terminal drop messages.
         std::pmr::unordered_map<components::catalog::oid_t, uint64_t> dropped_table_agents_;
 
-        // Per-index disk persistence (child actors)
-        std::vector<index_agent_disk_ptr> disk_agents_;
+        // Per-index disk persistence actor addresses, grouped by table oid.
+        // Used by commit_insert / commit_delete fan-out and by on_horizon_advanced
+        // GC. Populated by create_index (runtime CREATE INDEX) and
+        // bootstrap_index_sync (Phase 4 catalog rebuild).
+        std::pmr::unordered_map<components::catalog::oid_t,
+                                 std::pmr::vector<actor_zeta::address_t>> disk_agents_per_oid_;
+
+        // Owning collection of disk persistence agents. The owning pointer
+        // remains here for the lifetime of the manager so addresses stored in
+        // disk_agents_per_oid_ stay valid. Agents are reaped when the owning
+        // table is GC'd by on_horizon_advanced.
+        std::vector<index_agent_disk_ptr> disk_agents_owned_;
 
         // indexes_METADATA file + write/read/remove_indexes_from_metafile retired
         // — all index metadata lives in pg_catalog.pg_index now.
@@ -328,8 +293,37 @@ namespace services::index {
         std::pmr::vector<unique_future<void>> pending_void_;
         void poll_pending();
 
+        // Cooperative driver state (see enqueue_impl docstring above).
+        std::mutex mutex_;
         actor_zeta::behavior_t current_behavior_;
     };
+
+    template<typename ReturnType, typename... Args>
+    requires(actor_zeta::type_traits::is_unique_future_v<ReturnType>)
+        ReturnType manager_index_t::enqueue_impl(actor_zeta::actor::address_t sender,
+                                                 actor_zeta::mailbox::message_id cmd,
+                                                 Args&&... args) {
+        using R = typename actor_zeta::type_traits::is_unique_future<ReturnType>::value_type;
+
+        auto [msg, future] =
+            actor_zeta::detail::make_message<R>(resource(), std::move(sender), cmd, std::forward<Args>(args)...);
+
+        std::lock_guard<std::mutex> guard(mutex_);
+        current_behavior_ = behavior(msg.get());
+
+        while (current_behavior_.is_busy()) {
+            if (current_behavior_.is_awaited_ready()) {
+                auto cont = current_behavior_.take_awaited_continuation();
+                if (cont) {
+                    cont.resume();
+                }
+            } else {
+                run_fn_();
+            }
+        }
+
+        return std::move(future);
+    }
 
     using manager_index_ptr = std::unique_ptr<manager_index_t, actor_zeta::pmr::deleter_t>;
 

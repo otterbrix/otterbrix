@@ -25,7 +25,6 @@ namespace components::operators {
         std::vector<components::pg_catalog_append_range_t> swap_appends;
         std::set<components::catalog::oid_t> swap_deletes_unused;
         if (txn_t) {
-            // EXTENSION — pg_catalog accumulation API.
             // drain_pg_catalog_pending mirrors the COMMIT path. On ABORT we
             // discard the delete-tables set (uncommitted tombstones with
             // delete_id == txn_id are invisible to every reader; abort()

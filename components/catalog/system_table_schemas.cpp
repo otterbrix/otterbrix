@@ -151,7 +151,7 @@ namespace components::catalog {
             // proargmatchers: encoded per-arg type matcher kinds + parameters. Format is
             // pipe-separated per arg: "e:N" exact (N=numeric logical_type id), "n" numeric,
             // "i" integer, "f" floating, "a:N1,N2,..." any_of, "t" always_true. Empty when
-            // no matcher info was persisted (legacy rows / placeholder UDFs). #152 — replaces
+            // no matcher info was persisted (legacy rows / placeholder UDFs). Replaces
             // std::function-based matchers with a serializable tagged kind.
             c.emplace_back("proargmatchers", str_col(), false);
             // prorettype: encoded output_type list. Format is comma-separated: "f:N" fixed

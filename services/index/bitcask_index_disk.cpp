@@ -142,16 +142,14 @@ namespace services::index {
             {
                 std::ofstream output(temp_path, std::ios::trunc);
                 if (!output.good()) {
-                    // I/O failure: actor-zeta -fno-exceptions swallows throws → assert+abort
-                    // is conservative-fail. TODO: core::error_t propagation.
+                    // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
                     assert(false && "bitcask I/O failure");
                     std::abort();
                 }
                 output << segment_id;
                 output.flush();
                 if (!output.good()) {
-                    // I/O failure: actor-zeta -fno-exceptions swallows throws → assert+abort
-                    // is conservative-fail. TODO: core::error_t propagation.
+                    // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
                     assert(false && "bitcask I/O failure");
                     std::abort();
                 }
@@ -227,8 +225,7 @@ namespace services::index {
     uint32_t bitcask_index_disk_t::segment_id_from_path(const std::filesystem::path& path) {
         uint64_t id = 0;
         if (!parse_segment_id(path, id)) {
-            // I/O failure: actor-zeta -fno-exceptions swallows throws → assert+abort
-            // is conservative-fail. TODO: core::error_t propagation.
+            // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
             assert(false && "bitcask I/O failure");
             std::abort();
         }
@@ -247,8 +244,7 @@ namespace services::index {
         for (auto& segment : segments) {
             auto f = open_file(fs_, segment.path, file_flags::READ, file_lock_type::NO_LOCK);
             if (!f) {
-                // I/O failure: actor-zeta -fno-exceptions swallows throws → assert+abort
-                // is conservative-fail. TODO: core::error_t propagation.
+                // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
                 assert(false && "bitcask I/O failure");
                 std::abort();
             }
@@ -278,8 +274,7 @@ namespace services::index {
                     calc = absl::ExtendCrc32c(calc, absl::string_view(payload.data(), payload.size()));
                 }
                 if (static_cast<uint32_t>(calc) != header.crc) {
-                    // I/O failure: actor-zeta -fno-exceptions swallows throws → assert+abort
-                    // is conservative-fail. TODO: core::error_t propagation.
+                    // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
                     assert(false && "bitcask I/O failure");
                     std::abort();
                 }
@@ -351,8 +346,7 @@ namespace services::index {
                           file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                           file_lock_type::NO_LOCK);
         if (!file_) {
-            // I/O failure: actor-zeta -fno-exceptions swallows throws → assert+abort
-            // is conservative-fail. TODO: core::error_t propagation.
+            // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
             assert(false && "bitcask I/O failure");
             std::abort();
         }
@@ -500,16 +494,14 @@ namespace services::index {
         {
             std::ofstream out(temp_path, std::ios::trunc);
             if (!out.good()) {
-                // I/O failure: actor-zeta -fno-exceptions swallows throws → assert+abort
-                // is conservative-fail. TODO: core::error_t propagation.
+                // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
                 assert(false && "bitcask I/O failure");
                 std::abort();
             }
             out << offset;
             out.flush();
             if (!out.good()) {
-                // I/O failure: actor-zeta -fno-exceptions swallows throws → assert+abort
-                // is conservative-fail. TODO: core::error_t propagation.
+                // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
                 assert(false && "bitcask I/O failure");
                 std::abort();
             }
@@ -549,8 +541,7 @@ namespace services::index {
                                       file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                                       file_lock_type::NO_LOCK);
             if (!txn_log_file_) {
-                // I/O failure: actor-zeta -fno-exceptions swallows throws → assert+abort
-                // is conservative-fail. TODO: core::error_t propagation.
+                // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
                 assert(false && "bitcask I/O failure");
                 std::abort();
             }
@@ -583,8 +574,7 @@ namespace services::index {
                 break;
             }
             if (header.magic != txn_magic) {
-                // I/O failure: actor-zeta -fno-exceptions swallows throws → assert+abort
-                // is conservative-fail. TODO: core::error_t propagation.
+                // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
                 assert(false && "bitcask I/O failure");
                 std::abort();
             }
@@ -604,8 +594,7 @@ namespace services::index {
                 calc = absl::ExtendCrc32c(calc, absl::string_view(payload.data(), payload.size()));
             }
             if (static_cast<uint32_t>(calc) != header.crc) {
-                // I/O failure: actor-zeta -fno-exceptions swallows throws → assert+abort
-                // is conservative-fail. TODO: core::error_t propagation.
+                // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
                 assert(false && "bitcask I/O failure");
                 std::abort();
             }
@@ -620,8 +609,7 @@ namespace services::index {
                 } else if (header.op_kind == 2) {
                     remove(key, row_id);
                 } else {
-                    // I/O failure: actor-zeta -fno-exceptions swallows throws → assert+abort
-                    // is conservative-fail. TODO: core::error_t propagation.
+                    // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
                     assert(false && "bitcask I/O failure");
                     std::abort();
                 }
@@ -641,8 +629,7 @@ namespace services::index {
                                       file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                                       file_lock_type::NO_LOCK);
             if (!txn_log_file_) {
-                // I/O failure: actor-zeta -fno-exceptions swallows throws → assert+abort
-                // is conservative-fail. TODO: core::error_t propagation.
+                // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
                 assert(false && "bitcask I/O failure");
                 std::abort();
             }
@@ -670,8 +657,7 @@ namespace services::index {
                                       file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                                       file_lock_type::NO_LOCK);
             if (!txn_log_file_) {
-                // I/O failure: actor-zeta -fno-exceptions swallows throws → assert+abort
-                // is conservative-fail. TODO: core::error_t propagation.
+                // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
                 assert(false && "bitcask I/O failure");
                 std::abort();
             }
@@ -806,25 +792,25 @@ namespace services::index {
     }
 
     void bitcask_index_disk_t::lower_bound(const value_t& /*value*/, result& /*res*/) const {
-        // Unsupported variant — invariant; not reachable in production code paths.
+        // Hashed index has no ordering — lower_bound/upper_bound are unreachable.
         assert(false && "not supported");
         std::abort();
     }
 
     bitcask_index_disk_t::result bitcask_index_disk_t::lower_bound(const value_t& /*value*/) const {
-        // Unsupported variant — invariant; not reachable in production code paths.
+        // Hashed index has no ordering — lower_bound/upper_bound are unreachable.
         assert(false && "not supported");
         std::abort();
     }
 
     void bitcask_index_disk_t::upper_bound(const value_t& /*value*/, result& /*res*/) const {
-        // Unsupported variant — invariant; not reachable in production code paths.
+        // Hashed index has no ordering — lower_bound/upper_bound are unreachable.
         assert(false && "not supported");
         std::abort();
     }
 
     bitcask_index_disk_t::result bitcask_index_disk_t::upper_bound(const value_t& /*value*/) const {
-        // Unsupported variant — invariant; not reachable in production code paths.
+        // Hashed index has no ordering — lower_bound/upper_bound are unreachable.
         assert(false && "not supported");
         std::abort();
     }
@@ -852,8 +838,7 @@ namespace services::index {
                                      file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                                      file_lock_type::NO_LOCK);
         if (!merged_file) {
-            // I/O failure: actor-zeta -fno-exceptions swallows throws → assert+abort
-            // is conservative-fail. TODO: core::error_t propagation.
+            // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
             assert(false && "bitcask I/O failure");
             std::abort();
         }
@@ -890,8 +875,7 @@ namespace services::index {
         merged_file->sync();
         merged_file.reset();
         if (!move_files(fs_, temp_path, merged_path)) {
-            // I/O failure: actor-zeta -fno-exceptions swallows throws → assert+abort
-            // is conservative-fail. TODO: core::error_t propagation.
+            // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
             assert(false && "bitcask I/O failure");
             std::abort();
         }

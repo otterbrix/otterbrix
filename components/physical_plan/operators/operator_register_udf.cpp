@@ -49,7 +49,8 @@ namespace components::operators {
 
         // 1. Cross-namespace conflict detection. Bail with success_=false on any
         //    pre-existing pg_proc row sharing this function name (any namespace,
-        //    user or pg_catalog). Mirrors #41 Path 2 in the legacy dispatcher.
+        //    user or pg_catalog). Mirrors the legacy dispatcher's cross-namespace
+        //    bail path.
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             auto [_rfbn, rfbnf] = actor_zeta::send(ctx->disk_address,
                                                    &services::disk::manager_disk_t::resolve_function_by_name,

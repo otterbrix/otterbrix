@@ -1,15 +1,15 @@
 // Logical plan enrichment.
 //
 // Runs after SQL parsing and before physical plan generation. Reads the
-// plan-tree resolve idx (populated by Pass 1's operator_resolve_*_t) to
-// annotate DML nodes with the data they need at execution time:
+// plan-tree resolve idx (populated by operator_resolve_*_t) to annotate DML
+// nodes with the data they need at execution time:
 //   INSERT  — not_null_cols, outgoing FK references, CHECK expressions
 //   UPDATE  — not_null_cols, outgoing FK references
 //   DELETE  — referencing FKs (for CASCADE / SET NULL / SET DEFAULT)
 //   CREATE  — namespace_oid (for catalog registration)
 //
-// No disk I/O of its own — all catalog data comes from the plan-tree idx, so
-// all catalog metadata comes from the resolve idx materialized in-plan by
+// No disk I/O of its own — all catalog metadata comes from the resolve idx
+// materialized in-plan by the resolve operators.
 
 #include "enrich_logical_plan.hpp"
 
@@ -68,9 +68,9 @@ namespace services::dispatcher {
 
     namespace {
 
-        // Helpers: probe enrich_resolve_idx_t (plan-tree resolves
-        // stamped by operator_resolve_*_t Pass 1). All catalog reads in
-        // enrich flow through these.
+        // Helpers: probe enrich_resolve_idx_t (plan-tree resolves stamped by
+        // operator_resolve_*_t). All catalog reads in enrich flow through
+        // these.
         const components::logical_plan::resolved_table_metadata_t*
         lookup_table_md_local(const enrich_resolve_idx_t* idx, std::string_view db, std::string_view rel) {
             if (!idx)
@@ -292,8 +292,8 @@ namespace services::dispatcher {
             }
         }
 
-        // Name→OID lookup via plan-tree index (Pass 1 results). Returns
-        // INVALID_OID on miss; the caller decides whether a miss is fatal.
+        // Name→OID lookup via plan-tree index. Returns INVALID_OID on miss;
+        // the caller decides whether a miss is fatal.
         components::catalog::oid_t
         lookup_table_oid(const enrich_resolve_idx_t* idx, std::string_view db, std::string_view rel) {
             if (!idx)
@@ -306,33 +306,22 @@ namespace services::dispatcher {
             return it != idx->tbl_oid_by_qname.end() ? it->second : components::catalog::INVALID_OID;
         }
 
-        // NOTE: derive_matview_output_schema (formerly defined here, in this
-        // anonymous namespace) was lifted out into namespace
-        // services::catalog_resolve as part of Variant E.3 Pass 1 so it
-        // stays visible to catalog_resolve::stamp_oids_from_resolves (its
-        // sole caller, which itself moved namespace). See the definition
-        // right after this anonymous-namespace block. Pure helper — no
-        // manager_dispatcher_t state.
+        // derive_matview_output_schema lives below in namespace
+        // services::catalog_resolve so it is reachable by
+        // catalog_resolve::stamp_oids_from_resolves.
 
     } // anonymous namespace
 
 } // namespace services::dispatcher
 
-// helpers — promoted out of services::dispatcher::impl /
-// dispatcher.cpp anonymous namespace into services::catalog_resolve so
-// services::collection::executor_t::execute_plan_full can call the same
-// primitives. Definitions stay physically in this file (Option A).
+// Helpers shared between the dispatcher and executor pipelines.
 namespace services::catalog_resolve {
 
     // Derive a materialized view's output schema from its body plan + the
-    // source table's Pass 1-stamped resolved_metadata. First iteration
-    // supports single-table FROM with scalar_type::get_field expressions
-    // (i.e. plain column references). Returns empty on unsupported shapes
-    // — the planner will surface this as an error (no fallback).
-    //
-    // Moved out of dispatcher's anonymous namespace as part of Variant E.3
-    // so its sole caller (stamp_oids_from_resolves below) keeps
-    // finding it via unqualified lookup after the namespace promotion.
+    // source table's resolved_metadata. First iteration supports single-table
+    // FROM with scalar_type::get_field expressions (i.e. plain column
+    // references). Returns empty on unsupported shapes — the planner will
+    // surface this as an error (no fallback).
     static std::vector<components::table::column_definition_t>
     derive_matview_output_schema(const components::logical_plan::node_t* body_plan,
                                  const components::logical_plan::resolved_table_metadata_t* source_md) {
@@ -395,11 +384,11 @@ namespace services::catalog_resolve {
 
     // Propagate OIDs from sibling catalog_resolve_* nodes onto their
     // consumer nodes (drop/create/DML/alter) inside each sequence_t.
-    // After Pass 1 stamps OIDs on resolve_* nodes via back-pointer, this
-    // walker copies them onto the consumers whose name fields are gone
-    // (tasks 3, 6, 7, 8). Idempotent — INVALID_OID guards make repeat
-    // calls no-ops. Called by dispatcher (after Pass 1, before validate)
-    // and by enrich_plan (defensive depth, second call is no-op).
+    // After the resolve operators stamp OIDs on resolve_* nodes via
+    // back-pointer, this walker copies them onto the consumers whose name
+    // fields are gone. Idempotent — INVALID_OID guards make repeat calls
+    // no-ops. Called by the dispatcher (after resolve, before validate) and
+    // again defensively by enrich_plan (second call is no-op).
     void stamp_oids_from_resolves(components::logical_plan::node_t* root) {
         using namespace components::logical_plan;
         if (!root)
@@ -540,8 +529,8 @@ namespace services::catalog_resolve {
                         case node_type::create_matview_t: {
                             // Stamp namespace + source oids from sibling resolves.
                             // derive_matview_output_schema walks body_plan +
-                            // source's Pass 1-stamped resolved_metadata.columns
-                            // to produce the matview's column schema.
+                            // source's resolved_metadata.columns to produce
+                            // the matview's column schema.
                             auto* d = static_cast<node_create_matview_t*>(c.get());
                             if (rn && rn->namespace_oid() != components::catalog::INVALID_OID) {
                                 d->set_namespace_oid(rn->namespace_oid());
@@ -560,8 +549,8 @@ namespace services::catalog_resolve {
                         }
                         case node_type::refresh_matview_t: {
                             // refresh: mv_oid comes from sibling rt's resolved_metadata
-                            // (which also carries view_sql via Phase A.A2 since
-                            // operator_resolve_table reads pg_rewrite for relkind='m').
+                            // (which also carries view_sql — operator_resolve_table
+                            // reads pg_rewrite for relkind='m').
                             // No fields to stamp here — planner reads from rt directly.
                             (void) c;
                             break;
@@ -643,10 +632,8 @@ namespace services::catalog_resolve {
         }
     }
 
-    // --- Phase 1.5 SELECT-time view expansion helpers (moved from
-    // services/dispatcher/dispatcher.cpp anonymous namespace as part of
-    // promotion). Pure functions over plan trees +
-    // raw SQL strings — no manager_dispatcher_t state. ---
+    // --- SELECT-time view expansion helpers. Pure functions over plan trees
+    // + raw SQL strings — no manager_dispatcher_t state. ---
 
     components::logical_plan::node_catalog_resolve_table_t*
     find_first_view_resolve(components::logical_plan::node_t* root) {
@@ -703,8 +690,8 @@ namespace services::catalog_resolve {
         }
         // The transformer returns a fresh plan, typically
         // sequence_t(catalog_resolve_namespace, catalog_resolve_table(t),
-        //            aggregate(t, ...)). The dispatcher will run Pass 1
-        //            on this sub_plan's resolves before validate_schema.
+        //            aggregate(t, ...)). The dispatcher will run the resolve
+        //            operators on this sub_plan's resolves before validate_schema.
         out.had_expansion = true;
         out.expanded_plan = std::move(tr.value().node);
         out.expanded_params = std::move(tr.value().params);
@@ -741,7 +728,7 @@ namespace services::catalog_resolve {
             } else if (t == node_type::catalog_resolve_database_t) {
                 auto* rd = static_cast<components::logical_plan::node_catalog_resolve_database_t*>(c.get());
                 if (rd->database_oid() != components::catalog::INVALID_OID) {
-                    continue; // already resolved (Pass 2 enrich)
+                    continue; // already resolved
                 }
             }
             out.push_back(c);
@@ -749,9 +736,7 @@ namespace services::catalog_resolve {
         return out;
     }
 
-    // === Variant E.3 Pass 2 helpers promoted from dispatcher.cpp's anonymous
-    // namespace. Definitions used to live in services/dispatcher/dispatcher.cpp;
-    // moved here (Option A) so executor_t::execute_plan_full can call them. ===
+    // === Plan-routing helpers shared by dispatcher and executor pipelines. ===
 
     const components::logical_plan::node_t*
     effective_root_node(const components::logical_plan::node_t* n) {
@@ -951,7 +936,7 @@ namespace services::dispatcher {
                 enrich_insert_sync(node, idx, ctx.session_tz);
                 const auto tbl_oid = node->table_oid();
                 // FK + CHECK populated by operator_resolve_constraint_t
-                // (Pass 1, direction=outgoing) and gathered into idx. No catalog
+                // (direction=outgoing) and gathered into idx. No catalog
                 // probe here — pure plan-tree read.
                 if (tbl_oid != components::catalog::INVALID_OID && idx) {
                     if (auto it = idx->outgoing_fks_by_oid.find(tbl_oid); it != idx->outgoing_fks_by_oid.end()) {
@@ -992,10 +977,10 @@ namespace services::dispatcher {
             case node_type::delete_t: {
                 auto* node = static_cast<node_delete_t*>(root.get());
                 // Parent table metadata + referencing FK rows are both stamped
-                // by Pass 1 (operator_resolve_table_t + operator_resolve_constraint_t,
-                // direction=referencing). Descendant child column positions and
-                // defspecs are pre-populated by the resolve_constraint operator
-                // itself — see operator_resolve_constraint.cpp.
+                // by operator_resolve_table_t + operator_resolve_constraint_t
+                // (direction=referencing). Descendant child column positions
+                // and defspecs are pre-populated by the resolve_constraint
+                // operator itself — see operator_resolve_constraint.cpp.
                 const auto* tbl = (node->table_oid() != components::catalog::INVALID_OID)
                                       ? lookup_table_md_by_oid_local(idx, node->table_oid())
                                       : nullptr;

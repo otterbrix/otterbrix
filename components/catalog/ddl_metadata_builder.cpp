@@ -443,7 +443,7 @@ namespace components::catalog {
         }
 
         // pg_depend row: matview depends on source table ('n' = normal).
-        // Allows future DROP TABLE source to detect dangling matview (followup #11).
+        // Allows future DROP TABLE source to detect a dangling matview.
         if (source_table_oid != INVALID_OID) {
             if (const auto* def = find_system_table("pg_depend")) {
                 auto chunk =

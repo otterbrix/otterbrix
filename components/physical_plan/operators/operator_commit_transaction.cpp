@@ -82,16 +82,15 @@ namespace components::operators {
         // and accumulated onto transaction_t by the executor's explicit-txn
         // branch). Patched after commit_id_ is allocated below.
         std::vector<components::pg_attribute_commit_id_backfill_t> swap_backfills;
-        // Central accumulation: drain the explicit-txn
-        // base-table DML ranges parked by the executor commit phase. These
-        // are batched into storage_publish_* alongside the pg_catalog ranges
+        // Drain the explicit-txn base-table DML ranges parked by the
+        // executor commit phase. These are batched into storage_publish_*
+        // alongside the pg_catalog ranges
         // BEFORE the ProcArray publish() barrier so the flip is atomic from
         // any concurrent reader's point of view — publish() runs only after
         // every storage_publish_* completes.
         std::vector<components::pg_catalog_append_range_t> base_appends;
         std::set<components::catalog::oid_t> base_delete_tables;
         if (txn_t) {
-            // EXTENSION — pg_catalog accumulation API.
             // drain_pg_catalog_pending wraps the move-out + clear of the
             // pg_catalog_appends / pg_catalog_delete_tables fields. The
             // explicit-txn branch in services/collection/executor.cpp parks

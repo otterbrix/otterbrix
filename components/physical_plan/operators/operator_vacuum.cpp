@@ -53,10 +53,10 @@ namespace components::operators {
             co_await std::move(cvf);
         }
 
-        // enumerate user relations via pg_class (relkind 'r' or 'g')
-        // and rebuild + repopulate indexes — compact in step 1 invalidates row
-        // positions. pg_class is the authoritative source for user relations;
-        // routing is by table_oid only.
+        // enumerate user relations via pg_class (relkind 'r' or 'g') and
+        // rebuild + repopulate indexes — the preceding compact pass invalidates
+        // row positions. pg_class is the authoritative source for user
+        // relations; routing is by table_oid only.
         constexpr catalog::oid_t kPgClass = catalog::well_known_oid::pg_class_table;
 
         std::unique_ptr<components::vector::data_chunk_t> pg_class_rows;
@@ -81,8 +81,8 @@ namespace components::operators {
             catalog::oid_t table_oid;
         };
         std::vector<user_table_t> user_tables;
-        // Collect computing-table OIDs in the same pass so step 5 (the
-        // pg_computed_column GC) doesn't have to re-scan pg_class.
+        // Collect computing-table OIDs in the same pass so the later
+        // pg_computed_column GC doesn't have to re-scan pg_class.
         std::vector<catalog::oid_t> computing_table_oids;
 
         for (std::uint64_t i = 0; i < pg_class_rows->size(); ++i) {

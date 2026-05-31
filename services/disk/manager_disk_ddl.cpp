@@ -6,45 +6,6 @@ namespace services::disk {
     namespace catalog = components::catalog;
     using namespace detail;
 
-    // ----------------------------------------------------------------------
-    // * Step 8.11 Path B (ddl) — partial. Three read-then-mutate
-    // DDL sites in this file:
-    //
-    //   * `delete_pg_catalog_rows`              (catalog table_oid)
-    //     -> APPLIED. Catalog OIDs (pg_class/pg_attribute/pg_depend/
-    //        pg_type/pg_namespace/pg_index) route to agents_[0]; per
-    //        Step 8.1.B the catalog SFBM lives on the catalog agent, so
-    //        the manager-map fallback was dead code and has been deleted.
-    //        A null `storage_entry_sync` is now a terminal "no entry".
-    //
-    //   * `update_pg_attribute_commit_id_field` (pg_attribute_oid)
-    //     -> APPLIED. pg_attribute is a catalog OID, same rationale.
-    //
-    //   * `compact_relkind_g_storage`           (user table_oid)
-    //     -> KEPT (conservative). Operates on relkind 'g' computed-column
-    //        carriers, which are USER OIDs (>= FIRST_USER_OID). User-table
-    //        SFBM ownership still lives on manager.storages_ pending
-    //        Step 8.1.C; the fallback covers both the const read and the
-    //        non-const drop_column mutation. Retired together with
-    //        Step 8.1.C / Step 8.11 wrap.
-    //
-    // Migration pattern (post-fallback removal, mirrors manager_disk_resolve):
-    //
-    //     const collection_storage_entry_t* entry = nullptr;
-    //     if (!agents_.empty()) {
-    //         const std::size_t idx = pool_idx_for_oid(<oid>, agents_.size());
-    //         if (agents_[idx] != nullptr) {
-    //             entry = agents_[idx]->storage_entry_sync(<oid>);
-    //         }
-    //     }
-    //     if (entry == nullptr) { co_return; }
-    //
-    // `agent_disk_t::storage_entry_sync` is the Step 8.11.A pre-scheduler
-    // const accessor. The mutation half (direct_{delete,update}_sync)
-    // already fans the write to the routed agent (see Step 4 dual-write
-    // comments in `manager_disk_storage.cpp`).
-    // ----------------------------------------------------------------------
-
     // Crash-safe pg_catalog row append: WAL is written first so a crash before the
     // storage update can be replayed on restart, then storage is updated.
     manager_disk_t::unique_future<components::pg_catalog_append_range_t>
@@ -60,8 +21,8 @@ namespace services::disk {
                     wal_chunk->data[col].set_value(r, row.data[col].value(r));
                 }
             }
-            // Variant C: db_oid plumbing — pg_catalog operations route to main_database
-            // until B14.C populates ctx.database_oid (currently always INVALID_OID).
+            // pg_catalog operations route to main_database (ctx.database_oid
+            // is currently always INVALID_OID for catalog writes).
             constexpr auto db_oid = components::catalog::well_known_oid::main_database;
             auto [_w, wf] = actor_zeta::send(manager_wal_,
                                              &wal::manager_wal_replicate_t::write_physical_insert,
@@ -90,18 +51,11 @@ namespace services::disk {
                                                                                components::catalog::oid_t table_oid,
                                                                                std::int64_t oid_col_idx,
                                                                                components::catalog::oid_t target_oid) {
-        // C Path B — catalog OIDs only. Every caller of
-        // delete_pg_catalog_rows passes a pg_catalog table_oid (pg_class,
-        // pg_attribute, pg_depend, pg_type, pg_namespace, pg_index) — all
-        // catalog OIDs (oid < FIRST_USER_OID) route to agents_[0] via
-        // pool_idx_for_oid. Step 8.1.B moved catalog SFBM ownership onto
-        // the catalog agent, so manager_disk_t::storages_ no longer holds
-        // entries for these OIDs and the prior manager-map fallback was
-        // dead code — deleted here in line with the manager_disk_resolve
-        // catalog-reader migration (file header doc, 2026-05-31). A null
-        // storage_entry_sync result is now a terminal "no entry" outcome.
-        // Mutation half (direct_delete_sync below) already routes to the
-        // agent.
+        // Catalog OIDs only. Every caller passes a pg_catalog table_oid
+        // (pg_class, pg_attribute, pg_depend, pg_type, pg_namespace,
+        // pg_index) — all catalog OIDs route to agents_[0] via
+        // pool_idx_for_oid. Null storage_entry_sync is a terminal "no entry".
+        // Mutation half (direct_delete_sync) routes to the agent.
         const collection_storage_entry_t* entry = nullptr;
         if (!agents_.empty()) {
             const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
@@ -173,16 +127,9 @@ namespace services::disk {
         components::pg_attribute_commit_id_backfill_t::kind_t kind,
         std::uint64_t commit_id) {
         constexpr auto pg_attr_oid = components::catalog::well_known_oid::pg_attribute_table;
-        // C Path B — pg_attribute is a catalog OID
-        // (oid < FIRST_USER_OID), so pool_idx_for_oid lands on agents_[0]
-        // (CATALOG agent). Step 8.1.B moved catalog SFBM ownership onto
-        // that agent and manager_disk_t::storages_ no longer holds the
-        // pg_attribute entry — the prior manager-map fallback was dead
-        // code and is deleted here, mirroring the manager_disk_resolve
-        // catalog-reader migration (file header doc, 2026-05-31). A null
-        // storage_entry_sync result is now a terminal "no entry" outcome.
-        // Mutation half (direct_update_sync below) already routes to the
-        // agent.
+        // pg_attribute is a catalog OID — routes to agents_[0] (CATALOG
+        // agent). Null storage_entry_sync is a terminal "no entry".
+        // Mutation half (direct_update_sync) routes to the agent.
         const collection_storage_entry_t* entry = nullptr;
         if (!agents_.empty()) {
             const std::size_t idx = pool_idx_for_oid(pg_attr_oid, agents_.size());
@@ -315,12 +262,9 @@ namespace services::disk {
     manager_disk_t::compact_relkind_g_storage(execution_context_t /*ctx*/,
                                               components::catalog::oid_t table_oid,
                                               std::set<std::string> live_attnames) {
-        // wrap (2026-05-31): manager.storages_ deleted. The routed
-        // agent slice owns the canonical IN_MEMORY twin for relkind 'g'
-        // computed-column carriers. Read the column list via the agent's
-        // storage_entry_sync (Constraint #11 carve-out — borrow is safe
-        // while the agent mailbox is idle vs. this manager-mailbox handler;
-        // see header comment on agent_disk_t::storage_entry_sync), then
+        // The routed agent slice owns the canonical IN_MEMORY twin for
+        // relkind 'g' computed-column carriers. Read the column list via
+        // storage_entry_sync (borrow safe while agent mailbox is idle), then
         // forward the mutation via mailbox send to drop_column_inner.
         if (agents_.empty())
             co_return 0;

@@ -4,10 +4,6 @@
 #include <algorithm>
 #include <memory_resource>
 
-// ProcArray test outlines.
-// Tests document what each should verify and forward-declare the assertion
-// shape.
-
 namespace components::table::test_block_e {
 
 TEST_CASE("Block E committed_version_operator respects in_flight_snapshot",
@@ -98,8 +94,8 @@ TEST_CASE("Block E cross-agent atomic visibility (Version B*)",
     // partial-publish window must NOT see one half of the transaction without
     // the other.
     //
-    // Pragmatic node-level verification: we drive transaction_manager_t's
-    // publish() + take_snapshot() directly. The canonical visibility filter
+    // We drive transaction_manager_t's publish() + take_snapshot() directly.
+    // The canonical visibility filter
     // (transaction_version_operator::use_inserted_version) is internal to
     // row_version_manager.cpp, so we inline its rules here per the contract
     // documented on transaction_data in row_version_manager.hpp. This locks
@@ -183,13 +179,10 @@ TEST_CASE("Block E cross-agent atomic visibility (Version B*)",
 
 TEST_CASE("Block E db_oid resolve via catalog_resolve_database",
           "[block_e][b14c]") {
-    // Pragmatic verification: exercise node_catalog_resolve_database_t's
-    // set/get mechanism in isolation. operator_resolve_database stamps the
-    // resolved oid via set_database_oid — verifying the stamping contract at
-    // the node level avoids spinning up a full pipeline (executor / disk /
-    // dispatcher) just to confirm a member-write contract. The full
-    // pg_database-scan integration path is exercised by higher-level E2E
-    // tests; here we lock down the contract that the operator relies upon.
+    // Exercise node_catalog_resolve_database_t's set/get mechanism in isolation.
+    // operator_resolve_database stamps the resolved oid via set_database_oid;
+    // the full pg_database-scan integration path is exercised by higher-level
+    // E2E tests.
     using namespace components::logical_plan;
     using namespace components::catalog;
 

@@ -1,15 +1,12 @@
 #pragma once
 
-// Block C §3.5 dec 43 V1 — ALTER 3-phase atomic validation helpers (Phase 1).
+// ALTER 3-phase atomic validation helpers.
 //
 // These are stand-alone pure validation functions invoked by ALTER operators
 // BEFORE any pg_catalog write. They never mutate state, never call actors, and
 // never touch the mailbox — they take their inputs by const-reference and
 // return core::error_t. On success they return error_t::no_error(); on failure
 // they populate a typed error_code_t plus a human-readable message.
-//
-// Phase 2 integration (separate task) will rewire ALTER operators to consult
-// these helpers and short-circuit before any catalog_write_t is emitted.
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/types/logical_value.hpp>
@@ -39,9 +36,9 @@ namespace components::catalog::alter_column_validators {
                                 const std::optional<components::types::logical_value_t>& default_value);
 
     // Reject a DEFAULT whose value cannot be evaluated at planning time.
-    // TODO(dec43-phase2): currently accepts any present logical_value_t; once
-    // the expression evaluator is wired in, fold constant-folding here so we
-    // can reject e.g. malformed expression trees or unresolved references.
+    // TODO: currently accepts any present logical_value_t; once the expression
+    // evaluator is wired in, fold constant-folding here so we can reject e.g.
+    // malformed expression trees or unresolved references.
     core::error_t
     validate_default_value_evaluatable(std::pmr::memory_resource* resource,
                                        const std::optional<components::types::logical_value_t>& default_value);
@@ -51,9 +48,9 @@ namespace components::catalog::alter_column_validators {
     // from pg_depend for the target column/relation. object_kind matches the
     // pg_depend.classid encoding used elsewhere in the catalog.
     //
-    // TODO(dec43-phase2): wire full handler table (FK / view / check_constraint
-    // / index / computed_column). For now this returns no_error and is a
-    // placeholder so callers can be written against the final signature.
+    // TODO: wire full handler table (FK / view / check_constraint / index /
+    // computed_column). For now this returns no_error and is a placeholder so
+    // callers can be written against the final signature.
     core::error_t
     validate_cascade_dependencies(std::pmr::memory_resource* resource,
                                   const std::pmr::vector<std::pair<int, components::catalog::oid_t>>& dependents);

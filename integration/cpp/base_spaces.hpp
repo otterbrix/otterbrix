@@ -9,8 +9,6 @@
 #include <core/config.hpp>
 #include <core/file/file_system.hpp>
 
-#include <services/index/index_table_agent.hpp>
-
 #include <memory>
 #include <memory_resource>
 
@@ -79,13 +77,18 @@ namespace otterbrix {
         std::unique_ptr<otterbrix::wrapper_dispatcher_t, actor_zeta::pmr::deleter_t> wrapper_dispatcher_;
         actor_zeta::scheduler_ptr scheduler_disk_;
 
-        // Bootstrap — owning collection of per-table index agents.
-        // manager_index_t::per_table_agents_ only stores addresses; the
-        // agents themselves live here for the lifetime of base_otterbrix_t
-        // so the addresses remain valid (no shared mutable state between
-        // actors — manager_index never owns the agent memory, only
-        // references it by address).
-        std::pmr::vector<services::index::index_table_agent_ptr> index_table_agents_;
+        // Catalog-driven index bootstrap. Called once during construction,
+        // after WAL replay and before scheduler.start, while the call site is
+        // still single-threaded by construction. Scans pg_class / pg_index
+        // via manager_disk_ sync helpers, then:
+        //   - creates an empty index_engine_t per live table oid;
+        //   - spawns an index_agent_disk_t per alive pg_index row and
+        //     transfers ownership to manager_index_;
+        //   - restores per-oid dropped-table tombstones.
+        // The disk-config thresholds + scheduler are forwarded into the
+        // spawned disk agents (mirroring manager_index_t's create_index
+        // handler).
+        void bootstrap_indexes_sync(const configuration::config_disk& disk_config);
 
     private:
         inline static std::unordered_set<std::filesystem::path, core::filesystem::path_hash> paths_ = {};

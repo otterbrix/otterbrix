@@ -33,15 +33,13 @@ namespace otterbrix {
 
     [[nodiscard]] std::pair<bool, actor_zeta::detail::enqueue_result>
     wrapper_dispatcher_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
-        // Delegation forward в manager_dispatcher_. Сейчас никто не шлёт на
-        // wrapper.address(), поэтому в проде enqueue_impl не вызывается;
-        // нужен только для удовлетворения has_enqueue_impl concept в 1.2.0.
-        // При появлении future-sender'а на wrapper.address() убедиться, что
-        // msg->command() валидна для manager_dispatcher.
-        auto [needs_sched, res] = manager_dispatcher_->enqueue_impl(std::move(msg));
-        if (needs_sched) {
-            scheduler_->enqueue(manager_dispatcher_);
-        }
+        // Dead code in production — wrapper.address() is never a send target.
+        // Exists only to satisfy has_enqueue_impl concept in actor-zeta 1.2.0.
+        // Forward to manager_dispatcher's mailbox and ignore the schedule hint
+        // (manager_dispatcher is actor_mixin, not a basic_actor — the
+        // mailbox-drain loop is owned by its own resume() driver, not by
+        // scheduler->enqueue(this)).
+        auto [_, res] = manager_dispatcher_->enqueue_impl(std::move(msg));
         return {false, res};
     }
 

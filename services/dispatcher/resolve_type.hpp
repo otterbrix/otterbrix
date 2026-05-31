@@ -5,10 +5,9 @@
 
 #include <vector>
 
-// Forward-declare in the canonical location. resolve_type's public API still
-// spells the type as `impl::plan_resolve_index_t` (back-compat re-export in
-// plan_resolve_index.hpp's tail makes that name an alias for the
-// services::catalog_resolve definition).
+// resolve_type's public API still spells the type as `impl::plan_resolve_index_t`;
+// the back-compat re-export in plan_resolve_index.hpp aliases it to the
+// services::catalog_resolve definition.
 namespace services::catalog_resolve {
     struct plan_resolve_index_t;
 } // namespace services::catalog_resolve
@@ -23,8 +22,8 @@ namespace services::dispatcher {
     bool resolve_builtin(components::types::complex_logical_type& ct);
 
     // Resolves a single UNKNOWN type from the plan-tree idx (passed
-    // explicitly). Pure sync — Pass 1's resolve_type operators must have
-    // stamped the relevant metadata before this is called.
+    // explicitly). Pure sync — the resolve_type operators must have stamped
+    // the relevant metadata before this is called.
     void resolve_one_type(components::types::complex_logical_type& ct, const impl::plan_resolve_index_t* idx);
 
     // Resolves UNKNOWN types in all columns (including STRUCT fields and

@@ -103,9 +103,8 @@ namespace services::index {
         unique_future<std::pmr::vector<components::index::index_description_t>>
         get_indexed_descriptions(session_id_t session, components::catalog::oid_t table_oid);
 
-        // event-driven GC subscriber. Stub today; real body lands
-        // with Block D DML (cleanup per-table agents whose pinned start_time
-        // < new_horizon).
+        // Event-driven GC subscriber. Walks dropped_table_agents_ and
+        // erases routing entries whose dropped_at_commit_id < new_horizon.
         unique_future<void> on_horizon_advanced(uint64_t new_horizon);
 
         // Runtime DROP TABLE path — operator_dynamic_cascade_delete sends this

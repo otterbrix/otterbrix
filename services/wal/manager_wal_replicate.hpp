@@ -48,7 +48,7 @@ namespace services::wal {
         // Contract handlers.
         unique_future<std::vector<record_t>> load(session_id_t session, wal::id_t wal_id);
 
-        // Block F (Pass 9 dec 47): commit_id is the MVCC version timestamp from
+        // commit_id is the MVCC version timestamp from
         // transaction_manager_t::commit() — written into the COMMIT WAL record
         // so snapshot-aware replay can rebuild published_horizon_.
         unique_future<wal::id_t> commit_txn(session_id_t session,
@@ -86,7 +86,7 @@ namespace services::wal {
                                                        uint64_t txn_id,
                                                        components::catalog::oid_t database_oid);
 
-        // Block F (Pass 11): mailbox-handler twin of the _sync helpers, used by
+        // Mailbox-handler twins of the _sync helpers, used by
         // operator_create_index_backfill which runs inside the executor actor
         // (rule 11: no sync inter-actor calls). Forwards to the same underlying
         // active_build_start_positions_ set.
@@ -111,9 +111,8 @@ namespace services::wal {
         // Returns true (and resets the flag) if WAL bytes since last checkpoint exceeded the
         // configured threshold. The caller (dispatcher execute_ddl_inline) then triggers
         // checkpoint_all on disk and calls reset_auto_checkpoint_bytes() after the checkpoint.
-        // Pass 9 BLOCKER 16 fix: wal_bytes_since_checkpoint_ is atomic — writer in commit_txn
-        // coroutine and reader needs_auto_checkpoint() on the dispatcher thread used to race
-        // on a plain std::uintmax_t.
+        // wal_bytes_since_checkpoint_ is atomic — writer in commit_txn coroutine and reader
+        // needs_auto_checkpoint() on the dispatcher thread used to race on a plain std::uintmax_t.
         bool needs_auto_checkpoint() const noexcept {
             return config_.on && config_.auto_checkpoint_threshold_bytes > 0 &&
                    wal_bytes_since_checkpoint_.load(std::memory_order_relaxed) >=
@@ -126,16 +125,15 @@ namespace services::wal {
         // Compute total WAL directory bytes by scanning segment files.
         std::uintmax_t total_wal_bytes() const noexcept;
 
-        // Block F (Pass 11) retention guard helpers.
-        // Bootstrap helper — operator_create_index registers its build_start_wal_position
-        // at Phase 2 start; unregisters at Phase 3 publish OR cleanup_and_fail.
-        // Sync because base_spaces / operator pipeline calls them outside mailbox.
-        // NOT mailbox handlers.
+        // Retention guard helpers. operator_create_index registers its
+        // build_start_wal_position at Phase 2 start; unregisters at Phase 3
+        // publish OR cleanup_and_fail. Sync because base_spaces / operator
+        // pipeline calls them outside the mailbox — NOT mailbox handlers.
         //
-        // TODO (dec 18 V1 carve-out): the sync-from-operator-pipeline assumption
-        // holds today because the operator pipeline runs single-threaded relative
-        // to the wal dispatcher; under multi-DB Variant C this may need to become
-        // a proper mailbox handler.
+        // TODO: the sync-from-operator-pipeline assumption holds today because
+        // the operator pipeline runs single-threaded relative to the wal
+        // dispatcher; under multi-DB this may need to become a proper mailbox
+        // handler.
         void register_active_build_sync(wal::id_t build_start_wal_position);
         void unregister_active_build_sync(wal::id_t build_start_wal_position);
 
@@ -151,8 +149,8 @@ namespace services::wal {
         log_t log_;
         bool enabled_;
         atomic_id_t global_id_{0};
-        // Pass 9 BLOCKER 16: atomic — written from commit_txn coroutine, read by
-        // dispatcher thread via needs_auto_checkpoint(). Plain uintmax_t raced.
+        // Atomic — written from commit_txn coroutine, read by the dispatcher
+        // thread via needs_auto_checkpoint(). Plain uintmax_t raced.
         std::atomic<std::uintmax_t> wal_bytes_since_checkpoint_{0};
 
         actor_zeta::address_t manager_disk_;
@@ -160,10 +158,10 @@ namespace services::wal {
 
         std::unordered_map<components::catalog::oid_t, wal_worker_ptr> wal_actors_;
 
-        // Block F (Pass 11) retention guard: build_start_wal_position of every
-        // CREATE INDEX currently in Phase 2.5 catchup. truncate_before clamps to
-        // min(active_build_start_wal_positions_) so concurrent catchup never
-        // misses a truncated record. Empty when no builds are active — no clamp.
+        // Retention guard: build_start_wal_position of every CREATE INDEX
+        // currently in Phase 2.5 catchup. truncate_before clamps to
+        // min(active_build_start_positions_) so concurrent catchup never misses
+        // a truncated record. Empty when no builds are active — no clamp.
         std::pmr::set<wal::id_t> active_build_start_positions_{resource_};
 
         run_fn_t run_fn_{[] { std::this_thread::yield(); }};

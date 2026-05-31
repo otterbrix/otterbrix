@@ -229,12 +229,13 @@ namespace services::wal {
     // -----------------------------------------------------------------------
     // encode_commit
     //
-    // Compact layout (29 bytes total):
-    //   [size:4]  = 21
+    // Compact layout (37 bytes total):
+    //   [size:4]  = 29
     //   [last_crc32:4]
     //   [wal_id:8]
     //   [txn_id:8]
     //   [record_type:1]   = COMMIT (1)
+    //   [commit_id:8]
     //   [crc32:4]
     // -----------------------------------------------------------------------
     crc32_t encode_commit(buffer_t& buffer,
@@ -242,9 +243,9 @@ namespace services::wal {
                           id_t wal_id,
                           uint64_t txn_id,
                           uint64_t commit_id) {
-        // Block F (Pass 9 dec 47): COMMIT records gain a trailing commit_id —
-        // snapshot-aware replay reads it back to restore published_horizon_.
-        // Layout: last_crc32(4) wal_id(8) txn_id(8) type(1) commit_id(8).
+        // COMMIT records carry a trailing commit_id — snapshot-aware replay
+        // reads it back to restore published_horizon_. Layout:
+        //   last_crc32(4) wal_id(8) txn_id(8) type(1) commit_id(8).
         // The type byte stays at the original offset so DML decode (which only
         // reads up to the type byte before branching) is unaffected.
         static constexpr uint32_t COMMIT_BODY_SIZE = 4 + 8 + 8 + 1 + 8;  // = 29
@@ -289,8 +290,7 @@ namespace services::wal {
         record_t rec;
         rec.is_corrupt = false;
 
-        // Minimum valid record is a COMMIT at 37 bytes (Block F: was 29 before
-        // commit_id was added).
+        // Minimum valid record is a COMMIT at 37 bytes.
         if (len < 37) {
             rec.is_corrupt = true;
             rec.size = 0;
@@ -333,10 +333,10 @@ namespace services::wal {
         rec.record_type = static_cast<wal_record_type>(*reinterpret_cast<const uint8_t*>(ptr));
         ptr += 1;
 
-        // Block F (Pass 9 dec 47): commit_id is encoded ONLY for COMMIT records,
-        // immediately after the type byte. DML records leave the field as 0;
-        // snapshot-aware replay back-fills it once the matching COMMIT marker
-        // is parsed (records are linked via transaction_id).
+        // commit_id is encoded ONLY for COMMIT records, immediately after the
+        // type byte. DML records leave the field as 0; snapshot-aware replay
+        // back-fills it once the matching COMMIT marker is parsed (records
+        // are linked via transaction_id).
         if (rec.record_type == wal_record_type::COMMIT) {
             rec.commit_id = read_le64(ptr);
             ptr += 8;

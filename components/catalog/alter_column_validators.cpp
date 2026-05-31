@@ -1,4 +1,4 @@
-// Block C §3.5 dec 43 V1 — ALTER 3-phase atomic validation helpers (Phase 1).
+// ALTER 3-phase atomic validation helpers.
 // Implementation notes: see alter_column_validators.hpp for the design contract.
 
 #include "alter_column_validators.hpp"
@@ -45,11 +45,11 @@ namespace components::catalog::alter_column_validators {
     core::error_t
     validate_default_value_evaluatable(std::pmr::memory_resource* /*resource*/,
                                        const std::optional<components::types::logical_value_t>& default_value) {
-        // TODO(dec43-phase2): integrate with the expression evaluator so that
-        // computed defaults (now(), nextval(...), CASE-expressions) are folded
-        // here and rejected when they reference unresolved symbols or fail to
-        // evaluate. For Phase 1 every materialised logical_value_t is, by
-        // construction, already evaluatable — no work to do.
+        // TODO: integrate with the expression evaluator so that computed
+        // defaults (now(), nextval(...), CASE-expressions) are folded here and
+        // rejected when they reference unresolved symbols or fail to evaluate.
+        // Currently every materialised logical_value_t is, by construction,
+        // already evaluatable — no work to do.
         (void) default_value;
         return core::error_t::no_error();
     }
@@ -57,7 +57,7 @@ namespace components::catalog::alter_column_validators {
     core::error_t
     validate_cascade_dependencies(std::pmr::memory_resource* /*resource*/,
                                   const std::pmr::vector<std::pair<int, components::catalog::oid_t>>& dependents) {
-        // TODO(dec43-phase2): replace this stub with the real handler table:
+        // TODO: replace this stub with the real handler table:
         //   pg_depend.classid → cascade handler (FK / view / check_constraint /
         //   index / computed_column). On an unhandled classid return
         //   error_code_t::other_error so the ALTER fails atomically.

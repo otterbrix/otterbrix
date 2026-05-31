@@ -50,14 +50,13 @@ namespace components::table {
         // Tests / helpers that bypass transaction_manager and construct
         // transaction_data with literal {id, time} must set snapshot_horizon to
         // a value covering the row insert_ids they expect to read (e.g.
-        // UINT64_MAX for "see all committed rows", or a specific commit_id when
-        // exercising horizon semantics). There is no implicit fallback —
-        // constraint #5/6 (no backwards compatibility) forbids it.
+        // UINT64_MAX for "see all committed rows", or a specific commit_id
+        // when exercising horizon semantics). There is no implicit fallback.
         uint64_t snapshot_horizon{0};
-        // Per rule 14 (no get_default_resource): the default vector is anchored
-        // to null_memory_resource — empty is fine; any allocation aborts. The
-        // ProcArray populates this field via move-assignment from a vector built
-        // against the transaction's own pmr resource.
+        // No get_default_resource: the default vector is anchored to
+        // null_memory_resource — empty is fine; any allocation aborts. The
+        // ProcArray populates this field via move-assignment from a vector
+        // built against the transaction's own pmr resource.
         std::pmr::vector<uint64_t> in_flight_snapshot{std::pmr::null_memory_resource()};
     };
     enum class chunk_info_type : uint8_t
@@ -80,9 +79,9 @@ namespace components::table {
         virtual uint64_t indexing_vector(transaction_data transaction,
                                          vector::indexing_vector_t& indexing_vector,
                                          uint64_t max_count) = 0;
-        // (BLOCKER 7): committed-scan path now takes a full transaction_data
-        // snapshot — same shape as indexing_vector — so DDL resolves respect
-        // ProcArray published_horizon + in_flight_snapshot.
+        // committed-scan path takes a full transaction_data snapshot — same
+        // shape as indexing_vector — so DDL resolves respect ProcArray
+        // published_horizon + in_flight_snapshot.
         virtual uint64_t committed_indexing_vector(const transaction_data& txn,
                                                    vector::indexing_vector_t& indexing_vector,
                                                    uint64_t max_count) = 0;

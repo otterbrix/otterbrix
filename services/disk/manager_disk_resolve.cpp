@@ -6,55 +6,23 @@ namespace services::disk {
     namespace catalog = components::catalog;
     using namespace detail;
 
-    // ----------------------------------------------------------------------
-    // * Step 8.11 Path B (catalog) — APPLIED. All 10 catalog read
-    // sites in this file (pg_namespace x2, pg_class x2, pg_attribute x2,
-    // pg_type, pg_proc x2, pg_computed_column) probe agents_[0] (CATALOG
-    // agent) via storage_entry_sync(<pg_*_oid>) and treat a null result as
-    // a terminal "no entry" outcome. The manager-map fallback that
-    // appeared between Step 8.9 (Path A) and Step 8.1.B is now gone:
-    // B moved the catalog SFBM ownership onto the catalog agent,
-    // so manager_disk_t::storages_ holds no entries for these OIDs and
-    // the fallback could never fire.
+    // All catalog read sites (pg_namespace, pg_class, pg_attribute, pg_type,
+    // pg_proc, pg_computed_column) probe agents_[0] (CATALOG agent) via
+    // storage_entry_sync; a null result is a terminal "no entry". The
+    // raw-pointer borrow is the documented carve-out (see
+    // agent_disk_t::storage_entry_sync header) — pre-scheduler reads are
+    // race-free; post-scheduler reads happen from inside the manager mailbox
+    // while the agent thread is idle for this OID. Choosing the borrow over
+    // a mailbox round-trip avoids per-resolve scheduler latency on every
+    // catalog probe.
     //
-    // Catalog migration pattern (post-fallback removal):
-    //
-    //     const collection_storage_entry_t* entry = nullptr;
-    //     if (!agents_.empty() && agents_[0] != nullptr) {
-    //         entry = agents_[0]->storage_entry_sync(<pg_*_oid>);
-    //     }
-    //     if (entry != nullptr) { /* scan via entry->table_storage.table() */ }
-    //
-    // The two remaining `storages_.find(...)` sites are the generic-
-    // table_oid primitives `scan_by_key` and `read_rows_by_key`. They
-    // probe agents_[pool_idx_for_oid(table_oid, agents_.size())] first
-    // and KEEP the manager-map fallback until Step 8.1.C moves user-table
-    // SFBM ownership onto routed agents and deletes the manager-side
-    // user-table entries.
-    //
-    // Decision rationale (still applies): turning the agent-probe into a
-    // mailbox `co_await` round-trip would add per-resolve scheduler
-    // latency to every catalog probe — measured ~1100 LOC of body that
-    // would need to move to `agent_resolve.cpp`. The storage_entry_sync
-    // raw-pointer borrow is the documented Constraint #11 carve-out (see
-    // header comment on agent_disk_t::storage_entry_sync) — pre-scheduler
-    // reads are race-free; post-scheduler reads happen from inside the
-    // manager mailbox while the agent thread is idle for the agent's
-    // slice.
-    // ----------------------------------------------------------------------
+    // Generic-table_oid primitives `scan_by_key` and `read_rows_by_key`
+    // route via pool_idx_for_oid(table_oid, agents_.size()).
 
     manager_disk_t::unique_future<resolve_namespace_result_t>
     manager_disk_t::resolve_namespace(execution_context_t /*ctx*/, std::string name, std::uint64_t /*since_version*/) {
         resolve_namespace_result_t out(resource());
 
-        // ──────────────── Path B (catalog) ──────────────────────
-        //
-        // Catalog OIDs always route to agents_[0] (CATALOG agent — see
-        // agent_role_t::CATALOG in agent_disk.hpp). Step 8.1.B moved the
-        // catalog SFBM ownership onto that agent, so manager_disk_t::
-        // storages_ no longer holds entries for catalog OIDs and the prior
-        // manager-map fallback is dead code — deleted here. A null
-        // storage_entry_sync result is now a terminal "no entry" outcome.
         const collection_storage_entry_t* ns_entry = nullptr;
         if (!agents_.empty() && agents_[0] != nullptr) {
             ns_entry = agents_[0]->storage_entry_sync(pg_namespace_oid_tbl);
@@ -88,8 +56,6 @@ namespace services::disk {
         resolve_table_result_t out(resource());
         out.namespace_oid = namespace_oid;
 
-        // Path B (catalog) — agents_[0] is the sole reader for
-        // pg_class; manager-map fallback removed.
         const collection_storage_entry_t* cls_entry = nullptr;
         if (!agents_.empty() && agents_[0] != nullptr) {
             cls_entry = agents_[0]->storage_entry_sync(pg_class_oid);
@@ -126,8 +92,6 @@ namespace services::disk {
         }
 
         if (out.relkind == catalog::relkind::computed) {
-            // Path B (catalog) — agents_[0] is the sole reader for
-            // pg_computed_column; manager-map fallback removed.
             const collection_storage_entry_t* cc_entry = nullptr;
             if (!agents_.empty() && agents_[0] != nullptr) {
                 cc_entry = agents_[0]->storage_entry_sync(pg_computed_column_oid);
@@ -223,8 +187,6 @@ namespace services::disk {
             co_return out;
         }
 
-        // Path B (catalog) — agents_[0] is the sole reader for
-        // pg_attribute; manager-map fallback removed.
         const collection_storage_entry_t* att_entry = nullptr;
         if (!agents_.empty() && agents_[0] != nullptr) {
             att_entry = agents_[0]->storage_entry_sync(pg_attribute_oid);
@@ -307,8 +269,6 @@ namespace services::disk {
         resolve_type_result_t out(resource());
         out.namespace_oid = namespace_oid;
 
-        // Path B (catalog) — agents_[0] is the sole reader for
-        // pg_type; manager-map fallback removed.
         const collection_storage_entry_t* type_entry = nullptr;
         if (!agents_.empty() && agents_[0] != nullptr) {
             type_entry = agents_[0]->storage_entry_sync(pg_type_oid);
@@ -338,8 +298,6 @@ namespace services::disk {
         if (out.found) {
             return out;
         }
-        // Path B (catalog) — agents_[0] is the sole reader for
-        // pg_class; manager-map fallback removed.
         const collection_storage_entry_t* cls_entry = nullptr;
         if (!agents_.empty() && agents_[0] != nullptr) {
             cls_entry = agents_[0]->storage_entry_sync(pg_class_oid);
@@ -373,8 +331,6 @@ namespace services::disk {
         if (composite_oid == components::catalog::INVALID_OID) {
             return out;
         }
-        // Path B (catalog) — agents_[0] is the sole reader for
-        // pg_attribute; manager-map fallback removed.
         const collection_storage_entry_t* att_entry = nullptr;
         if (!agents_.empty() && agents_[0] != nullptr) {
             att_entry = agents_[0]->storage_entry_sync(pg_attribute_oid);
@@ -461,8 +417,6 @@ namespace services::disk {
         resolve_function_result_t out(resource());
         out.namespace_oid = namespace_oid;
 
-        // Path B (catalog) — agents_[0] is the sole reader for
-        // pg_proc; manager-map fallback removed.
         const collection_storage_entry_t* proc_entry = nullptr;
         if (!agents_.empty() && agents_[0] != nullptr) {
             proc_entry = agents_[0]->storage_entry_sync(pg_proc_oid);
@@ -506,8 +460,6 @@ namespace services::disk {
                                              std::string name,
                                              std::uint64_t /*since_version*/) {
         std::pmr::vector<resolve_function_result_t> out(resource());
-        // Path B (catalog) — agents_[0] is the sole reader for
-        // pg_proc; manager-map fallback removed.
         const collection_storage_entry_t* proc_entry = nullptr;
         if (!agents_.empty() && agents_[0] != nullptr) {
             proc_entry = agents_[0]->storage_entry_sync(pg_proc_oid);
@@ -550,8 +502,6 @@ namespace services::disk {
     manager_disk_t::unique_future<std::pmr::vector<std::string>>
     manager_disk_t::list_namespaces(execution_context_t /*ctx*/) {
         std::pmr::vector<std::string> out(resource());
-        // Path B (catalog) — agents_[0] is the sole reader for
-        // pg_namespace; manager-map fallback removed.
         const collection_storage_entry_t* ns_entry = nullptr;
         if (!agents_.empty() && agents_[0] != nullptr) {
             ns_entry = agents_[0]->storage_entry_sync(pg_namespace_oid_tbl);
@@ -599,9 +549,7 @@ namespace services::disk {
             co_return out;
         }
 
-        // wrap (2026-05-31): manager.storages_ deleted. The routed
-        // agent slice (catalog → agents_[0], user → agents_[1..N-1] via
-        // pool_idx_for_oid) is the sole canonical SFBM/IN_MEMORY owner.
+        // Routed agent slice is the sole canonical SFBM/IN_MEMORY owner.
         if (agents_.empty())
             co_return out;
         const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
@@ -652,9 +600,7 @@ namespace services::disk {
         if (key_col_names.size() != key_values.size() || key_col_names.empty())
             co_return out;
 
-        // wrap (2026-05-31): manager.storages_ deleted. The routed
-        // agent slice (catalog → agents_[0], user → agents_[1..N-1] via
-        // pool_idx_for_oid) is the sole canonical SFBM/IN_MEMORY owner.
+        // Routed agent slice is the sole canonical SFBM/IN_MEMORY owner.
         if (agents_.empty())
             co_return out;
         const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());

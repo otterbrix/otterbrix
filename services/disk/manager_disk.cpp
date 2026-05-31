@@ -435,23 +435,14 @@ namespace services::disk {
         }
     }
 
-    // event-driven GC subscriber. Walks dropped_storages_ and
-    // physically removes entries whose dropped_at_commit_id < new_horizon
-    // (no live snapshot can reference them anymore). Kept-vector rebuild
-    // avoids iterator invalidation on partial erase.
-    //
-    // * Step 6: router fanout — also notify every agent so their
-    // local storages_ slices observe the horizon advance. The agent
-    // on_horizon_advanced_inner is a no-op skeleton today (Step 7 will
-    // migrate per-agent dropped_storages_ slices in); we send the fanout now
-    // so the wiring exists and message-ordering invariants are visible.
-    // Constraint #11: mailbox-only fanout, std::pmr vector for futures.
+    // Event-driven GC subscriber. Pure router fanout — every agent's
+    // on_horizon_advanced_inner owns the canonical sweep over its
+    // dropped_storages_ slice and emits its own on_subscriber_empty(DISK_KIND)
+    // ack to the dispatcher.
     manager_disk_t::unique_future<void> manager_disk_t::on_horizon_advanced(uint64_t new_horizon) {
         trace(log_, "manager_disk::on_horizon_advanced , horizon : {}", new_horizon);
 
-        // fanout: send to every agent in parallel, await all before
-        // running the manager-side GC. Sequential await is fine — the agent
-        // inner handlers are no-ops today.
+        // Fanout to every agent; await all in sequence.
         std::pmr::vector<unique_future<void>> agent_futures{resource()};
         agent_futures.reserve(agents_.size());
         for (auto& agent_ptr : agents_) {
@@ -467,14 +458,6 @@ namespace services::disk {
             co_await std::move(f);
         }
 
-        // * Step 8.4.D: manager-side GC sweep + ack DELETED. The
-        // per-agent on_horizon_advanced_inner handlers (fanned out above)
-        // own the canonical sweep over the per-agent dropped_storages_
-        // slices and emit their own on_subscriber_empty(DISK_KIND) acks
-        // (one per agent — dispatcher idempotently collapses N-fold acks
-        // into a single disk_has_dropped_ flag flip).
-        // * Step 8.11: the manager-side mirror
-        // `dropped_storages_` field itself has now been deleted as well.
         co_return;
     }
 
@@ -483,17 +466,10 @@ namespace services::disk {
         // Single-threaded by construction — no locking required.
         manager_dispatcher_ = address;
 
-        // * Step 8 — fan the dispatcher address out to every agent so
-        // their per-slice on_horizon_advanced_inner can fire on_subscriber_
-        // empty(DISK_KIND) directly once the slice drains. Post Step 8.4.D /
-        // 8.11 wrap the per-agent ack is the SOLE source of the
-        // DISK_KIND empty signal (manager-side ack DELETED); the manager
-        // retains its address_t copy only so it can fan the address out at
-        // bootstrap. Constraint #11: address_t is a mailbox handle (not
-        // mutable state), so it is safe to hand a copy to each agent. Sync
-        // calls across the manager→agent boundary are pre-scheduler-start
-        // only — base_spaces invokes set_manager_dispatcher_sync
-        // immediately after spawning the agents and before scheduler.start.
+        // Fan dispatcher address to every agent so on_horizon_advanced_inner
+        // can fire on_subscriber_empty(DISK_KIND) directly on slice drain.
+        // address_t is a mailbox handle (not mutable state) — safe to copy.
+        // Sync calls across manager→agent are pre-scheduler-start only.
         for (auto& agent_ptr : agents_) {
             agent_ptr->set_manager_dispatcher_sync(address);
         }
@@ -503,29 +479,11 @@ namespace services::disk {
                                                        uint64_t dropped_at_commit_id,
                                                        std::filesystem::path path,
                                                        std::pmr::vector<std::filesystem::path> sidecar_paths) {
-        // Pre-scheduler-start bootstrap path only — base_spaces PHASE 2c catalog
-        // scan rebuild (dec 18 V1 carve-out). Runtime DROP goes through the
-        // mark_storage_dropped mailbox handler below, which uses the mailbox-
-        // send overload of register_dropped_storage_inner to avoid sync calls
-        // across the actor boundary (Constraint #11).
-        //
-        // * Step 7 router fanout: forward an independent copy into
-        // the owning agent's dropped_storages_ slice so on_horizon_advanced_
-        // inner can mirror the manager's GC pass. The path + sidecars are
-        // deep-copied (std::filesystem::path / std::pmr::vector copy
-        // constructors); no shared mutable state crosses the manager↔agent
-        // boundary (Constraint #11 / no-shared-state-actors).
-        //
-        // * Step 8.4.C: manager-side MIRROR write DELETED. The
-        // agent slice (populated by register_dropped_storage_inner_sync
-        // above) is the canonical owner of the GC entry; the per-agent
-        // on_horizon_advanced_inner sweep drains it and emits
-        // on_subscriber_empty(DISK_KIND) directly. This function is now a
-        // pure router. Version B* Step 8.11: the dead manager_disk_t::
-        // dropped_storages_ member has also been deleted (no remaining
-        // readers after §8.4.D removed the manager GC body). Do NOT
-        // reintroduce a mirror write here — soak validation confirmed no
-        // reader remains.
+        // Pre-scheduler-start bootstrap path only — base_spaces catalog
+        // scan rebuild. Runtime DROP goes through the mark_storage_dropped
+        // mailbox handler below (mailbox-send to avoid sync calls across
+        // actor boundary). Pure router: forwards an independent deep-copy
+        // of path + sidecars into the owning agent's slice.
         if (!agents_.empty()) {
             const auto idx = pool_idx_for_oid(oid, agents_.size());
             std::pmr::vector<std::filesystem::path> agent_sidecars{resource()};
@@ -544,32 +502,18 @@ namespace services::disk {
     manager_disk_t::mark_storage_dropped(session_id_t /*session*/,
                                          components::catalog::oid_t table_oid,
                                          uint64_t dropped_at_commit_id) {
-        // Runtime DROP TABLE path. Operator_dynamic_cascade_delete sends this
-        // BEFORE the existing drop_storage send so we can still read the live
-        // storages_ entry to derive the on-disk path + sidecars. We do NOT
-        // touch storages_ or the files here: drop_storage continues to perform
-        // the immediate physical removal. The GC entry exists so a subsequent
-        // on_horizon_advanced sweep reconciles any leftover state and so the
-        // dispatcher's disk_has_dropped_ flag gets flipped by the operator via
+        // Runtime DROP TABLE path. operator_dynamic_cascade_delete sends this
+        // BEFORE the drop_storage send so we can still read the live storage
+        // entry to derive the on-disk path + sidecars. Does NOT touch storage
+        // or files here: drop_storage performs the immediate physical removal.
+        // The GC entry exists so on_horizon_advanced reconciles any leftover
+        // state and dispatcher's disk_has_dropped_ flag gets flipped via
         // on_drop_resource_marked.
         //
-        // * Step 8.4.C: this handler is now a pure mailbox-router.
-        // The per-agent slice owns the canonical GC entry (populated by the
-        // register_dropped_storage_inner mailbox send below) and the
-        // per-agent on_horizon_advanced_inner sweep (§8.4.D) physically
-        // removes the .otbx + sidecars and emits on_subscriber_empty
-        // (DISK_KIND). Manager-side mirror write into dropped_storages_
-        // and the member itself DELETED; manager-side
-        // storages_.find lookup REPLACED with the
-        // A storage_entry_sync raw-pointer accessor against the
-        // routed agent's slice (race-free per the const accessor's contract
-        // — the agent mailbox serializes writes against this read, and the
-        // pointer is borrowed for the duration of this handler only).
-        //
-        // Constraint #11: register_dropped_storage_inner fanout below uses
-        // actor_zeta::otterbrix::send (mailbox-only inter-actor), and the
-        // co_await keeps mark_storage_dropped's mailbox-handler ordering
-        // intact w.r.t. subsequent operator_dynamic_cascade_delete sends.
+        // Pure mailbox-router: reads otbx_path via storage_entry_sync against
+        // the routed agent's slice (the agent mailbox serializes writes
+        // against this read; pointer is borrowed for this handler only),
+        // then fans the GC entry into the agent's slice via mailbox send.
         trace(log_,
               "manager_disk_t::mark_storage_dropped , oid : {} , commit_id : {}",
               static_cast<unsigned>(table_oid),
@@ -593,16 +537,15 @@ namespace services::disk {
                 }
             }
         }
-        // IN_MEMORY storages have no on-disk artefact; otbx_path is empty
-        // (default-constructed) and sidecars is empty. We still record a GC
-        // entry so dispatcher's disk_has_dropped_ bookkeeping treats this
-        // drop uniformly — the agent on_horizon_advanced_inner sweep
-        // silently no-ops on the empty path.
+        // IN_MEMORY storages have no on-disk artefact; otbx_path/sidecars
+        // are empty. Still record a GC entry so dispatcher's
+        // disk_has_dropped_ bookkeeping treats this drop uniformly — the
+        // agent sweep silently no-ops on the empty path.
 
-        // fanout to the routed agent via mailbox. We deep-copy the
-        // path + sidecars so the agent gets its own independent storage; the
-        // co_await keeps mark_storage_dropped's mailbox-handler ordering
-        // intact w.r.t. subsequent operator_dynamic_cascade_delete sends.
+        // Fanout to the routed agent via mailbox. Deep-copy path + sidecars
+        // so the agent gets its own independent storage; co_await keeps
+        // mark_storage_dropped's mailbox-handler ordering intact w.r.t.
+        // subsequent operator_dynamic_cascade_delete sends.
         if (!agents_.empty()) {
             const auto idx = pool_idx_for_oid(table_oid, agents_.size());
             std::pmr::vector<std::filesystem::path> agent_sidecars{resource()};

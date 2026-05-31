@@ -1,4 +1,4 @@
-// ALTER 3-phase atomic validation helpers (Phase 2).
+// ALTER atomic validation helpers — async data-gathering layer.
 // See alter_validators.hpp for the design contract.
 
 #include "alter_validators.hpp"

@@ -73,8 +73,8 @@ namespace {
             return std::move(future).get();
         }
 
-        // ProcArray test helpers: bypass txn_manager — set snapshot_horizon
-        // to UINT64_MAX so committed catalog rows (commit_id=1000 etc.) are visible.
+        // Bypass txn_manager — set snapshot_horizon to UINT64_MAX so
+        // committed catalog rows (commit_id=1000 etc.) are visible.
         components::execution_context_t auto_ctx() {
             transaction_data td(0, 0);
             td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
@@ -524,8 +524,7 @@ TEST_CASE("services::disk::mvcc::dynamic_field_drop_insert_concurrent_TODO") {
 // ctx->txn snapshot uses lowest_active_start_time as horizon, so uncommitted
 // INSERT writes are invisible. Both read_rows_by_key and delete_pg_catalog_rows
 // funnel through ctx.txn (verified in manager_disk_resolve.cpp /
-// manager_disk_ddl.cpp). See operator_vacuum.cpp Step 5 comment block for full
-// reasoning.
+// manager_disk_ddl.cpp).
 TEST_CASE("services::disk::mvcc::vacuum_insert_concurrent_TODO") {
     WARN("TODO: requires multi-session concurrent test fixture; race is "
          "handled by VACUUM's lowest_active_start_time horizon — uncommitted "

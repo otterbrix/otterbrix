@@ -22,6 +22,7 @@
 #include <components/context/execution_context.hpp>
 #include <components/context/pg_catalog_swap.hpp>
 #include <components/log/log.hpp>
+#include <components/logical_plan/node_create_index.hpp>
 #include <components/physical_plan/operators/operator_write_data.hpp>
 #include <components/storage/storage.hpp>
 #include <components/storage/table_storage_adapter.hpp>
@@ -74,6 +75,7 @@ namespace services::disk {
         table_storage_t(std::pmr::memory_resource* resource, const std::filesystem::path& otbx_path);
 
         components::table::data_table_t& table() { return *table_; }
+        const components::table::data_table_t& table() const { return *table_; }
         storage_mode_t mode() const { return mode_; }
 
         /// Checkpoint (disk mode only, no-op for in-memory).
@@ -123,14 +125,10 @@ namespace services::disk {
         wal::id_t prev_checkpoint_wal_id_{0};
     };
 
-    // Storage entries per collection.
-    //
-    // * Step 2: promoted from a private nested type of
-    // manager_disk_t to namespace scope so agent_disk_t can own its slice of
-    // storages_ as `std::pmr::unordered_map<oid_t, std::unique_ptr<
-    // collection_storage_entry_t>>`. Constraint #11: ownership migration is
-    // by-rvalue std::unique_ptr move only — no shared raw pointers cross the
-    // actor boundary.
+    // Storage entry per collection. Lives at namespace scope so agent_disk_t
+    // can own a slice as
+    // `std::pmr::unordered_map<oid_t, std::unique_ptr<collection_storage_entry_t>>`.
+    // Ownership migration across actors is by-rvalue std::unique_ptr move only.
     struct collection_storage_entry_t {
         table_storage_t table_storage;
         std::unique_ptr<components::storage::storage_t> storage;
@@ -188,21 +186,52 @@ namespace services::disk {
         }
     };
 
-    // deferred DROP TABLE GC entry: file path + commit_id
-    // of the DROP plus the standard sidecars (`.wal_id`, `.prev`). on_horizon_
-    // advanced iterates the per-actor slice and physically removes entries whose
+    // Deferred DROP TABLE GC entry: file path + commit_id of the DROP plus the
+    // standard sidecars (`.wal_id`, `.prev`). on_horizon_advanced iterates the
+    // per-agent slice and physically removes entries whose
     // dropped_at_commit_id < new_horizon (no live snapshot can reference them).
-    //
-    // * Step 7: promoted from a private nested type of manager_disk_t
-    // to namespace scope (mirrors collection_storage_entry_t in Step 2) so
-    // agent_disk_t can own its routed slice as
-    // `std::pmr::vector<dropped_storage_entry_t>`. Constraint #11: passed
-    // by-value across the actor boundary (path / pmr-vector members move).
+    // Passed by-value across the actor boundary.
     struct dropped_storage_entry_t {
         components::catalog::oid_t oid;
         uint64_t dropped_at_commit_id;
         std::filesystem::path path;
         std::pmr::vector<std::filesystem::path> sidecar_paths;
+    };
+
+    // Index-bootstrap row: one entry per live pg_index row. Populated by
+    // manager_disk_t::scan_alive_pg_index_sync() at startup (single-threaded,
+    // pre-scheduler-start) and consumed by base_spaces to spawn
+    // index_agent_disk_t actors and register them with
+    // manager_index_t::bootstrap_index_sync.
+    //
+    // Mapping pg_index columns → struct fields:
+    //   indexrelid  → oid          (the index OID; matches pg_class.oid where relkind='i')
+    //   indrelid    → table_oid    (the indexed user table OID)
+    //   indkey      → keys         (CSV of attoids resolved to attnames via pg_attribute scan)
+    //   indisvalid  → ready_since  (sentinel: 1 if valid, 0 if backfill not yet committed —
+    //                               base_spaces treats ready_since==0 as "skip, unfinished build")
+    //
+    // Fields without a direct pg_index column today:
+    //   name — resolved from pg_class.relname for indexrelid (PG-canonical naming).
+    //   type — pg_index has no `indtype` column in otterbrix's schema.
+    //          Defaults to index_type::single; base_spaces uses this to pick
+    //          the on-disk file extension (.bitcask vs .btree) when
+    //          reconstructing the agent.
+    struct pg_index_row_t {
+        components::catalog::oid_t oid;
+        components::catalog::oid_t table_oid;
+        std::pmr::string name;
+        components::logical_plan::index_type type;
+        components::logical_plan::keys_base_storage_t keys;
+        std::uint64_t ready_since;
+
+        explicit pg_index_row_t(std::pmr::memory_resource* resource)
+            : oid(components::catalog::INVALID_OID)
+            , table_oid(components::catalog::INVALID_OID)
+            , name(resource)
+            , type(components::logical_plan::index_type::single)
+            , keys(resource)
+            , ready_since(0) {}
     };
 
     class manager_disk_t final : public actor_zeta::actor::actor_mixin<manager_disk_t> {
@@ -227,14 +256,9 @@ namespace services::disk {
 
         // True if a storage entry is registered for `table_oid` (used by WAL replay to lazily
         // create in-memory storages on the first PHYSICAL_INSERT for tables without an .otbx).
-        //
-        // * Step 8.11 wrap (2026-05-31): manager-side storages_ map
-        // has been DELETED — the routed agent slice is the SOLE source of
-        // truth. All call sites (test_d4_lazy_load bootstrap inspection,
-        // base_spaces Phase 2c bootstrap,
-        // manager_disk_io::peek_checkpoint_wal_id_from_disk bootstrap path)
-        // are either single-threaded bootstrap or already inside the manager's
-        // mailbox lock — the sync probe into the agent is safe (Constraint #11
+        // Pure router into the routed agent slice (the sole source of truth);
+        // callers must be single-threaded bootstrap or already inside the
+        // manager's mailbox lock (sync probe into agent is safe under
         // pre-scheduler carve-out).
         bool has_storage(components::catalog::oid_t table_oid) const noexcept {
             if (agents_.empty())
@@ -245,9 +269,7 @@ namespace services::disk {
             return agents_[idx]->has_storage_sync(table_oid);
         }
         // Sync row-count probe used by base_spaces WAL replay to avoid duplicating already-
-        // checkpointed records. Returns 0 for unknown OIDs.
-        //
-        // wrap: routed agent slice is the sole source of truth.
+        // checkpointed records. Returns 0 for unknown OIDs. Pure router.
         uint64_t total_rows_sync(components::catalog::oid_t table_oid) const noexcept {
             if (agents_.empty())
                 return 0;
@@ -256,9 +278,8 @@ namespace services::disk {
                 return 0;
             return agents_[idx]->total_rows_inner_sync(table_oid);
         }
-        // Returns the persisted checkpoint_wal_id for `table_oid` (0 if never checkpointed or unknown).
-        //
-        // wrap: routed agent slice is the sole source of truth.
+        // Returns the persisted checkpoint_wal_id for `table_oid` (0 if never
+        // checkpointed or unknown). Pure router.
         wal::id_t checkpoint_wal_id_sync(components::catalog::oid_t table_oid) const noexcept {
             if (agents_.empty())
                 return wal::id_t{0};
@@ -303,23 +324,58 @@ namespace services::disk {
         // resurrecting a phantom storage.
         std::unordered_set<components::catalog::oid_t> alive_user_oids_sync() const;
 
-        // catalog scan: returns (oid, delete_id) for every pg_class
-        // row whose row-version is tombstoned (deleted but not yet physically
-        // GC'd). Called by base_spaces Phase 2c after WAL replay, before
-        // scheduler.start, to rebuild the per-agent dropped_storages_ slices
-        // (Version B* Step 8.11: manager-side mirror deleted; routing goes
-        // through register_dropped_storage_sync into the owning agent slice)
-        // from on-disk state so on_horizon_advanced can finish the deferred
-        // GC of user-table .otbx files left behind by a crash mid-DROP.
+        // Index-bootstrap helper: scan pg_class for every live user-OID whose
+        // relkind is 'r' (regular table) or 'm' (materialized view). These are
+        // the OIDs for which manager_index_t needs an empty engine populated
+        // at startup (before any CREATE INDEX-driven rebuild can populate
+        // per-index data). Called by base_spaces between
+        // load_user_table_storages_sync and bootstrap_indexes_sync, pre-
+        // scheduler-start (single-threaded — Constraint #11 carve-out).
         //
-        // pg_class has no `dropped_at_commit_id` column (dec 32 V2 added that
-        // to pg_attribute, not pg_class). The tombstone marker is the
-        // row-version-manager's per-row delete_id, which is not exposed
-        // through a public API. Returned delete_id is a sentinel (1) — at boot
-        // lowest_active_start_time=1, so any delete_id > 1 is GC-eligible;
-        // sentinel 1 means "GC on the first horizon advance past 1", i.e. the
-        // first commit that bumps published_horizon_.
+        // Excludes system OIDs (oid < FIRST_USER_OID) and tombstoned rows.
+        // Independent of (but consistent with) alive_user_oids_sync() which
+        // has no relkind filter and is used by WAL replay.
+        std::pmr::vector<components::catalog::oid_t> scan_live_table_oids_sync() const;
+
+        // Index-bootstrap helper: scan pg_index for every live row, resolve
+        // the index name from pg_class.relname (indexrelid lookup) and the
+        // indkey CSV from pg_attribute (attoid → attname). Returns one
+        // pg_index_row_t per live pg_index entry. Called by base_spaces
+        // immediately after scan_live_table_oids_sync to spawn per-index
+        // disk agents and register them with manager_index_t.
+        //
+        // pg_index schema today: (indexrelid, indrelid, indkey, indisvalid).
+        // The `type` field is defaulted to index_type::single — pg_index has
+        // no `indtype` column in otterbrix's schema. `ready_since` is a
+        // sentinel: 1 if indisvalid=true, 0 if false; base_spaces skips rows
+        // with ready_since==0 (unfinished backfill).
+        std::pmr::vector<pg_index_row_t> scan_alive_pg_index_sync() const;
+
+        // catalog scan: returns (oid, delete_id) for every pg_class row
+        // whose row-version is tombstoned (deleted but not yet physically
+        // GC'd). Called by base_spaces after WAL replay, before
+        // scheduler.start, to rebuild the per-agent dropped_storages_ slices
+        // (routing goes through register_dropped_storage_sync into the owning
+        // agent slice) from on-disk state so on_horizon_advanced can finish
+        // the deferred GC of user-table .otbx files left behind by a crash
+        // mid-DROP.
+        //
+        // pg_class has no `dropped_at_commit_id` column. The tombstone marker
+        // is the row-version-manager's per-row delete_id, which is not
+        // exposed through a public API. Returned delete_id is a sentinel (1)
+        // — at boot lowest_active_start_time=1, so any delete_id > 1 is
+        // GC-eligible; sentinel 1 means "GC on the first horizon advance past
+        // 1", i.e. the first commit that bumps published_horizon_.
         std::pmr::vector<std::pair<components::catalog::oid_t, std::uint64_t>> scan_dropped_oids_sync();
+
+        // Alias for scan_dropped_oids_sync used by the index-bootstrap path.
+        // The body is identical because pg_class is the only relation whose
+        // tombstones we must track for index GC. Kept as a thin forwarder so
+        // future refactors can specialise (e.g. filter by relkind=='r' to
+        // exclude already-cleaned 'i' rows).
+        std::pmr::vector<std::pair<components::catalog::oid_t, std::uint64_t>> scan_dropped_table_oids_sync() {
+            return scan_dropped_oids_sync();
+        }
 
         // Read-only accessor for the on-disk root directory.
         // base_spaces uses this to derive dropped storage paths.
@@ -481,18 +537,17 @@ namespace services::disk {
         unique_future<void> vacuum_all(session_id_t session, uint64_t lowest_active_start_time);
         unique_future<void> maybe_cleanup(execution_context_t ctx, uint64_t lowest_active_start_time);
 
-        // event-driven GC subscriber. Version B* Step 8.4.D /
-        // 8.11: manager body is a pure fanout — every agent's
-        // on_horizon_advanced_inner walks its OWN dropped_storages_ slice,
-        // physically removes entries whose dropped_at_commit_id <
-        // new_horizon (no live snapshot can reference them anymore), and
-        // emits on_subscriber_empty(DISK_KIND) to dispatcher on slice drain
-        // so the selective-broadcast flag clears.
+        // Event-driven GC subscriber. Manager body is a pure fanout — every
+        // agent's on_horizon_advanced_inner walks its OWN dropped_storages_
+        // slice, physically removes entries whose
+        // dropped_at_commit_id < new_horizon (no live snapshot can reference
+        // them anymore), and emits on_subscriber_empty(DISK_KIND) to dispatcher
+        // on slice drain so the selective-broadcast flag clears.
         unique_future<void> on_horizon_advanced(uint64_t new_horizon);
 
-        /// Bootstrap helper — dec 37 V1 catalog scan rebuild populates this.
-        /// Also called internally by the mark_storage_dropped mailbox handler
-        /// once it has derived path + sidecars from the live `storages_` entry.
+        /// Bootstrap helper — catalog scan rebuild populates this. Also called
+        /// internally by the mark_storage_dropped mailbox handler once it has
+        /// derived path + sidecars from the live storage entry.
         /// NOT a mailbox handler — single-threaded callers only.
         void register_dropped_storage_sync(components::catalog::oid_t oid,
                                            uint64_t dropped_at_commit_id,
@@ -501,13 +556,13 @@ namespace services::disk {
 
         /// Runtime DROP TABLE path — sent from operator_dynamic_cascade_delete
         /// (inside the executor actor) BEFORE the existing drop_storage send.
-        /// Reads the live `storages_` entry to derive the .otbx path + the
+        /// Reads the live storage entry to derive the .otbx path + the
         /// standard sidecars (wal_id, prev), then records them via
-        /// register_dropped_storage_sync. Does NOT touch the `storages_` map
-        /// or any files — drop_storage continues to perform the immediate file
-        /// removal; the GC entry exists so on_horizon_advanced can reconcile
-        /// any leftover state and so dispatcher disk_has_dropped_ gets flipped
-        /// via on_drop_resource_marked.
+        /// register_dropped_storage_sync. Does NOT touch the storage map or
+        /// any files — drop_storage performs the immediate file removal; the
+        /// GC entry exists so on_horizon_advanced can reconcile any leftover
+        /// state and so dispatcher disk_has_dropped_ gets flipped via
+        /// on_drop_resource_marked.
         unique_future<void> mark_storage_dropped(session_id_t session,
                                                  components::catalog::oid_t table_oid,
                                                  uint64_t dropped_at_commit_id);
@@ -516,7 +571,7 @@ namespace services::disk {
         /// scheduler.start, and the manager fans it out to every agent so
         /// per-slice on_horizon_advanced_inner can fire
         /// on_subscriber_empty(DISK_KIND) directly once its dropped_storages_
-        /// slice drains (Version B* — no manager mirror).
+        /// slice drains (no manager-side mirror).
         void set_manager_dispatcher_sync(actor_zeta::address_t address);
 
         // Storage management
@@ -664,66 +719,44 @@ namespace services::disk {
         std::mutex mutex_;
 
         actor_zeta::address_t manager_wal_ = actor_zeta::address_t::empty_address();
-        // selective broadcast — base_spaces wires this before
-        // scheduler.start via set_manager_dispatcher_sync. Version B* Step
-        // 8.4.D / 8.11: kept only so the manager can fan the dispatcher
-        // address out to every agent during bootstrap (each agent emits its
-        // own on_subscriber_empty(DISK_KIND) ack when its dropped_storages_
-        // slice drains; the manager itself no longer acks or mirrors).
+        // selective broadcast — base_spaces wires this before scheduler.start
+        // via set_manager_dispatcher_sync. Kept only so the manager can fan
+        // the dispatcher address out to every agent during bootstrap; each
+        // agent emits its own on_subscriber_empty(DISK_KIND) ack when its
+        // dropped_storages_ slice drains. The manager itself never acks/mirrors.
         actor_zeta::address_t manager_dispatcher_{actor_zeta::address_t::empty_address()};
         log_t log_;
         configuration::config_disk config_;
-        // * (Pass 9 USER DECISION) storages_ migration — COMPLETE.
-        //
-        // Terminal state (post Step 8.11 wrap + Step 8.12 final polish,
-        // 2026-05-31): manager_disk_t::storages_ has been DELETED. Every
-        // IN_MEMORY twin and DISK SFBM lives in the routed agent's slice;
-        // the manager is a pure router. has_storage / total_rows_sync /
-        // checkpoint_wal_id_sync delegate directly to
-        // agents_[pool_idx_for_oid]. checkpoint_all uses agent->
-        // has_in_memory_inner_sync() to preserve the WAL-seal suppression
-        // semantic that the pre-cutover body derived from manager.storages_.
-        // get_storage(oid) is DELETED; manager-side dead fallback bodies
-        // (direct_*_sync, storage_fetch, storage_scan_segment,
-        // storage_revert_append, storage_publish_*) collapsed to pure
-        // routers.
-        //
-        // Ownership shape:
+        // Storage ownership shape (manager has NO storages_ map — pure router):
         //   - agent_disk_0 (CATALOG): pg_* system tables (pg_class,
         //     pg_attribute, pg_type, pg_proc, pg_namespace, pg_constraint,
         //     pg_index, pg_database, pg_settings, pg_computed_column),
         //     oid_gen_, stored_catalog_, file_wal_id_.
         //   - agents_[1..N-1] (USER_POOL): user tables hash-routed by
         //     table_oid % (N-1).
-        //
-        // Routing helper: pool_idx_for_oid(oid_t, pool_size) — see below.
-        //   Returns 0 for catalog OIDs, 1+(oid % (N-1)) for user OIDs.
+        // Routing via pool_idx_for_oid below: 0 for catalog OIDs,
+        // 1 + (oid % (N-1)) for user OIDs. checkpoint_all uses agent->
+        // has_in_memory_inner_sync() to preserve the WAL-seal suppression
+        // semantic for IN_MEMORY twins.
         std::pmr::vector<agent_disk_ptr> agents_{resource_};
         components::catalog::oid_generator oid_gen_;
         components::catalog::session_catalog_t stored_catalog_;
 
-        //
-        // * Step 8.11: the manager-side `dropped_storages_` mirror
-        // has been DELETED. The per-agent dropped_storages_ slices (owned by
-        // each agent_disk_t — see agent_disk.hpp) are the CANONICAL and SOLE
-        // owner of GC state. Writers (register_dropped_storage_sync /
-        // mark_storage_dropped) are pure routers that forward into the
-        // routed agent slice; the per-agent on_horizon_advanced_inner sweep
+        // Per-agent dropped_storages_ slices (owned by agent_disk_t — see
+        // agent_disk.hpp) are the CANONICAL and SOLE owner of GC state.
+        // Writers (register_dropped_storage_sync / mark_storage_dropped) are
+        // pure routers; the per-agent on_horizon_advanced_inner sweep
         // physically removes .otbx + sidecars and emits
         // on_subscriber_empty(DISK_KIND) directly. DO NOT reintroduce a
-        // manager-side mirror — soak validation confirmed no reader remains.
-        // (`dropped_storage_entry_t` is defined at namespace scope above so
-        // agent_disk_t owns slices of the same type.)
+        // manager-side mirror.
 
-        // (2026-05-31): `get_storage(oid)` has been DELETED along
-        // with `storages_`. Every storage access now probes the routed agent
-        // slice (`agents_[pool_idx_for_oid(oid)]->storage_entry_sync(oid)`
-        // for sync paths; agent storage_*_inner mailbox handlers otherwise).
+        // Storage access path: sync probes go through
+        // `agents_[pool_idx_for_oid(oid)]->storage_entry_sync(oid)`; all other
+        // access goes through agent storage_*_inner mailbox handlers.
         void create_agent(int count_agents);
         auto agent() -> actor_zeta::address_t;
 
-        // *: hash-route by table_oid.
-        // Routes catalog tables (oid < FIRST_USER_OID) to agent 0;
+        // Hash-route by table_oid. Catalog tables (oid < FIRST_USER_OID) → agent 0;
         // user tables hash across agents_[1..N-1].
         static constexpr std::size_t pool_idx_for_oid(components::catalog::oid_t oid,
                                                       std::size_t pool_size) noexcept {

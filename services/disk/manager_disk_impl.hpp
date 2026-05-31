@@ -151,6 +151,27 @@ namespace services::disk {
             detail_impl_::inline_scan_range(table, col_indices, resource, std::forward<Fn>(fn));
         }
 
+        // const overloads: scan is logically read-only. data_table_t::scan
+        // does not modify chunk content, but its method signature is not const.
+        // const_cast is safe because we only read.
+        template<typename Fn>
+        void inline_scan(const components::table::data_table_t& table,
+                         std::initializer_list<std::int64_t> col_indices,
+                         std::pmr::memory_resource* resource,
+                         Fn&& fn) {
+            detail_impl_::inline_scan_range(const_cast<components::table::data_table_t&>(table),
+                                            col_indices, resource, std::forward<Fn>(fn));
+        }
+
+        template<typename Fn>
+        void inline_scan(const components::table::data_table_t& table,
+                         const std::vector<std::int64_t>& col_indices,
+                         std::pmr::memory_resource* resource,
+                         Fn&& fn) {
+            detail_impl_::inline_scan_range(const_cast<components::table::data_table_t&>(table),
+                                            col_indices, resource, std::forward<Fn>(fn));
+        }
+
         // ---------------------------------------------------------------------------
         // rebuild_chunk: copy a data_chunk_t into a new one backed by `resource`.
         // Ensures WAL-replay chunks created with a foreign allocator are safe to

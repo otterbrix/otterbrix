@@ -67,28 +67,13 @@ namespace {
                 return value_t(r, complex_logical_type{logical_type::NA});
         }
     }
-} // anonymous namespace`
+} // anonymous namespace
 
 namespace {
     // Batched disk operation types — collect per-agent ops, send once
     using disk_batch_t = std::vector<std::pair<value_t, size_t>>;
     using agent_batch_map_t = std::unordered_map<uintptr_t, disk_batch_t>;
     using agent_addr_map_t = std::unordered_map<uintptr_t, actor_zeta::address_t>;
-
-    [[maybe_unused]] void collect_disk_op(const components::index::index_engine_ptr& engine,
-                                          const components::vector::data_chunk_t& chunk,
-                                          size_t row,
-                                          std::pmr::memory_resource* target_resource,
-                                          agent_batch_map_t& batches,
-                                          agent_addr_map_t& addrs) {
-        engine->for_each_disk_op(chunk,
-                                 row,
-                                 [&](const actor_zeta::address_t& agent_addr, const components::index::value_t& key) {
-                                     auto id = reinterpret_cast<uintptr_t>(agent_addr.get());
-                                     addrs.try_emplace(id, agent_addr);
-                                     batches[id].emplace_back(value_t(target_resource, key), row);
-                                 });
-    }
 } // anonymous namespace
 
 namespace services::index {
@@ -110,8 +95,8 @@ namespace services::index {
         , bitcask_segment_record_limit_(bitcask_segment_record_limit)
         , btree_flush_threshold_(btree_flush_threshold)
         , engines_(resource)
-        , per_table_agents_(resource)
         , dropped_table_agents_(resource)
+        , disk_agents_per_oid_(resource)
         , pending_void_(resource) {
         if (!path_db_.empty()) {
             std::filesystem::create_directories(path_db_);
@@ -119,6 +104,25 @@ namespace services::index {
     }
 
     auto manager_index_t::make_type() const noexcept -> const char* { return "manager_index"; }
+
+    std::pair<bool, actor_zeta::detail::enqueue_result>
+    manager_index_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
+        std::lock_guard<std::mutex> guard(mutex_);
+        current_behavior_ = behavior(msg.get());
+
+        while (current_behavior_.is_busy()) {
+            if (current_behavior_.is_awaited_ready()) {
+                auto cont = current_behavior_.take_awaited_continuation();
+                if (cont) {
+                    cont.resume();
+                }
+            } else {
+                run_fn_();
+            }
+        }
+
+        return {false, actor_zeta::detail::enqueue_result::success};
+    }
 
     actor_zeta::behavior_t manager_index_t::behavior(actor_zeta::mailbox::message* msg) {
         poll_pending();
@@ -213,25 +217,6 @@ namespace services::index {
         }
     }
 
-    std::pair<bool, actor_zeta::detail::enqueue_result>
-    manager_index_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
-        std::lock_guard<std::mutex> guard(mutex_);
-        current_behavior_ = behavior(msg.get());
-
-        while (current_behavior_.is_busy()) {
-            if (current_behavior_.is_awaited_ready()) {
-                auto cont = current_behavior_.take_awaited_continuation();
-                if (cont) {
-                    cont.resume();
-                }
-            } else {
-                run_fn_();
-            }
-        }
-
-        return {false, actor_zeta::detail::enqueue_result::success};
-    }
-
     void manager_index_t::poll_pending() {
         for (auto it = pending_void_.begin(); it != pending_void_.end();) {
             if (it->is_ready()) {
@@ -247,49 +232,10 @@ namespace services::index {
         trace(log_, "manager_index_t::sync: disk_address set");
     }
 
-    void manager_index_t::register_table_agent_sync(components::catalog::oid_t oid, actor_zeta::address_t addr) {
-        // Bootstrap-only path: invoked from base_spaces Phase 3.5 before the
-        // scheduler is started. No locking — single-threaded by construction.
-        per_table_agents_.emplace(oid, std::move(addr));
-    }
-
-    components::index::index_engine_t*
-    manager_index_t::engine_for_oid_sync(components::catalog::oid_t oid) const noexcept {
-        // Bootstrap-only path: invoked from base_spaces Phase 3.5 alongside
-        // register_table_agent_sync. engines_ stores
-        // core::pmr::unique_ptr<index_engine_t>, so the raw pointer we return
-        // here is the heap address of the engine object — stable across any
-        // unordered_map rehash. Returns nullptr when no engine exists for the
-        // oid yet (engines_ is populated lazily by register_collection).
-        auto it = engines_.find(oid);
-        if (it == engines_.end()) {
-            return nullptr;
-        }
-        return it->second.get();
-    }
-
-    components::index::index_engine_ptr
-    manager_index_t::take_engine_ownership_sync(components::catalog::oid_t oid) {
-        // Bootstrap-only path: invoked from base_spaces Phase 3.5 after
-        // register_table_agent_sync. If engines_ already has an entry for the
-        // oid (system-table bootstrap or earlier register_collection), pop it
-        // out so the owning index_table_agent_t becomes the exclusive holder.
-        // Otherwise mint a fresh engine here so the agent always receives a
-        // non-null unique_ptr — mirrors register_collection's lazy-init shape
-        // so the migrated and unmigrated paths converge.
-        auto it = engines_.find(oid);
-        if (it != engines_.end()) {
-            auto engine = std::move(it->second);
-            engines_.erase(it);
-            return engine; // NRVO; explicit std::move not needed for local of same type
-        }
-        return components::index::make_index_engine(resource_);
-    }
-
     void manager_index_t::mark_table_dropped_sync(components::catalog::oid_t oid, uint64_t dropped_at_commit_id) {
-        // Bootstrap helper — dec 37 catalog scan rebuild populates this. Also
-        // called internally by the mark_table_dropped mailbox handler. NOT a
-        // mailbox handler — single-threaded callers only (bootstrap path).
+        // Bootstrap helper — catalog scan rebuild populates this. Also called
+        // internally by the mark_table_dropped mailbox handler. NOT a mailbox
+        // handler — single-threaded callers only (bootstrap path).
         dropped_table_agents_[oid] = dropped_at_commit_id;
     }
 
@@ -316,10 +262,153 @@ namespace services::index {
         manager_dispatcher_ = std::move(address);
     }
 
+    // ---------------- Bootstrap helpers (called pre-scheduler-start) ----------------
+
+    void manager_index_t::bootstrap_engine_sync(components::catalog::oid_t oid) {
+        // Pre-scheduler-start; single-threaded by construction. Mirrors the
+        // lazy-init shape of register_collection without the co_return wrapper.
+        auto it = engines_.find(oid);
+        if (it == engines_.end()) {
+            engines_.emplace(oid, components::index::make_index_engine(resource_));
+        }
+    }
+
+    void manager_index_t::bootstrap_index_sync(components::catalog::oid_t table_oid,
+                                               std::pmr::string name,
+                                               components::logical_plan::index_type type,
+                                               components::index::keys_base_storage_t keys,
+                                               actor_zeta::address_t disk_agent_addr,
+                                               index_agent_disk_ptr disk_agent_owned) {
+        // Bootstrap path — base_spaces::bootstrap_indexes_sync invokes this
+        // once per alive pg_index row recovered from the catalog scan, BEFORE
+        // scheduler.start (rule 11 exception — single-threaded by
+        // construction). Mirrors the runtime create_index handler below
+        // (in-memory index_t construction + engine wiring + per-oid fan-out
+        // registration) without the mailbox-send overhead, plus takes
+        // ownership of the disk-persistence actor whose spawn responsibility
+        // stays in base_spaces (it owns the path layout knowledge).
+        //
+        // No emergency engine create here: bootstrap_engine_sync is expected
+        // to have run for every live oid before any bootstrap_index_sync call
+        // (base_spaces sequences engines first, then per-index rows). A
+        // missing entry is a bootstrap-order bug — log and return, do not
+        // silently paper over it with an emplace.
+
+        auto it = engines_.find(table_oid);
+        if (it == engines_.end()) {
+            trace(log_,
+                  "manager_index_t::bootstrap_index_sync: missing engine for oid={} "
+                  "(index name={}), bootstrap order violated — skipping",
+                  static_cast<unsigned>(table_oid),
+                  std::string_view(name.data(), name.size()));
+            return;
+        }
+
+        auto& engine = it->second;
+        const std::string index_name(name.data(), name.size());
+
+        // Refuse duplicate registration — base_spaces should only call once
+        // per alive pg_index row, but be defensive against rescan paths.
+        if (engine->has_index(index_name)) {
+            trace(log_,
+                  "manager_index_t::bootstrap_index_sync: index {} already present on oid={}, skipping",
+                  index_name,
+                  static_cast<unsigned>(table_oid));
+            return;
+        }
+
+        uint32_t id_index = components::index::INDEX_ID_UNDEFINED;
+        switch (type) {
+            case components::logical_plan::index_type::single: {
+                id_index =
+                    components::index::make_index<components::index::single_field_index_t>(engine, index_name, keys);
+                break;
+            }
+            case components::logical_plan::index_type::hashed: {
+                if (path_db_.empty()) {
+                    id_index =
+                        components::index::make_index<components::index::hash_single_field_index_t>(engine,
+                                                                                                      index_name,
+                                                                                                      keys);
+                } else {
+                    const auto base = path_db_ / std::to_string(static_cast<unsigned>(table_oid)) / index_name;
+                    std::filesystem::create_directories(base);
+                    try {
+                        id_index = components::index::make_index<components::index::disk_hash_single_field_index_t>(
+                            engine,
+                            index_name,
+                            keys,
+                            std::make_unique<services::index::disk_hash_table_t>(base / "hash_index.bin",
+                                                                                 services::index::disk_hash_table_t::default_bucket_count,
+                                                                                 true,
+                                                                                 resource_));
+                    } catch (const std::exception& e) {
+                        trace(log_,
+                              "manager_index_t::bootstrap_index_sync: disk hash storage init failed, "
+                              "fallback to memory: {}",
+                              e.what());
+                        id_index = components::index::make_index<components::index::hash_single_field_index_t>(
+                            engine,
+                            index_name,
+                            keys);
+                    }
+                }
+                break;
+            }
+            default:
+                trace(log_,
+                      "manager_index_t::bootstrap_index_sync: unsupported index type for {} on oid={}",
+                      index_name,
+                      static_cast<unsigned>(table_oid));
+                return;
+        }
+
+        if (id_index == components::index::INDEX_ID_UNDEFINED) {
+            trace(log_,
+                  "manager_index_t::bootstrap_index_sync: failed to construct index {} on oid={}",
+                  index_name,
+                  static_cast<unsigned>(table_oid));
+            return;
+        }
+
+        // Wire the in-memory index_t to its disk-persistence actor address
+        // (mirrors the runtime create_index handler below). search_index by
+        // keys is the same lookup the runtime path uses.
+        if (auto* idx = components::index::search_index(engine, keys); idx) {
+            idx->set_disk_agent(disk_agent_addr, address());
+            engine->add_disk_agent(id_index, disk_agent_addr);
+        }
+
+        // Per-oid fan-out registration — commit_insert / commit_delete /
+        // on_horizon_advanced GC use this map. Keep insertion order matching
+        // create_index for runtime/bootstrap parity.
+        auto oid_it = disk_agents_per_oid_.try_emplace(
+            table_oid, std::pmr::vector<actor_zeta::address_t>(resource_)).first;
+        oid_it->second.emplace_back(disk_agent_addr);
+
+        // Ownership transfer — the unique_ptr keeps the spawned agent alive
+        // for the lifetime of the manager. Addresses recorded above stay
+        // valid until reaped by on_horizon_advanced.
+        disk_agents_owned_.emplace_back(std::move(disk_agent_owned));
+
+        trace(log_,
+              "manager_index_t::bootstrap_index_sync: wired index {} (id={}) on oid={} type={}",
+              index_name,
+              id_index,
+              static_cast<unsigned>(table_oid),
+              static_cast<unsigned>(type));
+    }
+
+    void manager_index_t::bootstrap_dropped_sync(components::catalog::oid_t oid, uint64_t delete_id) {
+        // Pre-scheduler-start alias of mark_table_dropped_sync to keep the
+        // bootstrap_* naming consistent at the call site.
+        mark_table_dropped_sync(oid, delete_id);
+    }
+
     void manager_index_t::schedule_agent(const actor_zeta::address_t& addr, bool needs_sched) {
         if (!needs_sched)
             return;
-        for (auto& agent : disk_agents_) {
+        for (auto& agent : disk_agents_owned_) {
             if (agent->address() == addr) {
                 scheduler_->enqueue(agent.get());
                 return;
@@ -333,17 +422,6 @@ namespace services::index {
                                                                               components::catalog::oid_t table_oid) {
         trace(log_, "manager_index_t::register_collection: oid={}", static_cast<unsigned>(table_oid));
 
-        // Final cleanup — engine ownership migration. If a per-table
-        // agent is already registered for this oid (base_spaces Phase 3.5 ran
-        // and handed engine ownership to the agent via take_engine_ownership_sync
-        // -> set_engine_owned_sync), engines_ has no entry by design. Skip the
-        // lazy-init here: re-creating an empty engine on engines_ would diverge
-        // from the agent's owned engine and any DDL/legacy path still pointed
-        // at engines_ would silently see an empty index set.
-        if (per_table_agents_.find(table_oid) != per_table_agents_.end()) {
-            co_return;
-        }
-
         auto it = engines_.find(table_oid);
         if (it == engines_.end()) {
             engines_.emplace(table_oid, components::index::make_index_engine(resource_));
@@ -356,44 +434,19 @@ namespace services::index {
         trace(log_, "manager_index_t::unregister_collection: oid={}", static_cast<unsigned>(table_oid));
 
         engines_.erase(table_oid);
+        disk_agents_per_oid_.erase(table_oid);
         co_return;
     }
 
     // --- DDL: index management ---
 
-    manager_index_t::unique_future<uint32_t> manager_index_t::create_index(session_id_t session,
+    manager_index_t::unique_future<uint32_t> manager_index_t::create_index(session_id_t /*session*/,
                                                                            components::catalog::oid_t table_oid,
                                                                            index_name_t index_name,
                                                                            components::index::keys_base_storage_t keys,
                                                                            components::logical_plan::index_type type,
                                                                            core::date::timezone_offset_t session_tz) {
         trace(log_, "manager_index_t::create_index: {} on oid={}", index_name, static_cast<unsigned>(table_oid));
-
-        // DDL routing — closes the regression introduced by the engine
-        // ownership migration. After base_spaces Phase 3.5 hands ownership of
-        // the per-table index_engine_t to the agent via set_engine_owned_sync,
-        // engines_[oid] is empty for every bootstrap-bound oid. The legacy
-        // engines_-based body below would therefore early-return with
-        // INDEX_ID_UNDEFINED and CREATE INDEX would fail silently for all
-        // system + user tables known at startup.
-        //
-        // Routing path: if a per-table agent is registered, forward via
-        // create_index_local — the agent runs the engine_ptr_-bound body and
-        // owns disk_agents_ for the new physical index. Otherwise (un-migrated
-        // runtime CREATE TABLE path) fall through to the legacy engines_ body
-        // below, which is still authoritative for that case until the runtime
-        // spawn step (Step N+1) lands.
-        if (auto agent_it = per_table_agents_.find(table_oid); agent_it != per_table_agents_.end()) {
-            auto [_, fut] = actor_zeta::send(agent_it->second,
-                                             &index_table_agent_t::create_index_local,
-                                             session,
-                                             table_oid,
-                                             index_name,
-                                             std::move(keys),
-                                             type,
-                                             session_tz);
-            co_return co_await std::move(fut);
-        }
 
         auto it = engines_.find(table_oid);
         if (it == engines_.end()) {
@@ -510,24 +563,17 @@ namespace services::index {
                         engine->add_disk_agent(id_index, agent->address());
                     }
 
-                    disk_agents_.emplace_back(std::move(agent));
+                    auto addr = agent->address();
+                    disk_agents_owned_.emplace_back(std::move(agent));
+                    // Register address in per-oid fan-out map for commit_insert
+                    // / commit_delete / on_horizon_advanced.
+                    auto oid_it = disk_agents_per_oid_.try_emplace(
+                        table_oid, std::pmr::vector<actor_zeta::address_t>(resource_)).first;
+                    oid_it->second.emplace_back(addr);
                 } catch (const std::exception& e) {
                     trace(log_, "manager_index_t::create_index: disk agent creation failed: {}", e.what());
                 }
             }
-        }
-
-        // Routing observability post-DDL. Trace whether the
-        // per-table agent already exists (path (a) above) or whether we just
-        // created an index for an oid not yet known to per_table_agents_
-        // (path (b) — router fallback covers DML correctness for now).
-        if (id_index != components::index::INDEX_ID_UNDEFINED) {
-            const bool has_agent = per_table_agents_.find(table_oid) != per_table_agents_.end();
-            trace(log_,
-                  "manager_index_t::create_index: oid={} per_table_agent={} (id_index={})",
-                  static_cast<unsigned>(table_oid),
-                  has_agent ? "bound" : "fallback-via-engines_",
-                  id_index);
         }
 
         co_return id_index;
@@ -536,29 +582,6 @@ namespace services::index {
     manager_index_t::unique_future<void>
     manager_index_t::drop_index(session_id_t session, components::catalog::oid_t table_oid, index_name_t index_name) {
         trace(log_, "manager_index_t::drop_index: {} on oid={}", index_name, static_cast<unsigned>(table_oid));
-
-        // DDL routing — same regression fix as create_index. After
-        // engine ownership migration, engines_[oid] is empty for bootstrap-
-        // bound oids, so the legacy body below would no-op silently. Forward
-        // to the agent's drop_index_local handler when registered; otherwise
-        // fall through to the legacy engines_ body for runtime CREATE TABLE
-        // oids that haven't migrated yet.
-        //
-        // DROP INDEX is NOT a GC trigger: per_table_agents_[oid] is left
-        // untouched (the agent still owns sibling indexes + the engine itself
-        // until DROP TABLE / unregister_collection drives the dec 33 sweep).
-        if (auto agent_it = per_table_agents_.find(table_oid); agent_it != per_table_agents_.end()) {
-            auto [_, fut] = actor_zeta::send(agent_it->second,
-                                             &index_table_agent_t::drop_index_local,
-                                             session,
-                                             table_oid,
-                                             index_name);
-            co_await std::move(fut);
-            trace(log_,
-                  "manager_index_t::drop_index: oid={} routed to per_table_agent",
-                  static_cast<unsigned>(table_oid));
-            co_return;
-        }
 
         auto it = engines_.find(table_oid);
         if (it == engines_.end())
@@ -578,48 +601,36 @@ namespace services::index {
                 // Wait for drop to complete before destroying the agent
                 co_await std::move(future);
 
-                // Remove agent from our list
-                disk_agents_.erase(std::remove_if(disk_agents_.begin(),
-                                                  disk_agents_.end(),
-                                                  [&agent_addr](const auto& a) { return a->address() == agent_addr; }),
-                                   disk_agents_.end());
+                // Remove agent from disk_agents_owned_
+                disk_agents_owned_.erase(
+                    std::remove_if(disk_agents_owned_.begin(),
+                                   disk_agents_owned_.end(),
+                                   [&agent_addr](const auto& a) { return a->address() == agent_addr; }),
+                    disk_agents_owned_.end());
+
+                // Remove address from per-oid fan-out map (DROP INDEX, not DROP TABLE —
+                // sibling indexes' addresses must stay).
+                auto oid_it = disk_agents_per_oid_.find(table_oid);
+                if (oid_it != disk_agents_per_oid_.end()) {
+                    auto& vec = oid_it->second;
+                    vec.erase(std::remove(vec.begin(), vec.end(), agent_addr), vec.end());
+                    if (vec.empty()) {
+                        disk_agents_per_oid_.erase(oid_it);
+                    }
+                }
             }
 
             components::index::drop_index(engine, index);
         }
-
-        // DDL routing observability. Trace the per-table
-        // agent's continued binding state: DROP INDEX must NOT clear it.
-        const bool has_agent = per_table_agents_.find(table_oid) != per_table_agents_.end();
-        trace(log_,
-              "manager_index_t::drop_index: oid={} per_table_agent={} (preserved across DROP INDEX)",
-              static_cast<unsigned>(table_oid),
-              has_agent ? "bound" : "fallback-via-engines_");
 
         co_return;
     }
 
     // --- Query ---
 
-    manager_index_t::unique_future<bool> manager_index_t::has_index(session_id_t session,
+    manager_index_t::unique_future<bool> manager_index_t::has_index(session_id_t /*session*/,
                                                                     components::catalog::oid_t table_oid,
                                                                     index_name_t index_name) {
-        // + dec 46 — per-table router. Forward via mailbox
-        // to the owning index_table_agent_t when one is registered. The agent's
-        // body is a stub today (engine_ptr_ stays null in steady state) so the
-        // truthful answer still comes from the engines_ fallback below; once
-        // engine ownership migrates, the agent will own the answer and the
-        // fallback will be removed.
-        if (auto agent_it = per_table_agents_.find(table_oid); agent_it != per_table_agents_.end()) {
-            auto [_, fut] =
-                actor_zeta::send(agent_it->second, &index_table_agent_t::has_index, session, table_oid, index_name);
-            auto agent_result = co_await std::move(fut);
-            if (agent_result) {
-                co_return true;
-            }
-            // engine not bound on agent yet — fall through to engines_ body.
-        }
-
         auto it = engines_.find(table_oid);
         if (it == engines_.end())
             co_return false;
@@ -637,24 +648,6 @@ namespace services::index {
                                  uint64_t count) {
         if (!data || count == 0)
             co_return;
-
-        // DML migration — feature-flag router. If a per-table agent is
-        // registered for this oid (via register_table_agent_sync during V4
-        // bootstrap), forward the message and await its future. Today the agent
-        // body is a no-op stub; the actual engine_ work still happens below
-        // when the map has no entry, so existing call sites keep working until
-        // the engine ownership move ships.
-        if (auto agent_it = per_table_agents_.find(table_oid); agent_it != per_table_agents_.end()) {
-            auto [_, fut] = actor_zeta::send(agent_it->second,
-                                             &index_table_agent_t::insert_rows,
-                                             ctx,
-                                             table_oid,
-                                             std::move(data),
-                                             start_row_id,
-                                             count);
-            co_await std::move(fut);
-            co_return;
-        }
 
         auto txn_id = ctx.txn.transaction_id;
         auto it = engines_.find(table_oid);
@@ -677,18 +670,6 @@ namespace services::index {
                                  std::pmr::vector<int64_t> row_ids) {
         if (!data || row_ids.empty())
             co_return;
-
-        // DML migration — feature-flag router (see insert_rows).
-        if (auto agent_it = per_table_agents_.find(table_oid); agent_it != per_table_agents_.end()) {
-            auto [_, fut] = actor_zeta::send(agent_it->second,
-                                             &index_table_agent_t::delete_rows,
-                                             ctx,
-                                             table_oid,
-                                             std::move(data),
-                                             std::move(row_ids));
-            co_await std::move(fut);
-            co_return;
-        }
 
         auto txn_id = ctx.txn.transaction_id;
         auto it = engines_.find(table_oid);
@@ -714,20 +695,6 @@ namespace services::index {
         if (!old_data || !new_data || row_ids.empty())
             co_return;
 
-        // DML migration — feature-flag router (see insert_rows).
-        if (auto agent_it = per_table_agents_.find(table_oid); agent_it != per_table_agents_.end()) {
-            auto [_, fut] = actor_zeta::send(agent_it->second,
-                                             &index_table_agent_t::update_rows,
-                                             ctx,
-                                             table_oid,
-                                             std::move(old_data),
-                                             std::move(new_data),
-                                             std::move(row_ids),
-                                             new_start_row_id);
-            co_await std::move(fut);
-            co_return;
-        }
-
         auto txn_id = ctx.txn.transaction_id;
         auto it = engines_.find(table_oid);
         if (it == engines_.end())
@@ -752,19 +719,6 @@ namespace services::index {
 
     manager_index_t::unique_future<core::error_t>
     manager_index_t::commit_insert(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id) {
-        // DML migration — feature-flag router (see insert_rows). The
-        // agent's core::error_t is forwarded back so the executor commit-path
-        // keeps its typed-error contract.
-        if (auto agent_it = per_table_agents_.find(table_oid); agent_it != per_table_agents_.end()) {
-            auto [_, fut] = actor_zeta::send(agent_it->second,
-                                             &index_table_agent_t::commit_insert,
-                                             ctx,
-                                             table_oid,
-                                             commit_id);
-            auto result = co_await std::move(fut);
-            co_return result;
-        }
-
         auto session = ctx.session;
         auto txn_id = ctx.txn.transaction_id;
         auto it = engines_.find(table_oid);
@@ -773,12 +727,12 @@ namespace services::index {
 
         auto& engine = it->second;
 
-        // Parallel A.B3: two-phase fan-out. Phase 1 — gather pending
-        // disk inserts from BOTH the txn-local pending map and the global
-        // pending map (txn_id == 0 path), batch per disk-agent, then send all
-        // insert_many messages without intervening co_await. Phase 2 — collect
-        // every future in one pass. Decoupling send from await means N disk
-        // agents progress in parallel instead of strictly serially.
+        // Two-phase fan-out. Phase 1 — gather pending disk inserts from BOTH
+        // the txn-local pending map and the global pending map (txn_id == 0
+        // path), batch per disk-agent, then send all insert_many messages
+        // without intervening co_await. Phase 2 — collect every future in one
+        // pass. Decoupling send from await means N disk agents progress in
+        // parallel instead of strictly serially.
         agent_batch_map_t insert_batches;
         agent_addr_map_t insert_addrs;
         engine->for_each_pending_disk_insert(
@@ -810,8 +764,8 @@ namespace services::index {
         }
 
         // Phase 2: collect every future. Underlying disk methods are
-        // assert+abort terminal today (Block A.B1), so reaching the end of
-        // this loop implies success for all agents.
+        // assert+abort terminal today, so reaching the end of this loop
+        // implies success for all agents.
         for (auto& f : futures) {
             co_await std::move(f);
         }
@@ -828,17 +782,6 @@ namespace services::index {
 
     manager_index_t::unique_future<core::error_t>
     manager_index_t::commit_delete(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id) {
-        // DML migration — feature-flag router (see insert_rows).
-        if (auto agent_it = per_table_agents_.find(table_oid); agent_it != per_table_agents_.end()) {
-            auto [_, fut] = actor_zeta::send(agent_it->second,
-                                             &index_table_agent_t::commit_delete,
-                                             ctx,
-                                             table_oid,
-                                             commit_id);
-            auto result = co_await std::move(fut);
-            co_return result;
-        }
-
         auto session = ctx.session;
         auto txn_id = ctx.txn.transaction_id;
         auto it = engines_.find(table_oid);
@@ -847,10 +790,10 @@ namespace services::index {
 
         auto& engine = it->second;
 
-        // Parallel A.B3: two-phase fan-out (mirror of commit_insert).
-        // Phase 1 batches pending disk deletes from both the txn-local pending
-        // map and the global (txn_id == 0) map, then sends every remove_many
-        // message before any co_await. Phase 2 awaits the collected futures.
+        // Two-phase fan-out (mirror of commit_insert). Phase 1 batches
+        // pending disk deletes from both the txn-local pending map and the
+        // global (txn_id == 0) map, then sends every remove_many message
+        // before any co_await. Phase 2 awaits the collected futures.
         agent_batch_map_t remove_batches;
         agent_addr_map_t remove_addrs;
         engine->for_each_pending_disk_delete(
@@ -897,16 +840,6 @@ namespace services::index {
 
     manager_index_t::unique_future<void> manager_index_t::revert_insert(execution_context_t ctx,
                                                                         components::catalog::oid_t table_oid) {
-        // DML migration — feature-flag router (see insert_rows).
-        if (auto agent_it = per_table_agents_.find(table_oid); agent_it != per_table_agents_.end()) {
-            auto [_, fut] = actor_zeta::send(agent_it->second,
-                                             &index_table_agent_t::revert_insert,
-                                             ctx,
-                                             table_oid);
-            co_await std::move(fut);
-            co_return;
-        }
-
         auto txn_id = ctx.txn.transaction_id;
         auto it = engines_.find(table_oid);
         if (it == engines_.end())
@@ -918,34 +851,8 @@ namespace services::index {
         co_return;
     }
 
-    manager_index_t::unique_future<void> manager_index_t::cleanup_all_versions(session_id_t session,
+    manager_index_t::unique_future<void> manager_index_t::cleanup_all_versions(session_id_t /*session*/,
                                                                                uint64_t lowest_active) {
-        // (Pass 9 Variant 2) — broadcast wrapper. For every
-        // registered per-table agent send cleanup_versions(ctx, oid,
-        // lowest_active) and collect the futures, then co_await them all in
-        // a second pass so the fan-out runs in parallel (mailbox-only per
-        // rule 11, no shared state per rule 10). The agent bodies are no-op
-        // stubs today (engine_ptr_ stays null in steady state), so the
-        // truthful cleanup still happens via the engines_ loop below —
-        // mirrors the "router + engines_ fallback" pattern used by
-        // search/has_index. Once engine ownership migrates onto the
-        // per-table agents the manager-side fallback can be removed.
-        if (!per_table_agents_.empty()) {
-            std::pmr::vector<unique_future<void>> futures(resource_);
-            futures.reserve(per_table_agents_.size());
-            for (auto& [oid, addr] : per_table_agents_) {
-                execution_context_t ctx{};
-                ctx.session = session;
-                ctx.table_oid = oid;
-                auto [_, fut] =
-                    actor_zeta::send(addr, &index_table_agent_t::cleanup_versions, ctx, oid, lowest_active);
-                futures.emplace_back(std::move(fut));
-            }
-            for (auto& f : futures) {
-                co_await std::move(f);
-            }
-        }
-
         for (auto& [oid, engine] : engines_) {
             engine->cleanup_versions(lowest_active);
         }
@@ -953,22 +860,8 @@ namespace services::index {
         co_return;
     }
 
-    manager_index_t::unique_future<void> manager_index_t::rebuild_indexes(session_id_t session,
+    manager_index_t::unique_future<void> manager_index_t::rebuild_indexes(session_id_t /*session*/,
                                                                           components::catalog::oid_t table_oid) {
-        // (Pass 9 Variant 2) — per-oid router. Same shape as
-        // insert_rows: when a per-table agent is registered for this oid,
-        // forward via mailbox and await its future. Agent body is a no-op
-        // stub today (engine_ptr_ null in steady state); the truthful
-        // rebuild still happens in the engines_ body below via the existing
-        // fallback path until engine ownership migrates.
-        if (auto agent_it = per_table_agents_.find(table_oid); agent_it != per_table_agents_.end()) {
-            auto [_, fut] =
-                actor_zeta::send(agent_it->second, &index_table_agent_t::rebuild_indexes, session, table_oid);
-            co_await std::move(fut);
-            // Fall through to engines_ body — agent stub is no-op while
-            // engine_ptr_ is null.
-        }
-
         auto it = engines_.find(table_oid);
         if (it == engines_.end())
             co_return;
@@ -993,7 +886,7 @@ namespace services::index {
     // --- Txn-aware Query ---
 
     manager_index_t::unique_future<std::pmr::vector<int64_t>>
-    manager_index_t::search_with_preferred_type(session_id_t session,
+    manager_index_t::search_with_preferred_type(session_id_t /*session*/,
                                                 components::catalog::oid_t table_oid,
                                                 components::index::keys_base_storage_t keys,
                                                 components::types::logical_value_t value,
@@ -1002,32 +895,6 @@ namespace services::index {
                                                 uint64_t start_time,
                                                 uint64_t txn_id,
                                                 core::date::timezone_offset_t session_tz) {
-        // + dec 46 — search hot-path router. Forward via
-        // mailbox to the owning index_table_agent_t when one is registered.
-        // The agent stub returns an empty vector while engine_ptr_ stays null
-        // (the engine ownership migration hasn't run yet), so when the agent
-        // future is empty AND the agent isn't authoritative yet, fall back to
-        // the existing engines_ body. Once engine ownership migrates, only the
-        // agent will run and the fallback can be deleted.
-        if (auto agent_it = per_table_agents_.find(table_oid); agent_it != per_table_agents_.end()) {
-            auto [_, fut] = actor_zeta::send(agent_it->second,
-                                             &index_table_agent_t::search_with_preferred_type,
-                                             session,
-                                             table_oid,
-                                             keys,
-                                             value,
-                                             compare,
-                                             preferred_type,
-                                             start_time,
-                                             txn_id,
-                                             session_tz);
-            auto agent_result = co_await std::move(fut);
-            if (!agent_result.empty()) {
-                co_return agent_result;
-            }
-            // empty agent answer — engine not bound yet; fall through.
-        }
-
         std::pmr::vector<int64_t> result(resource_);
         auto it = engines_.find(table_oid);
         if (it == engines_.end()) {
@@ -1045,7 +912,7 @@ namespace services::index {
     }
 
     manager_index_t::unique_future<std::pmr::vector<int64_t>>
-    manager_index_t::search(session_id_t session,
+    manager_index_t::search(session_id_t /*session*/,
                             components::catalog::oid_t table_oid,
                             components::index::keys_base_storage_t keys,
                             components::types::logical_value_t value,
@@ -1053,29 +920,6 @@ namespace services::index {
                             uint64_t start_time,
                             uint64_t txn_id,
                             core::date::timezone_offset_t session_tz) {
-        // + dec 46 — search hot-path router. See the
-        // longer comment in search_with_preferred_type above. Mailbox-only
-        // delegation per constraint #11; manager engines_ body remains the
-        // truthful source until engine ownership migrates onto the per-table
-        // agent.
-        if (auto agent_it = per_table_agents_.find(table_oid); agent_it != per_table_agents_.end()) {
-            auto [_, fut] = actor_zeta::send(agent_it->second,
-                                             &index_table_agent_t::search,
-                                             session,
-                                             table_oid,
-                                             keys,
-                                             value,
-                                             compare,
-                                             start_time,
-                                             txn_id,
-                                             session_tz);
-            auto agent_result = co_await std::move(fut);
-            if (!agent_result.empty()) {
-                co_return agent_result;
-            }
-            // empty agent answer — engine not bound yet; fall through.
-        }
-
         std::pmr::vector<int64_t> result(resource_);
 
         auto it = engines_.find(table_oid);
@@ -1090,26 +934,7 @@ namespace services::index {
     }
 
     manager_index_t::unique_future<std::pmr::vector<components::index::keys_base_storage_t>>
-    manager_index_t::get_indexed_keys(session_id_t session, components::catalog::oid_t table_oid) {
-        // metadata-read router. Forward via mailbox to the
-        // owning index_table_agent_t when one is registered. The agent stub
-        // returns an empty vector while engine_ptr_ stays null (engine
-        // ownership migration hasn't run), so an empty agent answer is treated
-        // as "agent not authoritative yet" — fall through to the existing
-        // engines_ body. Once engine ownership migrates, the agent will own the
-        // answer and the fallback can be deleted.
-        if (auto agent_it = per_table_agents_.find(table_oid); agent_it != per_table_agents_.end()) {
-            auto [_, fut] = actor_zeta::send(agent_it->second,
-                                             &index_table_agent_t::get_indexed_keys,
-                                             session,
-                                             table_oid);
-            auto agent_result = co_await std::move(fut);
-            if (!agent_result.empty()) {
-                co_return agent_result;
-            }
-            // empty agent answer — engine not bound yet; fall through.
-        }
-
+    manager_index_t::get_indexed_keys(session_id_t /*session*/, components::catalog::oid_t table_oid) {
         auto it = engines_.find(table_oid);
         if (it == engines_.end()) {
             co_return std::pmr::vector<components::index::keys_base_storage_t>(resource_);
@@ -1118,21 +943,7 @@ namespace services::index {
     }
 
     manager_index_t::unique_future<std::pmr::vector<components::index::index_description_t>>
-    manager_index_t::get_indexed_descriptions(session_id_t session, components::catalog::oid_t table_oid) {
-        // metadata-read router. See get_indexed_keys above
-        // for the empty-result fallback contract.
-        if (auto agent_it = per_table_agents_.find(table_oid); agent_it != per_table_agents_.end()) {
-            auto [_, fut] = actor_zeta::send(agent_it->second,
-                                             &index_table_agent_t::get_indexed_descriptions,
-                                             session,
-                                             table_oid);
-            auto agent_result = co_await std::move(fut);
-            if (!agent_result.empty()) {
-                co_return agent_result;
-            }
-            // empty agent answer — engine not bound yet; fall through.
-        }
-
+    manager_index_t::get_indexed_descriptions(session_id_t /*session*/, components::catalog::oid_t table_oid) {
         auto it = engines_.find(table_oid);
         if (it == engines_.end()) {
             co_return std::pmr::vector<components::index::index_description_t>(resource_);
@@ -1143,33 +954,13 @@ namespace services::index {
     manager_index_t::unique_future<void> manager_index_t::flush_all_indexes(session_id_t session) {
         trace(log_, "manager_index_t::flush_all_indexes, session: {}", session.data());
 
-        // (Pass 9 Variant 2) — broadcast wrapper. Fan a
-        // flush_indexes message out to every registered per-table agent,
-        // collect futures, then co_await them in a second pass so the
-        // fan-out runs in parallel (mailbox-only per rule 11, no shared
-        // state per rule 10). Agent bodies are no-op stubs today
-        // (engine_ptr_ null in steady state); the truthful flush still runs
-        // via the disk_agents_ loop below — the manager-side path remains
-        // authoritative until engine + disk-agent ownership migrate.
-        if (!per_table_agents_.empty()) {
-            std::pmr::vector<unique_future<void>> futures(resource_);
-            futures.reserve(per_table_agents_.size());
-            for (auto& [oid, addr] : per_table_agents_) {
-                auto [_, fut] = actor_zeta::send(addr, &index_table_agent_t::flush_indexes, session, oid);
-                futures.emplace_back(std::move(fut));
-            }
-            for (auto& f : futures) {
-                co_await std::move(f);
-            }
-        }
-
         // Await all pending agent operations to ensure no in-flight writes
         for (auto& f : pending_void_) {
             co_await std::move(f);
         }
         pending_void_.clear();
         // Now safe to call synchronously — no actor messaging, avoids TSan race
-        for (auto& agent : disk_agents_) {
+        for (auto& agent : disk_agents_owned_) {
             if (agent && !agent->is_dropped()) {
                 agent->force_flush_sync();
             }
@@ -1177,33 +968,37 @@ namespace services::index {
         co_return;
     }
 
-    // event-driven GC subscriber. Walks dropped_table_agents_ and
-    // erases the routing entry for any table whose dropped_at_commit_id is now
-    // strictly below the snapshot floor (new_horizon). Address-only entry
-    // erase: the owning unique_ptr<index_table_agent_t> lives in base_spaces
-    // per the Block D V4 bootstrap design, so removing the address from
-    // per_table_agents_ here only drops the routing entry — the actor itself
-    // is reaped at base_spaces shutdown (or via a future base_spaces.cpp
-    // cleanup once the address is no longer referenced). No double-free is
-    // possible from this path.
-    //
-    // event-driven GC subscriber. On drain (queue empty) sends
-    // on_subscriber_empty(INDEX_KIND) ack to dispatcher so the
-    // selective-broadcast flag clears and no further on_horizon_advanced
-    // broadcasts arrive until a new DROP TABLE re-marks the subscriber.
+    // event-driven GC subscriber. Walks dropped_table_agents_ and erases
+    // the per-oid routing entries (engines_ + disk_agents_per_oid_) whose
+    // dropped_at_commit_id is now strictly below the snapshot floor
+    // (new_horizon). On drain (queue empty) sends on_subscriber_empty(INDEX_KIND)
+    // ack to dispatcher so the selective-broadcast flag clears and no further
+    // on_horizon_advanced broadcasts arrive until a new DROP TABLE re-marks
+    // the subscriber.
     manager_index_t::unique_future<void> manager_index_t::on_horizon_advanced(uint64_t new_horizon) {
         trace(log_, "manager_index_t::on_horizon_advanced , horizon : {}", new_horizon);
-        // symmetric GC pass: erase dropped per-table agents whose
+        // symmetric GC pass: erase per-oid state for tables whose
         // dropped_at_commit_id is now below the snapshot floor.
         for (auto it = dropped_table_agents_.begin(); it != dropped_table_agents_.end();) {
             if (it->second < new_horizon) {
-                // Drop the address-only routing entry from per_table_agents_.
-                // The owning unique_ptr<index_table_agent_t> lives in
-                // base_spaces (per Block D V4 bootstrap design), so erasing
-                // here only removes routing — actor destruction happens at
-                // base_spaces shutdown OR via base_spaces.cpp cleanup when
-                // the address is no longer referenced (future work).
-                per_table_agents_.erase(it->first);
+                auto oid = it->first;
+                // Drop the engine first — manager_index_t is its sole owner.
+                engines_.erase(oid);
+                // Send terminal drop to each disk_agent_disk_t bound to this oid
+                // (best-effort fire-and-forget — the agents are owned by
+                // disk_agents_owned_; they will be reaped on next force_flush
+                // pass or at base_spaces shutdown).
+                auto disk_it = disk_agents_per_oid_.find(oid);
+                if (disk_it != disk_agents_per_oid_.end()) {
+                    for (auto& addr : disk_it->second) {
+                        auto [needs_sched, fut] = actor_zeta::otterbrix::send(addr,
+                                                                              &index_agent_disk_t::drop,
+                                                                              session_id_t{});
+                        schedule_agent(addr, needs_sched);
+                        pending_void_.emplace_back(std::move(fut));
+                    }
+                    disk_agents_per_oid_.erase(disk_it);
+                }
                 it = dropped_table_agents_.erase(it);
             } else {
                 ++it;
@@ -1221,8 +1016,8 @@ namespace services::index {
         co_return;
     }
 
-    // d — apply a single WAL record's effect to the
-    // build's in-memory index_engine_t during CREATE INDEX Phase 2.5 catchup.
+    // Apply a single WAL record's effect to the build's in-memory
+    // index_engine_t during the CREATE INDEX catchup loop.
     //
     // The handler mirrors the steady-state DML path (insert_rows / delete_rows
     // / update_rows above) but drives a single record instead of a chunk batch.
@@ -1240,11 +1035,10 @@ namespace services::index {
     // → key reverse map). PHYSICAL_UPDATE replay is split into two messages
     // by the operator: a PHYSICAL_UPDATE one carrying the NEW chunk for the
     // insert half, then a PHYSICAL_DELETE one carrying the recovered OLD
-    // chunk for the delete half. See
-    // operator_create_index_backfill.cpp for the Phase 2.5 catchup loop
-    // that drives this sequence.
+    // chunk for the delete half. See operator_create_index_backfill.cpp for
+    // the catchup loop that drives this sequence.
     manager_index_t::unique_future<void>
-    manager_index_t::apply_wal_record_for_index(session_id_t session,
+    manager_index_t::apply_wal_record_for_index(session_id_t /*session*/,
                                                 components::catalog::oid_t table_oid,
                                                 components::catalog::oid_t index_oid,
                                                 uint64_t wal_record_id,
@@ -1254,36 +1048,12 @@ namespace services::index {
                                                 uint64_t physical_row_start,
                                                 uint64_t txn_id,
                                                 core::date::timezone_offset_t session_tz) {
-        // DDL routing — closes the regression for CREATE INDEX WAL
-        // catchup (operator_create_index_backfill Phase 2.5 loop). After
-        // engine ownership migration the manager-side engines_ map is empty
-        // for bootstrap-bound oids; the legacy body below would log "no
-        // engine for table_oid=..." and skip every replay record. Forward to
-        // the agent's local handler when registered; otherwise fall through
-        // for un-migrated runtime oids.
-        if (auto agent_it = per_table_agents_.find(table_oid); agent_it != per_table_agents_.end()) {
-            auto [_, fut] = actor_zeta::send(agent_it->second,
-                                             &index_table_agent_t::apply_wal_record_for_index_local,
-                                             session,
-                                             table_oid,
-                                             index_oid,
-                                             wal_record_id,
-                                             record_type,
-                                             std::move(row_ids),
-                                             std::move(physical_data),
-                                             physical_row_start,
-                                             txn_id,
-                                             session_tz);
-            co_await std::move(fut);
-            co_return;
-        }
-
         auto it = engines_.find(table_oid);
         if (it == engines_.end()) {
             // The build's engine should already have been created by the
             // register_collection / create_index calls earlier in the operator.
             // Missing engine here means a bookkeeping mismatch; log and skip
-            // (no exceptions per rule constraint #2).
+            // (no exceptions thrown across the actor boundary).
             trace(log_,
                   "manager_index_t::apply_wal_record_for_index: no engine for "
                   "table_oid={} (index_oid={} wal_id={} type={}), skipping",
@@ -1297,11 +1067,11 @@ namespace services::index {
         auto& engine = it->second;
 
         if (record_type == static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_INSERT)) {
-            // V1.d real-impl: replay the INSERT chunk into the build's engine.
-            // Entries are tagged with the CREATE INDEX txn_id so they stay
-            // PENDING until the post-pipeline commit_insert publishes them
-            // alongside the rest of the build (operator_create_index_backfill
-            // wires dml_append_row_count for the executor to fire that commit).
+            // Replay the INSERT chunk into the build's engine. Entries are
+            // tagged with the CREATE INDEX txn_id so they stay PENDING until
+            // the post-pipeline commit_insert publishes them alongside the
+            // rest of the build (operator_create_index_backfill wires
+            // dml_append_row_count for the executor to fire that commit).
             if (!physical_data || physical_data->size() == 0) {
                 trace(log_,
                       "manager_index_t::apply_wal_record_for_index INSERT: empty chunk "
@@ -1327,21 +1097,21 @@ namespace services::index {
                   wal_record_id,
                   rows);
         } else if (record_type == static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_DELETE)) {
-            // V1.d follow-up real-impl: the PHYSICAL_DELETE WAL record itself
-            // ships only storage row_ids — no key columns. The operator side
-            // (operator_create_index_backfill Phase 2.5 loop) closes that gap
-            // by performing a storage_fetch(row_ids) before sending us the
-            // message, and forwards the recovered chunk via physical_data.
-            // This keeps the engine API unchanged (no row_id → keys reverse
-            // map needed) at the cost of one extra read-only fetch per
-            // PHYSICAL_DELETE record during catchup — acceptable for the
-            // bounded-retry CREATE INDEX loop.
+            // The PHYSICAL_DELETE WAL record itself ships only storage row_ids
+            // — no key columns. The operator side (operator_create_index_backfill
+            // catchup loop) closes that gap by performing a
+            // storage_fetch(row_ids) before sending us the message and
+            // forwards the recovered chunk via physical_data. This keeps the
+            // engine API unchanged (no row_id → keys reverse map needed) at
+            // the cost of one extra read-only fetch per PHYSICAL_DELETE
+            // record during catchup — acceptable for the bounded-retry
+            // CREATE INDEX loop.
             //
             // Defensive fall-throughs:
             //   - physical_data == nullptr or empty: the operator could not
             //     recover the chunk (rows physically gone, fetch failed).
-            //     Best-effort skip + log; the V1.a convergence guard still
-            //     fires if the index keeps diverging.
+            //     Best-effort skip + log; the operator-side convergence
+            //     guard still fires if the index keeps diverging.
             //   - row_ids.size() != physical_data->size(): partial recovery
             //     (some rows missing from storage). Apply only the prefix
             //     where both sides agree and log the mismatch — same
@@ -1374,11 +1144,11 @@ namespace services::index {
                       physical_data->size());
             }
         } else if (record_type == static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_UPDATE)) {
-            // V1.d real-impl: PHYSICAL_UPDATE records carry the NEW chunk
-            // (in physical_data) and the OLD storage row_ids (in row_ids).
-            // The new-row insert half is replayed here. The OLD-row delete
-            // half is replayed by a separate apply_wal_record_for_index call
-            // with record_type=PHYSICAL_DELETE that the operator issues right
+            // PHYSICAL_UPDATE records carry the NEW chunk (in physical_data)
+            // and the OLD storage row_ids (in row_ids). The new-row insert
+            // half is replayed here. The OLD-row delete half is replayed by a
+            // separate apply_wal_record_for_index call with
+            // record_type=PHYSICAL_DELETE that the operator issues right
             // after this one — the operator owns the storage_fetch on the
             // OLD row_ids that recovers the key chunk for the delete branch
             // above (same recovery pattern as standalone PHYSICAL_DELETE).
@@ -1387,7 +1157,7 @@ namespace services::index {
             // signature stable (one chunk per call) and lets the operator
             // schedule the fetch with its existing disk_address handle (the
             // index manager intentionally does not own a disk_address handle
-            // for the catchup path — rule 11: mailbox-only inter-actor).
+            // for the catchup path — mailbox-only inter-actor communication).
             if (physical_data && physical_data->size() > 0) {
                 // For UPDATE the new storage row-ids are appended starting at
                 // physical_row_start (the table writer's append cursor at the

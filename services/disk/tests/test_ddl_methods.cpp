@@ -259,7 +259,7 @@ TEST_CASE("services::disk::ddl::computed_unregister_marks_dead") {
     REQUIRE(tomb_v > live_v);
 }
 
-// 25b. task #103 — disk-level mirror of the SQL-level
+// 25b. Disk-level mirror of the SQL-level
 // dynamic_schema_drop_then_readd_preserves_old_data test. Verify the post-
 // register/unregister/register sequence at the pg_computed_column row level:
 //
@@ -640,10 +640,10 @@ TEST_CASE("services::disk::ddl::dynamic_schema_wal_recovery_skip") {
     WARN("TODO: requires restart fixture; covered by test_recovery.cpp pattern but not yet for relkind='g'");
 }
 
-// 30. task #91 — verify storage_append behavior for relkind='g'
-// tables with dynamic schema. The premise under test: an INSERT bringing a new
-// column (not yet in the underlying table_storage_t) should silently extend
-// the storage's schema. This documents what storage_append actually does today
+// 30. Verify storage_append behavior for relkind='g' tables with dynamic
+// schema. The premise under test: an INSERT bringing a new column (not yet
+// in the underlying table_storage_t) should silently extend the storage's
+// schema. This documents what storage_append actually does today
 // (services/disk/manager_disk_storage.cpp lines 290+):
 //   - If !s->has_schema(), the FIRST chunk's types are adopted (one-shot).
 //   - On subsequent chunks the code only iterates over table_columns and seeks
@@ -708,7 +708,7 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
     }
 
     // register column "b" and storage_append a row with both "a" and "b".
-    // Expected (per task #91 premise): storage now has 2 columns; row 1 has b=NULL.
+    // Expected: storage now has 2 columns; row 1 has b=NULL.
     // Actual: storage's schema was frozen at 1 column when the first chunk was
     // appended (adopt_schema is one-shot). The "b" column in the incoming chunk
     // is silently dropped by manager_disk_storage.cpp:316 (only iterates over

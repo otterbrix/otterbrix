@@ -2,7 +2,6 @@
 #include <actor-zeta.hpp>
 #include <actor-zeta/spawn.hpp>
 #include <components/catalog/catalog_oids.hpp>
-#include <components/catalog/system_table_schemas.hpp>
 #include <components/logical_plan/node_checkpoint.hpp>
 #include <core/executor.hpp>
 #include <core/file/file_handle.hpp>
@@ -10,6 +9,7 @@
 #include <memory>
 #include <services/disk/manager_disk.hpp>
 #include <services/dispatcher/dispatcher.hpp>
+#include <services/index/index_agent_disk.hpp>
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 #include <services/wal/wal_reader.hpp>
@@ -29,8 +29,7 @@ namespace otterbrix {
         , manager_wal_(nullptr, actor_zeta::pmr::deleter_t(&resource))
         , manager_index_(nullptr, actor_zeta::pmr::deleter_t(&resource))
         , wrapper_dispatcher_(nullptr, actor_zeta::pmr::deleter_t(&resource))
-        , scheduler_disk_(new actor_zeta::shared_work(3, 1000))
-        , index_table_agents_(&resource) {
+        , scheduler_disk_(new actor_zeta::shared_work(3, 1000)) {
         log_ = initialization_logger("python", config.log.path.c_str());
         log_.set_level(config.log.level);
         trace(log_, "spaces::spaces()");
@@ -125,7 +124,7 @@ namespace otterbrix {
 
         // Publish the dispatcher address back into manager_disk / manager_index so the
         // GC-ack path (manager_disk → dispatcher → manager_wal truncate) has a
-        // destination. Bootstrap-time sync direct call — rule 11 base_spaces exception.
+        // destination. Bootstrap-time sync direct call (pre-scheduler-start, single-threaded).
         if (disk_ptr) {
             disk_ptr->set_manager_dispatcher_sync(manager_dispatcher_->address());
         }
@@ -293,15 +292,14 @@ namespace otterbrix {
             disk_ptr->restore_oid_generator_sync();
         }
 
-        // catalog scan rebuild — pg_class rows tombstoned
-        // by a pre-crash DROP TABLE that didn't get to physically remove the
-        // .otbx are recovered here, BEFORE scheduler.start. The scan returns
+        // Catalog scan rebuild — pg_class rows tombstoned by a pre-crash
+        // DROP TABLE that didn't get to physically remove the .otbx are
+        // recovered here, BEFORE scheduler.start. The scan returns
         // (oid, sentinel delete_id=1) pairs; we rebuild dropped_storages_ on
         // disk and dropped_table_agents_ on index, and flip the dispatcher's
         // per-subscriber broadcast flags so the first post-start horizon
         // advance fires on_horizon_advanced and finishes the deferred GC.
-        // Bootstrap-only sync calls — schedulers haven't started, single
-        // threaded by construction (rule 11 base_spaces exception).
+        // Bootstrap-only sync calls (schedulers haven't started, single-threaded).
         if (disk_ptr && manager_index_) {
             auto dropped_oids = disk_ptr->scan_dropped_oids_sync();
             if (!dropped_oids.empty()) {
@@ -348,14 +346,13 @@ namespace otterbrix {
             }
         }
 
-        // ) — snapshot-aware WAL replay horizon.
+        // Snapshot-aware WAL replay horizon.
         // Scan COMMIT records (already filtered by 2-pass committed-txn filter in
         // wal_reader_t) for the maximum commit_id and publish it once so the
         // post-recovery txn_manager_'s published_horizon_ matches the durable
-        // MVCC frontier. Per rule 6 (no fallback): a crash means in-flight
-        // commits were never published, so we only restore the max-COMMIT
-        // horizon — never reconstruct in_flight ids (crashed txns weren't
-        // visible to any snapshot anyway).
+        // MVCC frontier. A crash means in-flight commits were never published,
+        // so we only restore the max-COMMIT horizon — never reconstruct
+        // in_flight ids (crashed txns weren't visible to any snapshot anyway).
         if (!wal_records.empty()) {
             uint64_t max_commit_id = 0;
             for (const auto& r : wal_records) {
@@ -369,79 +366,15 @@ namespace otterbrix {
             }
         }
 
-        // V4 Phase 3.5 — spawn a per-table index_table_agent_t for every
-        // known table_oid (well-known catalog tables + user tables loaded by
-        // Phase 3) and register its address with manager_index. After
-        // registration, manager_index_t's DML feature-flag router forwards
-        // per-table DML to the owning agent for any oid present in the map.
-        //
-        // The agents are owned by index_table_agents_ (member of
-        // base_otterbrix_t) so the addresses registered into
-        // manager_index_t::per_table_agents_ remain live for the entire
-        // base_spaces lifetime. manager_index_t never owns the agent memory
-        // (rule 10: no shared mutable state between actors).
-        //
-        // Bootstrap-time sync calls are allowed (rule 11 base_spaces
-        // exception); the schedulers haven't started yet so the spawn /
-        // register sequence is single-threaded by construction.
+        // Catalog-driven index bootstrap. Walks pg_class + pg_index via
+        // manager_disk_ sync helpers, then for each live table oid mints
+        // an empty index_engine_t on manager_index_; for each alive
+        // pg_index row spawns the persistence disk_agent and hands
+        // ownership to manager_index_; for each dropped table restores
+        // the tombstone so on_horizon_advanced finishes the deferred GC.
+        // Single-threaded by construction (pre-scheduler-start).
         if (disk_ptr && manager_index_) {
-            // Well-known catalog tables (pg_database, pg_namespace, pg_class,
-            // pg_attribute, pg_type, pg_proc, pg_depend, pg_constraint,
-            // pg_index, pg_computed_column, pg_sequence, pg_rewrite,
-            // pg_settings). Driven off the same all_system_tables() registry
-            // used by bootstrap_system_tables_sync so the two sets cannot
-            // drift.
-            // Final cleanup — engine ownership migration.
-            // For each spawned agent, transfer ownership of its per-table
-            // index_engine_t from manager_index_t::engines_ into the agent
-            // via take_engine_ownership_sync -> set_engine_owned_sync. The
-            // engine is minted on demand if engines_ had no prior entry
-            // (lazy-init was the rule for both system and user oids), so
-            // every agent leaves Phase 3.5 with a non-null engine_ptr_ and
-            // manager's engines_ has no entry for that oid.
-            std::size_t system_count = 0;
-            for (const auto& def : components::catalog::all_system_tables()) {
-                auto oid = def.relation_oid;
-                auto agent = actor_zeta::spawn<services::index::index_table_agent_t>(&resource, log_, oid);
-                manager_index_->register_table_agent_sync(oid, agent->address());
-                agent->set_engine_owned_sync(manager_index_->take_engine_ownership_sync(oid));
-                // DDL routing — hand the agent the disk-spawn config
-                // mirroring manager_index_t's own constants so create_index_local
-                // / drop_index_local can own the disk_agents_ lifecycle.
-                agent->set_disk_config_sync(config.disk.path,
-                                            config.disk.bitcask_flush_threshold,
-                                            config.disk.bitcask_segment_record_limit,
-                                            config.disk.btree_flush_threshold,
-                                            scheduler_.get());
-                index_table_agents_.push_back(std::move(agent));
-                ++system_count;
-            }
-            // User-table oids — the set of pg_class rows whose oid >=
-            // FIRST_USER_OID and that survived dropped-oid filtering.
-            // Phase 3 (load_user_table_storages_sync) and Phase 2c (catalog
-            // scan rebuild) have already settled pg_class, so this scan
-            // reflects the final alive set.
-            auto user_oids = disk_ptr->alive_user_oids_sync();
-            for (auto oid : user_oids) {
-                auto agent = actor_zeta::spawn<services::index::index_table_agent_t>(&resource, log_, oid);
-                manager_index_->register_table_agent_sync(oid, agent->address());
-                // Same ownership-transfer pattern as the system loop above:
-                // pull the engine out of manager.engines_ (or mint one) and
-                // give it to the agent.
-                agent->set_engine_owned_sync(manager_index_->take_engine_ownership_sync(oid));
-                // DDL routing — see system-table loop above.
-                agent->set_disk_config_sync(config.disk.path,
-                                            config.disk.bitcask_flush_threshold,
-                                            config.disk.bitcask_segment_record_limit,
-                                            config.disk.btree_flush_threshold,
-                                            scheduler_.get());
-                index_table_agents_.push_back(std::move(agent));
-            }
-            trace(log_,
-                  "spaces::PHASE 3.5 spawned {} index_table_agents ({} system + {} user)",
-                  index_table_agents_.size(),
-                  system_count,
-                  user_oids.size());
+            bootstrap_indexes_sync(config.disk);
         }
 
         scheduler_dispatcher_->start();
@@ -494,6 +427,90 @@ namespace otterbrix {
         scheduler_disk_->stop();
         std::lock_guard lock(m_);
         paths_.erase(main_path_);
+    }
+
+    // Catalog-driven index bootstrap.
+    //
+    // Pre-scheduler-start, single-threaded by construction. pg_class /
+    // pg_index / dropped-row scans are already settled by the catalog
+    // rebuild and user-table load above, so the helpers below see the
+    // steady-state catalog.
+    //
+    // Done in three passes:
+    //   - mint an empty index_engine_t per live table oid so subsequent
+    //     bootstrap_index_sync calls find an engine to attach to
+    //     (bootstrap_index_sync does not mint engines on the fly);
+    //   - walk pg_index, spawn one index_agent_disk_t per alive row
+    //     (mirroring manager_index_t::create_index's spawn pattern), hand
+    //     ownership to manager_index_ via bootstrap_index_sync;
+    //   - replay tombstones from scan_dropped_table_oids_sync so
+    //     on_horizon_advanced GC drains rebuilt entries after the first
+    //     post-start commit.
+    //
+    // Errors propagate via log+return: scan helpers return empty pmr
+    // vectors on internal failure, bootstrap_index_sync logs and skips a
+    // malformed row, no throw escapes this method.
+    void base_otterbrix_t::bootstrap_indexes_sync(const configuration::config_disk& disk_config) {
+        // engines for every live table OID.
+        auto live_tables = manager_disk_->scan_live_table_oids_sync();
+        for (auto oid : live_tables) {
+            manager_index_->bootstrap_engine_sync(oid);
+        }
+
+        // disk agents for every alive pg_index row.
+        std::size_t indexes_wired = 0;
+        std::size_t indexes_skipped_unfinished = 0;
+        auto index_rows = manager_disk_->scan_alive_pg_index_sync();
+        for (auto& row : index_rows) {
+            if (row.ready_since == 0) {
+                // pg_index row exists but the backfill never committed —
+                // no fallback, the operator must re-issue CREATE INDEX.
+                // Drop the half-built artefact silently here; the
+                // post-bootstrap catalog scan picks it up by oid.
+                ++indexes_skipped_unfinished;
+                continue;
+            }
+
+            // Mirror manager_index_t::create_index's spawn pattern so the
+            // resulting agent is byte-for-byte equivalent to one produced
+            // by the runtime DDL path. index_agent_disk_t's ctor takes
+            // index_name_t = std::string; pg_index_row_t carries a
+            // std::pmr::string, so we materialise a non-pmr copy here
+            // (cheap — short identifier).
+            auto agent = actor_zeta::spawn<services::index::index_agent_disk_t>(
+                &resource,
+                disk_config.path,
+                row.table_oid,
+                std::string(row.name.data(), row.name.size()),
+                row.type,
+                disk_config.bitcask_flush_threshold,
+                disk_config.bitcask_segment_record_limit,
+                disk_config.btree_flush_threshold,
+                log_);
+            auto agent_addr = agent->address();
+
+            manager_index_->bootstrap_index_sync(row.table_oid,
+                                                  std::move(row.name),
+                                                  row.type,
+                                                  std::move(row.keys),
+                                                  agent_addr,
+                                                  std::move(agent));
+            ++indexes_wired;
+        }
+
+        // restore dropped tombstones from pg_class.
+        auto dropped = manager_disk_->scan_dropped_table_oids_sync();
+        for (auto& [oid, delete_id] : dropped) {
+            manager_index_->bootstrap_dropped_sync(oid, delete_id);
+        }
+
+        trace(log_,
+              "spaces::PHASE 4 bootstrap_indexes_sync: {} engines, {} indexes wired "
+              "({} skipped as unfinished), {} dropped tombstones restored",
+              live_tables.size(),
+              indexes_wired,
+              indexes_skipped_unfinished,
+              dropped.size());
     }
 
 } // namespace otterbrix

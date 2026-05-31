@@ -3,9 +3,9 @@
 // Dispatcher-side catalog enrichment pass.
 // Called after validate_schema and before planner_t::create_plan. Fills
 // logical plan node fields (outgoing_fks, not_null_cols, etc.) from the
-// plan-tree resolve idx populated by Pass 1's operator_resolve_*_t. The
-// planner then does pure structural rewrite reading those fields — no
-// external context parameter needed.
+// plan-tree resolve idx populated by operator_resolve_*_t. The planner then
+// does pure structural rewrite reading those fields — no external context
+// parameter needed.
 
 #include <actor-zeta.hpp>
 #include <components/catalog/catalog_oids.hpp>
@@ -28,8 +28,8 @@
 namespace services::dispatcher {
 
     // name->OID lookup table built from catalog_resolve_*_t logical-plan leaves
-    // AFTER they were stamped by operator_resolve_*_t. enrich_plan walks
-    // this map directly, so no async catalog actor messages from validate/enrich/
+    // AFTER they were stamped by operator_resolve_*_t. enrich_plan walks this
+    // map directly, so no async catalog actor messages from validate / enrich /
     // planner. Empty when the plan has no resolve wrap (DDL paths, disk-less
     // harnesses). Also stores pointers to full table metadata
     // (resolved_table_metadata_t living on the resolve node) so enrich can
@@ -49,7 +49,7 @@ namespace services::dispatcher {
         std::unordered_map<components::catalog::oid_t, const components::logical_plan::resolved_table_metadata_t*>
             tbl_md_by_oid;
         // Constraint snapshots keyed by parent table_oid, stamped by
-        // operator_resolve_constraint_t at Pass 1 time.
+        // operator_resolve_constraint_t.
         std::unordered_map<components::catalog::oid_t, std::vector<components::catalog::fk_info_t>> outgoing_fks_by_oid;
         std::unordered_map<components::catalog::oid_t, std::vector<components::catalog::fk_info_t>>
             referencing_fks_by_oid;
@@ -82,18 +82,14 @@ namespace services::dispatcher {
 
 } // namespace services::dispatcher
 
-// catalog-resolve helpers. Promoted out of
-// `services::dispatcher::impl` (and out of dispatcher.cpp's anonymous
-// namespace, for the Phase 1.5 trio) so `executor_t::execute_plan_full`
-// can call them without depending on manager_dispatcher_t internals. Pure
-// functions over plan trees — no member-state access. Option A: the
-// definitions stay in services/dispatcher/enrich_logical_plan.cpp; only
-// the namespace they live under has moved.
+// catalog-resolve helpers shared by the dispatcher and executor pipelines.
+// Pure functions over plan trees / lookup paths — no member-state access.
+// Definitions live in services/dispatcher/enrich_logical_plan.cpp.
 namespace services::catalog_resolve {
 
     // Propagate OIDs from sibling catalog_resolve_* nodes onto their consumer
     // nodes (drop/create/DML/alter) inside each sequence_t. Idempotent.
-    // Dispatcher invokes this AFTER Pass 1 and BEFORE validate so check_node
+    // Dispatcher invokes this AFTER resolve and BEFORE validate so check_node
     // and tbl_md_for_oid see stamped OIDs on consumer nodes whose name
     // fields are no longer present.
     void stamp_oids_from_resolves(components::logical_plan::node_t* root);
@@ -123,16 +119,11 @@ namespace services::catalog_resolve {
     view_expansion_result_t expand_view_body(std::pmr::memory_resource* resource, const std::string& view_sql);
 
     // Collect catalog_resolve_*_t nodes whose oid hasn't been stamped yet
-    // (i.e. need a fresh Pass 1 round). Operates on direct children of
+    // (i.e. need a fresh resolve round). Operates on direct children of
     // sequence_t roots; sub-plan splicing places them at the front so a
     // shallow scan suffices.
     std::vector<components::logical_plan::node_ptr>
     extract_unresolved_resolves(components::logical_plan::node_t* root);
-
-    // === Variant E.3 Pass 2 helpers promoted out of dispatcher.cpp's
-    // anonymous namespace so executor_t::execute_plan_full can call them
-    // without depending on manager_dispatcher_t internals. Pure functions
-    // over plan trees / lookup paths — no member-state access. ===
 
     // When the SQL transformer wraps a DML/DDL plan in
     //   sequence_t(catalog_resolve_namespace_t, catalog_resolve_table_t, <real_root>)

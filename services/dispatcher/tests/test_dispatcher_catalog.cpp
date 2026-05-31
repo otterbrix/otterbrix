@@ -65,7 +65,7 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
     void step() { scheduler_->run(10000); }
 
     cursor_t_ptr take_result() {
-        // V4 execute_plan does extra co_awaits (collections_ rebuild via list_namespaces +
+        // execute_plan does extra co_awaits (collections_ rebuild via list_namespaces +
         // pre-load namespace + DDL existence check). Run scheduler with enough iterations
         // to drain the message queue before extracting the future.
         step();

@@ -198,7 +198,7 @@ namespace components::operators {
         }
 
         // for relkind 'v' (regular view) or 'm' (matview), read
-        // pg_rewrite.ev_action so dispatcher Phase 1.5 rewrite_views can
+        // pg_rewrite.ev_action so the dispatcher view-rewrite step can
         // re-parse the body. pg_rewrite layout: [0=oid, 1=rulename,
         // 2=ev_class, 3=ev_type, 4=ev_action]. Matview body is also stored
         // here for REFRESH MATERIALIZED VIEW.
@@ -358,7 +358,7 @@ namespace components::operators {
         } else if (relkind_ == catalog::relkind::view) {
             // Views have no pg_attribute (their schema is derived from the
             // body SQL on expansion). Leave `rows` empty; view_sql carries
-            // the body for dispatcher Phase 1.5 rewrite_views.
+            // the body for the dispatcher view-rewrite step.
         } else {
             // relkind='r', 'm' (matview), and other static-schema kinds:
             // scan pg_attribute.

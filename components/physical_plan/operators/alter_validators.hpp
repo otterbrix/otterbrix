@@ -57,8 +57,8 @@ namespace components::operators::alter_validators {
     // The returned vector is allocated against `resource` and consumed by
     // alter_column_validators::validate_column_not_duplicate (pure validator). Returns
     // an empty vector on a scan-side failure — operators MUST treat empty as
-    // "no known visible columns" (worst case: duplicate column slips through
-    // Phase 1 and surfaces as a later consistency error). This degrades
+    // "no known visible columns" (worst case: a duplicate column slips through
+    // validation and surfaces as a later consistency error). This degrades
     // gracefully because the manager_disk_t read path itself currently has no
     // error-channel; once it does, this helper should be upgraded to return
     // unique_future<core::result<...>> instead.

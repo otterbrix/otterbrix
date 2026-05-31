@@ -353,11 +353,11 @@ namespace services::collection::executor {
                 //
                 // We MOVE the vectors onto the txn and return EMPTY ones to
                 // the dispatcher. The dispatcher's existing merge-into-txn
-                // block (services/dispatcher/dispatcher.cpp ~1458-1467) gates
-                // on txn_data.transaction_id != 0 — for explicit-DML the
-                // dispatcher passes txn_data{0,0} so the merge would be
-                // skipped, making this in-executor accumulate the canonical
-                // path. The duplicate-into-txn elsewhere is a no-op.
+                // block gates on txn_data.transaction_id != 0 — for
+                // explicit-DML the dispatcher passes txn_data{0,0} so the
+                // merge would be skipped, making this in-executor accumulate
+                // the canonical path. The duplicate-into-txn elsewhere is a
+                // no-op.
                 std::size_t pgc_appends_n = result.pg_catalog_appends.size();
                 std::size_t pgc_deletes_n = result.pg_catalog_delete_tables.size();
                 current_txn->accumulate_pg_catalog_pending(
@@ -410,9 +410,9 @@ namespace services::collection::executor {
             // would shadow the inner DML node's identity. Each range's table_oid
             // is stamped by the inner DML operator; it identifies the
             // storage/index target unambiguously.
-            // B33: iterate ALL accumulated ranges so FK cascade DELETE on
-            // multiple tables publishes each child's flip (previously only the
-            // last range was published).
+            // Iterate ALL accumulated ranges so FK cascade DELETE on multiple
+            // tables publishes each child's flip (previously only the last
+            // range was published).
             if (commit_id > 0) {
                 for (const auto& app : result.dml_appends) {
                     components::execution_context_t ctx{session,
@@ -433,11 +433,10 @@ namespace services::collection::executor {
                                                            ctx,
                                                            app.table_oid,
                                                            commit_id);
-                        // Parallel A.B3: commit_insert now returns a
-                        // core::error_t carrying its error state. Bitcask is
-                        // assert+abort terminal today so contains_error()
-                        // never trips, but the branch is plumbed in for the
-                        // future C §3.1 index-side abort path.
+                        // commit_insert returns a core::error_t carrying its
+                        // error state. Bitcask is assert+abort terminal today
+                        // so contains_error() never trips, but the branch is
+                        // plumbed in for a future index-side abort path.
                         auto ci_result = co_await std::move(cif);
                         if (ci_result.contains_error()) {
                             // propagate via cursor and route through the
@@ -475,9 +474,9 @@ namespace services::collection::executor {
                                                              del_ctx,
                                                              del.table_oid,
                                                              commit_id);
-                        // Parallel A.B3: commit_delete now returns a
-                        // core::error_t. Same assert+abort terminal
-                        // semantics as commit_insert apply today.
+                        // commit_delete returns a core::error_t. Same
+                        // assert+abort terminal semantics as commit_insert
+                        // apply today.
                         auto cd_result = co_await std::move(cdif);
                         if (cd_result.contains_error()) {
                             // failure path. Goto routes execution to the
@@ -599,7 +598,7 @@ namespace services::collection::executor {
             // Abort path
             trace(log_, "executor::execute_plan: DML error, aborting txn");
             // Oid-only routing on abort path; same rationale as commit path.
-            // B33: revert ALL accumulated ranges (mirrors commit-phase iteration).
+            // Revert ALL accumulated ranges (mirrors commit-phase iteration).
             for (const auto& app : result.dml_appends) {
                 components::execution_context_t abort_ctx{session,
                                                           txn_data,
@@ -1041,8 +1040,8 @@ namespace services::collection::executor {
         table_id id(resource(),
                     build_id_cfn(services::catalog_resolve::effective_root_node(logical_plan.get())));
         cursor_t_ptr error;
-        // Mirror dispatcher.cpp:874 — existence checks read from the
-        // explicit dispatcher_idx populated above.
+        // Existence checks read from the explicit dispatcher_idx populated
+        // above (mirrors the dispatcher's pre-execute pass).
         switch (original_type) {
             case node_type::create_database_t:
                 if (!services::dispatcher::check_namespace_exists(resource(), &dispatcher_idx, id).contains_error()) {
@@ -1125,8 +1124,8 @@ namespace services::collection::executor {
                 break;
             }
             case node_type::drop_collection_t: {
-                // drop_collection_t branch (dispatcher.cpp:895-910). The
-                // dispatcher does TWO checks in order:
+                // drop_collection_t branch. The dispatcher does TWO checks
+                // in order:
                 //   1) collections_.count(qualified_name_t{db, rel}) — its
                 //      own routing-map probe; miss → table_not_exists.
                 //   2) check_collection_exists(&dispatcher_idx, id) —
@@ -1374,15 +1373,14 @@ namespace services::collection::executor {
         // before forwarding to the executor. Until the dispatcher's
         // pre-execute pass is removed, gate the executor's copy off by
         // default. The code stays compiled so the migration path is wired
-        // and tested by the unit-test follow-up; flipping
-        // `enable_pass2_rewrites` to true here is the final cut-over step.
+        // and tested; flipping `enable_pass2_rewrites` to true here is the
+        // final cut-over step.
         //
         // `use_executor_full_pipeline` lives in dispatcher.cpp's anonymous
-        // namespace. See the SAFETY MATRIX comment there for the
-        // four-state correctness table. Target state for the atomic flip
-        // commit: both flags `true` PLUS the dispatcher's pre-execute
-        // block deleted in the same commit, otherwise it runs twice and
-        // produces a double-wrapped plan.
+        // namespace. Target state for the atomic flip commit: both flags
+        // `true` PLUS the dispatcher's pre-execute block deleted in the
+        // same commit, otherwise it runs twice and produces a double-wrapped
+        // plan.
         constexpr bool enable_pass2_rewrites = true;
         if (enable_pass2_rewrites) {
             // Late logical optimization.
@@ -1487,9 +1485,9 @@ namespace services::collection::executor {
             using components::logical_plan::node_sequence_t;
             using components::catalog::relkind::computed;
 
-            // INSERT relkind='g' wrap — mirrors dispatcher.cpp:1076-1151.
-            // Wraps INSERT into sequence_t(insert, computed_field_register)
-            // so pg_computed_column rows are appended inside the DML txn.
+            // INSERT relkind='g' wrap — wraps INSERT into
+            // sequence_t(insert, computed_field_register) so
+            // pg_computed_column rows are appended inside the DML txn.
             if (original_type == node_type::insert_t &&
                 disk_address_ != actor_zeta::address_t::empty_address()) {
                 components::catalog::oid_t resolved_tbl_oid = components::catalog::INVALID_OID;
@@ -1549,7 +1547,6 @@ namespace services::collection::executor {
 
             // CREATE COLLECTION → planner rewrite to
             // sequence_t(create_collection_t, primitive_write × N).
-            // Mirrors dispatcher.cpp:1156-1164.
             if (original_type == node_type::create_collection_t &&
                 disk_address_ != actor_zeta::address_t::empty_address()) {
                 auto* cc = static_cast<node_create_collection_t*>(
@@ -1562,7 +1559,7 @@ namespace services::collection::executor {
             }
 
             // CREATE DATABASE → planner rewrite into sequence_t(primitive_write
-            // on pg_namespace). Mirrors dispatcher.cpp:1167-1172.
+            // on pg_namespace).
             if (original_type == node_type::create_database_t &&
                 disk_address_ != actor_zeta::address_t::empty_address()) {
                 components::catalog::oid_batch_t oid_batch;
@@ -1571,7 +1568,7 @@ namespace services::collection::executor {
                 logical_plan = ddl_planner.create_plan(resource(), std::move(logical_plan), std::move(oid_batch));
             }
 
-            // CREATE TYPE → planner rewrite. Mirrors dispatcher.cpp:1179-1188.
+            // CREATE TYPE → planner rewrite.
             //   STRUCT → 1 + N OIDs (pg_class.oid + N×pg_attribute.attoid).
             //   ENUM/other → 1 OID (pg_type.oid).
             if (original_type == node_type::create_type_t &&
@@ -1588,7 +1585,7 @@ namespace services::collection::executor {
             }
 
             // CREATE SEQUENCE/VIEW/MACRO → planner rewrite to
-            // sequence_t(primitive_write × N). Mirrors dispatcher.cpp:1197-1205.
+            // sequence_t(primitive_write × N).
             //   SEQUENCE → 1 OID; VIEW → 2 OIDs; MACRO → 2 OIDs.
             if ((original_type == node_type::create_sequence_t ||
                  original_type == node_type::create_view_t ||
@@ -1603,7 +1600,6 @@ namespace services::collection::executor {
             }
 
             // CREATE MATERIALIZED VIEW → mv_oid + N×attoid + rule_oid = 2 + N.
-            // Mirrors dispatcher.cpp:1214-1222.
             if (original_type == node_type::create_matview_t &&
                 disk_address_ != actor_zeta::address_t::empty_address()) {
                 auto* cm = static_cast<node_create_matview_t*>(
@@ -1618,7 +1614,6 @@ namespace services::collection::executor {
 
             // CREATE INDEX → planner rewrite to
             // sequence_t(primitive_write × N, create_index_t).
-            // Mirrors dispatcher.cpp:1228-1233.
             if (original_type == node_type::create_index_t &&
                 disk_address_ != actor_zeta::address_t::empty_address()) {
                 components::catalog::oid_batch_t oid_batch;
@@ -1629,7 +1624,6 @@ namespace services::collection::executor {
 
             // DROP INDEX → planner rewrite to
             // sequence_t(primitive_delete × N, drop_index_t). No OIDs.
-            // Mirrors dispatcher.cpp:1237-1241.
             if (original_type == node_type::drop_index_t) {
                 components::catalog::oid_batch_t oid_batch;
                 components::planner::planner_t ddl_planner;
@@ -1639,12 +1633,12 @@ namespace services::collection::executor {
             // ALTER TABLE → planner rewrite to
             // sequence_t(alter_column_{add,rename,drop}_t × N). No OID batch
             // (alter_column_add_t allocates its own attoid at execution).
-            // Mirrors dispatcher.cpp:1246-1274. The re-enrich after the
-            // planner stamps fresh attoids on rename / computed_field_unregister
-            // primitives that did not exist before the planner ran. We use
-            // the executor's resolve_txn so the pg_computed_column scan in
-            // enrich's computed_field_unregister case observes the
-            // INSERT-time register rows committed under that txn.
+            // The re-enrich after the planner stamps fresh attoids on rename
+            // / computed_field_unregister primitives that did not exist
+            // before the planner ran. We use the executor's resolve_txn so
+            // the pg_computed_column scan in enrich's
+            // computed_field_unregister case observes the INSERT-time
+            // register rows committed under that txn.
             if (original_type == node_type::alter_table_t &&
                 disk_address_ != actor_zeta::address_t::empty_address()) {
                 components::catalog::oid_batch_t oid_batch; // intentionally empty
@@ -1664,7 +1658,6 @@ namespace services::collection::executor {
 
             // DROP DATABASE / TABLE / TYPE / SEQUENCE / VIEW / MACRO →
             // planner rewrite to node_dynamic_cascade_delete_t. No OIDs.
-            // Mirrors dispatcher.cpp:1281-1288.
             if ((original_type == node_type::drop_database_t ||
                  original_type == node_type::drop_collection_t ||
                  original_type == node_type::drop_type_t ||
@@ -1678,9 +1671,9 @@ namespace services::collection::executor {
             }
 
             // CREATE CONSTRAINT → planner rewrite to sequence_t(primitive_write
-            // on pg_constraint+pg_depend). Mirrors dispatcher.cpp:1292-1310.
-            // CHECK expressions are pre-validated for non-empty here so we
-            // do not waste an OID on a doomed constraint.
+            // on pg_constraint+pg_depend). CHECK expressions are
+            // pre-validated for non-empty here so we do not waste an OID on
+            // a doomed constraint.
             if (original_type == node_type::create_constraint_t &&
                 disk_address_ != actor_zeta::address_t::empty_address()) {
                 auto* cstr = static_cast<node_create_constraint_t*>(
@@ -1967,9 +1960,9 @@ namespace services::collection::executor {
 
             // Lift DML swap-info recorded by operator_insert /
             // operator_delete / operator_update inside await_async_and_resume.
-            // B33: accumulate per-table ranges across sub-plans —
-            // previously overwriting silently dropped non-last FK cascade child
-            // table publishes. execute_plan iterates the vectors below to drive
+            // Accumulate per-table ranges across sub-plans — previously
+            // overwriting silently dropped non-last FK cascade child table
+            // publishes. execute_plan iterates the vectors below to drive
             // storage_publish_commit / storage_publish_delete for each range.
             if (pipeline_context.dml_append_row_count > 0) {
                 result_tracking.dml_appends.push_back({pipeline_context.dml_table_oid,

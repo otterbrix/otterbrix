@@ -34,10 +34,10 @@ namespace services::wal {
         // commit_txn to decide whether to trigger checkpoint_all + truncate_before.
         actor_zeta::unique_future<id_t> auto_checkpoint_wal_id(session_id_t session);
 
-        // Variant C scaffolding: database_oid identifies the target WAL worker for
-        // multi-database routing. Operators pass it; manager_wal_replicate routes
-        // via wal_actors_[database_oid]. Until B14.C (catalog_resolve_database_t)
-        // populates execution_context_t.database_oid, callers pass main_database.
+        // database_oid identifies the target WAL worker for multi-database
+        // routing. Operators pass it; manager_wal_replicate routes via
+        // wal_actors_[database_oid]. Until catalog_resolve_database_t populates
+        // execution_context_t.database_oid, callers pass main_database.
         actor_zeta::unique_future<id_t>
         write_physical_insert(session_id_t session,
                               components::catalog::oid_t table_oid,
@@ -63,7 +63,7 @@ namespace services::wal {
                               uint64_t txn_id,
                               components::catalog::oid_t database_oid);
 
-        // Block F (Pass 11): retention guard for CREATE INDEX Phase 2.5 catchup.
+        // Retention guard for CREATE INDEX Phase 2.5 catchup.
         // operator_create_index_backfill (running inside the executor actor)
         // registers its build_start_wal_position before backfill and unregisters
         // on success or fail; truncate_before clamps to min(active set) so the

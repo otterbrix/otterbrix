@@ -103,11 +103,10 @@ namespace components::operators {
         // operator_commit_transaction_t calls txn_manager.commit() later in
         // the pipeline. We record a backfill marker on the pipeline context;
         // operator_commit_transaction drains the marker after commit() and
-        // patches the row in place (see TBD-impl note there). The row's own
-        // MVCC insert_id is still stamped with the executing transaction_id
-        // at write and flipped to commit_id by storage_publish_commits at
-        // COMMIT, so even pre-backfill the row participates in normal MVCC
-        // version filtering.
+        // patches the row in place. The row's own MVCC insert_id is still
+        // stamped with the executing transaction_id at write and flipped to
+        // commit_id by storage_publish_commits at COMMIT, so even pre-backfill
+        // the row participates in normal MVCC version filtering.
         auto att_row = catalog::build_pg_attribute_row(resource_,
                                                        attoid,
                                                        table_oid_,
@@ -129,8 +128,8 @@ namespace components::operators {
         auto rng = co_await std::move(wf);
         if (rng.count > 0) {
             ctx->pg_catalog_appends.push_back(std::move(rng));
-            // OPTION X: schedule added_at_commit_id backfill on the freshly-
-            // inserted pg_attribute row. attoid is the keyed identity.
+            // Schedule added_at_commit_id backfill on the freshly-inserted
+            // pg_attribute row. attoid is the keyed identity.
             ctx->pg_attribute_commit_id_backfills.push_back(
                 components::pg_attribute_commit_id_backfill_t{
                     attoid,

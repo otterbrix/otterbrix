@@ -12,13 +12,9 @@ namespace services::disk {
     }
 
     void manager_disk_t::create_agent(int count_agents) {
-        // * Step 1: assign roles aligned with pool_idx_for_oid contract.
-        //   agent at slot 0 → CATALOG (pg_* system tables home, post-migration)
-        //   agents at slot 1..N-1 → USER_POOL (user tables hashed by oid % (N-1))
-        // The storages_ slice itself is added in Step 2; for Step 1 the role
-        // assignment is the only behavioural change — it lets the router fanout
-        // compile against a stable identity without any ownership
-        // transfer having happened yet.
+        // Roles align with pool_idx_for_oid: slot 0 = CATALOG (pg_* system
+        // tables); slots 1..N-1 = USER_POOL (user tables hashed by
+        // oid % (N-1)).
         for (int i = 0; i < count_agents; i++) {
             const std::size_t slot = agents_.size();
             auto name_agent = "agent_disk_" + std::to_string(slot + 1);
@@ -38,16 +34,10 @@ namespace services::disk {
                                                                             wal::id_t current_wal_id) {
         trace(log_, "manager_disk_t::checkpoint_all , session : {} , wal_id : {}", session.data(), current_wal_id);
 
-        // * Step 6 — router fanout. Send checkpoint_inner to every
-        // agent in parallel; collect their futures into a std::pmr::vector so
-        // we can aggregate their min(prev_id) tallies into the manager-side
-        // tally after the manager body runs. The agent inner handler is a
-        // placeholder today (returns max() sentinel) because DISK entries are
-        // record-only markers on the agent side — only the manager
-        // owns the live single_file_block_manager_t. Step 8 makes the agent
-        // slice authoritative; until then the manager body remains the
-        // canonical checkpoint writer.
-        // Constraint #11: mailbox-only fanout, std::pmr vector for futures.
+        // Router fanout: send checkpoint_inner to every agent in parallel;
+        // each runs the full compact + checkpoint + sidecar sequence per DISK
+        // entry and returns min(prev_checkpoint_wal_id_) across its slice
+        // (max() sentinel when the agent owns no DISK entry).
         std::pmr::vector<unique_future<wal::id_t>> agent_futures{resource()};
         agent_futures.reserve(agents_.size());
         for (auto& agent_ptr : agents_) {
@@ -61,12 +51,6 @@ namespace services::disk {
             agent_futures.emplace_back(std::move(fut));
         }
 
-        // wrap (2026-05-31): manager.storages_ deleted; the agent
-        // slice owns every SFBM and IN_MEMORY twin. Aggregate the per-agent
-        // checkpoint results — agent_disk_t::checkpoint_inner does the full
-        // compact + checkpoint + sidecar atomic-write sequence per DISK entry
-        // and returns the min(prev_checkpoint_wal_id_) across that agent's
-        // slice (max() sentinel when no DISK entry).
         wal::id_t min_prev_id = std::numeric_limits<wal::id_t>::max();
         for (auto& f : agent_futures) {
             auto agent_min = co_await std::move(f);
@@ -74,27 +58,15 @@ namespace services::disk {
         }
 
         if (!agents_.empty()) {
-            // restore pre-cutover IN_MEMORY suppression semantics.
-            //
-            // Pre-cutover: the manager's checkpoint_all body walked its own
-            // canonical storages_ map and returned `wal::id_t{0}` (skipping
-            // the WAL ID seal) IFF any IN_MEMORY entry existed; the std::min
-            // tally was a separate signal. After Step 8.11 wrap the canonical
-            // map is gone, and the per-agent `checkpoint_inner` skips
-            // IN_MEMORY twins entirely — so the sentinel `numeric_limits::
-            // max()` returned by every agent cannot distinguish "no DISK
-            // entry AND no IN_MEMORY twin" (safe to seal — pure cold DB)
-            // from "no DISK entry BUT IN_MEMORY twin present" (must NOT
-            // seal — IN_MEMORY tables still need replay records).
-            //
-            // The Step 8.12 `has_in_memory_inner_sync` probe restores the
-            // missing signal: a sync, mailbox-free read across every agent's
-            // slice (legal under Constraint #11 because the manager body is
-            // already awaiting agent mailbox completion above — the agents
-            // are idle by the time we get here, and the manager is the only
-            // writer to the agent slices). If ANY agent owns an IN_MEMORY
-            // twin we suppress the seal exactly as the pre-cutover manager
-            // did.
+            // IN_MEMORY-twin WAL-seal suppression. The std::min tally over
+            // per-agent max() sentinels cannot distinguish "no DISK entry +
+            // no IN_MEMORY twin" (safe to seal) from "no DISK entry +
+            // IN_MEMORY twin present" (must NOT seal — IN_MEMORY tables
+            // still need WAL replay records). The has_in_memory_inner_sync
+            // probe restores that signal: a mailbox-free sync read across
+            // every agent's slice (legal here because the manager body has
+            // just awaited agent mailbox completion — agents are idle, and
+            // the manager is the only writer to the agent slices).
             bool any_in_memory = false;
             for (const auto& agent_ptr : agents_) {
                 if (agent_ptr != nullptr && agent_ptr->has_in_memory_inner_sync()) {
@@ -105,8 +77,7 @@ namespace services::disk {
 
             // Persist WAL ID only when (a) at least one agent had a real
             // DISK checkpoint to advance (sentinel max() => "no DISK entry"
-            // across the whole pool) AND (b) no IN_MEMORY twin exists
-            // anywhere — the latter mirrors the pre-cutover suppression rule.
+            // across the pool) AND (b) no IN_MEMORY twin exists anywhere.
             const bool all_disk_checkpointed = (min_prev_id != std::numeric_limits<wal::id_t>::max());
             const bool safe_to_seal = all_disk_checkpointed && !any_in_memory;
             if (current_wal_id > 0 && safe_to_seal) {
@@ -133,9 +104,8 @@ namespace services::disk {
                                                                    uint64_t lowest_active_start_time) {
         trace(log_, "manager_disk_t::vacuum_all , session : {}", session.data());
 
-        // wrap (2026-05-31): manager.storages_ deleted; per-agent
-        // vacuum_inner is the canonical cleanup_versions + compact path.
-        // Constraint #11: mailbox-only fanout, std::pmr vector for futures.
+        // Per-agent vacuum_inner is the canonical cleanup_versions + compact
+        // path.
         std::pmr::vector<unique_future<void>> agent_futures{resource()};
         agent_futures.reserve(agents_.size());
         for (auto& agent_ptr : agents_) {
@@ -166,11 +136,8 @@ namespace services::disk {
             co_return;
         }
 
-        // wrap (2026-05-31): manager.storages_ deleted; the routed
-        // agent slice is the sole source of truth. Probe the owning agent via
-        // storage_entry_sync (Constraint #11 carve-out — maybe_cleanup is a
-        // mailbox handler, agent mailbox is idle vs. this sync read; see
-        // header comment on agent_disk_t::storage_entry_sync).
+        // Probe the owning agent via storage_entry_sync (carve-out — this
+        // is a mailbox handler; agent mailbox is idle vs. this sync read).
         const collection_storage_entry_t* entry = nullptr;
         if (!agents_.empty()) {
             const std::size_t idx = pool_idx_for_oid(ctx.table_oid, agents_.size());
@@ -218,12 +185,9 @@ namespace services::disk {
             table.compact();
         }
 
-        // forward — owning agent runs the same threshold check
-        // against its IN_MEMORY twin. The agent body is a dual-write maint
-        // call (manager-side compact above remains authoritative until
-        // 8.11/12); INVALID_OID is already filtered above, so agent gets a
-        // real OID. Agent fallback (not-owned / null entry) is a logged
-        // no-op — see agent_disk.cpp::maybe_cleanup_inner.
+        // Forward to owning agent which runs the same threshold check
+        // against its IN_MEMORY twin. INVALID_OID is filtered above; agent
+        // logs a no-op on not-owned / null entry.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(ctx.table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
@@ -246,12 +210,9 @@ namespace services::disk {
                                                           components::catalog::oid_t /*database_oid*/,
                                                           std::vector<components::table::column_definition_t> columns) {
         trace(log_, "manager_disk_t::create_storage_with_columns_sync , oid : {}", static_cast<unsigned>(table_oid));
-        // wrap (2026-05-31): manager.storages_ deleted. The routed
-        // agent slice (catalog → agents_[0], user → agents_[1..N-1] via
-        // pool_idx_for_oid) is the canonical owner for ALL OIDs. The IN_MEMORY
-        // entry is constructed on the agent's resource() and ownership is
-        // transferred via bootstrap_inner_sync (rvalue unique_ptr move,
-        // Constraint #11 — no shared state across the actor boundary).
+        // The routed agent slice is the canonical owner. IN_MEMORY entry is
+        // constructed on the agent's resource() and ownership is transferred
+        // via bootstrap_inner_sync (rvalue unique_ptr move).
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
@@ -274,18 +235,16 @@ namespace services::disk {
               "manager_disk_t::create_storage_disk_sync , oid : {} , path : {}",
               static_cast<unsigned>(table_oid),
               otbx_path.string());
-        // wrap (2026-05-31): manager.storages_ deleted. The routed
-        // agent slice (catalog → agents_[0], user → agents_[1..N-1] via
-        // pool_idx_for_oid) is the canonical SFBM owner. The
+        // The routed agent slice is the canonical SFBM owner. The
         // single_file_block_manager_t is constructed on the agent thread via
-        // bootstrap_create_disk_inner_sync; the manager never opens the .otbx
-        // anymore.
+        // bootstrap_create_disk_inner_sync; the manager never opens the
+        // .otbx (would race the exclusive WRITE_LOCK).
         if (agents_.empty()) {
             return;
         }
         const std::size_t pool_idx_c = pool_idx_for_oid(table_oid, agents_.size());
         trace(log_,
-              "[step-8.1.B-sfbm-construct] create oid={} pool_idx={} path={} (agent canonical owner)",
+              "manager_disk_t::create_storage_disk_sync: create oid={} pool_idx={} path={}",
               static_cast<unsigned>(table_oid),
               pool_idx_c,
               otbx_path.string());
@@ -308,34 +267,15 @@ namespace services::disk {
               static_cast<unsigned>(table_oid),
               otbx_path.string());
 
-        // * Step 8.1.B APPLIED for CATALOG OIDs (2026-05-31).
-        // * Step 8.1.C APPLIED for USER OIDs   (2026-05-31).
-        //
-        // The SFBM ownership cutover is HIGH-RISK because
-        // single_file_block_manager_t holds an exclusive WRITE_LOCK on the
-        // underlying `.otbx` (posix advisory lock, per-process semantics —
-        // closing either fd releases it for both). A double-construct of the
-        // same OID across (manager.storages_, agent.storages_) would race the
-        // lock and corrupt fsync/mmap pairing.
-        //
-        // §8.1.B moved catalog OIDs (oid < FIRST_USER_OID) onto agents_[0].
-        // §8.1.C completes the transfer for USER OIDs: the SFBM is now
-        // constructed on agents_[pool_idx_for_oid(oid)] via
-        // bootstrap_disk_inner_sync for ALL OIDs; manager.storages_ skips
-        // the emplace. Pre-requisite §8.2 (routing of runtime user-table
-        // CREATE through the agent slice) already landed, so the runtime
-        // CREATE path can no longer collide on the `.otbx` WRITE_LOCK with
-        // the bootstrap-time agent SFBM.
-        //
-        // Readers in resolve / bootstrap / direct_append / maybe_cleanup
-        // probe `agents_[idx]->storage_entry_sync(oid)` first and fall back
-        // to the manager map only for legacy / no-agents test-fixture paths.
-        // wrap (2026-05-31): manager.storages_ deleted. Diagnostic
-        // trace marks the new invariant — agent slice is the sole SFBM owner.
+        // SFBM ownership lives on the routed agent. single_file_block_manager_t
+        // holds an exclusive WRITE_LOCK on the underlying `.otbx` (posix
+        // advisory lock, per-process semantics — closing either fd releases
+        // it for both). Double-construct of the same OID would race the lock
+        // and corrupt fsync/mmap pairing; only the agent thread opens it.
         const std::size_t pool_idx =
             agents_.empty() ? 0 : pool_idx_for_oid(table_oid, agents_.size());
         trace(log_,
-              "[step-8.1.B-sfbm-construct] load oid={} pool_idx={} path={} (agent canonical owner)",
+              "manager_disk_t::load_storage_disk_sync: load oid={} pool_idx={} path={}",
               static_cast<unsigned>(table_oid),
               pool_idx,
               otbx_path.string());
@@ -398,21 +338,17 @@ namespace services::disk {
             return;
         }
 
-        // §8.1.B/C unified transfer path. The corrupt-recovery branch
-        // (rename .otbx → .broken, .prev → .otbx, retry) needs to detect
-        // SFBM-open failure. The agent's bootstrap_disk_inner_sync is
-        // declared noexcept but its body calls
-        // std::make_unique<collection_storage_entry_t>(resource(), path)
-        // which CAN throw on corrupt files — that pre-existing API
-        // contract issue is out of scope here. To preserve the legacy
-        // corrupt-recovery semantics deterministically, we construct a
-        // probe entry on the manager thread first (catches the
-        // std::exception inside our try/catch), then DESTROY the probe
-        // (releasing the file_handle_t — posix advisory lock is per-
-        // process, so closing this fd releases the lock entirely and the
-        // agent's subsequent open will reacquire it cleanly). The
-        // close-then-reopen window is single-threaded (pre-scheduler-
-        // start), so no other thread races in.
+        // Corrupt-recovery branch (rename .otbx → .broken, .prev → .otbx,
+        // retry) needs to detect SFBM-open failure. The agent's
+        // bootstrap_disk_inner_sync is noexcept but its make_unique<>
+        // call CAN throw on corrupt files. To preserve corrupt-recovery
+        // semantics deterministically, construct a probe entry on the
+        // manager thread first (catches std::exception in try/catch), then
+        // destroy it (releasing the file_handle_t — posix advisory lock is
+        // per-process, so closing this fd releases the lock entirely and
+        // the agent's subsequent open reacquires it cleanly). The
+        // close-then-reopen window is single-threaded (pre-scheduler-start),
+        // so no other thread races in.
         try {
             auto probe = std::make_unique<collection_storage_entry_t>(resource(), otbx_path);
             probe.reset(); // release WRITE_LOCK before agent reopens on agent thread
@@ -447,10 +383,9 @@ namespace services::disk {
 
     wal::id_t manager_disk_t::peek_checkpoint_wal_id_from_disk(components::catalog::oid_t table_oid,
                                                                components::catalog::oid_t database_oid) const noexcept {
-        // wrap (2026-05-31): manager.storages_ deleted. Probe the
-        // routed agent slice (canonical SFBM owner); if the agent has not
-        // yet loaded the entry, fall back to reading the sidecar directly
-        // (Phase 2c bootstrap path).
+        // Probe the routed agent slice (canonical SFBM owner); if the agent
+        // has not yet loaded the entry, fall back to reading the sidecar
+        // directly (bootstrap path).
         if (!agents_.empty()) {
             const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
             if (idx < agents_.size() && agents_[idx] != nullptr) {

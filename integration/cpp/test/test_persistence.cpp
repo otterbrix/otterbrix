@@ -1523,3 +1523,121 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_massive_checkpoint_cyc
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count < 10;", 10);
     }
 }
+
+// bootstrap_indexes_sync restart recovery of a user index that lives on disk
+// via the catalog-driven path. We exercise the "clean shutdown via
+// base_otterbrix dtor" path:
+//   - phase 1: CREATE TABLE users (id, email) + CREATE INDEX users_email_idx
+//              + INSERT 10 rows; base_otterbrix_t dtor CHECKPOINTs everything.
+//   - phase 2: new test_spaces instance with the same path_db rebuilds the
+//              catalog from pg_*, loads the user table, and bootstrap_indexes_sync
+//              re-mints the engine and respawns the disk_agent. Asserts
+//              SELECT WHERE email = '…' returns the correct rows. The on-disk
+//              bitcask directory under ${path}/${users_oid}/users_email_idx
+//              existing after restart is the structural witness that the index
+//              agent was re-wired (CHECK_EXISTS_INDEX walks numeric oid dirs).
+TEST_CASE("integration::cpp::test_persistence::index_recovery_phase4_catalog_driven_bootstrap") {
+    auto config =
+        test_create_config("/tmp/otterbrix/integration/test_persistence/index_recovery_phase4_catalog_driven_bootstrap");
+    test_clear_directory(config);
+
+    INFO("phase 1: create users(id, email) + email index, insert 10 rows, dtor checkpoint") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE TABLE TestDatabase.users (id INT, email TEXT) "
+                                               "WITH (storage = 'disk');");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE INDEX users_email_idx ON TestDatabase.users (email);");
+            REQUIRE(cur->is_success());
+        }
+
+        // INSERT 10 rows — emails are stable strings ("user_0@x" … "user_9@x")
+        // so the post-restart lookups can probe both an existing and a missing
+        // value without ambiguity.
+        {
+            auto session = otterbrix::session_id_t();
+            std::stringstream q;
+            q << "INSERT INTO TestDatabase.users (id, email) VALUES ";
+            for (int i = 0; i < 10; ++i) {
+                q << "(" << i << ", 'user_" << i << "@x')" << (i == 9 ? ";" : ", ");
+            }
+            auto cur = dispatcher->execute_sql(session, q.str());
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 10);
+        }
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.users;", 10);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.users WHERE email = 'user_0@x';", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.users WHERE email = 'user_9@x';", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.users WHERE email = 'missing@x';", 0);
+        // dtor checkpoints — no explicit CHECKPOINT here; we want the scenario
+        // to exercise the "clean shutdown via base_otterbrix dtor" path.
+    }
+
+    INFO("phase 2: restart — bootstrap rewires the email index from pg_index") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        // Structural witness: scan_alive_pg_index_sync found users_email_idx
+        // and base_spaces::bootstrap_indexes_sync spawned a disk agent rooted
+        // at ${disk.path}/${users_oid}/users_email_idx. CHECK_EXISTS_INDEX
+        // walks the oid-keyed dirs and asserts the directory still exists.
+        bool found = false;
+        if (std::filesystem::exists(config.disk.path)) {
+            for (const auto& d : std::filesystem::directory_iterator(config.disk.path)) {
+                if (!d.is_directory())
+                    continue;
+                try {
+                    auto oid = std::stoull(d.path().filename().string());
+                    if (oid < 16384)
+                        continue;
+                } catch (...) {
+                    continue;
+                }
+                auto candidate = d.path() / "users_email_idx";
+                if (std::filesystem::exists(candidate) && std::filesystem::is_directory(candidate)) {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        REQUIRE(found);
+
+        // Functional witness: email lookups return correct rows post-restart.
+        // The optimiser routes equality predicates on indexed columns through
+        // the rebuilt engine; we can't directly assert "index was used" from
+        // the SQL surface, but a passing CHECK_EXISTS_INDEX + correct results
+        // is the canonical phase-4-bootstrap contract.
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.users;", 10);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.users WHERE email = 'user_0@x';", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.users WHERE email = 'user_5@x';", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.users WHERE email = 'user_9@x';", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.users WHERE email = 'missing@x';", 0);
+
+        // Post-restart writes must hit the rewired engine, not just the
+        // storage — a fresh INSERT followed by an email lookup confirms the
+        // bootstrap_index_sync engine is live for runtime traffic, not only
+        // read-only replay.
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "INSERT INTO TestDatabase.users (id, email) VALUES (10, 'user_10@x');");
+            REQUIRE(cur->is_success());
+        }
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.users;", 11);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.users WHERE email = 'user_10@x';", 1);
+    }
+}

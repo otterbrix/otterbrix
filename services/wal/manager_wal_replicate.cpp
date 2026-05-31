@@ -158,11 +158,11 @@ namespace services::wal {
     }
 
     // -----------------------------------------------------------------------
-    // Block F (Pass 11) retention guard: active CREATE INDEX build registration
+    // Retention guard: active CREATE INDEX build registration.
     //
     // No locking: assumed called from the operator-pipeline thread BEFORE the
     // wal_worker has finished the previous batch — single-threaded relative to
-    // the dispatcher / wal contracts. TODO: re-evaluate under multi-DB Variant C.
+    // the dispatcher / wal contracts. TODO: re-evaluate under multi-DB.
     // -----------------------------------------------------------------------
 
     void manager_wal_replicate_t::register_active_build_sync(wal::id_t build_start_wal_position) {
@@ -188,13 +188,13 @@ namespace services::wal {
     }
 
     // -----------------------------------------------------------------------
-    // Block F (Pass 11) mailbox-handler twins of the _sync helpers above.
-    // Called by operator_create_index_backfill which runs inside the executor
-    // actor — rule 11 forbids sync inter-actor calls there, so we route the
-    // same in-place set mutation through the manager's mailbox. The handler
-    // body is intentionally thin: dispatch into the actor's own coroutine, run
-    // the sync helper (we are now on the manager's thread per actor-zeta
-    // single-consumer mailbox model), co_return.
+    // Mailbox-handler twins of the _sync helpers above. Called by
+    // operator_create_index_backfill which runs inside the executor actor —
+    // rule 11 forbids sync inter-actor calls there, so we route the same
+    // in-place set mutation through the manager's mailbox. The handler body is
+    // intentionally thin: dispatch into the actor's own coroutine, run the sync
+    // helper (we are now on the manager's thread per actor-zeta single-consumer
+    // mailbox model), co_return.
     // -----------------------------------------------------------------------
 
     manager_wal_replicate_t::unique_future<void>
@@ -288,7 +288,7 @@ namespace services::wal {
             scheduler_->enqueue(worker);
         }
         auto result = co_await std::move(fut);
-        // Track WAL bytes for auto-checkpoint threshold (atomic, BLOCKER 16).
+        // Track WAL bytes for auto-checkpoint threshold (atomic).
         wal_bytes_since_checkpoint_.store(total_wal_bytes(), std::memory_order_relaxed);
         co_return result;
     }
@@ -331,9 +331,9 @@ namespace services::wal {
             co_return;
         }
 
-        // Block F (Pass 11): clamp to min(active_build_start_wal_positions_) so any
-        // in-flight CREATE INDEX Phase 2.5 catchup still has its records. Empty set
-        // means no active builds, so no clamp is necessary. std::set is ordered
+        // Clamp to min(active_build_start_positions_) so any in-flight CREATE
+        // INDEX Phase 2.5 catchup still has its records. Empty set means no
+        // active builds, so no clamp is necessary. std::set is ordered
         // ascending — .begin() is the minimum.
         if (!active_build_start_positions_.empty()) {
             auto earliest = *active_build_start_positions_.begin();

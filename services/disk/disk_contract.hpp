@@ -192,9 +192,9 @@ namespace services::disk {
         actor_zeta::unique_future<void>
         storage_revert_appends(execution_context_t ctx, std::vector<components::pg_catalog_append_range_t> ranges);
 
-        // event-driven GC subscriber. Stub today; real body lands
-        // with Block D DML (walk dropped_storages_ + GC entries whose
-        // pinned start_time < new_horizon).
+        // Event-driven GC subscriber. Walks per-agent dropped_storages_
+        // slices and physically removes entries whose
+        // dropped_at_commit_id < new_horizon.
         actor_zeta::unique_future<void> on_horizon_advanced(uint64_t new_horizon);
 
         // Runtime DROP TABLE path — operator_dynamic_cascade_delete sends this

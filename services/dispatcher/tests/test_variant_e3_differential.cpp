@@ -13,29 +13,8 @@
 #include <services/disk/manager_disk.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
-// ============================================================================
-// ----------------------------------------------------------------------------
-// Variant E.3 differential test scaffold:
-//   Same SQL fixture, run once through dispatcher::execute_plan (current) and
-//   once with enable_pass2_rewrites=true + force routing to execute_plan_full.
-//   Compare cursor + side effects (pg_catalog state, collections_ map).
-//
-// CURRENT ROUTING (see dispatcher.cpp anonymous-namespace flag
-// `use_executor_full_pipeline`, default `false`): every dispatcher
-// invocation still goes through the legacy Pass 1/2/3 in dispatcher.cpp
-// lines 543-1313, so for now both "old" and "new" path drive the same
-// code. The scaffold is structured so that when the flag flips to `true`
-// in the atomic cut-over commit, the SAME test bodies re-run against
-// executor_t::execute_plan_full with no edits required — only the
-// build-time wiring changes.
-//
-// This file covers FOURTEEN scaffolded cases (SELECT, INSERT static,
-// INSERT relkind='g', CREATE TABLE, DROP TABLE, DROP DATABASE,
-// CREATE INDEX, ALTER TABLE ADD COLUMN, CREATE TYPE STRUCT, CREATE VIEW,
-// CREATE CONSTRAINT FK, CREATE MATERIALIZED VIEW, CREATE CONSTRAINT CHECK,
-// SET TIME ZONE). See the trailing FOLLOW-UPS block for post-cut-over
-// follow-ups (re-run under flag=true to confirm parity).
-// ============================================================================
+// Differential test scaffold: same SQL fixture, drive dispatcher::execute_plan
+// and compare cursor + side effects (pg_catalog state, collections_ map).
 
 using namespace services;
 using namespace services::wal;
@@ -130,12 +109,7 @@ namespace {
             return std::move(fut).get();
         }
 
-        // execute_sql posts a parsed logical plan to manager_dispatcher's
-        // execute_plan handler. Under Variant E.3 routing this is the
-        // single entry point — internal use_executor_full_pipeline flag
-        // selects legacy Pass 1/2/3 vs. executor_t::execute_plan_full.
-        // The differential assertion is therefore: same SQL → same cursor
-        // + catalog state, regardless of which side of the flag we are on.
+        // Post a parsed logical plan to manager_dispatcher's execute_plan handler.
         void execute_sql(const std::string& query) {
             parser_arena_ = std::make_unique<std::pmr::monotonic_buffer_resource>(resource_);
             auto parse_result = linitial(raw_parser(parser_arena_.get(), query.c_str()));
@@ -169,13 +143,8 @@ namespace {
 
 } // namespace
 
-// ============================================================================
-// TEST_CASE 1 — SELECT pass-through differential
-// ----------------------------------------------------------------------------
-// Fixture: CREATE DATABASE/TABLE/INSERT, then a SELECT. Assert SELECT cursor
-// is successful and column shape matches the inserted data. With the flag
-// flipped this same body validates execute_plan_full's SELECT routing.
-// ============================================================================
+// SELECT pass-through differential. Fixture: CREATE DATABASE/TABLE/INSERT,
+// then SELECT. Assert SELECT cursor is successful and column shape matches.
 TEST_CASE("variant-e3 differential: SELECT pass-through") {
     auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_select");
@@ -199,20 +168,14 @@ TEST_CASE("variant-e3 differential: SELECT pass-through") {
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
-        // Differential invariant: SELECT must return success + at least
-        // one column type descriptor under BOTH routings.
+        // SELECT must return success + at least one column type descriptor.
         REQUIRE(cur->type_data().size() >= 1);
     }
 }
 
-// ============================================================================
-// TEST_CASE 2 — CREATE TABLE basic differential
-// ----------------------------------------------------------------------------
 // CREATE TABLE through dispatcher → manager_disk pg_class row exists with
 // matching relkind / column shape. The columns-by-attname loop mirrors
-// test_dispatcher_catalog.cpp::schemeful_operations to keep the assertion
-// stable across the flip.
-// ============================================================================
+// test_dispatcher_catalog.cpp::schemeful_operations.
 TEST_CASE("variant-e3 differential: CREATE TABLE basic") {
     auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_create");
@@ -243,15 +206,9 @@ TEST_CASE("variant-e3 differential: CREATE TABLE basic") {
     }
 }
 
-// ============================================================================
-// TEST_CASE 3 — INSERT + SELECT differential (data round-trip)
-// ----------------------------------------------------------------------------
 // INSERT static-shape rows then SELECT — verifies the data path: row
-// allocation, ETL into vector::data_chunk_t, cursor materialization.
-// calls out INSERT (static + relkind='g'); this scaffold covers
-// the static case. The relkind='g' (computed-column adoption) variant is
-// listed in FOLLOW-UPS below.
-// ============================================================================
+// allocation, ETL into vector::data_chunk_t, cursor materialization. The
+// relkind='g' (computed-column adoption) variant is covered separately.
 TEST_CASE("variant-e3 differential: INSERT + SELECT round-trip") {
     auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_insert");
@@ -287,17 +244,12 @@ TEST_CASE("variant-e3 differential: INSERT + SELECT round-trip") {
     }
 }
 
-// ============================================================================
-// TEST_CASE 4 — CREATE INDEX differential
-// ----------------------------------------------------------------------------
 // CREATE TABLE → CREATE INDEX. The index shares the pg_class namespace with
-// tables (see integration/.../test_clean_break_startup.cpp::index_round_trip —
-// "relkind 'i' shares the pg_class namespace with 'r'"), so we resolve_table
-// the index by name and assert relkind=='i'. That single fact transitively
-// covers the pg_index entry + pg_depend ('a' parent edge) + index OID stamp
-// — without those side effects the pg_class row would not appear under the
-// requested name in the same namespace.
-// ============================================================================
+// tables ("relkind 'i' shares the pg_class namespace with 'r'"), so we
+// resolve_table the index by name and assert relkind=='i'. That single fact
+// transitively covers the pg_index entry + pg_depend ('a' parent edge) +
+// index OID stamp — without those side effects the pg_class row would not
+// appear under the requested name in the same namespace.
 TEST_CASE("variant-e3 differential: CREATE INDEX") {
     auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_index");
@@ -331,18 +283,10 @@ TEST_CASE("variant-e3 differential: CREATE INDEX") {
     }
 }
 
-// ============================================================================
-// TEST_CASE 5 — DROP TABLE differential
-// ----------------------------------------------------------------------------
 // CREATE TABLE → DROP TABLE. After the drop, resolve_table by the same
-// (namespace_oid, name) must return found=false. That's the externally
-// observable contract of "pg_class delete_id set + dropped storage list":
-// the runtime DROP TABLE path (manager_disk.cpp ~line 606,
-// agent_disk.cpp ~line 384 "storages_ erase fanout") is what causes
-// resolve_table to flip; the differential check is therefore the visibility
-// transition, mirrored from test_dispatcher_catalog.cpp::schemeful_operations
-// "in-order" SECTION.
-// ============================================================================
+// (namespace_oid, name) must return found=false — the externally observable
+// contract of "pg_class delete_id set + dropped storage list". Mirrored from
+// test_dispatcher_catalog.cpp::schemeful_operations "in-order" SECTION.
 TEST_CASE("variant-e3 differential: DROP TABLE") {
     auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_drop");
@@ -365,9 +309,9 @@ TEST_CASE("variant-e3 differential: DROP TABLE") {
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
-        // The differential invariant: after DROP TABLE, the pg_class row is
-        // tombstoned (delete_id stamped) and storages_ no longer publishes
-        // commits for this table → resolve_table reports not found.
+        // After DROP TABLE the pg_class row is tombstoned (delete_id stamped)
+        // and storages_ no longer publishes commits for it → resolve_table
+        // reports not found.
         auto rns = fx.resolve_namespace("ve3_drop");
         REQUIRE(rns.found);
         auto rt = fx.resolve_table(rns.oid, "victim");
@@ -375,18 +319,10 @@ TEST_CASE("variant-e3 differential: DROP TABLE") {
     }
 }
 
-// ============================================================================
-// TEST_CASE 6 — ALTER TABLE ADD COLUMN differential
-// ----------------------------------------------------------------------------
-// CREATE TABLE → ALTER TABLE ADD COLUMN. Requires a fresh pg_attribute
-// row with added_at_commit_id stamped. The columns vector
-// returned by resolve_table is reconstructed from pg_attribute, so observing
-// the new column name there transitively guarantees the row was inserted
-// (otherwise the rebuild would not surface it). Default-value DDL is
-// exercised via the column type only — the existing ALTER paths in
-// integration/cpp/test/test_sql_features.cpp (line 1619) confirm the
-// dispatcher accepts `ADD COLUMN <name> <type>` without a literal DEFAULT.
-// ============================================================================
+// CREATE TABLE → ALTER TABLE ADD COLUMN. Requires a fresh pg_attribute row
+// with added_at_commit_id stamped. The columns vector returned by
+// resolve_table is reconstructed from pg_attribute, so observing the new
+// column name there transitively guarantees the row was inserted.
 TEST_CASE("variant-e3 differential: ALTER TABLE ADD COLUMN") {
     auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_alter");
@@ -439,19 +375,11 @@ TEST_CASE("variant-e3 differential: ALTER TABLE ADD COLUMN") {
     }
 }
 
-// ============================================================================
-// TEST_CASE 7 — CREATE TYPE STRUCT differential
-// ----------------------------------------------------------------------------
 // CREATE TYPE <name> AS (<field> <type>, ...) registers a composite row in
 // pg_type plus a nested pg_attribute row per field. The user-facing
 // observation is a successful resolve_type under the default namespace
-// (well_known_oid::public_namespace=2 — see catalog_oids.hpp:29). Composite
-// types in this codebase are registered without a database prefix (see
-// integration/cpp/test/test_correctness_bugs.cpp:202
-// "CREATE TYPE p_t AS (px INT, py INT);" — no namespace qualifier), matching
-// the documented behaviour of resolve_type / resolve_type_sync in
-// manager_disk.hpp lines 369-375.
-// ============================================================================
+// (well_known_oid::public_namespace). Composite types in this codebase are
+// registered without a database prefix.
 TEST_CASE("variant-e3 differential: CREATE TYPE STRUCT") {
     auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_type");
@@ -460,13 +388,11 @@ TEST_CASE("variant-e3 differential: CREATE TYPE STRUCT") {
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
-        // The differential assertion proper happens through the parent table
-        // that *uses* the type below. CREATE TABLE referencing the composite
-        // is the canonical user-visible smoke for pg_type registration —
-        // the column-spec parser resolves the composite via manager_disk
-        // resolve_type_sync (manager_disk.hpp line 375), which can only
-        // succeed if both the pg_type composite row and its nested
-        // pg_attribute rows for px/py were written by CREATE TYPE.
+        // The smoke happens through the parent table that *uses* the type
+        // below — the column-spec parser resolves the composite via
+        // manager_disk resolve_type_sync, which can only succeed if both
+        // the pg_type composite row and its nested pg_attribute rows were
+        // written by CREATE TYPE.
     }
 
     fx.execute_sql("CREATE DATABASE ve3_ty_db;");
@@ -493,18 +419,11 @@ TEST_CASE("variant-e3 differential: CREATE TYPE STRUCT") {
     }
 }
 
-// ============================================================================
-// TEST_CASE 8 — INSERT relkind='g' (computed-column adoption) differential
-// ----------------------------------------------------------------------------
 // Empty CREATE TABLE → pg_class row stamped relkind='g' (computing/generated),
 // columns vector empty. The first INSERT adopts the column shape by
 // appending pg_computed_column rows via operator_computed_field_register_t —
 // resolve_table on the next txn surfaces those columns as if they had been
-// declared statically. Mirrors test_dispatcher_catalog.cpp::computed_operations
-// (lines 213–260); the differential invariant is that the cursor succeeds AND
-// resolve_table reports relkind='g' with the adopted column shape under both
-// routings of the Variant E.3 flag.
-// ============================================================================
+// declared statically. Mirrors test_dispatcher_catalog.cpp::computed_operations.
 TEST_CASE("variant-e3 differential: INSERT relkind='g' computed-column adoption") {
     auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_computed");
@@ -512,8 +431,7 @@ TEST_CASE("variant-e3 differential: INSERT relkind='g' computed-column adoption"
     fx.execute_sql("CREATE DATABASE ve3_cg;");
     (void) fx.take_result();
 
-    // Empty column-list CREATE TABLE → relkind='g' (per
-    // test_dispatcher_catalog.cpp:228 "Empty CREATE TABLE → relkind='g'").
+    // Empty column-list CREATE TABLE → relkind='g'.
     fx.execute_sql("CREATE TABLE ve3_cg.events();");
     {
         auto cur = fx.take_result();
@@ -531,8 +449,8 @@ TEST_CASE("variant-e3 differential: INSERT relkind='g' computed-column adoption"
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
-        // Post-INSERT differential: pg_computed_column carries the adopted
-        // shape; resolve_table rebuilds the columns vector from those rows.
+        // Post-INSERT: pg_computed_column carries the adopted shape;
+        // resolve_table rebuilds the columns vector from those rows.
         auto rns = fx.resolve_namespace("ve3_cg");
         REQUIRE(rns.found);
         auto rt = fx.resolve_table(rns.oid, "events");
@@ -550,17 +468,11 @@ TEST_CASE("variant-e3 differential: INSERT relkind='g' computed-column adoption"
     }
 }
 
-// ============================================================================
-// TEST_CASE 9 — DROP DATABASE differential
-// ----------------------------------------------------------------------------
 // CREATE DATABASE → resolve_namespace.found=true → DROP DATABASE →
-// resolve_namespace.found=false. This is the externally observable contract
-// of "pg_database row tombstoned + namespace_oid removed from catalog
-// cache". Mirrors test_dispatcher_catalog.cpp lines
-// 193–199 (in-order DROP TABLE then DROP DATABASE). The CASCADE wipe of
-// child pg_class rows is implicitly covered: after the namespace is gone,
-// no resolve_table call can succeed regardless of the stored relkind.
-// ============================================================================
+// resolve_namespace.found=false. The externally observable contract of
+// "pg_database row tombstoned + namespace_oid removed from catalog cache".
+// CASCADE wipe of child pg_class rows is implicitly covered: after the
+// namespace is gone, no resolve_table call can succeed regardless of relkind.
 TEST_CASE("variant-e3 differential: DROP DATABASE") {
     auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_drop_db");
@@ -577,26 +489,18 @@ TEST_CASE("variant-e3 differential: DROP DATABASE") {
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
-        // pg_database tombstone is the differential invariant — the
-        // namespace must not resolve after DROP under either routing.
+        // pg_database tombstone — the namespace must not resolve after DROP.
         auto rns = fx.resolve_namespace("ve3_dropdb");
         REQUIRE(!rns.found);
     }
 }
 
-// ============================================================================
-// TEST_CASE 10 — CREATE VIEW differential
-// ----------------------------------------------------------------------------
-// CREATE TABLE → CREATE VIEW v AS SELECT ... FROM table. The VIEW must
-// land a pg_class row with relkind='v' plus a pg_rewrite ev_action
-// row carrying the body SQL. The view shares the pg_class namespace with
-// 'r'/'i', so resolve_table by view name returns relkind='v'. The pg_rewrite
-// side effect is not directly exposed via resolve_table_result_t (no
-// view_sql field — see components/catalog/results/resolve_result.hpp), but
-// its existence is a pre-condition for SELECT-on-view expansion (covered
-// e2e by integration test test_sql_features.cpp::create_view_e2e at line
-// 3387). Here we assert the catalog-level visibility transition only.
-// ============================================================================
+// CREATE TABLE → CREATE VIEW v AS SELECT ... FROM table. The VIEW must land
+// a pg_class row with relkind='v' plus a pg_rewrite ev_action row carrying
+// the body SQL. The view shares the pg_class namespace with 'r'/'i', so
+// resolve_table by view name returns relkind='v'. The pg_rewrite side effect
+// is not directly exposed via resolve_table_result_t (no view_sql field) but
+// is a pre-condition for SELECT-on-view expansion (covered e2e elsewhere).
 TEST_CASE("variant-e3 differential: CREATE VIEW") {
     auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_view");
@@ -631,23 +535,13 @@ TEST_CASE("variant-e3 differential: CREATE VIEW") {
     }
 }
 
-// ============================================================================
-// TEST_CASE 11 — CREATE CONSTRAINT FK differential
-// ----------------------------------------------------------------------------
 // CREATE 2 tables → ALTER TABLE ... ADD CONSTRAINT FOREIGN KEY. SQL surface
-// is ALTER TABLE ... ADD CONSTRAINT (the only parser entry; see
-// integration/cpp/test/test_sql_features.cpp:1774 and gram.y), but the
-// logical-plan node emitted is node_create_constraint_t — that's the
-// "CREATE CONSTRAINT" planner rewrite referenced in dispatcher.cpp:1339
-// ("CREATE CONSTRAINT → planner rewrite в sequence_t(primitive_write
-// pg_constraint+pg_depend)"). Requires pg_constraint contype='f' +
-// pg_depend edges, but manager_disk exposes no public resolve_constraint
-// API (services/disk/manager_disk.hpp). The behavioural proxy used by the
-// integration suite is FK enforcement on INSERT (rejects orphan child rows,
-// accepts valid ones) — that pathway can only succeed if both pg_constraint
-// (confrelid + conkey + confkey) and pg_depend ('n' parent edge) were
-// written by the ADD CONSTRAINT path. We exercise both directions.
-// ============================================================================
+// is ALTER TABLE ... ADD CONSTRAINT (the only parser entry), but the
+// logical-plan node emitted is node_create_constraint_t. Requires
+// pg_constraint contype='f' + pg_depend edges, but manager_disk exposes no
+// public resolve_constraint API; the behavioural proxy is FK enforcement on
+// INSERT (rejects orphan child rows, accepts valid ones) — exercising both
+// directions transitively guarantees pg_constraint + pg_depend were written.
 TEST_CASE("variant-e3 differential: CREATE CONSTRAINT FK") {
     auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_fk");
@@ -668,7 +562,7 @@ TEST_CASE("variant-e3 differential: CREATE CONSTRAINT FK") {
     }
 
     // ADD CONSTRAINT is the parser entry for the node_create_constraint_t
-    // logical-plan node (per dispatcher.cpp:1339 comment).
+    // logical-plan node.
     fx.execute_sql(
         "ALTER TABLE ve3_fk.employees ADD CONSTRAINT fk_dept "
         "FOREIGN KEY (dept_id) REFERENCES ve3_fk.departments (id);");
@@ -703,9 +597,8 @@ TEST_CASE("variant-e3 differential: CREATE CONSTRAINT FK") {
         REQUIRE(cur->is_success());
     }
 
-    // Inverse proxy: orphan child rejected by FK enforcement — the same
-    // pg_constraint row drives the violation path. Per
-    // test_sql_features.cpp:1808 this is the canonical negative case.
+    // Inverse: orphan child rejected by FK enforcement — the same
+    // pg_constraint row drives the violation path.
     fx.execute_sql(
         "INSERT INTO ve3_fk.employees (id, dept_id, name) VALUES (2, 99, 'Bob');");
     {
@@ -714,23 +607,14 @@ TEST_CASE("variant-e3 differential: CREATE CONSTRAINT FK") {
     }
 }
 
-// ============================================================================
-// TEST_CASE 12 — CREATE MATERIALIZED VIEW differential
-// ----------------------------------------------------------------------------
-// CREATE TABLE → CREATE MATERIALIZED VIEW mv AS SELECT ... FROM table. Section
-// 5 requires a pg_class row stamped relkind='m', a pg_rewrite ev_action row
+// CREATE TABLE → CREATE MATERIALIZED VIEW mv AS SELECT ... FROM table.
+// Lands a pg_class row stamped relkind='m', a pg_rewrite ev_action row
 // carrying the body SQL, AND a real physical heap (matview is a populated
-// table, not a query rewrite). Per commit a2a86310 "G13 Phase B" the
-// pipeline-canonical lowering is sequence_t(create_collection(relkind='m'),
-// primitive_write pg_rewrite) via operator_create_matview_t (composite). Per
-// integration/.../test_sql_features.cpp:3424 (create_matview_e2e) WITH NO DATA
-// is the default — the matview lands empty until REFRESH. The dispatcher-level
-// differential proxy is therefore: cursor success + resolve_table(mv) reports
-// relkind='m' (pg_class row + pg_attribute shape) AND resolve_table on the
-// parent still works (no side-effect leakage). The pg_rewrite ev_action row
-// is not directly exposed via resolve_table_result_t; its presence is an
-// implicit pre-condition for REFRESH to recover the body SQL.
-// ============================================================================
+// table, not a query rewrite). Pipeline-canonical lowering is
+// sequence_t(create_collection(relkind='m'), primitive_write pg_rewrite) via
+// operator_create_matview_t (composite); WITH NO DATA is the default — the
+// matview lands empty until REFRESH. Proxy: cursor success +
+// resolve_table(mv) reports relkind='m' AND parent resolve_table still works.
 TEST_CASE("variant-e3 differential: CREATE MATERIALIZED VIEW") {
     auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_matview");
@@ -774,20 +658,14 @@ TEST_CASE("variant-e3 differential: CREATE MATERIALIZED VIEW") {
     }
 }
 
-// ============================================================================
-// TEST_CASE 13 — CREATE CONSTRAINT CHECK differential
-// ----------------------------------------------------------------------------
 // CREATE TABLE → ALTER TABLE ... ADD CONSTRAINT ... CHECK (expr).
-// pg_constraint contype='c' is the side effect (distinct from the
-// FK case in TEST_CASE 11 which is contype='f'). manager_disk exposes no
-// public resolve_constraint API, so the behavioural proxy mirrors the FK
-// pattern: a CHECK constraint that is in force WILL reject a violating row
-// at INSERT time and accept a conforming row. This proxy is the canonical
-// negative case used by integration/.../test_sql_features.cpp:1443
-// (check_constraint INFO "simple check: age > 0"). It transitively requires
-// the pg_constraint row (contype='c', conexpr carrying the parsed predicate)
-// to have been written — without it, operator_check_constraint never fires.
-// ============================================================================
+// pg_constraint contype='c' is the side effect (distinct from the FK case
+// which is contype='f'). manager_disk exposes no public resolve_constraint
+// API, so the behavioural proxy mirrors the FK pattern: a CHECK constraint
+// in force will reject a violating row at INSERT and accept a conforming
+// one. Transitively requires the pg_constraint row (contype='c', conexpr
+// parsed predicate) to have been written — without it,
+// operator_check_constraint never fires.
 TEST_CASE("variant-e3 differential: CREATE CONSTRAINT CHECK") {
     auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_check");
@@ -836,31 +714,22 @@ TEST_CASE("variant-e3 differential: CREATE CONSTRAINT CHECK") {
     }
 }
 
-// ============================================================================
-// TEST_CASE 14 — SET TIME ZONE differential
-// ----------------------------------------------------------------------------
 // SET TIMEZONE TO 'UTC' goes through manager_dispatcher_t::execute_plan_msg's
-// set_timezone_t case (dispatcher.cpp lines 990-1017). Requires a
-// pg_settings row append ('TimeZone', <tz>) plus an in-memory default_tz_cat_
-// mutation (single-owner per actor rule 10 — no shared mutable state). The
-// pg_settings append is fan-out through disk_address_->append_pg_catalog_row;
-// the session_tz update is implicit (next query's execution_context_t carries
-// it). The dispatcher-level differential proxy is therefore the cursor
-// success + a follow-up SET TIMEZONE on the same fixture (re-entry must not
-// double-fail). The pg_settings table is part of the system bootstrap (see
-// manager_disk_bootstrap.cpp), so the append target row exists from
-// fixture startup. A negative case (unknown TZ → cursor error) confirms the
-// default_tz_cat_ validation path under the same mailbox.
-// ============================================================================
+// set_timezone_t case. Requires a pg_settings row append ('TimeZone', <tz>)
+// plus an in-memory default_tz_cat_ mutation (single-owner per actor — no
+// shared mutable state). The pg_settings append is fan-out through
+// disk_address_->append_pg_catalog_row; the session_tz update is implicit
+// (next query's execution_context_t carries it). The dispatcher-level proxy
+// is cursor success + follow-up SET TIMEZONE on the same fixture (re-entry
+// must not double-fail). A negative case (unknown TZ → cursor error)
+// confirms the default_tz_cat_ validation path under the same mailbox.
 TEST_CASE("variant-e3 differential: SET TIME ZONE") {
     auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_settz");
 
     // Valid timezone — pg_settings append + default_tz_cat_ mutation succeed.
     // Only possible if the manager_disk pg_settings system table is alive AND
-    // default_tz_cat_.set_timezone accepted the name. The cursor success is
-    // therefore a joint proxy for both side effects under both routings of
-    // the Variant E.3 flag.
+    // default_tz_cat_.set_timezone accepted the name.
     fx.execute_sql("SET TIMEZONE TO 'utc';");
     {
         auto cur = fx.take_result();
@@ -869,8 +738,7 @@ TEST_CASE("variant-e3 differential: SET TIME ZONE") {
 
     // Idempotent re-entry on the same actor: second SET TIMEZONE must also
     // succeed (default_tz_cat_ is single-owner mutable state — must accept
-    // overwrite, not lock). Mirrors test_sql_features.cpp::set_timezone INFO
-    // "valid timezone with mixed case via SQL is accepted" at line 3283.
+    // overwrite, not lock).
     fx.execute_sql("SET TIMEZONE TO 'UTC';");
     {
         auto cur = fx.take_result();
@@ -885,8 +753,8 @@ TEST_CASE("variant-e3 differential: SET TIME ZONE") {
     }
 
     // Negative case: unknown timezone → default_tz_cat_ rejects, no
-    // pg_settings append (guard at dispatcher.cpp:993 contains_error()).
-    // The cursor surfaces the error under both routings.
+    // pg_settings append (guarded by a contains_error() check). The cursor
+    // surfaces the error.
     fx.execute_sql("SET TIMEZONE TO 'not_a_real_timezone';");
     {
         auto cur = fx.take_result();
@@ -894,14 +762,3 @@ TEST_CASE("variant-e3 differential: SET TIME ZONE") {
     }
 }
 
-// ============================================================================
-// FOLLOW-UPS — fully scaffolded across 14 TEST_CASEs above.
-// Post-cut-over follow-ups (after the use_executor_full_pipeline flag flips
-// to `true`):
-//   - re-run this file under the flipped flag and confirm every assertion
-//     above still passes (no edits required — the differential contract is
-//     deliberately routing-agnostic).
-//   - extend with parametric Catch2 GENERATE() once we want both routings
-//     exercised in the SAME ctest invocation (today the flag is a build-time
-//     constant).
-// ============================================================================

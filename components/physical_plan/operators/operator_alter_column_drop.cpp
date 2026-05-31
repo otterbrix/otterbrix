@@ -241,10 +241,10 @@ namespace components::operators {
         // commit_id is not allocated until operator_commit_transaction_t calls
         // txn_manager.commit() later in the pipeline. We record a backfill
         // marker on the pipeline context; operator_commit_transaction drains
-        // the marker after commit() and patches the tombstone row in place
-        // (see TBD-impl note there). The tombstone's MVCC insert_id is still
-        // stamped with the executing transaction_id at write and flipped to
-        // commit_id by storage_publish_commits at COMMIT.
+        // the marker after commit() and patches the tombstone row in place.
+        // The tombstone's MVCC insert_id is still stamped with the executing
+        // transaction_id at write and flipped to commit_id by
+        // storage_publish_commits at COMMIT.
         //
         // cascade dependency validation already ran above, BEFORE mutations —
         // ABORT-on-error.
@@ -280,9 +280,9 @@ namespace components::operators {
             co_return;
         }
         ctx->pg_catalog_appends.push_back(std::move(rng));
-        // OPTION X: schedule dropped_at_commit_id backfill on the tombstone.
-        // attoid is the same as the live row's attoid (identity-preserving
-        // tombstone — see build_pg_attribute_row contract).
+        // Schedule dropped_at_commit_id backfill on the tombstone. attoid is
+        // the same as the live row's attoid (identity-preserving tombstone —
+        // see build_pg_attribute_row contract).
         ctx->pg_attribute_commit_id_backfills.push_back(
             components::pg_attribute_commit_id_backfill_t{
                 attoid,

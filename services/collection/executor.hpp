@@ -57,10 +57,10 @@ namespace services::collection::executor {
     };
     using plan_storage_t = core::pmr::btree::btree_t<components::session::session_id_t, plan_t>;
 
-    // B33 (Pass 9 BLOCKER 33 preemptive accumulation): accumulate per-table DML
-    // ranges across sub-plans so FK cascade DELETE on >=2 tables publishes each
-    // child's flip — previously last-DML-fragment-wins overwrote earlier ranges
-    // and silently dropped publishes for non-last child tables.
+    // Accumulate per-table DML ranges across sub-plans so FK cascade DELETE
+    // on >=2 tables publishes each child's flip — previously
+    // last-DML-fragment-wins overwrote earlier ranges and silently dropped
+    // publishes for non-last child tables.
     struct dml_append_range_t {
         components::catalog::oid_t table_oid;
         int64_t row_start;
@@ -79,7 +79,7 @@ namespace services::collection::executor {
     struct sub_plan_result_t {
         components::cursor::cursor_t_ptr cursor;
         components::operators::operator_write_data_t::updated_types_map_t updates;
-        // B33: accumulating vectors replace single fields (FK cascade correctness).
+        // Accumulating vectors (FK cascade correctness — see dml_append_range_t).
         std::vector<dml_append_range_t> dml_appends;
         std::vector<dml_delete_range_t> dml_deletes;
 
@@ -111,16 +111,15 @@ namespace services::collection::executor {
                                                      services::context_storage_t context_storage,
                                                      components::table::transaction_data txn);
 
-        // executor takes over manager_dispatcher_t::execute_plan
-        // pipeline — Pass 1 catalog resolve, validate, enrich, planner.rewrite,
-        // optimizer, physical_plan_generator, then operator pipeline. The current
-        // execute_plan method runs the operator pipeline only; execute_plan_full
-        // adds the upstream Pass 1/1.5/1.6 stages so the dispatcher can shed them.
-        // Implementation lives in executor.cpp at execute_plan_full (Pass 1
-        // resolve loop, Phase 1.5 view splice, Phase 1.6 stamp+gather, Pass 2
-        // validate / enrich / planner.rewrite, then delegate to execute_plan
-        // for the operator pipeline). Call signature parallels execute_plan
-        // but takes the unrewritten logical_plan and runs the full pipeline.
+        // Executor takes over the full manager_dispatcher_t::execute_plan
+        // pipeline — catalog resolve, validate, enrich, planner.rewrite,
+        // optimizer, physical_plan_generator, then operator pipeline. The
+        // current execute_plan method runs the operator pipeline only;
+        // execute_plan_full adds the upstream stages so the dispatcher can
+        // shed them. Implementation: resolve loop → view splice → stamp +
+        // gather → validate / enrich / planner.rewrite, then delegates to
+        // execute_plan for the operator pipeline. Call signature parallels
+        // execute_plan but takes the unrewritten logical_plan.
         unique_future<execute_result_t>
         execute_plan_full(components::session::session_id_t session,
                           components::logical_plan::node_ptr logical_plan,
@@ -131,29 +130,24 @@ namespace services::collection::executor {
         unique_future<std::unique_ptr<function_result_t>> register_udf(components::session::session_id_t session,
                                                                        components::compute::function_ptr function);
 
-        // dispatcher fans these out (single send, NOT broadcast) to the executor
-        // whose index == hash(oid) % executor_pool_size_ (= oid % 4). Each
-        // executor owns its slice of the global table map in `local_collections_`.
+        // Dispatcher fans these out (single send, NOT broadcast) to the
+        // executor whose index == hash(oid) % executor_pool_size_ (= oid %
+        // 4). Each executor owns its slice of the global table map in
+        // `local_collections_`.
         //
-        // (this revision): replaced the raw `collection_t*` placeholder
-        // with a value-type POD entry that the executor copy-stores in its own
-        // map. This deliberately avoids the constraint #11 trap of sharing a
-        // mutable `collection_t` between actor and dispatcher — the entry is a
-        // by-value membership + identity record (oid + database + schema +
-        // name). Cross-partition queries (JOIN of tables landing in different
-        // executor slices) fall back to the dispatcher's `collections_` set;
-        // intra-partition DML / DDL can probe `find_local_collection(oid)`
-        // before paying that mailbox hop.
+        // The entry is a value-type POD (oid + database + schema + name) the
+        // executor copy-stores in its own map. NOT a `collection_t*` and NOT
+        // a `shared_ptr<collection_t>` (rule 14, constraint #11): mutable
+        // `collection_t` must never cross actors. Cross-partition queries
+        // (JOIN of tables landing in different executor slices) fall back to
+        // the dispatcher's `collections_` set; intra-partition DML / DDL can
+        // probe `find_local_collection(oid)` before paying that mailbox hop.
         //
-        // + (deferred): erase `dispatcher.collections_` entirely. That
-        // requires migrating the 8 physical_plan_generator membership probes
-        // that read it indirectly through enrich/validate, and is intentionally
-        // out of scope here — see executor.cpp Pass 1/2/3 Serial track.
-        //
-        // NOT a `collection_t*` and NOT a `shared_ptr<collection_t>` (rule 14,
-        // constraint #11). If ownership migration later requires moving state
-        // into this slot, the path is a pmr-allocated owning handle reachable
-        // only from this actor.
+        // FUTURE: erase `dispatcher.collections_` entirely once the 8
+        // physical_plan_generator membership probes that read it indirectly
+        // through enrich/validate are migrated. If ownership migration later
+        // requires moving state into this slot, the path is a pmr-allocated
+        // owning handle reachable only from this actor.
         struct local_collection_entry_t {
             components::catalog::oid_t oid{components::catalog::INVALID_OID};
             std::string database;
@@ -201,24 +195,25 @@ namespace services::collection::executor {
                                                            plan_t plan_data,
                                                            components::table::transaction_data txn);
 
-        // + Pass 12 LoC bump) collections_ partition:
-        // FUTURE WORK — manager_dispatcher_t::collections_ map currently owns all
-        // tables. Variant E.3 partitions this across 4 executors by hash:
+        // FUTURE WORK — collections_ partition:
+        // manager_dispatcher_t::collections_ map currently owns all tables.
+        // Plan is to partition this across the executor pool by hash:
         //   pool_idx = oid % executor_pool_size_ = oid % 4
-        // Each executor owns its slice (`std::pmr::unordered_map<oid_t, collection_ptr>`)
-        // so DML hot path stops crossing the manager_dispatcher mailbox for local-partition
-        // ops.
+        // Each executor owns its slice (`std::pmr::unordered_map<oid_t,
+        // collection_ptr>`) so DML hot path stops crossing the
+        // manager_dispatcher mailbox for local-partition ops.
         //
-        // Cross-partition queries (JOIN) fall back to resolve_table via disk_address_
-        // (already async). Pre-check on CREATE/DROP DDL: each executor maintains
-        // local pre/post DDL checks on its own slice — no router round-trip on CREATE
-        // success.
+        // Cross-partition queries (JOIN) fall back to resolve_table via
+        // disk_address_ (already async). Pre-check on CREATE/DROP DDL: each
+        // executor maintains local pre/post DDL checks on its own slice — no
+        // router round-trip on CREATE success.
         //
-        // Migration order: (1) add executors_'s `local_collections_` map AND the
-        // routing helper `pool_idx_for_plan(node_ptr)`; (2) populate each executor's
-        // slice from manager_dispatcher's collections_ at base_spaces bootstrap
-        // (Phase 3.5 hook); (3) DML hot path reads from local_collections_; (4)
-        // remove manager_dispatcher::collections_ once all callers are migrated.
+        // Migration order: (1) add executors_'s `local_collections_` map AND
+        // the routing helper `pool_idx_for_plan(node_ptr)`; (2) populate each
+        // executor's slice from manager_dispatcher's collections_ at
+        // base_spaces bootstrap; (3) DML hot path reads from
+        // local_collections_; (4) remove manager_dispatcher::collections_
+        // once all callers are migrated.
     private:
         actor_zeta::address_t parent_address_ = actor_zeta::address_t::empty_address();
         actor_zeta::address_t wal_address_ = actor_zeta::address_t::empty_address();
@@ -231,9 +226,8 @@ namespace services::collection::executor {
         // Keeps fire-and-forget WAL flush futures alive until they resolve.
         std::pmr::vector<unique_future<void>> pending_void_;
 
-        // collections_ partition — Step 2 field.
-        // Owned slice of the global table map; this executor owns oids where
-        // (oid % executor_pool_size_) == own_index. Populated by
+        // collections_ partition slice owned by this executor — holds oids
+        // where (oid % executor_pool_size_) == own_index. Populated by
         // register_collection_local mailbox handler, cleared by
         // unregister_collection_local. execute_plan probes this map via
         // find_local_collection(oid) before falling back to the

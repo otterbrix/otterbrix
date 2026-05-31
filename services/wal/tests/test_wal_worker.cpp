@@ -117,9 +117,9 @@ struct test_wal_worker {
     actor_zeta::unique_future<services::wal::id_t> send_commit(uint64_t txn_id,
                                                                wal_sync_mode sync_mode = wal_sync_mode::NORMAL,
                                                                uint64_t commit_id = 0) {
-        // Block F (Pass 9 dec 47): commit_id is the MVCC version timestamp
-        // written into the COMMIT record. Tests use 0 unless they explicitly
-        // exercise snapshot-aware replay.
+        // commit_id is the MVCC version timestamp written into the COMMIT
+        // record. Tests use 0 unless they explicitly exercise snapshot-aware
+        // replay.
         auto [needs_sched, future] = actor_zeta::otterbrix::send(manager_->address(),
                                                                  &manager_wal_replicate_t::commit_txn,
                                                                  session_id_t::generate_uid(),

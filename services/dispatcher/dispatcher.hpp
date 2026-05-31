@@ -69,22 +69,22 @@ namespace services::dispatcher {
 
         void sync(sync_pack pack);
 
-        // ) — bootstrap-time hook called from base_spaces
-        // after WAL replay scans all records and finds the maximum durable
-        // commit_id. Advances published_horizon_ past everything already on
-        // disk so post-recovery snapshots observe the right MVCC visibility.
-        // Direct sync call is allowed here: scheduler_dispatcher_ has not been
-        // started yet (rule 11 base_spaces bootstrap exception). Idempotent —
-        // publish() is monotonic and ignores stale ids.
+        // Bootstrap-time hook called from base_spaces after WAL replay scans
+        // all records and finds the maximum durable commit_id. Advances
+        // published_horizon_ past everything already on disk so post-recovery
+        // snapshots observe the right MVCC visibility. Direct sync call is
+        // allowed here: scheduler_dispatcher_ has not been started yet
+        // (rule 11 base_spaces bootstrap exception). Idempotent — publish()
+        // is monotonic and ignores stale ids.
         void set_replay_horizon_sync(uint64_t commit_id);
 
-        // catalog scan rebuild — base_spaces Phase 2c
-        // calls these after rebuilding dropped_storages_ / dropped_table_agents_
-        // so the very first post-start horizon advance broadcasts
-        // on_horizon_advanced to the affected subscribers and finishes the GC
-        // pass that the pre-crash DROP didn't get to. Equivalent to the
-        // mailbox handler on_drop_resource_marked() but usable pre-
-        // scheduler.start (rule 11 base_spaces bootstrap exception). Idempotent.
+        // Catalog scan rebuild — base_spaces calls these after rebuilding
+        // dropped_storages_ / dropped_table_agents_ so the very first
+        // post-start horizon advance broadcasts on_horizon_advanced to the
+        // affected subscribers and finishes the GC pass that the pre-crash
+        // DROP didn't get to. Equivalent to the mailbox handler
+        // on_drop_resource_marked() but usable pre-scheduler.start (rule 11
+        // base_spaces bootstrap exception). Idempotent.
         void set_disk_has_dropped_sync(bool value) noexcept { disk_has_dropped_ = value; }
         void set_index_has_dropped_sync(bool value) noexcept { index_has_dropped_ = value; }
 
@@ -106,8 +106,8 @@ namespace services::dispatcher {
         unique_future<uint64_t> commit_transaction(components::session::session_id_t session);
         unique_future<void> abort_transaction(components::session::session_id_t session);
 
-        // (Constraint #11): low-level transaction-manager wrappers
-        // for the executor. The executor currently dereferences a raw
+        // Low-level transaction-manager wrappers for the executor (constraint
+        // #11). The executor currently dereferences a raw
         // `transaction_manager_t*` shared from this dispatcher (anti-pattern —
         // mutable state shared across actors). These handlers replay the same
         // sync calls inside the dispatcher's own actor context, so the
@@ -130,29 +130,29 @@ namespace services::dispatcher {
         unique_future<void> txn_publish_msg(uint64_t commit_id);
         unique_future<uint64_t> txn_lowest_active_msg();
 
-        // (Constraint #11): SET TIME ZONE mailbox handler. The
-        // dispatcher owns default_tz_cat_ (session-shared mutable state); the
-        // executor cannot mutate it directly without violating the no-shared-
-        // state rule, so it routes SET TIME ZONE through this handler. The
-        // body mirrors the dispatcher's own set_timezone_t case in
-        // execute_plan_impl: mutates default_tz_cat_, then appends a
-        // ("TimeZone", <name>) row to pg_settings via disk_address_'s
-        // append_pg_catalog_row mailbox. Returns the success/error cursor.
+        // SET TIME ZONE mailbox handler (constraint #11). The dispatcher owns
+        // default_tz_cat_ (session-shared mutable state); the executor cannot
+        // mutate it directly without violating the no-shared-state rule, so it
+        // routes SET TIME ZONE through this handler. The body mirrors the
+        // dispatcher's own set_timezone_t case in execute_plan_impl: mutates
+        // default_tz_cat_, then appends a ("TimeZone", <name>) row to
+        // pg_settings via disk_address_'s append_pg_catalog_row mailbox.
+        // Returns the success/error cursor.
         unique_future<components::cursor::cursor_t_ptr>
         set_default_timezone_msg(components::session::session_id_t session, std::pmr::string tz_name);
 
-        // selective broadcast — DROP TABLE / DROP INDEX path marks the
-        // owning subscriber as "has dropped resources pending GC" via this
-        // mailbox handler. Cleared by on_subscriber_empty once the subscriber's
+        // Selective broadcast — DROP TABLE / DROP INDEX path marks the owning
+        // subscriber as "has dropped resources pending GC" via this mailbox
+        // handler. Cleared by on_subscriber_empty once the subscriber's
         // dropped_storages_ queue is empty. These are mailbox handlers invoked
         // via actor_zeta::send (rule 11 — no sync parent-pointer calls). They
         // return unique_future<void> because actor_zeta::dispatch requires all
         // actor methods to return unique_future<T> or generator<T>.
         unique_future<void> on_drop_resource_marked(uint8_t subscriber_kind);
-        // subscriber-empty ack — subscriber sends this back once its
-        // dropped_storages_ queue drained (i.e. nothing left to GC for that kind),
-        // which clears the corresponding broadcast flag and stops further
-        // on_horizon_advanced broadcasts to that subscriber.
+        // Subscriber-empty ack — subscriber sends this back once its
+        // dropped_storages_ queue drained (i.e. nothing left to GC for that
+        // kind), which clears the corresponding broadcast flag and stops
+        // further on_horizon_advanced broadcasts to that subscriber.
         unique_future<void> on_subscriber_empty(uint8_t subscriber_kind);
 
         using dispatch_traits = actor_zeta::dispatch_traits<&manager_dispatcher_t::execute_plan,
@@ -172,15 +172,14 @@ namespace services::dispatcher {
                                                             &manager_dispatcher_t::on_subscriber_empty>;
 
     private:
-        // cleanup-trigger helper. Called INLINE from the commit_txn /
-        // abort_txn handler bodies (Variant E.3 work; not wired yet). This is a
-        // regular private member function — NOT a std::function callback (rule
-        // 13) — so the call site stays a direct method call without indirection.
-        // Reads `txn_manager_.lowest_active_start_time()`, and if it advanced
-        // since `last_broadcast_horizon_`, sends `on_horizon_advanced(new)` to
-        // each subscriber whose drop-resource flag is set. Skip-send is the
-        // common case (no drops outstanding → no message bursts on every
-        // commit).
+        // Cleanup-trigger helper. Called INLINE from the commit_txn /
+        // abort_txn handler bodies (not wired yet). Regular private member
+        // function — NOT a std::function callback (rule 13) — so the call
+        // site stays a direct method call without indirection. Reads
+        // `txn_manager_.lowest_active_start_time()`, and if it advanced since
+        // `last_broadcast_horizon_`, sends `on_horizon_advanced(new)` to each
+        // subscriber whose drop-resource flag is set. Skip-send is the common
+        // case (no drops outstanding → no message bursts on every commit).
         void try_trigger_cleanup_if_horizon_advanced() noexcept;
 
         std::pmr::memory_resource* resource_;
@@ -191,14 +190,15 @@ namespace services::dispatcher {
         static constexpr std::size_t executor_pool_size_ = 4;
 
         // FUTURE: this map will be partitioned across 4 executors by `oid % 4`.
-        // Until that migration, collections_ stays here and is the source of truth.
-        // See services/collection/executor.hpp Variant E.3 docstring for the
-        // migration contract.
+        // Until that migration, collections_ stays here and is the source of
+        // truth. See services/collection/executor.hpp for the migration
+        // contract.
         //
-        // Fast-path membership cache for collections. Read by physical_plan_generator
-        // in 8 sites (join, match, aggregate, sort, group) to drive optimizer
-        // decisions. Removing would require touching all 8 + replacing with
-        // on-demand pg_class scans. Cache rebuild on init_from_state is cheap.
+        // Fast-path membership cache for collections. Read by
+        // physical_plan_generator in 8 sites (join, match, aggregate, sort,
+        // group) to drive optimizer decisions. Removing would require touching
+        // all 8 + replacing with on-demand pg_class scans. Cache rebuild on
+        // init_from_state is cheap.
         collection_storage_t collections_;
         std::pmr::vector<services::collection::executor::executor_ptr> executors_;
         std::pmr::vector<actor_zeta::address_t> executor_addresses_;
@@ -207,10 +207,10 @@ namespace services::dispatcher {
         actor_zeta::address_t disk_address_ = actor_zeta::address_t::empty_address();
         actor_zeta::address_t index_address_ = actor_zeta::address_t::empty_address();
 
-        // selective broadcast flags. Set when DROP TABLE / DROP INDEX
-        // marks a resource dropped (via on_drop_resource_marked); cleared by the
-        // subscriber's on_subscriber_empty ack. Single-actor private state — no
-        // atomic / no shared (rule 10).
+        // Selective broadcast flags. Set when DROP TABLE / DROP INDEX marks
+        // a resource dropped (via on_drop_resource_marked); cleared by the
+        // subscriber's on_subscriber_empty ack. Single-actor private state —
+        // no atomic / no shared (rule 10).
         bool disk_has_dropped_{false};
         bool index_has_dropped_{false};
         // Cached last-broadcast horizon to skip redundant on_horizon_advanced

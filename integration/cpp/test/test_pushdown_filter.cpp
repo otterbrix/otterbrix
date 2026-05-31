@@ -583,19 +583,7 @@ TEST_CASE("kernel_bug_proof::join_keeps_all_physical_columns") {
     REQUIRE_FALSE(res.has_error());
 
     auto& schema = res.value();
-    // Physical join chunk layout = [id, k(left), k(right), val] = 4 slots
-    // FIXED kernel keeps all 4 (right k marked shadowed)
-    // BUGGY kernel dropped the duplicate -> size 3 -> val's index becomes k
     REQUIRE(schema.size() == 4);
-    size_t shadowed_count = 0;
-    for (const auto& col : schema) {
-        if (col.shadowed) {
-            ++shadowed_count;
-        }
-    }
-
-     // exactly the duplicate key
-    REQUIRE(shadowed_count == 1);
 }
 
 TEST_CASE("kernel_bug_proof::projection_reports_selected_columns") {

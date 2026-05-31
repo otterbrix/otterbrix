@@ -560,6 +560,15 @@ class DataFrame:
                         ColumnExpression(key, sc, "right"))
                     cond_expr = eq if cond_expr is None else cond_expr.__and__(eq)
                 new_relation = self.relation.join(other.relation, cond_expr, join_type)
+                key_set = set(on)
+                projections = [
+                    ColumnExpression(c, sc, "left") for c in self.relation.columns
+                ] + [
+                    ColumnExpression(c, sc, "right")
+                    for c in other.relation.columns
+                    if c not in key_set
+                ]
+                new_relation = new_relation.select(*projections)
             else:
                 cond_exprs = []
                 for x in on:

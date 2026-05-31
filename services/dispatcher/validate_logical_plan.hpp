@@ -28,13 +28,6 @@ namespace services::dispatcher {
         std::string result_alias;
         components::types::complex_logical_type type;
         components::expressions::side_t side = components::expressions::side_t::undefined;
-        // On a JOIN the left columns + ALL right columns are concatenated; a same-named column
-        // on the right side is kept (so that schema positions match the
-        // physical join output), but is marked shadowed: it occupies its own
-        // slot but is not accessible by name — a by-name reference resolves to
-        // the surviving (left) column. This mirrors the key coalescing
-        // SQL USING/NATURAL JOIN.
-        bool shadowed = false;
     };
     struct type_path_t {
         column_path path;

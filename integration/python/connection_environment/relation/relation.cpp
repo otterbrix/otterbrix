@@ -4,8 +4,6 @@
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/expression.hpp>
 
-#include <magic_enum.hpp>
-
 using namespace components;
 
 using namespace components::logical_plan;

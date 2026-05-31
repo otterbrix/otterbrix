@@ -7,7 +7,6 @@
 
 #include <util/util.hpp>
 
-#include <magic_enum.hpp>
 #include <stdexcept>
 
 using namespace components;

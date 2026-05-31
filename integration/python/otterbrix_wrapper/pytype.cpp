@@ -7,11 +7,99 @@
 #include <connection_environment/connection_environment.hpp>
 #include <core/types/vector.hpp>
 
-#include <magic_enum.hpp>
-
 using namespace components::types;
 
 namespace otterbrix {
+
+    namespace {
+        std::string logical_type_name(logical_type type) {
+            switch (type) {
+                case logical_type::NA:
+                    return "NA";
+                case logical_type::ANY:
+                    return "ANY";
+                case logical_type::USER:
+                    return "USER";
+                case logical_type::BOOLEAN:
+                    return "BOOLEAN";
+                case logical_type::TINYINT:
+                    return "TINYINT";
+                case logical_type::SMALLINT:
+                    return "SMALLINT";
+                case logical_type::INTEGER:
+                    return "INTEGER";
+                case logical_type::BIGINT:
+                    return "BIGINT";
+                case logical_type::HUGEINT:
+                    return "HUGEINT";
+                case logical_type::TIMESTAMP_SEC:
+                    return "TIMESTAMP_SEC";
+                case logical_type::TIMESTAMP_MS:
+                    return "TIMESTAMP_MS";
+                case logical_type::TIMESTAMP_US:
+                    return "TIMESTAMP_US";
+                case logical_type::TIMESTAMP_NS:
+                    return "TIMESTAMP_NS";
+                case logical_type::DECIMAL:
+                    return "DECIMAL";
+                case logical_type::FLOAT:
+                    return "FLOAT";
+                case logical_type::DOUBLE:
+                    return "DOUBLE";
+                case logical_type::BLOB:
+                    return "BLOB";
+                case logical_type::INTERVAL:
+                    return "INTERVAL";
+                case logical_type::UTINYINT:
+                    return "UTINYINT";
+                case logical_type::USMALLINT:
+                    return "USMALLINT";
+                case logical_type::UINTEGER:
+                    return "UINTEGER";
+                case logical_type::UBIGINT:
+                    return "UBIGINT";
+                case logical_type::UHUGEINT:
+                    return "UHUGEINT";
+                case logical_type::BIT:
+                    return "BIT";
+                case logical_type::STRING_LITERAL:
+                    return "STRING_LITERAL";
+                case logical_type::INTEGER_LITERAL:
+                    return "INTEGER_LITERAL";
+                case logical_type::POINTER:
+                    return "POINTER";
+                case logical_type::VALIDITY:
+                    return "VALIDITY";
+                case logical_type::UUID:
+                    return "UUID";
+                case logical_type::STRUCT:
+                    return "STRUCT";
+                case logical_type::LIST:
+                    return "LIST";
+                case logical_type::MAP:
+                    return "MAP";
+                case logical_type::TABLE:
+                    return "TABLE";
+                case logical_type::ENUM:
+                    return "ENUM";
+                case logical_type::FUNCTION:
+                    return "FUNCTION";
+                case logical_type::LAMBDA:
+                    return "LAMBDA";
+                case logical_type::UNION:
+                    return "UNION";
+                case logical_type::VARIANT:
+                    return "VARIANT";
+                case logical_type::ARRAY:
+                    return "ARRAY";
+                case logical_type::UNKNOWN:
+                    return "UNKNOWN";
+                case logical_type::INVALID:
+                    return "INVALID";
+            }
+            return "UNKNOWN";
+        }
+    } // namespace
 
     // NOLINTNEXTLINE(readability-identifier-naming)
     bool PyGenericAlias::check_(const py::handle &object) {
@@ -363,8 +451,7 @@ namespace otterbrix {
     }
     
     string OtterBrixPyType::ToString() const {
-		auto name = magic_enum::enum_name(type.type());
-    	return string(name);
+        return logical_type_name(type.type());
     }
     
     py::list OtterBrixPyType::Children() const {
@@ -434,9 +521,8 @@ namespace otterbrix {
 		if (type.type() == logical_type::STRING_LITERAL) {
             return "varchar";
         }
-		auto name = magic_enum::enum_name(type.type());
-    	const string cv(name);
-		return string_utils::Lower(cv);
+        auto name = logical_type_name(type.type());
+        return string_utils::Lower(name);
     }
     
     const complex_logical_type &OtterBrixPyType::Type() const {

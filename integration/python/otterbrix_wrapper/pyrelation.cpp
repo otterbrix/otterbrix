@@ -10,12 +10,36 @@
 #include <core/string_util/string_util.hpp>
 #include <components/logical_plan/node_join.hpp>
 
-#include <magic_enum.hpp>
+#include <optional>
 
 using namespace components;
 
 namespace otterbrix {
-    
+
+    namespace {
+        std::optional<logical_plan::join_type> parse_join_type(const std::string& name) {
+            if (name == "inner") {
+                return logical_plan::join_type::inner;
+            }
+            if (name == "full") {
+                return logical_plan::join_type::full;
+            }
+            if (name == "left") {
+                return logical_plan::join_type::left;
+            }
+            if (name == "right") {
+                return logical_plan::join_type::right;
+            }
+            if (name == "cross") {
+                return logical_plan::join_type::cross;
+            }
+            if (name == "invalid") {
+                return logical_plan::join_type::invalid;
+            }
+            return std::nullopt;
+        }
+    } // namespace
+
     PyRelation::PyRelation(ConnectionEnvironment* env, shared_ptr<Relation> rel_) 
         : env(env), rel(rel_) {
         if (!rel) {
@@ -119,14 +143,12 @@ namespace otterbrix {
     }
     unique_ptr<PyRelation> PyRelation::Join(const PyRelation& other, const py::object& condition, const string& type) {
         auto type_string = string_utils::Lower(type);
-        logical_plan::join_type dtype;
 
-        auto parse_result = magic_enum::enum_cast<logical_plan::join_type>(type);
-        if (parse_result.has_value()) {
-            dtype = parse_result.value();
-        } else {
+        auto parse_result = parse_join_type(type_string);
+        if (!parse_result.has_value()) {
             throw std::runtime_error("Couldn\'t parse the join type");
         }
+        auto dtype = parse_result.value();
 
         if (py::isinstance<py::str>(condition)) {
             throw std::runtime_error("OtterBrix couldn\'t parse condition. Please call join with an expression parameter");

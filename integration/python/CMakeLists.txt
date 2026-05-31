@@ -11,7 +11,6 @@ set(external_LIBS
     otterbrix_vector
     otterbrix_table
     otterbrix::planner
-    magic_enum::magic_enum
     utf8proc::utf8proc
 )
 

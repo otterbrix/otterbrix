@@ -56,9 +56,9 @@ namespace {
 
         template<typename Fn, typename... Args>
         auto invoke_async(Fn fn, Args&&... args) {
-            auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::forward<Args>(args)...);
+            auto [_, future] = actor_zeta::send(manager->address(), fn, std::forward<Args>(args)...);
             scheduler->run(10000);
-            return std::move(future).get();
+            return std::move(future).take_ready();
         }
 
         // Alias used by disk_test_helpers templates.

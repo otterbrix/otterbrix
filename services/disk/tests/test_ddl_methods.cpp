@@ -65,7 +65,7 @@ namespace {
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::forward<Args>(args)...);
             scheduler->run(10000);
-            return std::move(future).get();
+            return std::move(future).take_ready();
         }
 
         components::execution_context_t ctx() {

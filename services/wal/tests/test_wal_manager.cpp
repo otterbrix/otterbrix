@@ -74,7 +74,8 @@ struct test_wal_manager {
                                                      std::make_unique<data_chunk_t>(std::move(chunk)),
                                                      row_start,
                                                      row_count,
-                                                     txn_id);
+                                                     txn_id,
+                                                     kMainDb);
         return std::move(fut);
     }
 
@@ -86,7 +87,8 @@ struct test_wal_manager {
                                                      session_id_t::generate_uid(),
                                                      txn_id,
                                                      sync_mode,
-                                                     database_oid);
+                                                     database_oid,
+                                                     uint64_t{0});
         return std::move(fut);
     }
 
@@ -153,12 +155,12 @@ TEST_CASE("wal_manager::commit_records_table_oid") {
 
     auto fut_id = env.send_insert(kTestTableOidA, /*txn_id=*/200, /*row_count=*/8);
     REQUIRE(fut_id.valid());
-    auto wal_id = std::move(fut_id).get();
+    auto wal_id = std::move(fut_id).take_ready();
     REQUIRE(wal_id > 0);
 
     env.send_commit(200);
 
-    auto records = std::move(env.send_load(0)).get();
+    auto records = std::move(env.send_load(0)).take_ready();
     bool found = false;
     for (const auto& r : records) {
         if (r.record_type == wal_record_type::PHYSICAL_INSERT && r.transaction_id == 200) {
@@ -183,7 +185,7 @@ TEST_CASE("wal_manager::load_returns_all") {
     env.send_insert(kTestTableOidB, /*txn_id=*/301, /*row_count=*/4);
     env.send_commit(301);
 
-    auto records = std::move(env.send_load(0)).get();
+    auto records = std::move(env.send_load(0)).take_ready();
 
     // We expect at least 4 records: 2 inserts + 2 commits.
     REQUIRE(records.size() >= 4);
@@ -218,7 +220,7 @@ TEST_CASE("wal_manager::truncate_all") {
     env.send_insert(kTestTableOidA, /*txn_id=*/500, /*row_count=*/5);
     env.send_commit(500);
 
-    auto checkpoint_id = std::move(env.send_current_wal_id()).get();
+    auto checkpoint_id = std::move(env.send_current_wal_id()).take_ready();
     REQUIRE(checkpoint_id > 0);
 
     // Write a second batch after the checkpoint.
@@ -229,7 +231,7 @@ TEST_CASE("wal_manager::truncate_all") {
     env.send_truncate_before(checkpoint_id);
 
     // Load from checkpoint -- should only see the second batch.
-    auto records = std::move(env.send_load(checkpoint_id)).get();
+    auto records = std::move(env.send_load(checkpoint_id)).take_ready();
     for (const auto& r : records) {
         // Every record returned should have an id greater than the checkpoint.
         if (r.is_physical()) {
@@ -249,7 +251,7 @@ TEST_CASE("wal_manager::current_wal_id") {
     env.send_insert(kTestTableOidB, /*txn_id=*/601, /*row_count=*/2);
     env.send_insert(kTestTableOidA, /*txn_id=*/602, /*row_count=*/2);
 
-    auto cur_id = std::move(env.send_current_wal_id()).get();
+    auto cur_id = std::move(env.send_current_wal_id()).take_ready();
     // We wrote 3 records total; the global WAL id should be at least 3.
     REQUIRE(cur_id >= 3);
 }
@@ -272,9 +274,10 @@ TEST_CASE("wal_manager::disabled") {
                                                      std::make_unique<data_chunk_t>(std::move(chunk)),
                                                      uint64_t{0},
                                                      uint64_t{5},
-                                                     uint64_t{800});
+                                                     uint64_t{800},
+                                                     kMainDb);
 
-        auto wal_id = std::move(fut).get();
+        auto wal_id = std::move(fut).take_ready();
         REQUIRE(wal_id == 0);
     }
 
@@ -285,9 +288,10 @@ TEST_CASE("wal_manager::disabled") {
                                                      session_id_t::generate_uid(),
                                                      uint64_t{800},
                                                      wal_sync_mode::NORMAL,
-                                                     kMainDb);
+                                                     kMainDb,
+                                                     uint64_t{0});
 
-        REQUIRE(std::move(fut).get() == 0);
+        REQUIRE(std::move(fut).take_ready() == 0);
     }
 
     // load should return empty.
@@ -297,7 +301,7 @@ TEST_CASE("wal_manager::disabled") {
                                                      session_id_t::generate_uid(),
                                                      services::wal::id_t{0});
 
-        auto records = std::move(fut).get();
+        auto records = std::move(fut).take_ready();
         REQUIRE(records.empty());
     }
 
@@ -307,7 +311,7 @@ TEST_CASE("wal_manager::disabled") {
                                                      &manager_wal_replicate_t::current_wal_id,
                                                      session_id_t::generate_uid());
 
-        REQUIRE(std::move(fut).get() == 0);
+        REQUIRE(std::move(fut).take_ready() == 0);
     }
 }
 
@@ -337,7 +341,7 @@ TEST_CASE("wal_manager::test_auto_checkpoint_on_wal_size") {
         auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
                                                      &manager_wal_replicate_t::auto_checkpoint_wal_id,
                                                      session_id_t::generate_uid());
-        auto id = std::move(fut).get();
+        auto id = std::move(fut).take_ready();
         REQUIRE(id == 0);
     }
 
@@ -352,8 +356,9 @@ TEST_CASE("wal_manager::test_auto_checkpoint_on_wal_size") {
                                                      std::make_unique<data_chunk_t>(std::move(chunk)),
                                                      uint64_t{0},
                                                      uint64_t{10},
-                                                     uint64_t{1001});
-        REQUIRE(std::move(fut).get() > 0);
+                                                     uint64_t{1001},
+                                                     kMainDb);
+        REQUIRE(std::move(fut).take_ready() > 0);
     }
     {
         auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
@@ -361,8 +366,9 @@ TEST_CASE("wal_manager::test_auto_checkpoint_on_wal_size") {
                                                      session_id_t::generate_uid(),
                                                      uint64_t{1001},
                                                      wal_sync_mode::NORMAL,
-                                                     kMainDb);
-        REQUIRE(std::move(fut).get() > 0);
+                                                     kMainDb,
+                                                     uint64_t{0});
+        REQUIRE(std::move(fut).take_ready() > 0);
     }
 
     // Now threshold is exceeded: auto_checkpoint_wal_id must return current wal_id > 0.
@@ -370,7 +376,7 @@ TEST_CASE("wal_manager::test_auto_checkpoint_on_wal_size") {
         auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
                                                      &manager_wal_replicate_t::auto_checkpoint_wal_id,
                                                      session_id_t::generate_uid());
-        auto id = std::move(fut).get();
+        auto id = std::move(fut).take_ready();
         REQUIRE(id > 0);
     }
 
@@ -379,7 +385,7 @@ TEST_CASE("wal_manager::test_auto_checkpoint_on_wal_size") {
         auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
                                                      &manager_wal_replicate_t::auto_checkpoint_wal_id,
                                                      session_id_t::generate_uid());
-        auto id = std::move(fut).get();
+        auto id = std::move(fut).take_ready();
         REQUIRE(id == 0);
     }
 
@@ -404,6 +410,6 @@ TEST_CASE("wal_manager::sync_addresses") {
     // The manager should still be functional after re-sync.
     auto fut_id = env.send_insert(kTestTableOidA, /*txn_id=*/900, /*row_count=*/2);
     REQUIRE(fut_id.valid());
-    auto wal_id = std::move(fut_id).get();
+    auto wal_id = std::move(fut_id).take_ready();
     REQUIRE(wal_id > 0);
 }

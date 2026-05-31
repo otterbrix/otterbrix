@@ -73,7 +73,7 @@ namespace {
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::forward<Args>(args)...);
             scheduler->run(10000);
-            return std::move(future).get();
+            return std::move(future).take_ready();
         }
 
         void checkpoint() {
@@ -82,7 +82,7 @@ namespace {
                                                        session_id_t{},
                                                        services::wal::id_t{0});
             scheduler->run(10000);
-            (void) std::move(cf).get();
+            (void) std::move(cf).take_ready();
         }
     };
 } // namespace

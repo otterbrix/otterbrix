@@ -71,7 +71,7 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         step();
         REQUIRE(pending_future_);
         REQUIRE(pending_future_->valid());
-        auto result = std::move(*pending_future_).get();
+        auto result = std::move(*pending_future_).take_ready();
         pending_future_.reset();
         // Drain again to ensure executor's post-result DDL inline pipeline
         // (catalog writes + flush + commit_txn + storage_publish_commits) completes
@@ -91,7 +91,7 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
                                                     name,
                                                     std::uint64_t{0});
         scheduler_->run(10000);
-        return std::move(fut).get();
+        return std::move(fut).take_ready();
     }
 
     // Resolve a table via disk actor under a given namespace oid.
@@ -106,7 +106,7 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
                                                     tname,
                                                     std::uint64_t{0});
         scheduler_->run(10000);
-        return std::move(fut).get();
+        return std::move(fut).take_ready();
     }
 
     void execute_sql(const std::string& query) {

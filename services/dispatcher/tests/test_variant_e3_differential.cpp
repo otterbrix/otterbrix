@@ -76,7 +76,7 @@ namespace {
             step();
             REQUIRE(pending_future_);
             REQUIRE(pending_future_->valid());
-            auto result = std::move(*pending_future_).get();
+            auto result = std::move(*pending_future_).take_ready();
             pending_future_.reset();
             step();
             return result;
@@ -92,7 +92,7 @@ namespace {
                                                        name,
                                                        std::uint64_t{0});
             scheduler_->run(10000);
-            return std::move(fut).get();
+            return std::move(fut).take_ready();
         }
 
         resolve_table_result_t resolve_table(components::catalog::oid_t ns_oid, const std::string& tname) {
@@ -106,7 +106,7 @@ namespace {
                                                        tname,
                                                        std::uint64_t{0});
             scheduler_->run(10000);
-            return std::move(fut).get();
+            return std::move(fut).take_ready();
         }
 
         // Post a parsed logical plan to manager_dispatcher's execute_plan handler.

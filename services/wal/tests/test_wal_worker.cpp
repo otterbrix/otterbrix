@@ -76,7 +76,8 @@ struct test_wal_worker {
                                                                  std::move(chunk_ptr),
                                                                  row_start,
                                                                  row_count,
-                                                                 txn_id);
+                                                                 txn_id,
+                                                                 kMainDb);
         return std::move(future);
     }
 
@@ -90,7 +91,8 @@ struct test_wal_worker {
                                                                  table_oid,
                                                                  std::move(ids_copy),
                                                                  static_cast<uint64_t>(row_ids.size()),
-                                                                 txn_id);
+                                                                 txn_id,
+                                                                 kMainDb);
         return std::move(future);
     }
 
@@ -110,7 +112,8 @@ struct test_wal_worker {
                                                                  std::move(ids_copy),
                                                                  std::move(chunk_ptr),
                                                                  static_cast<uint64_t>(row_count),
-                                                                 txn_id);
+                                                                 txn_id,
+                                                                 kMainDb);
         return std::move(future);
     }
 
@@ -205,7 +208,7 @@ TEST_CASE("wal_worker::delete_write_read") {
 
     env.send_commit(200);
 
-    auto records = std::move(env.send_load(0)).get();
+    auto records = std::move(env.send_load(0)).take_ready();
     bool found_delete = false;
     for (const auto& r : records) {
         if (r.record_type == wal_record_type::PHYSICAL_DELETE) {
@@ -234,7 +237,7 @@ TEST_CASE("wal_worker::update_write_read") {
 
     env.send_commit(300);
 
-    auto records = std::move(env.send_load(0)).get();
+    auto records = std::move(env.send_load(0)).take_ready();
     bool found_update = false;
     for (const auto& r : records) {
         if (r.record_type == wal_record_type::PHYSICAL_UPDATE) {
@@ -260,7 +263,7 @@ TEST_CASE("wal_worker::commit_marker") {
     env.send_insert(/*txn_id=*/400, /*row_count=*/5);
     env.send_commit(400);
 
-    auto records = std::move(env.send_load(0)).get();
+    auto records = std::move(env.send_load(0)).take_ready();
 
     bool found_commit = false;
     for (const auto& r : records) {
@@ -306,7 +309,8 @@ TEST_CASE("wal_worker::corruption_stop") {
                                                          std::make_unique<data_chunk_t>(std::move(chunk)),
                                                          static_cast<uint64_t>(i * 4),
                                                          uint64_t{4},
-                                                         uint64_t{500});
+                                                         uint64_t{500},
+                                                         kMainDb);
         }
         {
             auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
@@ -412,7 +416,8 @@ TEST_CASE("wal_worker::crc_chain_startup") {
                                                          std::make_unique<data_chunk_t>(std::move(chunk)),
                                                          uint64_t{0},
                                                          uint64_t{8},
-                                                         uint64_t{600});
+                                                         uint64_t{600},
+                                                         kMainDb);
         }
         {
             auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
@@ -464,7 +469,8 @@ TEST_CASE("wal_worker::crc_chain_startup") {
             std::make_unique<data_chunk_t>(gen_data_chunk(3, std::pmr::get_default_resource())),
             uint64_t{0},
             uint64_t{3},
-            uint64_t{601});
+            uint64_t{601},
+            kMainDb);
         auto new_wal_id = std::move(fut_id).take_ready();
         REQUIRE(new_wal_id > last_wal_id);
 
@@ -506,7 +512,8 @@ TEST_CASE("wal_worker::segment_rotation") {
                                                      std::make_unique<data_chunk_t>(std::move(chunk)),
                                                      i * 20,
                                                      uint64_t{20},
-                                                     uint64_t{700 + i});
+                                                     uint64_t{700 + i},
+                                                     kMainDb);
     }
 
     // Count WAL-related files under the test path.
@@ -550,14 +557,15 @@ TEST_CASE("wal_worker::spanning_record") {
                                                      std::move(chunk_ptr),
                                                      uint64_t{0},
                                                      uint64_t{500},
-                                                     uint64_t{800});
+                                                     uint64_t{800},
+                                                     kMainDb);
         auto wal_id = std::move(fut).take_ready();
         REQUIRE(wal_id > 0);
     }
 
     env.send_commit(800);
 
-    auto records = std::move(env.send_load(0)).get();
+    auto records = std::move(env.send_load(0)).take_ready();
     bool found = false;
     for (const auto& r : records) {
         if (r.record_type == wal_record_type::PHYSICAL_INSERT && r.transaction_id == 800) {
@@ -602,7 +610,8 @@ TEST_CASE("wal_worker::fsync_full_mode") {
                                                      std::make_unique<data_chunk_t>(std::move(chunk)),
                                                      uint64_t{0},
                                                      uint64_t{10},
-                                                     uint64_t{900});
+                                                     uint64_t{900},
+                                                     kMainDb);
         REQUIRE(std::move(fut).take_ready() > 0);
     }
 
@@ -663,7 +672,8 @@ TEST_CASE("wal_worker::fsync_off_mode") {
                                                      std::make_unique<data_chunk_t>(std::move(chunk)),
                                                      uint64_t{0},
                                                      uint64_t{10},
-                                                     uint64_t{1000});
+                                                     uint64_t{1000},
+                                                     kMainDb);
         // Write should still return a valid WAL id.
         REQUIRE(std::move(fut).take_ready() > 0);
     }

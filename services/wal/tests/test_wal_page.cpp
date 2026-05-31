@@ -50,7 +50,7 @@ namespace {
         info.txn_id = txn_id;
         info.type = wal_record_type::COMMIT;
         buffer_t buf;
-        services::wal::encode_commit(buf, last_crc, wal_id, txn_id);
+        services::wal::encode_commit(buf, last_crc, wal_id, txn_id, /*commit_id=*/0);
         info.data = buffer_to_vec(buf);
         return info;
     }

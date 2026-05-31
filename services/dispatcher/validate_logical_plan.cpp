@@ -137,11 +137,6 @@ namespace services::dispatcher {
             size_t key_order;
         };
 
-        // JOIN merge: keep ALL physical columns from both sides, even when a name is
-        // shared across tables (e.g. left.k and right.k). Dropping a same-named column
-        // here loses real data — see kernel_bug_proof::join_keeps_all_physical_columns.
-        // Wildcard ambiguity is not resolved here: SELECT * returns every column, and an
-        // EXPLICIT reference to an ambiguous name is rejected later in find_types.
         named_schema merge_schemas(std::pmr::memory_resource* resource, named_schema lhs, named_schema rhs) {
             named_schema merged(resource);
             for (auto&& type : lhs) {
@@ -1491,9 +1486,6 @@ namespace services::dispatcher {
                             }
                         }
 
-                        // Resolve key paths in node_select scalar expressions against incoming schema,
-                        // building a precise result schema. Aggregates are always in node_group_t now,
-                        // so only scalar expressions appear here.
                         bool has_computed_column = false;
                         for (auto& expr : node_select->expressions()) {
                             if (expr->group() != expression_group::scalar) {
@@ -1531,8 +1523,6 @@ namespace services::dispatcher {
                                     result.emplace_back(col);
                                 }
                             } else {
-                                // Computed column (constant / arithmetic / case): resolve key paths,
-                                // but fall back to the incoming schema since its output type is unknown.
                                 if (scalar_expr->type() != scalar_type::constant) {
                                     auto res = impl::resolve_key_paths_in_group(resource,
                                                                                 scalar_expr->params(),
@@ -1548,19 +1538,6 @@ namespace services::dispatcher {
                             return result;
                         }
                     } else {
-                        // "SELECT *" / "SELECT t.*" — emit every column unchanged. The
-                        // wildcard is never ambiguous: it simply returns all columns,
-                        // including
-                        //   * several same-name columns of different types (multi-type
-                        //     fields on a computing table), and
-                        //   * same-name columns from different JOIN'd tables, and
-                        //   * the doubled columns of a bare self-join.
-                        // Ambiguity is enforced only on an EXPLICIT reference to such a
-                        // name (handled in find_types, which errors with ambiguous_name
-                        // and requires aliases / '::?type' selection). No dedup or type
-                        // conflict check belongs here — see the merge_schemas note above
-                        // and tests test_computed_schema::multitype_select_star,
-                        // test_join "self join", join_keeps_all_physical_columns.
                     }
                     return incoming_schema;
                 } else {

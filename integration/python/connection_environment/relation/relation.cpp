@@ -94,9 +94,6 @@ namespace otterbrix {
                 }
                 if (scalar_expr->params().size() == 1) {
                     auto param_name = find_param_name(scalar_expr->params().front());
-                    // Name comes from the alias (key) when present, otherwise fall
-                    // back to the underlying column name so unaliased projections
-                    // keep a real name instead of error_str.
                     name = scalar_expr->key().is_null() ? param_name.first
                                                         : scalar_expr->key().as_string();
                     type = find_type(param_name.first, initial);

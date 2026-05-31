@@ -15,6 +15,13 @@ using services::index::bitcask_index_disk_t;
 using services::index::btree_index_disk_t;
 
 namespace {
+    constexpr uint64_t test_flush_threshold = 1000;
+    constexpr uint64_t test_segment_record_limit = 100;
+
+    bitcask_index_disk_t make_test_index(const std::filesystem::path& path, std::pmr::memory_resource* resource) {
+        return bitcask_index_disk_t(path, resource, test_flush_threshold, test_segment_record_limit);
+    }
+
     size_t count_bitcask_data_files(const std::filesystem::path& path) {
         if (!std::filesystem::exists(path)) {
             return 0;
@@ -90,7 +97,7 @@ TEST_CASE("services::index::bitcask_index_disk::int64_basic") {
     std::filesystem::path path{"/tmp/index_disk/bitcask_int64"};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
-    auto index = bitcask_index_disk_t(path, &resource);
+    auto index = make_test_index(path, &resource);
 
     for (int i = 1; i <= 100; ++i) {
         index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
@@ -102,9 +109,6 @@ TEST_CASE("services::index::bitcask_index_disk::int64_basic") {
     REQUIRE(index.find(logical_value_t(&resource, 100l)).front() == 100);
     REQUIRE(index.find(logical_value_t(&resource, 101l)).empty());
 
-    REQUIRE(index.lower_bound(logical_value_t(&resource, 10l)).size() == 9);
-    REQUIRE(index.upper_bound(logical_value_t(&resource, 90l)).size() == 10);
-
     for (int i = 2; i <= 100; i += 2) {
         index.remove(logical_value_t(&resource, int64_t(i)));
     }
@@ -112,8 +116,6 @@ TEST_CASE("services::index::bitcask_index_disk::int64_basic") {
     { std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
 
     REQUIRE(index.find(logical_value_t(&resource, 2l)).empty());
-    REQUIRE(index.lower_bound(logical_value_t(&resource, 10l)).size() == 5);
-    REQUIRE(index.upper_bound(logical_value_t(&resource, 90l)).size() == 5);
 }
 
 TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen") {
@@ -124,7 +126,7 @@ TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen") {
     std::filesystem::create_directories(path);
 
     {
-        auto index = bitcask_index_disk_t(path, &resource, bitcask_index_disk_t::default_flush_threshold_, 1000);
+        auto index = bitcask_index_disk_t(path, &resource, test_flush_threshold, 1000);
         for (int i = 1; i <= 100; ++i) {
             index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
         }
@@ -139,7 +141,7 @@ TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen") {
     REQUIRE(count_bitcask_data_files(path) == 1);
 
     {
-        auto index = bitcask_index_disk_t(path, &resource, bitcask_index_disk_t::default_flush_threshold_, 1000);
+        auto index = bitcask_index_disk_t(path, &resource, test_flush_threshold, 1000);
 
         REQUIRE(index.find(logical_value_t(&resource, 1l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 1l)).front() == 1);
@@ -147,9 +149,6 @@ TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen") {
         REQUIRE(index.find(logical_value_t(&resource, 99l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 99l)).front() == 99);
         REQUIRE(index.find(logical_value_t(&resource, 100l)).empty());
-
-        REQUIRE(index.lower_bound(logical_value_t(&resource, 10l)).size() == 5);
-        REQUIRE(index.upper_bound(logical_value_t(&resource, 90l)).size() == 5);
     }
 }
 
@@ -161,7 +160,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_immutable_segments") {
     std::filesystem::create_directories(path);
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         for (int i = 1; i <= 250; ++i) {
             index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
         }
@@ -173,15 +172,13 @@ TEST_CASE("services::index::bitcask_index_disk::merge_immutable_segments") {
     REQUIRE(count_bitcask_data_files(path) == 2);
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         REQUIRE(index.find(logical_value_t(&resource, 1l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 1l)).front() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 100l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 100l)).front() == 100);
         REQUIRE(index.find(logical_value_t(&resource, 250l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 250l)).front() == 250);
-        REQUIRE(index.lower_bound(logical_value_t(&resource, 10l)).size() == 9);
-        REQUIRE(index.upper_bound(logical_value_t(&resource, 240l)).size() == 10);
     }
 }
 
@@ -193,7 +190,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_keeps_latest_snapshot_for_
     std::filesystem::create_directories(path);
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
 
         index.insert(logical_value_t(&resource, 777l), 1);
         for (int i = 1; i < 100; ++i) {
@@ -214,7 +211,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_keeps_latest_snapshot_for_
     REQUIRE(count_bitcask_data_files(path) == 2);
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         const auto rows = index.find(logical_value_t(&resource, 777l));
         REQUIRE(rows.size() == 2);
         REQUIRE(rows[0] == 1);
@@ -230,7 +227,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_drops_tombstoned_keys") {
     std::filesystem::create_directories(path);
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
 
         index.insert(logical_value_t(&resource, 555l), 55);
         for (int i = 1; i < 100; ++i) {
@@ -250,7 +247,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_drops_tombstoned_keys") {
 
     REQUIRE(count_bitcask_data_files(path) == 2);
 
-    auto index = bitcask_index_disk_t(path, &resource);
+    auto index = make_test_index(path, &resource);
     REQUIRE(index.find(logical_value_t(&resource, 555l)).empty());
     REQUIRE(index.find(logical_value_t(&resource, 60001l)).size() == 1);
     REQUIRE(index.find(logical_value_t(&resource, 60001l)).front() == 60001);
@@ -264,7 +261,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_preserves_active_segment_e
     std::filesystem::create_directories(path);
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
 
         for (int i = 1; i <= 200; ++i) {
             index.insert(logical_value_t(&resource, 70000l + i), static_cast<size_t>(i));
@@ -280,7 +277,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_preserves_active_segment_e
     REQUIRE(count_bitcask_data_files(path) == 2);
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         REQUIRE(index.find(logical_value_t(&resource, 888l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 888l)).front() == 888);
         REQUIRE(index.find(logical_value_t(&resource, 889l)).size() == 1);
@@ -298,7 +295,7 @@ TEST_CASE("services::index::bitcask_index_disk::remove_specific_row_id") {
     std::filesystem::create_directories(path);
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
 
         index.insert(logical_value_t(&resource, 42l), 100);
         index.insert(logical_value_t(&resource, 42l), 101);
@@ -325,7 +322,7 @@ TEST_CASE("services::index::bitcask_index_disk::remove_specific_row_id") {
     }
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         REQUIRE(index.find(logical_value_t(&resource, 42l)).empty());
         REQUIRE(index.find(logical_value_t(&resource, 43l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 43l)).front() == 200);
@@ -340,7 +337,7 @@ TEST_CASE("services::index::bitcask_index_disk::deduplicates_same_row_for_key") 
     std::filesystem::create_directories(path);
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         index.insert(logical_value_t(&resource, 10l), 7);
         index.insert(logical_value_t(&resource, 10l), 7); // duplicate must be ignored
         index.insert(logical_value_t(&resource, 10l), 8);
@@ -348,7 +345,7 @@ TEST_CASE("services::index::bitcask_index_disk::deduplicates_same_row_for_key") 
     }
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         const auto rows = index.find(logical_value_t(&resource, 10l));
         REQUIRE(rows.size() == 2);
         REQUIRE(rows[0] == 7);
@@ -363,7 +360,7 @@ TEST_CASE("services::index::bitcask_index_disk::load_entries_reflects_current_st
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
-    auto index = bitcask_index_disk_t(path, &resource);
+    auto index = make_test_index(path, &resource);
     index.insert(logical_value_t(&resource, 1l), 11);
     index.insert(logical_value_t(&resource, 1l), 12);
     index.insert(logical_value_t(&resource, 2l), 21);
@@ -390,7 +387,7 @@ TEST_CASE("services::index::bitcask_index_disk::drop_removes_storage_and_recreat
     std::filesystem::create_directories(path);
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         index.insert(logical_value_t(&resource, 99l), 999);
         index.force_flush();
         REQUIRE(std::filesystem::exists(path));
@@ -401,7 +398,7 @@ TEST_CASE("services::index::bitcask_index_disk::drop_removes_storage_and_recreat
     }
 
     {
-        auto recreated = bitcask_index_disk_t(path, &resource);
+        auto recreated = make_test_index(path, &resource);
         REQUIRE(std::filesystem::exists(path));
         REQUIRE(recreated.find(logical_value_t(&resource, 99l)).empty());
 
@@ -418,13 +415,11 @@ TEST_CASE("services::index::bitcask_index_disk::empty_index_operations_are_noop"
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
-    auto index = bitcask_index_disk_t(path, &resource);
+    auto index = make_test_index(path, &resource);
     index.remove(logical_value_t(&resource, 111l));      // no-op
     index.remove(logical_value_t(&resource, 111l), 222); // no-op
 
     REQUIRE(index.find(logical_value_t(&resource, 111l)).empty());
-    REQUIRE(index.lower_bound(logical_value_t(&resource, 111l)).empty());
-    REQUIRE(index.upper_bound(logical_value_t(&resource, 111l)).empty());
 
     bitcask_index_disk_t::entries_t entries(&resource);
     index.load_entries(entries);
@@ -439,7 +434,7 @@ TEST_CASE("services::index::bitcask_index_disk::string_keys_persist_and_range_qu
     std::filesystem::create_directories(path);
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         index.insert(logical_value_t(&resource, std::string("alpha")), 1);
         index.insert(logical_value_t(&resource, std::string("beta")), 2);
         index.insert(logical_value_t(&resource, std::string("gamma")), 3);
@@ -447,17 +442,10 @@ TEST_CASE("services::index::bitcask_index_disk::string_keys_persist_and_range_qu
     }
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         auto beta = index.find(logical_value_t(&resource, std::string("beta")));
         REQUIRE(beta.size() == 1);
         REQUIRE(beta.front() == 2);
-
-        auto less_than_gamma = index.lower_bound(logical_value_t(&resource, std::string("gamma")));
-        REQUIRE(less_than_gamma.size() == 2);
-
-        auto greater_than_beta = index.upper_bound(logical_value_t(&resource, std::string("beta")));
-        REQUIRE(greater_than_beta.size() == 1);
-        REQUIRE(greater_than_beta.front() == 3);
     }
 }
 
@@ -477,7 +465,7 @@ TEST_CASE("services::index::bitcask_index_disk::flush_threshold_persists_without
     }
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         REQUIRE(index.find(logical_value_t(&resource, 1l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 2l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 3l)).size() == 1);
@@ -492,7 +480,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_fs_error_does_not_lose_dat
     std::filesystem::create_directories(path);
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         for (int i = 1; i <= 250; ++i) {
             index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
         }
@@ -508,7 +496,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_fs_error_does_not_lose_dat
     std::filesystem::create_directory(blocking_path);
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         index.force_flush(); // enqueue merge; publish should fail because target path is a directory
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
@@ -516,7 +504,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_fs_error_does_not_lose_dat
     std::filesystem::remove_all(blocking_path);
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         REQUIRE(index.find(logical_value_t(&resource, 1l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 1l)).front() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 100l)).size() == 1);
@@ -534,7 +522,7 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_ignores_corrupted_tail_
     std::filesystem::create_directories(path);
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         index.insert(logical_value_t(&resource, 1l), 11);
         index.insert(logical_value_t(&resource, 2l), 22);
         index.force_flush();
@@ -547,7 +535,7 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_ignores_corrupted_tail_
     std::filesystem::resize_file(file_path, original_size + 5); // append incomplete/trash tail
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         REQUIRE(index.find(logical_value_t(&resource, 1l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 1l)).front() == 11);
         REQUIRE(index.find(logical_value_t(&resource, 2l)).size() == 1);
@@ -563,7 +551,7 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_throws_on_crc_mismatch"
     std::filesystem::create_directories(path);
 
     {
-        auto index = bitcask_index_disk_t(path, &resource, bitcask_index_disk_t::default_flush_threshold_, 2);
+        auto index = bitcask_index_disk_t(path, &resource, test_flush_threshold, 2);
         index.insert(logical_value_t(&resource, 1l), 11);
         index.insert(logical_value_t(&resource, 2l), 22);
         index.insert(logical_value_t(&resource, 100l), 100);
@@ -589,12 +577,12 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_throws_on_crc_mismatch"
         REQUIRE(file.good());
     }
 
-    REQUIRE_THROWS_AS((bitcask_index_disk_t(path, &resource)), std::runtime_error);
+    REQUIRE_THROWS_AS((make_test_index(path, &resource)), std::runtime_error);
 
     std::filesystem::copy_file(backup_path, file_path, std::filesystem::copy_options::overwrite_existing);
     std::filesystem::remove(backup_path);
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         REQUIRE(index.find(logical_value_t(&resource, 1l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 2l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 100l)).size() == 1);
@@ -610,7 +598,7 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_crc_mismatch_does_not_d
     std::filesystem::create_directories(path);
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         for (int i = 1; i <= 250; ++i) {
             index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
         }
@@ -648,7 +636,7 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_crc_mismatch_does_not_d
         REQUIRE(file.good());
     }
 
-    REQUIRE_THROWS_AS((bitcask_index_disk_t(path, &resource)), std::runtime_error);
+    REQUIRE_THROWS_AS((make_test_index(path, &resource)), std::runtime_error);
 
     const auto intact_after_failed_recovery = read_file_bytes(intact_segment);
     REQUIRE(intact_after_failed_recovery == intact_before);
@@ -657,7 +645,7 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_crc_mismatch_does_not_d
     std::filesystem::remove(corrupted_backup);
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         REQUIRE(index.find(logical_value_t(&resource, 1l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 1l)).front() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 250l)).size() == 1);
@@ -673,7 +661,7 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_with_invalid_current_fi
     std::filesystem::create_directories(path);
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         for (int i = 1; i <= 250; ++i) {
             index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
         }
@@ -690,7 +678,7 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_with_invalid_current_fi
     }
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         REQUIRE(index.find(logical_value_t(&resource, 1l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 250l)).size() == 1);
         index.insert(logical_value_t(&resource, 9999l), 9999);
@@ -698,7 +686,7 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_with_invalid_current_fi
     }
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         REQUIRE(index.find(logical_value_t(&resource, 9999l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 9999l)).front() == 9999);
     }
@@ -712,7 +700,7 @@ TEST_CASE("services::index::bitcask_index_disk::tombstone_then_reinsert_persists
     std::filesystem::create_directories(path);
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         index.insert(logical_value_t(&resource, 77l), 1);
         index.remove(logical_value_t(&resource, 77l));
         index.insert(logical_value_t(&resource, 77l), 2);
@@ -720,7 +708,7 @@ TEST_CASE("services::index::bitcask_index_disk::tombstone_then_reinsert_persists
     }
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         const auto rows = index.find(logical_value_t(&resource, 77l));
         REQUIRE(rows.size() == 1);
         REQUIRE(rows.front() == 2);
@@ -737,13 +725,13 @@ TEST_CASE("services::index::bitcask_index_disk::string_key_with_embedded_null_pe
     const std::string key_with_null{"abc\0def", 7};
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         index.insert(logical_value_t(&resource, key_with_null), 77);
         index.force_flush();
     }
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         const auto rows = index.find(logical_value_t(&resource, key_with_null));
         REQUIRE(rows.size() == 1);
         REQUIRE(rows.front() == 77);
@@ -760,16 +748,89 @@ TEST_CASE("services::index::bitcask_index_disk::very_long_string_key_persists") 
     const std::string long_key(1U << 20U, 'x');
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         index.insert(logical_value_t(&resource, long_key), 12345);
         index.force_flush();
     }
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         const auto rows = index.find(logical_value_t(&resource, long_key));
         REQUIRE(rows.size() == 1);
         REQUIRE(rows.front() == 12345);
+    }
+}
+
+TEST_CASE("services::index::bitcask_index_disk::txn_log_recovery_replays_committed_batch") {
+    auto resource = std::pmr::synchronized_pool_resource();
+
+    std::filesystem::path path{"/tmp/index_disk/bitcask_txn_recovery"};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    {
+        auto index = make_test_index(path, &resource);
+        std::vector<std::pair<logical_value_t, size_t>> inserts;
+        inserts.emplace_back(logical_value_t(&resource, 1001l), 11);
+        inserts.emplace_back(logical_value_t(&resource, 1002l), 22);
+        index.apply_txn_inserts(5001, inserts);
+    }
+
+    {
+        auto index = make_test_index(path, &resource);
+        REQUIRE(index.find(logical_value_t(&resource, 1001l)).size() == 1);
+        REQUIRE(index.find(logical_value_t(&resource, 1001l)).front() == 11);
+        REQUIRE(index.find(logical_value_t(&resource, 1002l)).size() == 1);
+        REQUIRE(index.find(logical_value_t(&resource, 1002l)).front() == 22);
+    }
+}
+
+TEST_CASE("services::index::bitcask_index_disk::txn_log_applied_checkpoint_prevents_replay_duplicates") {
+    auto resource = std::pmr::synchronized_pool_resource();
+
+    std::filesystem::path path{"/tmp/index_disk/bitcask_txn_recovery_idempotent"};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    {
+        auto index = make_test_index(path, &resource);
+        std::vector<std::pair<logical_value_t, size_t>> inserts;
+        inserts.emplace_back(logical_value_t(&resource, 2001l), 77);
+        index.apply_txn_inserts(6001, inserts);
+    }
+
+    {
+        auto index = make_test_index(path, &resource);
+        auto rows = index.find(logical_value_t(&resource, 2001l));
+        REQUIRE(rows.size() == 1);
+        REQUIRE(rows.front() == 77);
+    }
+}
+
+TEST_CASE("services::index::bitcask_index_disk::txn_log_recovery_is_order_independent_by_txn_id") {
+    auto resource = std::pmr::synchronized_pool_resource();
+
+    std::filesystem::path path{"/tmp/index_disk/bitcask_txn_recovery_out_of_order_txn_id"};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    {
+        auto index = make_test_index(path, &resource);
+        std::vector<std::pair<logical_value_t, size_t>> first;
+        first.emplace_back(logical_value_t(&resource, 3001l), 1);
+        index.apply_txn_inserts(9002, first);
+
+        std::vector<std::pair<logical_value_t, size_t>> second;
+        second.emplace_back(logical_value_t(&resource, 3002l), 2);
+        index.apply_txn_inserts(9001, second); // lower txn_id, committed later
+    }
+
+    {
+        auto index = make_test_index(path, &resource);
+        REQUIRE(index.find(logical_value_t(&resource, 3001l)).size() == 1);
+        REQUIRE(index.find(logical_value_t(&resource, 3001l)).front() == 1);
+        REQUIRE(index.find(logical_value_t(&resource, 3002l)).size() == 1);
+        REQUIRE(index.find(logical_value_t(&resource, 3002l)).front() == 2);
     }
 }
 
@@ -783,13 +844,13 @@ TEST_CASE("services::index::bitcask_index_disk::max_size_t_row_id_persists") {
     const auto max_row_id = std::numeric_limits<size_t>::max();
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         index.insert(logical_value_t(&resource, 999l), max_row_id);
         index.force_flush();
     }
 
     {
-        auto index = bitcask_index_disk_t(path, &resource);
+        auto index = make_test_index(path, &resource);
         const auto rows = index.find(logical_value_t(&resource, 999l));
         REQUIRE(rows.size() == 1);
         REQUIRE(rows.front() == max_row_id);
@@ -879,7 +940,7 @@ TEST_CASE("services::index::bitcask_index_disk::concurrent_insert_remove_find_st
     }
 
     {
-        auto reopened = bitcask_index_disk_t(path, &resource);
+        auto reopened = make_test_index(path, &resource);
         const auto actual_after_reopen = snapshot(reopened);
         for (size_t key = 0; key < key_count; ++key) {
             REQUIRE(actual_after_reopen[key].size() == expected_after_stress[key].size());

@@ -4,6 +4,7 @@
 #include <condition_variable>
 #include <functional>
 #include <mutex>
+#include <utility>
 #include <vector>
 
 #include <actor-zeta.hpp>
@@ -25,6 +26,7 @@
 #include <components/logical_plan/node_match.hpp>
 #include <components/session/session.hpp>
 #include <components/sql/transformer/transformer.hpp>
+#include <components/types/logical_value.hpp>
 
 namespace otterbrix {
 
@@ -97,6 +99,10 @@ namespace otterbrix {
                           components::logical_plan::parameter_node_ptr params = nullptr)
             -> components::cursor::cursor_t_ptr;
         auto execute_sql(const session_id_t& session, const std::string& query) -> components::cursor::cursor_t_ptr;
+        auto execute_sql_with_params(const session_id_t& session,
+                                     const std::string& query,
+                                     const std::vector<std::pair<size_t, components::types::logical_value_t>>& params)
+            -> components::cursor::cursor_t_ptr;
         auto set_timezone(const session_id_t& session, std::string timezone_name) -> components::cursor::cursor_t_ptr;
 
         auto get_schema(const session_id_t& session,

@@ -323,6 +323,14 @@ namespace services::disk {
             co_return std::make_pair(uint64_t{0}, uint64_t{0});
         }
 
+        // Computing (relkind='g') tables may hold several columns with the same
+        // name but different types (multi-type fields): schema growth and column
+        // matching key on (name, type) instead of name alone, and no coercion.
+        bool is_computed_table = false;
+        if (auto it = storages_.find(table_oid); it != storages_.end()) {
+            is_computed_table = it->second->is_computed;
+        }
+
         // 1. Schema adoption
         if (!s->has_schema() && data->column_count() > 0) {
             s->adopt_schema(data->types());
@@ -344,7 +352,12 @@ namespace services::disk {
         // (now-unfilled) column — producing a NOT NULL violation on the
         // original. test_collection::insert::"insert with conversions"
         // exercises this exact path.
-        if (s->has_schema() && data->column_count() > 0 && data->column_count() != s->columns().size()) {
+        // Computing tables grow per (name,type), regardless of chunk width, so a
+        // same-name different-type field becomes a separate physical column.
+        // Non-computing tables keep the original width-difference guard (an
+        // alias mismatch at equal width is a rename/type-conversion, not growth).
+        if (s->has_schema() && data->column_count() > 0 &&
+            (is_computed_table || data->column_count() != s->columns().size())) {
             auto it = storages_.find(table_oid);
             if (it != storages_.end() && it->second->table_storage.mode() == storage_mode_t::IN_MEMORY) {
                 std::vector<components::table::column_definition_t> new_columns;
@@ -353,9 +366,10 @@ namespace services::disk {
                         continue;
                     }
                     const auto alias = data->data[col].type().alias();
+                    const auto ctype = data->data[col].type().type();
                     bool present = false;
                     for (const auto& tc : s->columns()) {
-                        if (tc.name() == alias) {
+                        if (tc.name() == alias && (!is_computed_table || tc.type().type() == ctype)) {
                             present = true;
                             break;
                         }
@@ -388,12 +402,16 @@ namespace services::disk {
 
             std::vector<components::vector::vector_t> expanded_data;
             expanded_data.reserve(table_columns.size());
-            const bool positional_fallback = (data->column_count() == table_columns.size());
+            // Computing tables match by (name, type) so each type-variant lands in
+            // its own physical column; unmatched variants get NULL. Positional
+            // fallback is disabled there (it assumes one column per name).
+            const bool positional_fallback = !is_computed_table && (data->column_count() == table_columns.size());
             for (size_t t = 0; t < table_columns.size(); t++) {
                 bool found = false;
                 for (uint64_t col = 0; col < data->column_count(); col++) {
                     if (data->data[col].type().has_alias() &&
-                        data->data[col].type().alias() == table_columns[t].name()) {
+                        data->data[col].type().alias() == table_columns[t].name() &&
+                        (!is_computed_table || data->data[col].type().type() == table_columns[t].type().type())) {
                         expanded_data.push_back(std::move(data->data[col]));
                         found = true;
                         break;

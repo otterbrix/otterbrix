@@ -136,7 +136,8 @@ namespace services::dispatcher {
         execute_plan_impl(components::session::session_id_t session,
                           components::logical_plan::node_ptr logical_plan,
                           components::logical_plan::storage_parameters parameters,
-                          components::table::transaction_data txn);
+                          components::table::transaction_data txn,
+                          context_storage_t* collections_context_storage);
 
         actor_zeta::behavior_t current_behavior_;
     };

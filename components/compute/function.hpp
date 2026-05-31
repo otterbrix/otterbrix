@@ -244,6 +244,13 @@ namespace components::compute {
 
         static function_registry_t* get_default();
 
+        // Replace the process-global default registry with a fresh one holding
+        // only the builtin functions. Used by tests to isolate the global UDF
+        // registry between independent instances (a UDF registered by one test
+        // otherwise leaks into get_default() and corrupts the next). NOT
+        // thread-safe — call only when no queries are in flight.
+        static void reset_default();
+
         [[nodiscard]] core::result_wrapper_t<function_uid> add_function(function_ptr function);
         // Insert with a caller-supplied UID. Used when the canonical UID was
         // chosen by another registry (e.g. the global default) and per-executor

@@ -1,0 +1,13 @@
+[package]
+name = "otterbrix"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+description = "Safe idiomatic Rust wrapper for Otterbrix"
+license = "BSD-3-Clause"
+
+[dependencies]
+otterbrix-sys = { path = "../otterbrix-sys" }
+
+[dev-dependencies]
+tempfile = "3"

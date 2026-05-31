@@ -491,12 +491,17 @@ namespace services::disk {
             // Used by checkpoint_all (sidecar lands next to .otbx) and drop_storage
             // (physical file removal).
             std::filesystem::path otbx_path;
+            // Computing (relkind='g', dynamic-schema) table: created schema-less via
+            // create_storage. Only such tables may hold several columns with the same
+            // name but different types (multi-type fields); regular tables coerce.
+            bool is_computed = false;
 
-            /// In-memory: schema-less
+            /// In-memory: schema-less (computing / relkind='g' dynamic schema)
             explicit collection_storage_entry_t(std::pmr::memory_resource* resource)
                 : table_storage(resource)
                 , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
-                                                                                         resource)) {}
+                                                                                         resource))
+                , is_computed(true) {}
 
             /// In-memory: with columns
             explicit collection_storage_entry_t(std::pmr::memory_resource* resource,

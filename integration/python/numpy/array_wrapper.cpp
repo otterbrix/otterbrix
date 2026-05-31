@@ -36,20 +36,6 @@ struct RegularConvert {
 	}
 };
 
-struct TimestampConvertNano {
-	template <class OTTERBRIX_T, class NUMPY_T>
-	static int64_t ConvertValue(std::chrono::nanoseconds val, NumpyAppendData &append_data) {
-		(void)append_data;
-		return val.count();
-	}
-
-	template <class NUMPY_T, bool PANDAS>
-	static NUMPY_T NullValue(bool &set_mask) {
-		set_mask = true;
-		return 0;
-	}
-};
-
 struct StringConvert {
 	template <class OTTERBRIX_T, class NUMPY_T>
 	static PyObject *ConvertValue(std::string_view val, NumpyAppendData &append_data) {
@@ -500,11 +486,8 @@ void ArrayWrapper::Append(idx_t current_offset, vector_t &input, idx_t source_si
 	case logical_type::DECIMAL:
 		may_have_null = ConvertDecimal(append_data);
 		break;
-	case logical_type::TIMESTAMP_US:
-	case logical_type::TIMESTAMP_SEC:
-	case logical_type::TIMESTAMP_MS:
-	case logical_type::TIMESTAMP_NS:
-		may_have_null = ConvertColumn<std::chrono::nanoseconds, int64_t, otterbrix_py_convert::TimestampConvertNano>(append_data);
+	case logical_type::TIMESTAMP:
+		may_have_null = ConvertColumnRegular<int64_t>(append_data);
 		break;
 	case logical_type::STRING_LITERAL:
 		may_have_null = ConvertColumn<std::string_view, PyObject *, otterbrix_py_convert::StringConvert>(append_data);

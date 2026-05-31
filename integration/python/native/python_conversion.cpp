@@ -792,7 +792,7 @@ namespace otterbrix
                 {
                     return logical_value_t(resource, stringified);
                 }
-                return logical_value_t(resource, stringified).cast_as(target_type);
+                return logical_value_t(resource, stringified).cast_as(target_type, core::date::timezone_offset_t{});
             }
         case PythonObjectType::ByteArray:
             {

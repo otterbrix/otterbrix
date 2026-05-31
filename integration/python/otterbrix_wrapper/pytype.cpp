@@ -32,14 +32,16 @@ namespace otterbrix {
                     return "BIGINT";
                 case logical_type::HUGEINT:
                     return "HUGEINT";
-                case logical_type::TIMESTAMP_SEC:
-                    return "TIMESTAMP_SEC";
-                case logical_type::TIMESTAMP_MS:
-                    return "TIMESTAMP_MS";
-                case logical_type::TIMESTAMP_US:
-                    return "TIMESTAMP_US";
-                case logical_type::TIMESTAMP_NS:
-                    return "TIMESTAMP_NS";
+                case logical_type::DATE:
+                    return "DATE";
+                case logical_type::TIME:
+                    return "TIME";
+                case logical_type::TIME_TZ:
+                    return "TIME_TZ";
+                case logical_type::TIMESTAMP:
+                    return "TIMESTAMP";
+                case logical_type::TIMESTAMP_TZ:
+                    return "TIMESTAMP_TZ";
                 case logical_type::DECIMAL:
                     return "DECIMAL";
                 case logical_type::FLOAT:
@@ -214,10 +216,10 @@ namespace otterbrix {
             {"UUID", logical_type::UUID},
             {"BLOB", logical_type::BLOB},
             {"BOOLEAN", logical_type::BOOLEAN},
-            {"TIMESTAMP", logical_type::TIMESTAMP_US},
-            {"TIMESTAMP_S", logical_type::TIMESTAMP_SEC},
-            {"TIMESTAMP_MS", logical_type::TIMESTAMP_MS},
-            {"TIMESTAMP_NS", logical_type::TIMESTAMP_NS},
+            {"TIMESTAMP", logical_type::TIMESTAMP},
+            {"TIMESTAMP_S", logical_type::TIMESTAMP},
+            {"TIMESTAMP_MS", logical_type::TIMESTAMP},
+            {"TIMESTAMP_NS", logical_type::TIMESTAMP},
             {"DOUBLE", logical_type::DOUBLE},
             {"FLOAT", logical_type::FLOAT},
             {"TINYINT", logical_type::TINYINT},
@@ -512,11 +514,8 @@ namespace otterbrix {
         if (type.type() == logical_type::NA) {
             return "null";
         }
-        if (type.type() == logical_type::TIMESTAMP_US) {
+        if (type.type() == logical_type::TIMESTAMP) {
             return "timestamp";
-        }
-		if (type.type() == logical_type::TIMESTAMP_SEC) {
-            return "timestamp_s";
         }
 		if (type.type() == logical_type::STRING_LITERAL) {
             return "varchar";

@@ -226,10 +226,7 @@ static bool KeyIsHashable(const complex_logical_type &type) {
 	case logical_type::STRING_LITERAL:
 	case logical_type::BLOB:
 	case logical_type::BIT:
-	case logical_type::TIMESTAMP_MS:
-	case logical_type::TIMESTAMP_US:
-	case logical_type::TIMESTAMP_NS:
-	case logical_type::TIMESTAMP_SEC:
+	case logical_type::TIMESTAMP:
 	case logical_type::UUID:
 		return true;
 	case logical_type::LIST:
@@ -308,10 +305,7 @@ py::object PythonObject::FromValue(const logical_value_t &val, const complex_log
 		return py::bytes(val.value<std::string_view>());
     case logical_type::BIT:
 		return py::cast(val.value<bool>()?"1":"0");
-	case logical_type::TIMESTAMP_US:
-	case logical_type::TIMESTAMP_MS:
-	case logical_type::TIMESTAMP_NS:
-	case logical_type::TIMESTAMP_SEC: {
+	case logical_type::TIMESTAMP: {
 		auto timestamp = val.value<timestamp_t>();
 
 		InfinityType infinity = GetTimestampInfinityType(timestamp);

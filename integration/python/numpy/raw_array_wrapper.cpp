@@ -36,10 +36,7 @@ static idx_t GetNumpyTypeWidth(const complex_logical_type &type) {
 	case logical_type::DOUBLE:
 	case logical_type::DECIMAL:
 		return sizeof(double);
-	case logical_type::TIMESTAMP_SEC:
-	case logical_type::TIMESTAMP_MS:
-	case logical_type::TIMESTAMP_US:
-	case logical_type::TIMESTAMP_NS:
+	case logical_type::TIMESTAMP:
 		return sizeof(int64_t);
 	case logical_type::STRING_LITERAL:
 	case logical_type::BIT:
@@ -87,14 +84,8 @@ string RawArrayWrapper::OtterBrixToNumpyDtype(const complex_logical_type &type) 
 	case logical_type::DOUBLE:
 	case logical_type::DECIMAL:
 		return "float64";
-	case logical_type::TIMESTAMP_US:
+	case logical_type::TIMESTAMP:
 		return "datetime64[us]";
-	case logical_type::TIMESTAMP_NS:
-		return "datetime64[ns]";
-	case logical_type::TIMESTAMP_MS:
-		return "datetime64[ms]";
-	case logical_type::TIMESTAMP_SEC:
-		return "datetime64[s]";
 	case logical_type::STRING_LITERAL:
 	case logical_type::BIT:
 	case logical_type::BLOB:

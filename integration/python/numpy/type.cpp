@@ -150,17 +150,11 @@ components::types::complex_logical_type NumpyToLogicalType(const NumpyType &col_
 		return logical_type::STRING_LITERAL;
 	case NumpyNullableType::OBJECT:
 		return logical_type::STRING_LITERAL;
-	case NumpyNullableType::DATETIME_MS: {
-		return logical_type::TIMESTAMP_MS;
-	}
-	case NumpyNullableType::DATETIME_NS: {
-		return logical_type::TIMESTAMP_NS;
-	}
-	case NumpyNullableType::DATETIME_S: {
-		return logical_type::TIMESTAMP_SEC;
-	}
+	case NumpyNullableType::DATETIME_MS:
+	case NumpyNullableType::DATETIME_NS:
+	case NumpyNullableType::DATETIME_S:
 	case NumpyNullableType::DATETIME_US: {
-		return logical_type::TIMESTAMP_US;
+		return logical_type::TIMESTAMP;
 	}
 	default:
 		throw std::runtime_error("No known conversion for NumpyNullableType "+to_string(static_cast<unsigned int>(col_type.type))+" to logical_type");

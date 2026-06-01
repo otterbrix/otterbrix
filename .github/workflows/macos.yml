@@ -27,8 +27,7 @@ jobs:
       - name: conan installation and configuration
         run: |
           conan profile detect --force
-          git clone --depth 1 https://github.com/duckstax/conan-duckstax.git /tmp/conan-duckstax
-          conan remote add duckstax /tmp/conan-duckstax --type=local-recipes-index
+          conan remote add otterbrix http://conan.otterbrix.com
 
       - name: download dependencies
         run: |

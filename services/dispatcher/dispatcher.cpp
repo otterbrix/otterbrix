@@ -296,24 +296,20 @@ namespace services::dispatcher {
                     return {false, actor_zeta::detail::enqueue_result::success};
                 }
             }
-            if (erased) {
-                // Partial workaround for actor-zeta cooperative_actor.hpp:310-320 bug:
-                // after a behavior completes in step (a), its handler set_value on a
-                // cross-actor consumer's future. The consumer (executor) may have been
-                // dropped from the scheduler queue by the bug (line 310 returns
-                // awaiting + keep_scheduled=false without re-checking is_busy()).
-                // Re-enqueue executors to put them back in the queue so a worker can
-                // pick up the now-ready future state on next resume_impl.
-                //
-                // Empirically observed: this workaround unblocks DDL paths
-                // (CREATE DATABASE / CREATE TABLE) but NOT DML (INSERT) at the
-                // DML txn_begin co_await. The framework bug likely needs a proper
-                // line-310 is_busy() re-check fix for full coverage. See task #53.
-                for (auto& executor : executors_) {
-                    if (executor) {
-                        scheduler_->enqueue(executor.get());
-                    }
+            // Workaround for actor-zeta cooperative_actor.hpp:310-320 bug:
+            // re-enqueue every executor on every idle pump tick (whether or not
+            // a behavior was just cleaned up). The bug drops the executor from
+            // the scheduler queue after its cont.resume() path suspends on a
+            // new cross-actor await; re-enqueueing puts it back so a worker
+            // can detect the now-ready future state on its next resume_impl.
+            // Pattern matches existing needs_sched-guarded enqueue (line 1036).
+            for (auto& executor : executors_) {
+                if (executor) {
+                    scheduler_->enqueue(executor.get());
                 }
+            }
+
+            if (erased) {
                 continue;
             }
 

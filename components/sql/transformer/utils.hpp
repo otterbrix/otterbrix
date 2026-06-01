@@ -164,10 +164,12 @@ namespace components::sql::transform {
             {"double", types::logical_type::DOUBLE},
             {"tinyint", types::logical_type::TINYINT},
             {"hugeint", types::logical_type::HUGEINT},
-            {"timestamp_sec", types::logical_type::TIMESTAMP_SEC},
-            {"timestamp_ms", types::logical_type::TIMESTAMP_MS},
-            {"timestamp_us", types::logical_type::TIMESTAMP_US},
-            {"timestamp_ns", types::logical_type::TIMESTAMP_NS},
+            {"date", types::logical_type::DATE},
+            {"time", types::logical_type::TIME},
+            {"timetz", types::logical_type::TIME_TZ},
+            {"timestamp", types::logical_type::TIMESTAMP},
+            {"timestamptz", types::logical_type::TIMESTAMP_TZ},
+            {"interval", types::logical_type::INTERVAL},
             {"blob", types::logical_type::BLOB},
             {"utinyint", types::logical_type::UTINYINT},
             {"usmallint", types::logical_type::USMALLINT},
@@ -204,6 +206,22 @@ namespace components::sql::transform {
             return expressions::scalar_type::mod;
         return expressions::scalar_type::invalid;
     }
+
+    // --- JSONB operators -------------------------------------------------
+    // Path-navigation jsonb operators. On a computing table (relkind='g')
+    // nested fields are flattened into a single column whose name is the
+    // path joined by '/', so navigation reduces to building that joined key.
+    //   ->  /  #>   return jsonb  -> a (sub)table (relation position only)
+    //   ->> / #>>   return text   -> a typed scalar value (SELECT/WHERE)
+    // '#>'/'#>>' take a whole path on the right ('{a,b}' or dotted 'a.b').
+    bool is_jsonb_nav_operator(std::string_view op);
+
+    // True for the scalar (text-returning) variants usable in SELECT/WHERE.
+    bool jsonb_nav_returns_scalar(std::string_view op);
+
+    // True for operators whose right operand is a whole path ('{a,b}' / 'a.b'),
+    // not a single key — '#>', '#>>' (navigation) and '#-' (delete by path).
+    bool jsonb_op_takes_path(std::string_view op);
 
     std::string node_tag_to_string(NodeTag type);
     std::string expr_kind_to_string(A_Expr_Kind type);

@@ -38,6 +38,9 @@ namespace services::index {
             actor_zeta::scheduler_raw scheduler,
             log_t& log,
             std::filesystem::path path_db = {},
+            uint64_t bitcask_flush_threshold = 1000,
+            uint64_t bitcask_segment_record_limit = 100,
+            uint64_t btree_flush_threshold = 1000,
             run_fn_t run_fn = [] { std::this_thread::yield(); });
         ~manager_index_t() = default;
 
@@ -85,7 +88,8 @@ namespace services::index {
                                              components::catalog::oid_t table_oid,
                                              index_name_t index_name,
                                              components::index::keys_base_storage_t keys,
-                                             components::logical_plan::index_type type);
+                                             components::logical_plan::index_type type,
+                                             core::date::timezone_offset_t session_tz);
         unique_future<void>
         drop_index(session_id_t session, components::catalog::oid_t table_oid, index_name_t index_name);
 
@@ -96,7 +100,20 @@ namespace services::index {
                                                         components::types::logical_value_t value,
                                                         components::expressions::compare_type compare,
                                                         uint64_t start_time,
-                                                        uint64_t txn_id);
+                                                        uint64_t txn_id,
+                                                        core::date::timezone_offset_t session_tz);
+
+        unique_future<std::pmr::vector<int64_t>> search_with_preferred_type(
+            session_id_t session,
+            components::catalog::oid_t table_oid,
+            components::index::keys_base_storage_t keys,
+            components::types::logical_value_t value,
+            components::expressions::compare_type compare,
+            components::logical_plan::index_type preferred_type,
+            uint64_t start_time,
+            uint64_t txn_id,
+            core::date::timezone_offset_t session_tz);
+
 
         unique_future<bool>
         has_index(session_id_t session, components::catalog::oid_t table_oid, index_name_t index_name);
@@ -105,6 +122,8 @@ namespace services::index {
 
         unique_future<std::pmr::vector<components::index::keys_base_storage_t>>
         get_indexed_keys(session_id_t session, components::catalog::oid_t table_oid);
+        unique_future<std::pmr::vector<components::index::index_description_t>>
+        get_indexed_descriptions(session_id_t session, components::catalog::oid_t table_oid);
 
         using dispatch_traits = actor_zeta::implements<index_contract,
                                                        &manager_index_t::register_collection,
@@ -120,16 +139,22 @@ namespace services::index {
                                                        &manager_index_t::create_index,
                                                        &manager_index_t::drop_index,
                                                        &manager_index_t::search,
+                                                       &manager_index_t::search_with_preferred_type,
                                                        &manager_index_t::has_index,
                                                        &manager_index_t::flush_all_indexes,
-                                                       &manager_index_t::get_indexed_keys>;
+                                                       &manager_index_t::get_indexed_keys,
+                                                       &manager_index_t::get_indexed_descriptions>;
 
     private:
+
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
         run_fn_t run_fn_;
         log_t log_;
         std::filesystem::path path_db_;
+        uint64_t bitcask_flush_threshold_{1000};
+        uint64_t bitcask_segment_record_limit_{100};
+        uint64_t btree_flush_threshold_{1000};
         std::mutex mutex_;
 
         // Per-collection in-memory index engines (keyed by table oid)

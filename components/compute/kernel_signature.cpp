@@ -118,7 +118,7 @@ namespace components::compute {
         return [](const types::complex_logical_type& t) {
             using lt = types::logical_type;
             auto id = t.type();
-            return id == lt::NA ||  // NA propagation (SQL NULL)
+            return id == lt::NA || // NA propagation (SQL NULL)
                    id == lt::TINYINT || id == lt::SMALLINT || id == lt::INTEGER || id == lt::BIGINT ||
                    id == lt::HUGEINT || id == lt::UTINYINT || id == lt::USMALLINT || id == lt::UINTEGER ||
                    id == lt::UBIGINT || id == lt::UHUGEINT;

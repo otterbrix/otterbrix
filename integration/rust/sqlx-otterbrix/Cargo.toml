@@ -1,0 +1,23 @@
+[package]
+name = "sqlx-otterbrix"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+description = "SQLx driver for Otterbrix"
+license = "BSD-3-Clause"
+
+[dependencies]
+either = "1"
+futures-core = { version = "0.3", default-features = false }
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+log = { version = "0.4", default-features = false }
+otterbrix = { version = "0.1.0", path = "../otterbrix" }
+parking_lot = "0.12"
+sqlx-core = { version = "=0.8.6", default-features = false, features = ["_rt-tokio"] }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread"] }
+
+[dev-dependencies]
+log = "0.4"
+sqlx = { version = "=0.8.6", default-features = false, features = ["runtime-tokio", "macros"] }
+tempfile = "3"
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "sync"] }

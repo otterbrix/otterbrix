@@ -260,7 +260,10 @@ namespace services::collection::executor {
             // is stamped by the inner DML operator; it identifies the
             // storage/index target unambiguously.
             if (result.dml_append_row_count > 0 && commit_id > 0) {
-                components::execution_context_t ctx{session, txn_data, result.dml_table_oid};
+                components::execution_context_t ctx{session,
+                                                    txn_data,
+                                                    context_storage.session_timezone,
+                                                    result.dml_table_oid};
                 auto [_ca, caf] = actor_zeta::send(disk_address_,
                                                    &disk::manager_disk_t::storage_commit_append,
                                                    ctx,
@@ -279,7 +282,10 @@ namespace services::collection::executor {
                 }
             }
             if (result.dml_delete_txn_id != 0 && commit_id > 0) {
-                components::execution_context_t del_ctx{session, txn_data, result.dml_table_oid};
+                components::execution_context_t del_ctx{session,
+                                                        txn_data,
+                                                        context_storage.session_timezone,
+                                                        result.dml_table_oid};
                 auto [_cd, cdf] = actor_zeta::send(disk_address_,
                                                    &disk::manager_disk_t::storage_commit_delete,
                                                    del_ctx,
@@ -357,7 +363,10 @@ namespace services::collection::executor {
             trace(log_, "executor::execute_plan: DML error, aborting txn");
             // Oid-only routing on abort path; same rationale as commit path.
             if (result.dml_append_row_count > 0) {
-                components::execution_context_t abort_ctx{session, txn_data, result.dml_table_oid};
+                components::execution_context_t abort_ctx{session,
+                                                          txn_data,
+                                                          context_storage.session_timezone,
+                                                          result.dml_table_oid};
                 auto [_ra, raf] = actor_zeta::send(disk_address_,
                                                    &disk::manager_disk_t::storage_revert_append,
                                                    abort_ctx,
@@ -461,6 +470,7 @@ namespace services::collection::executor {
             pipeline_context.index_address = index_address_;
             pipeline_context.wal_address = wal_address_;
             pipeline_context.txn = txn;
+            pipeline_context.session_tz = plan_data.context_storage_.session_timezone;
             // VACUUM/MVCC GC threshold. operator_vacuum_t reads
             // this to gate manager_disk_t::vacuum_all + manager_index_t::
             // cleanup_all_versions. Computed up-front so the operator does not

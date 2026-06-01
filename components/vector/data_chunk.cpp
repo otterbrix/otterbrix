@@ -129,7 +129,11 @@ namespace components::vector {
     vector_t* data_chunk_t::at(const std::pmr::vector<size_t>& col_path) {
         vector_t* sub_column = &data[col_path.front()];
         for (auto it = std::next(col_path.begin()); it != col_path.end(); ++it) {
-            sub_column = sub_column->entries()[*it].get();
+            if (sub_column->type().type() == types::logical_type::ARRAY) {
+                sub_column = &sub_column->entry();
+            } else {
+                sub_column = sub_column->entries()[*it].get();
+            }
         }
         return sub_column;
     }
@@ -137,7 +141,11 @@ namespace components::vector {
     const vector_t* data_chunk_t::at(const std::pmr::vector<size_t>& col_path) const {
         const vector_t* sub_column = &data[col_path.front()];
         for (auto it = std::next(col_path.begin()); it != col_path.end(); ++it) {
-            sub_column = sub_column->entries()[*it].get();
+            if (sub_column->type().type() == types::logical_type::ARRAY) {
+                sub_column = &sub_column->entry();
+            } else {
+                sub_column = sub_column->entries()[*it].get();
+            }
         }
         return sub_column;
     }

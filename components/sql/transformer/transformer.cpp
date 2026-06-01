@@ -107,9 +107,8 @@ namespace components::sql::transform {
                 } else {
                     error_ = core::error_t(
                         core::error_code_t::sql_parse_error,
-                        std::pmr::string{
-                            "CREATE TABLE AS without MATERIALIZED — see docs/pr496-followups.md #4",
-                            resource_});
+                        std::pmr::string{"CREATE TABLE AS without MATERIALIZED — see docs/pr496-followups.md #4",
+                                         resource_});
                 }
                 break;
             }
@@ -130,6 +129,18 @@ namespace components::sql::transform {
             case T_TransactionStmt:
                 log_node = transform_transaction(pg_cast<TransactionStmt>(node));
                 break;
+            case T_VariableSetStmt: {
+                auto& set_stmt = pg_cast<VariableSetStmt>(node);
+                std::string_view var_name = set_stmt.name ? set_stmt.name : "";
+                if (var_name == "timezone") {
+                    log_node = transform_set_timezone(set_stmt);
+                } else {
+                    error_ = core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"SET " + std::string(var_name) + " is not supported", resource_});
+                }
+                break;
+            }
             default:
                 error_ = core::error_t(
                     core::error_code_t::sql_parse_error,
@@ -144,7 +155,8 @@ namespace components::sql::transform {
                     std::move(params),
                     std::move(parameter_map_),
                     std::move(parameter_insert_map_),
-                    std::move(parameter_insert_rows_)};
+                    std::move(parameter_insert_rows_),
+                    std::move(deferred_limits_)};
         }
     }
 

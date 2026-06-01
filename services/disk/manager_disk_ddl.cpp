@@ -36,7 +36,7 @@ namespace services::disk {
             }
         }
         const auto count = static_cast<std::uint64_t>(row.size());
-        const auto start_row = direct_append_sync(table_oid, row, ctx.txn);
+        const auto start_row = direct_append_sync(table_oid, row, ctx.session_tz, ctx.txn);
         if (ctx.txn.transaction_id == 0 || count == 0) {
             co_return components::pg_catalog_append_range_t{table_oid, static_cast<int64_t>(start_row), 0};
         }

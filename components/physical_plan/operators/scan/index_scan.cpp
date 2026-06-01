@@ -11,12 +11,14 @@ namespace components::operators {
                            const expressions::key_t& key,
                            const types::logical_value_t& value,
                            expressions::compare_type compare_type,
+                           components::logical_plan::index_type preferred_index_type,
                            logical_plan::limit_t limit)
         : read_only_operator_t(resource, log, operator_type::index_scan)
         , table_oid_(table_oid)
         , key_(key)
         , value_(value)
         , compare_type_(compare_type)
+        , preferred_index_type_(preferred_index_type)
         , limit_(limit) {}
 
     void index_scan::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
@@ -47,7 +49,9 @@ namespace components::operators {
 
         // Search index for matching row IDs (txn-aware visibility)
         std::pmr::vector<int64_t> row_ids_vec(resource_);
-        auto [_s, sf] = actor_zeta::send(ctx->index_address,
+        auto [_s, sf] =
+            preferred_index_type_ == logical_plan::index_type::no_valid
+            ? actor_zeta::send(ctx->index_address,
                                          &services::index::manager_index_t::search,
                                          ctx->session,
                                          table_oid_,
@@ -55,7 +59,19 @@ namespace components::operators {
                                          types::logical_value_t{resource_, value_},
                                          compare_type_,
                                          ctx->txn.start_time,
-                                         ctx->txn.transaction_id);
+                                         ctx->txn.transaction_id,
+                                         ctx->session_tz)
+            : actor_zeta::send(ctx->index_address,
+                                     &services::index::manager_index_t::search_with_preferred_type,
+                                     ctx->session,
+                                     table_oid_,
+                                     index::keys_base_storage_t{{key_}},
+                                     types::logical_value_t{resource_, value_},
+                                     compare_type_,
+                                     preferred_index_type_,
+                                     ctx->txn.start_time,
+                                     ctx->txn.transaction_id,
+                                     ctx->session_tz);
         row_ids_vec = co_await std::move(sf);
 
         // Apply offset and limit

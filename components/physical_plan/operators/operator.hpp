@@ -34,6 +34,10 @@ namespace components::operators {
         sort,
         select,
         join,
+        // Equi-join fast path. Substituted for `join` by create_plan_join when the
+        // ON condition is a single eq(left.key, right.key). Builds a hash table on
+        // the right side once and probes with the left; same output layout as `join`.
+        hash_join,
         aggregate,
         raw_data,
         // Constraint operators

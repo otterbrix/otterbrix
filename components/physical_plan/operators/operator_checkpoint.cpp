@@ -32,18 +32,17 @@ namespace components::operators {
             wal_max_id = co_await std::move(wif);
         }
 
-        // Step 3: checkpoint_all (the real work — per-table copy + 2 fsync barriers).
-        // Must run unconditionally: in IN_MEMORY-only deployments the wal_address
-        // is empty but we still want manager_disk_t to advance internal markers.
-        auto [_cp, cpf] = actor_zeta::send(ctx->disk_address,
-                                           &services::disk::manager_disk_t::checkpoint_all,
-                                           ctx->session,
-                                           wal_max_id);
-        auto checkpoint_wal_id = co_await std::move(cpf);
+        // Step 3: checkpoint_all. No-op when disk is off.
+        services::wal::id_t checkpoint_wal_id{0};
+        if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
+            auto [_cp, cpf] = actor_zeta::send(ctx->disk_address,
+                                               &services::disk::manager_disk_t::checkpoint_all,
+                                               ctx->session,
+                                               wal_max_id);
+            checkpoint_wal_id = co_await std::move(cpf);
+        }
 
-        // Step 4: trim old WAL segments. id=0 means "no truncation safe" (e.g. only
-        // IN_MEMORY tables registered, where WAL is the durability tier — see
-        // services/wal/wal.cpp comment near line 308 and disk's W-TORN test).
+        // Step 4: trim old WAL segments.
         if (checkpoint_wal_id > services::wal::id_t{0} && ctx->wal_address != actor_zeta::address_t::empty_address()) {
             auto [_wt, wtf] = actor_zeta::send(ctx->wal_address,
                                                &services::wal::manager_wal_replicate_t::truncate_before,

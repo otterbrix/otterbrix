@@ -17,6 +17,8 @@
 #include "plan_resolve_index.hpp"
 #include "resolve_type.hpp"
 
+#include <components/catalog/catalog_codes.hpp>
+#include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_alter_column_add.hpp>
 #include <components/logical_plan/node_alter_column_drop.hpp>
@@ -31,8 +33,6 @@
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/logical_plan/node_create_macro.hpp>
 #include <components/logical_plan/node_create_matview.hpp>
-#include <components/logical_plan/node_refresh_matview.hpp>
-#include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_create_sequence.hpp>
 #include <components/logical_plan/node_create_view.hpp>
 #include <components/logical_plan/node_data.hpp>
@@ -50,8 +50,10 @@
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/node_match.hpp>
+#include <components/logical_plan/node_refresh_matview.hpp>
 #include <components/logical_plan/node_sort.hpp>
 #include <components/logical_plan/node_update.hpp>
+#include <services/index/manager_index.hpp>
 
 #include <limits>
 #include <queue>
@@ -95,7 +97,9 @@ namespace services::dispatcher {
             }
         }
 
-        void enrich_insert_sync(components::logical_plan::node_insert_t* node, const enrich_resolve_idx_t* idx) {
+        void enrich_insert_sync(components::logical_plan::node_insert_t* node,
+                                const enrich_resolve_idx_t* idx,
+                                core::date::timezone_offset_t session_tz) {
             // Insert node carries only its table_oid (stamped by
             // stamp_drop_oids_from_resolves from the sibling resolve_table);
             // look up table metadata by OID rather than (db, rel) strings.
@@ -118,7 +122,14 @@ namespace services::dispatcher {
             // with the 8-byte payload. Rebuild each column vector with the
             // table's declared type; cast_as on logical_value_t handles the
             // recursive STRUCT/ARRAY descent.
-            if (!node->children().empty() && node->children().front() &&
+            // Skip for computing tables (relkind='g'): they adopt the literal's
+            // own type and may keep several same-name columns of different types
+            // (multi-type fields). Coercing every value to one resolved type would
+            // collapse those variants (e.g. a string 'val' cast to an existing
+            // BIGINT 'val'). Storage adopts the literal type directly, so the
+            // INTEGER/BIGINT width concern below does not apply there.
+            if (md->relkind != components::catalog::relkind::computed && !node->children().empty() &&
+                node->children().front() &&
                 node->children().front()->type() == components::logical_plan::node_type::data_t) {
                 auto* dat = static_cast<components::logical_plan::node_data_t*>(node->children().front().get());
                 auto& chunk = dat->data_chunk();
@@ -163,7 +174,7 @@ namespace services::dispatcher {
                     for (std::uint64_t row = 0; row < rows; ++row) {
                         auto v = col.value(row);
                         if (!v.is_null() && v.type() != *target_type) {
-                            v = v.cast_as(*target_type);
+                            v = v.cast_as(*target_type, session_tz);
                         }
                         replacement.set_value(row, v);
                     }
@@ -528,7 +539,7 @@ namespace services::dispatcher {
                             // (which also carries view_sql via Phase A.A2 since
                             // operator_resolve_table reads pg_rewrite for relkind='m').
                             // No fields to stamp here — planner reads from rt directly.
-                            (void)c;
+                            (void) c;
                             break;
                         }
                         case node_type::create_index_t: {
@@ -608,10 +619,12 @@ namespace services::dispatcher {
         }
     }
 
-    actor_zeta::unique_future<void> enrich_plan(components::logical_plan::node_ptr root,
+    actor_zeta::unique_future<void> enrich_plan(std::pmr::memory_resource* resource,
+                                                components::logical_plan::node_ptr root,
                                                 actor_zeta::address_t disk_address,
                                                 components::execution_context_t ctx,
-                                                std::pmr::memory_resource* resource,
+                                                actor_zeta::address_t index_address,
+                                                services::context_storage_t* collections_ctx,
                                                 const enrich_resolve_idx_t* idx) {
         using namespace components::logical_plan;
         if (!root)
@@ -626,7 +639,24 @@ namespace services::dispatcher {
             // from their sibling catalog_resolve_* nodes inside each sequence_t
             // before the per-node enrich cases run.
             stamp_oids_from_resolves(root.get());
-            co_await enrich_plan(root, disk_address, ctx, resource, &local_idx);
+            co_await enrich_plan(resource, root, disk_address, ctx, index_address, collections_ctx, &local_idx);
+
+            if (collections_ctx && index_address != actor_zeta::address_t::empty_address()) {
+                for (auto tbl_oid : root->table_oid_dependencies()) {
+                    if (tbl_oid == components::catalog::INVALID_OID) {
+                        continue;
+                    }
+                    auto [_ik, ikf] =
+                        actor_zeta::send(index_address, &index::manager_index_t::get_indexed_keys, ctx.session, tbl_oid);
+                    collections_ctx->indexed_keys = co_await std::move(ikf);
+                    auto [_id, idf] =
+                        actor_zeta::send(index_address,
+                                         &index::manager_index_t::get_indexed_descriptions,
+                                         ctx.session,
+                                         tbl_oid);
+                    collections_ctx->indexed_descriptions = co_await std::move(idf);
+                }
+            }
             co_return;
         }
         // Stamp table_oid for any SELECT-side consumer that still carries
@@ -693,7 +723,7 @@ namespace services::dispatcher {
         switch (root->type()) {
             case node_type::insert_t: {
                 auto* node = static_cast<node_insert_t*>(root.get());
-                enrich_insert_sync(node, idx);
+                enrich_insert_sync(node, idx, ctx.session_tz);
                 const auto tbl_oid = node->table_oid();
                 // FK + CHECK populated by operator_resolve_constraint_t
                 // (Pass 1, direction=outgoing) and gathered into idx. No catalog
@@ -904,7 +934,7 @@ namespace services::dispatcher {
         for (auto& child : root->children()) {
             if (!child)
                 continue;
-            co_await enrich_plan(child, disk_address, ctx, resource, idx);
+            co_await enrich_plan(resource, child, disk_address, ctx, index_address, collections_ctx, idx);
         }
     }
 

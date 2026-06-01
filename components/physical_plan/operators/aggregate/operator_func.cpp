@@ -28,7 +28,8 @@ namespace {
                                                               scalar_expr->type(),
                                                               scalar_expr->params(),
                                                               chunk,
-                                                              pipeline_context->parameters);
+                                                              pipeline_context->parameters,
+                                                              pipeline_context->session_tz);
                     if (res.has_error()) {
                         op.set_error(res.error());
                         return false;

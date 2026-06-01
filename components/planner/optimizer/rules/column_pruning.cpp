@@ -260,8 +260,7 @@ namespace components::planner::optimizer {
                         // idx out of range for the joined schema — invariant violation;
                         // disable split rather than corrupt projection.
                         can_split = false;
-                        for (auto& pc : per_child_projected)
-                            pc.clear();
+                        for (auto& pc : per_child_projected) pc.clear();
                         break;
                     }
                 }

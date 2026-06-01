@@ -58,7 +58,8 @@ namespace components::operators {
                                                                     expression_,
                                                                     types,
                                                                     types,
-                                                                    &pipeline_context->parameters)
+                                                                    &pipeline_context->parameters,
+                                                                    pipeline_context->session_tz)
                                      : predicates::create_all_true_predicate(resource);
 
         bool reached_limit = false;

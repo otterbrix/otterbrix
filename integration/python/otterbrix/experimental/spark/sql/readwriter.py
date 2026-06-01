@@ -1,3 +1,5 @@
+# This code is based on code from Apache Spark under the license found in the LICENSE file located in the 'spark' folder.
+
 from typing import TYPE_CHECKING, List, Optional, Union, cast
 
 from ..exception import ContributionsAcceptedError
@@ -35,7 +37,6 @@ class DataFrameWriter:
         if partitionBy:
             raise NotImplementedError
 
-        # relation.write_parquet(path, compression=compression)
         raise NotImplementedError
 
 
@@ -75,19 +76,6 @@ class DataFrameWriter:
         if lineSep:
             raise NotImplementedError
         relation = self.dataframe.relation
-        # relation.write_csv(
-        #     path,
-        #     sep=sep,
-        #     na_rep=nullValue,
-        #     quotechar=quote,
-        #     compression=compression,
-        #     escapechar=escape,
-        #     header=header if isinstance(header, bool) else header == "True",
-        #     encoding=encoding,
-        #     quoting=quoteAll,
-        #     date_format=dateFormat,
-        #     timestamp_format=timestampFormat,
-        # )
         raise NotImplementedError
 
 
@@ -102,34 +90,11 @@ class DataFrameReader:
         schema: Optional[Union[StructType, str]] = None,
         **options: OptionalPrimitiveType,
     ) -> "DataFrame":
-        from otterbrix.experimental.spark.sql.dataframe import DataFrame
-
         if not isinstance(path, str):
             raise ImportError
         if options:
             raise ContributionsAcceptedError
 
-        rel = None
-        if format:
-            # format = format.lower()
-            # if format == "csv" or format == "tsv":
-            #     rel = self.session.conn.read_csv(path)
-            # elif format == "json":
-            #     rel = self.session.conn.read_json(path)
-            # elif format == "parquet":
-            #     rel = self.session.conn.read_parquet(path)
-            # else:
-                raise ContributionsAcceptedError
-        else:
-            rel = self.session.conn.sql(f"select * from {path}")
-        df = DataFrame(rel, self.session)
-        if schema:
-            if not isinstance(schema, StructType):
-                raise ContributionsAcceptedError
-            schema = cast(StructType, schema)
-            types, names = schema.extract_types_and_names()
-            df = df._cast_types(types)
-            df = df.toDF(names)
         raise NotImplementedError
 
     def csv(

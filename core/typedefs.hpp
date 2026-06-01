@@ -65,7 +65,7 @@ namespace otterbrix {
 
     template <typename T>
     void Store(const T &val, data_ptr_t ptr) {
-        std::memcpy(ptr, (void *)&val, sizeof(val)); // NOLINT
+        std::memcpy(ptr, static_cast<const void *>(&val), sizeof(val)); // NOLINT
     }
 
 }

@@ -6,6 +6,7 @@
 #include <components/logical_plan/node_catalog_resolve_table.hpp>
 #include <components/logical_plan/node_sequence.hpp>
 #include <components/types/logical_value.hpp>
+#include <core/date/date_parse.hpp>
 
 #include <atomic>
 #include <cstdlib>
@@ -148,6 +149,14 @@ namespace components::sql::transform {
         }
         return ref;
     }
+
+    bool is_jsonb_nav_operator(std::string_view op) {
+        return op == "->" || op == "->>" || op == "#>" || op == "#>>";
+    }
+
+    bool jsonb_nav_returns_scalar(std::string_view op) { return op == "->>" || op == "#>>"; }
+
+    bool jsonb_op_takes_path(std::string_view op) { return op == "#>" || op == "#>>" || op == "#-"; }
 
     std::string node_tag_to_string(NodeTag type) {
         switch (type) {
@@ -336,16 +345,65 @@ namespace components::sql::transform {
     core::result_wrapper_t<types::logical_value_t> get_value(std::pmr::memory_resource* resource, Node* node) {
         switch (nodeTag(node)) {
             case T_TypeCast: {
-                auto constant = pg_ptr_cast<A_Const>(pg_ptr_cast<TypeCast>(node)->arg);
-                if (constant->val.type == T_String) {
-                    std::string str = strVal(&constant->val);
-                    if (str == "t" || str == "f") {
-                        return types::logical_value_t(resource, str == "t");
-                    }
-                    return types::logical_value_t(resource, str);
-                } else {
+                auto cast = pg_ptr_cast<TypeCast>(node);
+                auto constant = pg_ptr_cast<A_Const>(cast->arg);
+                if (constant->val.type != T_String) {
                     return types::logical_value_t(resource, constant->val.val.ival);
                 }
+                std::string_view str = strVal(&constant->val);
+                auto type_res = get_type(resource, cast->typeName);
+                if (!type_res.has_error() && types::is_duration(type_res.value().type())) {
+                    switch (type_res.value().type()) {
+                        case types::logical_type::DATE:
+                            if (auto parsed = core::date::parse_date(str)) {
+                                return types::logical_value_t(resource, *parsed);
+                            }
+                            return core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"invalid DATE literal: " + std::string(str), resource});
+                        case types::logical_type::TIME:
+                            if (auto parsed = core::date::parse_time(str)) {
+                                return types::logical_value_t(resource, *parsed);
+                            }
+                            return core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"invalid TIME literal: " + std::string(str), resource});
+                        case types::logical_type::TIME_TZ:
+                            if (auto parsed = core::date::parse_timetz(str)) {
+                                return types::logical_value_t(resource, *parsed);
+                            }
+                            return core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"invalid TIMETZ literal: " + std::string(str), resource});
+                        case types::logical_type::TIMESTAMP:
+                            if (auto parsed = core::date::parse_timestamp(str)) {
+                                return types::logical_value_t(resource, *parsed);
+                            }
+                            return core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"invalid TIMESTAMP literal: " + std::string(str), resource});
+                        case types::logical_type::TIMESTAMP_TZ:
+                            if (auto parsed = core::date::parse_timestamptz(str)) {
+                                return types::logical_value_t(resource, *parsed);
+                            }
+                            return core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"invalid TIMESTAMPTZ literal: " + std::string(str), resource});
+                        case types::logical_type::INTERVAL:
+                            if (auto parsed = core::date::parse_interval(str)) {
+                                return types::logical_value_t(resource, *parsed);
+                            }
+                            return core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"invalid INTERVAL literal: " + std::string(str), resource});
+                        default:
+                            break;
+                    }
+                }
+                if (!type_res.has_error() && type_res.value().type() == types::logical_type::BOOLEAN) {
+                    return types::logical_value_t(resource, str == "t");
+                }
+                return types::logical_value_t(resource, std::string(str));
             }
             case T_A_Const: {
                 auto* value = &(pg_ptr_cast<A_Const>(node)->val);

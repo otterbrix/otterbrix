@@ -17,6 +17,7 @@ namespace configuration {
     struct config_wal final {
         std::filesystem::path path{std::filesystem::current_path() / "wal"};
         bool on{true};
+        bool sync_to_disk{true};
         uint32_t page_size{4096};
         std::size_t max_segment_size{4 * 1024 * 1024}; // 4 MB per segment
         // WAL_AUTO_CHECKPOINT_THRESHOLD_BYTES: trigger checkpoint_all when cumulative WAL
@@ -39,10 +40,15 @@ namespace configuration {
             : path(path / "wal") {}
     };
 
+    struct config_pandas final {
+        uint64_t analyze_sample_size{1000};
+    };
+
     struct config final {
         config_log log;
         config_wal wal;
         config_disk disk;
+        config_pandas pandas;
         std::filesystem::path main_path; // mainly used for checking, because log, wal and disk could be missing
 
         config(const std::filesystem::path& path = std::filesystem::current_path());
@@ -55,5 +61,6 @@ namespace configuration {
         : log(path)
         , wal(path)
         , disk(path)
+        , pandas()
         , main_path(path) {}
 } // namespace configuration

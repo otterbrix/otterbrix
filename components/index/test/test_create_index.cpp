@@ -15,24 +15,24 @@ public:
         : index_t(resource, components::logical_plan::index_type::single, name, keys) {}
 
 private:
-    void insert_impl(value_t, index_value_t) override {}
-    void remove_impl(value_t) override {}
-    range find_impl(const value_t&) const override {
+    void insert_impl(value_t, index_value_t, core::date::timezone_offset_t) override {}
+    void remove_impl(value_t, core::date::timezone_offset_t) override {}
+    range find_impl(const value_t&, core::date::timezone_offset_t) const override {
         return std::make_pair(iterator(new impl_t(dummy_storage_.cbegin())),
                               iterator(new impl_t(dummy_storage_.cend())));
     }
-    range lower_bound_impl(const value_t&) const override {
+    range lower_bound_impl(const value_t&, core::date::timezone_offset_t) const override {
         return std::make_pair(iterator(new impl_t(dummy_storage_.cbegin())),
                               iterator(new impl_t(dummy_storage_.cend())));
     }
-    range upper_bound_impl(const value_t&) const override {
+    range upper_bound_impl(const value_t&, core::date::timezone_offset_t) const override {
         return std::make_pair(iterator(new impl_t(dummy_storage_.cbegin())),
                               iterator(new impl_t(dummy_storage_.cend())));
     }
     iterator cbegin_impl() const override { return iterator(new impl_t(dummy_storage_.cbegin())); }
     iterator cend_impl() const override { return iterator(new impl_t(dummy_storage_.cend())); }
-    void insert_txn_impl(value_t, int64_t, uint64_t) override {}
-    void mark_delete_impl(value_t, int64_t, uint64_t) override {}
+    void insert_txn_impl(value_t, int64_t, uint64_t, core::date::timezone_offset_t) override {}
+    void mark_delete_impl(value_t, int64_t, uint64_t, core::date::timezone_offset_t) override {}
     void commit_insert_impl(uint64_t, uint64_t) override {}
     void commit_delete_impl(uint64_t, uint64_t) override {}
     void revert_insert_impl(uint64_t) override {}

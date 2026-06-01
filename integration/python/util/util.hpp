@@ -1,7 +1,6 @@
-#pragma once 
+#pragma once
 
 #include <pybind11/pybind_wrapper.hpp>
-#include <components/document/value.hpp>
 #include <components/types/logical_value.hpp>
 #include <core/types/string.hpp>
 #include <core/typedefs.hpp>
@@ -10,10 +9,7 @@
 
 namespace otterbrix {
     namespace util {
-        string DocumentValueToString(const components::document::value_t& value);
-        
         string LogicalValueToString(const components::types::logical_value_t& value);
-
 
         template<class T>
         T ParseToNumeric(const string& numeric_string) {
@@ -33,7 +29,7 @@ namespace otterbrix {
         	}
         	if (is_neg) {
         		return -res;
-        	} 
+        	}
         	return res;
         }
 

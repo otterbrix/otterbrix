@@ -21,8 +21,16 @@ namespace otterbrix {
 
     PyExpression::~PyExpression() = default;
 
-    pyexpr_ptr PyExpression::ColumnExpression(const string& column_name, PyConnection& conn) {
-        return make_shared<PyExpression>(components::expressions::key_t(column_name), conn);
+    pyexpr_ptr PyExpression::ColumnExpression(const string& column_name, PyConnection& conn, const string& side) {
+        auto side_val = components::expressions::side_t::undefined;
+        if (side == "left") {
+            side_val = components::expressions::side_t::left;
+        } else if (side == "right") {
+            side_val = components::expressions::side_t::right;
+        }
+        return make_shared<PyExpression>(
+            components::expressions::key_t(std::pmr::get_default_resource(), column_name, side_val),
+            conn);
     }
 
     pyexpr_ptr PyExpression::ConstantExpression(const py::object& value, PyConnection& conn) {
@@ -46,23 +54,23 @@ namespace otterbrix {
 
     // Aggregation operations
     pyexpr_ptr PyExpression::Count() {
-        return AggregationExpression(components::expressions::aggregate_type::count, *this);
+        return AggregationExpression("count", *this);
     }
 
     pyexpr_ptr PyExpression::Sum() {
-        return AggregationExpression(components::expressions::aggregate_type::sum, *this);
+        return AggregationExpression("sum", *this);
     }
 
     pyexpr_ptr PyExpression::Min() {
-        return AggregationExpression(components::expressions::aggregate_type::min, *this);
+        return AggregationExpression("min", *this);
     }
 
     pyexpr_ptr PyExpression::Max() {
-        return AggregationExpression(components::expressions::aggregate_type::max, *this);
+        return AggregationExpression("max", *this);
     }
 
     pyexpr_ptr PyExpression::Avg() {
-        return AggregationExpression(components::expressions::aggregate_type::avg, *this);
+        return AggregationExpression("avg", *this);
     }
 
     pyexpr_ptr PyExpression::Round() {
@@ -176,9 +184,9 @@ namespace otterbrix {
         return expr;
     }
 
-    pyexpr_ptr PyExpression::AggregationExpression(components::expressions::aggregate_type type, 
+    pyexpr_ptr PyExpression::AggregationExpression(const std::string& function_name,
         const PyExpression& expr) {
-        return make_shared<PyExpression>(expr.factory->AggregationUnaryExpression(type, expr.expr), expr.factory);
+        return make_shared<PyExpression>(expr.factory->AggregationUnaryExpression(function_name, expr.expr), expr.factory);
     }
 
     pyexpr_ptr PyExpression::ScalarBinaryExpression(components::expressions::scalar_type type, 
@@ -191,10 +199,8 @@ namespace otterbrix {
         return make_shared<PyExpression>(expr.factory->ScalarUnaryExpression(type, expr.expr), expr.factory);
     }
 
-    pyexpr_ptr PyExpression::ComparisonExpression(components::expressions::compare_type type, 
+    pyexpr_ptr PyExpression::ComparisonExpression(components::expressions::compare_type type,
         const PyExpression& left, const PyExpression& right) {
-        // 	auto left = left_p.GetExpression().Copy();
-	    // auto right = right_p.GetExpression().Copy();
         return make_shared<PyExpression>(left.factory->ComparisonExpression(type, left.expr, right.expr), left.factory);
     
     }
@@ -206,16 +212,7 @@ namespace otterbrix {
     }
 
     pyexpr_ptr PyExpression::SortExpression(components::expressions::sort_order type, const PyExpression& expr) {
-        //todo remove to factory
-        auto sort_expr = std::visit([&type](const auto& expr) -> Expression {
-            using T = std::decay_t<decltype(expr)>;
-            if constexpr (std::is_same_v<T, expressions::key_t>) {
-                return expressions::make_sort_expression(expr, type);
-            }
-            throw std::runtime_error("Undefined sort expression"); 
-        }, expr.expr);
-        return make_shared<PyExpression>(sort_expr, expr.factory);
-        
+        return make_shared<PyExpression>(expr.factory->SortExpression(expr.expr, type), expr.factory);
     }
 
 } // namespace otterbrix

@@ -244,6 +244,13 @@ namespace components::compute {
 
         static function_registry_t* get_default();
 
+        // Replace the process-global default registry with a fresh one holding
+        // only the builtin functions. Used by tests to isolate the global UDF
+        // registry between independent instances (a UDF registered by one test
+        // otherwise leaks into get_default() and corrupts the next). NOT
+        // thread-safe — call only when no queries are in flight.
+        static void reset_default();
+
         [[nodiscard]] core::result_wrapper_t<function_uid> add_function(function_ptr function);
         // Insert with a caller-supplied UID. Used when the canonical UID was
         // chosen by another registry (e.g. the global default) and per-executor
@@ -310,14 +317,12 @@ namespace components::compute {
             "substring",
             {5,
              {kernel_signature_t{function_type_t::row,
-                                 {input_type::make_always_true(),
-                                  input_type::make_always_true()},
+                                 {input_type::make_always_true(), input_type::make_always_true()},
                                  {output_type::fixed(types::logical_type::STRING_LITERAL)}},
-              kernel_signature_t{function_type_t::row,
-                                 {input_type::make_always_true(),
-                                  input_type::make_always_true(),
-                                  input_type::make_always_true()},
-                                 {output_type::fixed(types::logical_type::STRING_LITERAL)}}}}},
+              kernel_signature_t{
+                  function_type_t::row,
+                  {input_type::make_always_true(), input_type::make_always_true(), input_type::make_always_true()},
+                  {output_type::fixed(types::logical_type::STRING_LITERAL)}}}}},
         std::pair<std::string, registered_func_id>{
             "length",
             {6,
@@ -327,11 +332,10 @@ namespace components::compute {
         std::pair<std::string, registered_func_id>{
             "regexp_replace",
             {7,
-             {kernel_signature_t{function_type_t::row,
-                                 {input_type::make_always_true(),
-                                  input_type::make_always_true(),
-                                  input_type::make_always_true()},
-                                 {output_type::fixed(types::logical_type::STRING_LITERAL)}}}}}};
+             {kernel_signature_t{
+                 function_type_t::row,
+                 {input_type::make_always_true(), input_type::make_always_true(), input_type::make_always_true()},
+                 {output_type::fixed(types::logical_type::STRING_LITERAL)}}}}}};
 
     void register_default_functions(function_registry_t& registry);
     void register_string_functions(function_registry_t& registry);

@@ -773,11 +773,11 @@ class StructType(DataType):
     def __contains__(self, item: Any) -> bool:
         return item in self.names
 
-    def extract_types_and_names(self) -> Tuple[List[str], List[str]]:
+    def extract_types_and_names(self) -> Tuple[List["DataType"], List[str]]:
         names = []
         types = []
         for f in self.fields:
-            types.append(str(f.dataType.otterbrix_type))
+            types.append(f.dataType)
             names.append(f.name)
         return (types, names)
 

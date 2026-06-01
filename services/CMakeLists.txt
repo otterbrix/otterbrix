@@ -28,6 +28,7 @@ set(${PROJECT_NAME}_SOURCES
     # index
         index/bitcask_task_executor.cpp
         index/bitcask_index_disk.cpp
+        index/disk_hash_table.cpp
         index/btree_index_disk.cpp
         index/index_agent_disk.cpp
         index/manager_index.cpp
@@ -53,6 +54,7 @@ set_property(TARGET otterbrix_${PROJECT_NAME} PROPERTY EXPORT_NAME ${PROJECT_NAM
 
 target_link_libraries(
         otterbrix_${PROJECT_NAME} PRIVATE
+        otterbrix::date
         otterbrix::file
         otterbrix::table
         otterbrix::types

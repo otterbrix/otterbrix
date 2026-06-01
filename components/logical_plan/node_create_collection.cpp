@@ -53,9 +53,8 @@ namespace components::logical_plan {
 
     const std::vector<table::table_constraint_t>& node_create_collection_t::constraints() const { return constraints_; }
 
-    node_create_collection_ptr make_node_create_collection(std::pmr::memory_resource* resource,
-                                                           core::relname_t relname,
-                                                           bool if_not_exists) {
+    node_create_collection_ptr
+    make_node_create_collection(std::pmr::memory_resource* resource, core::relname_t relname, bool if_not_exists) {
         return {new node_create_collection_t{resource, std::move(relname), false, if_not_exists}};
     }
 

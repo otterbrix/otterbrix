@@ -35,6 +35,7 @@ namespace components::operators::predicates {
                                           const expressions::compare_expression_ptr& expr,
                                           const std::pmr::vector<types::complex_logical_type>& types_left,
                                           const std::pmr::vector<types::complex_logical_type>& types_right,
-                                          const logical_plan::storage_parameters* parameters);
+                                          const logical_plan::storage_parameters* parameters,
+                                          core::date::timezone_offset_t session_tz);
 
 } // namespace components::operators::predicates

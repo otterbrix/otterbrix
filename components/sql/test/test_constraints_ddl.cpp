@@ -354,8 +354,7 @@ TEST_CASE("components::sql::if_not_exists") {
     }
 
     SECTION("CREATE TABLE IF NOT EXISTS sets flag on collection node") {
-        auto stmt =
-            raw_parser(&arena_resource, "CREATE TABLE IF NOT EXISTS db.tbl (id INTEGER)")->lst.front().data;
+        auto stmt = raw_parser(&arena_resource, "CREATE TABLE IF NOT EXISTS db.tbl (id INTEGER)")->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();

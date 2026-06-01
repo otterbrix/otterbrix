@@ -60,7 +60,8 @@ private:
 
 }; // namespace
 
-static complex_logical_type BindColumn(PandasBindColumn &column_p, PandasColumnBindData &bind_data) {
+static complex_logical_type BindColumn(PandasBindColumn &column_p, PandasColumnBindData &bind_data,
+                                       const configuration::config_pandas &cfg) {
 	complex_logical_type column_type;
 	auto &column = column_p.handle;
 
@@ -95,7 +96,7 @@ static complex_logical_type BindColumn(PandasBindColumn &column_p, PandasColumnB
 	}
 	// Analyze the inner data type of the 'object' column
 	if (bind_data.numpy_type.type == NumpyNullableType::OBJECT) {
-		PandasAnalyzer analyzer;
+		PandasAnalyzer analyzer(cfg);
 		if (analyzer.Analyze(column)) {
 			column_type = analyzer.AnalyzedType();
 		}
@@ -104,7 +105,8 @@ static complex_logical_type BindColumn(PandasBindColumn &column_p, PandasColumnB
 }
 
 void Pandas::Bind(py::handle df_p, vector<PandasColumnBindData> &bind_columns,
-                  vector<complex_logical_type> &return_types, vector<string> &names) {
+                  vector<complex_logical_type> &return_types, vector<string> &names,
+                  const configuration::config_pandas &cfg) {
 
 	PandasDataFrameBind df(df_p);
 	idx_t column_count = py::len(df.names);
@@ -120,7 +122,7 @@ void Pandas::Bind(py::handle df_p, vector<PandasColumnBindData> &bind_columns,
 
 		names.emplace_back(py::str(df.names[col_idx]));
 		auto column = df[col_idx];
-		auto column_type = BindColumn(column, bind_data);
+		auto column_type = BindColumn(column, bind_data, cfg);
 
 		return_types.push_back(column_type);
 		bind_columns.push_back(std::move(bind_data));

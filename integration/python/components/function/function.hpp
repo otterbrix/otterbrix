@@ -21,15 +21,12 @@ namespace components::function {
     
         template <class TARGET>
         TARGET &Cast() {
-            //DynamicCastCheck<TARGET>(this);
             return reinterpret_cast<TARGET &>(*this);
-        }   
+        }
         template <class TARGET>
         const TARGET &Cast() const {
-            //DynamicCastCheck<TARGET>(this);
             return reinterpret_cast<const TARGET &>(*this);
-        }   
-        // FIXME: this function should be removed in the future
+        }
         template <class TARGET>
         TARGET &CastNoConst() const {
             return const_cast<TARGET &>(Cast<TARGET>()); // NOLINT: FIXME

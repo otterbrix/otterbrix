@@ -31,9 +31,7 @@ namespace components::logical_plan {
         const std::string& body_sql() const noexcept { return body_sql_; }
 
         // Body plan lives at child[0]. nullptr if not set yet.
-        node_ptr body_plan() const noexcept {
-            return children_.empty() ? nullptr : children_.front();
-        }
+        node_ptr body_plan() const noexcept { return children_.empty() ? nullptr : children_.front(); }
         void set_body_plan(node_ptr plan);
 
         components::catalog::oid_t namespace_oid() const noexcept { return namespace_oid_; }
@@ -47,12 +45,8 @@ namespace components::logical_plan {
         // Output schema derived by enrich (which has Pass 1-stamped source
         // metadata + access to dispatcher_idx). Planner reads it to call
         // build_create_table_writes for pg_class + pg_attribute rows.
-        const std::vector<table::column_definition_t>& inferred_columns() const noexcept {
-            return inferred_columns_;
-        }
-        void set_inferred_columns(std::vector<table::column_definition_t> cols) {
-            inferred_columns_ = std::move(cols);
-        }
+        const std::vector<table::column_definition_t>& inferred_columns() const noexcept { return inferred_columns_; }
+        void set_inferred_columns(std::vector<table::column_definition_t> cols) { inferred_columns_ = std::move(cols); }
 
         // The matview's own oid (pg_class.oid). Stamped by planner from
         // allocate_oids batch. physical_plan_generator reads to construct
@@ -66,12 +60,8 @@ namespace components::logical_plan {
         const std::vector<components::catalog::catalog_write_t>& catalog_writes() const noexcept {
             return catalog_writes_;
         }
-        void set_catalog_writes(std::vector<components::catalog::catalog_write_t> w) {
-            catalog_writes_ = std::move(w);
-        }
-        std::vector<components::catalog::catalog_write_t> take_catalog_writes() {
-            return std::move(catalog_writes_);
-        }
+        void set_catalog_writes(std::vector<components::catalog::catalog_write_t> w) { catalog_writes_ = std::move(w); }
+        std::vector<components::catalog::catalog_write_t> take_catalog_writes() { return std::move(catalog_writes_); }
 
     private:
         hash_t hash_impl() const override;

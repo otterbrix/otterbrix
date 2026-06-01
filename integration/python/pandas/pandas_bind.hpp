@@ -6,6 +6,7 @@
 #include <pybind11/python_object_container.hpp>
 #include <numpy/numpy_type.hpp>
 
+#include <components/configuration/configuration.hpp>
 #include <components/types/types.hpp>
 #include <core/types/string.hpp>
 #include <core/types/vector.hpp>
@@ -30,8 +31,9 @@ struct PandasColumnBindData {
 
 struct Pandas {
 	static void Bind(py::handle df, vector<PandasColumnBindData> &out,
-	                 vector<components::types::complex_logical_type> &return_types, 
-                     vector<string> &names);
+	                 vector<components::types::complex_logical_type> &return_types,
+                     vector<string> &names,
+                     const configuration::config_pandas &cfg = {});
 };
 
 } // namespace otterbrix

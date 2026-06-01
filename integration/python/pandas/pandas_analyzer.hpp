@@ -4,21 +4,17 @@
 #include <pybind11/gil_wrapper.hpp>
 #include <native/python_objects.hpp>
 
+#include <components/configuration/configuration.hpp>
 #include <components/types/types.hpp>
 #include <core/typedefs.hpp>
 
 namespace otterbrix {
 
-// TODO add to config
-// sample to detect complex_logical_type
-constexpr uint64_t PANDAS_ANALYZE_SAMPLE = 1000;
-
 class PandasAnalyzer {
 public:
-	explicit PandasAnalyzer() {
-		analyzed_type = components::types::logical_type::NA;
-
-		sample_size = PANDAS_ANALYZE_SAMPLE; 
+	explicit PandasAnalyzer(const configuration::config_pandas& cfg = {})
+		: sample_size(cfg.analyze_sample_size)
+		, analyzed_type(components::types::logical_type::NA) {
 	}
 
 public:

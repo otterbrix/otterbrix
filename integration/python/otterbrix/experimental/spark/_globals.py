@@ -20,11 +20,11 @@ Module defining global singleton classes.
 
 This module raises a RuntimeError if an attempt to reload it is made. In that
 way the identities of the classes defined here are fixed and will remain so
-even if duckdb spark itself is reloaded. In particular, a function like the following
-will still work correctly after duckdb spark is reloaded:
+even if otterbrix spark itself is reloaded. In particular, a function like the following
+will still work correctly after otterbrix spark is reloaded:
 
-    def foo(arg=pyducdkb.spark._NoValue):
-        if arg is pyducdkb.spark._NoValue:
+    def foo(arg=otterbrix.spark._NoValue):
+        if arg is otterbrix.spark._NoValue:
             ...
 
 See gh-7844 for a discussion of the reload problem that motivated this module.
@@ -38,7 +38,7 @@ __ALL__ = ["_NoValue"]
 # Disallow reloading this module so as to preserve the identities of the
 # classes defined here.
 if "_is_loaded" in globals():
-    raise RuntimeError("Reloading duckdb.experimental.spark._globals is not allowed")
+    raise RuntimeError("Reloading otterbrix.experimental.spark._globals is not allowed")
 _is_loaded = True
 
 

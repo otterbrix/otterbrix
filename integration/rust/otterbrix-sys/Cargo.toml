@@ -1,0 +1,11 @@
+[package]
+name = "otterbrix-sys"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+description = "Raw FFI bindings to the Otterbrix C API"
+license = "BSD-3-Clause"
+links = "otterbrix"
+
+[build-dependencies]
+bindgen = "0.71"

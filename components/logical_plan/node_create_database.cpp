@@ -19,9 +19,8 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    node_create_database_ptr make_node_create_database(std::pmr::memory_resource* resource,
-                                                       core::dbname_t dbname,
-                                                       bool if_not_exists) {
+    node_create_database_ptr
+    make_node_create_database(std::pmr::memory_resource* resource, core::dbname_t dbname, bool if_not_exists) {
         return {new node_create_database_t{resource, std::move(dbname), if_not_exists}};
     }
 

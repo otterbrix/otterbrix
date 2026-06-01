@@ -14,15 +14,18 @@
 #include <actor-zeta/detail/future.hpp>
 #include <actor-zeta/detail/queue/enqueue_result.hpp>
 
+#include <core/date/date_types.hpp>
 #include <core/executor.hpp>
 #include <mutex>
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/session_catalog.hpp>
 #include <components/compute/function.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/log/log.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/physical_plan/operators/operator_write_data.hpp>
+#include <components/session/session.hpp>
 #include <components/table/transaction_manager.hpp>
 #include <services/collection/context_storage.hpp>
 #include <services/collection/executor.hpp>
@@ -30,6 +33,10 @@
 #include <services/wal/base.hpp>
 #include <services/wal/record.hpp>
 #include <services/wal/wal_contract.hpp>
+
+namespace services::disk {
+    class manager_disk_t;
+} // namespace services::disk
 
 namespace services::dispatcher {
 
@@ -117,6 +124,11 @@ namespace services::dispatcher {
         std::mutex mutex_;
 
         components::table::transaction_manager_t txn_manager_;
+        components::catalog::session_catalog_t default_tz_cat_;
+
+        core::date::timezone_offset_t session_tz(components::session::session_id_t /*session*/) const {
+            return default_tz_cat_.timezone_offset;
+        }
 
         components::logical_plan::node_ptr create_logic_plan(components::logical_plan::node_ptr plan);
 
@@ -124,7 +136,8 @@ namespace services::dispatcher {
         execute_plan_impl(components::session::session_id_t session,
                           components::logical_plan::node_ptr logical_plan,
                           components::logical_plan::storage_parameters parameters,
-                          components::table::transaction_data txn);
+                          components::table::transaction_data txn,
+                          context_storage_t* collections_context_storage);
 
         actor_zeta::behavior_t current_behavior_;
     };

@@ -330,6 +330,14 @@ namespace components::compute {
         return default_registry_.get();
     }
 
+    void function_registry_t::reset_default() {
+        // Ensure init_flag_ has fired (so get_default() won't later overwrite our
+        // fresh instance), then replace with a clean builtins-only registry.
+        (void) get_default();
+        default_registry_ = std::make_unique<function_registry_t>(std::pmr::get_default_resource());
+        default_registry_->register_builtin_functions();
+    }
+
     core::result_wrapper_t<function_uid> function_registry_t::add_function(function_ptr function) {
         if (!function) {
             core::error_t(core::error_code_t::function_registry_error,

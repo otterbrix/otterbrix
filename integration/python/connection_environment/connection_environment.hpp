@@ -41,7 +41,7 @@ namespace otterbrix {
         void CreateDatabase(const string& name);
         shared_ptr<Relation> RelationFromQuery(const string& query);
         Result ExecuteInternal(const string& query);
-        Result Execute(const Relation& rel);
+        Result Execute(const Relation& rel, bool optimize = false);
 
         components::cursor::cursor_t_ptr QueryRelation(const components::logical_plan::node_ptr &rel);
     public:

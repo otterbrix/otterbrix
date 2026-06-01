@@ -1,8 +1,10 @@
 #pragma once
 
+#include <chrono>
 #include <functional>
 #include <set>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <variant>
 
@@ -71,7 +73,7 @@ namespace services::dispatcher {
             std::pmr::memory_resource*,
             actor_zeta::scheduler_raw,
             log_t& log,
-            run_fn_t run_fn = [] { std::this_thread::yield(); });
+            run_fn_t run_fn = [] { std::this_thread::sleep_for(std::chrono::microseconds(10)); });
         ~manager_dispatcher_t();
 
         void set_run_fn(run_fn_t fn) { run_fn_ = std::move(fn); }

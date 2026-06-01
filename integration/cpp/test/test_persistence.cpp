@@ -13,7 +13,7 @@ static const database_name_t database_name = "testdatabase";
         auto session = otterbrix::session_id_t();                                                                      \
         auto cur = dispatcher->execute_sql(session, QUERY);                                                            \
         REQUIRE(cur->is_success());                                                                                    \
-        REQUIRE(cur->size() == static_cast<std::size_t>(COUNT));                                                      \
+        REQUIRE(cur->size() == static_cast<std::size_t>(COUNT));                                                       \
     } while (false)
 
 TEST_CASE("integration::cpp::test_persistence::wal_recovery_mixed_batch") {
@@ -1329,7 +1329,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_add_column_survives_restart"
 }
 
 TEST_CASE("integration::cpp::test_persistence::disk_index_mixed_ops_checkpoint_restart") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_index_mixed_ops_checkpoint_restart");
+    auto config =
+        test_create_config("/tmp/otterbrix/integration/test_persistence/disk_index_mixed_ops_checkpoint_restart");
     test_clear_directory(config);
 
     INFO("phase 1: create disk table + index, apply mixed DML, checkpoint") {
@@ -1349,8 +1350,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_mixed_ops_checkpoint_r
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "CREATE INDEX idx_count ON TestDatabase.TestCollection (count);");
+            auto cur =
+                dispatcher->execute_sql(session, "CREATE INDEX idx_count ON TestDatabase.TestCollection (count);");
             REQUIRE(cur->is_success());
         }
 
@@ -1376,8 +1377,9 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_mixed_ops_checkpoint_r
 
         {
             auto session = otterbrix::session_id_t();
-            auto cur =
-                dispatcher->execute_sql(session, "UPDATE TestDatabase.TestCollection SET count = count + 1000 WHERE count > 150;");
+            auto cur = dispatcher->execute_sql(
+                session,
+                "UPDATE TestDatabase.TestCollection SET count = count + 1000 WHERE count > 150;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 25);
         }
@@ -1430,15 +1432,14 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_long_keys_survive_chec
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "CREATE INDEX idx_name ON TestDatabase.TestCollection (name);");
+            auto cur = dispatcher->execute_sql(session, "CREATE INDEX idx_name ON TestDatabase.TestCollection (name);");
             REQUIRE(cur->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
-                                               "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ('" + long_a +
-                                                   "', 1), ('" + long_b + "', 2);");
+                                               "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ('" +
+                                                   long_a + "', 1), ('" + long_b + "', 2);");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 2);
         }
@@ -1483,8 +1484,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_massive_checkpoint_cyc
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "CREATE INDEX idx_count ON TestDatabase.TestCollection (count);");
+            auto cur =
+                dispatcher->execute_sql(session, "CREATE INDEX idx_count ON TestDatabase.TestCollection (count);");
             REQUIRE(cur->is_success());
         }
 

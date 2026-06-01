@@ -499,8 +499,8 @@ namespace services::disk {
             /// In-memory: schema-less (computing / relkind='g' dynamic schema)
             explicit collection_storage_entry_t(std::pmr::memory_resource* resource)
                 : table_storage(resource)
-                , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
-                                                                                         resource))
+                , storage(
+                      std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), resource))
                 , is_computed(true) {}
 
             /// In-memory: with columns

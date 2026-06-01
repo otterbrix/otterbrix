@@ -45,7 +45,8 @@ void otterbrix_destroy(otterbrix_ptr);
 
 cursor_ptr execute_sql(otterbrix_ptr ptr, string_view_t query);
 
-typedef enum sql_param_kind_t {
+typedef enum sql_param_kind_t
+{
     SQL_PARAM_NULL = 0,
     SQL_PARAM_BOOL,
     SQL_PARAM_INT64,
@@ -64,10 +65,7 @@ typedef struct sql_param_t {
     string_view_t string_value;
 } sql_param_t;
 
-cursor_ptr execute_sql_params(otterbrix_ptr ptr,
-                              string_view_t query,
-                              const sql_param_t* params,
-                              size_t param_count);
+cursor_ptr execute_sql_params(otterbrix_ptr ptr, string_view_t query, const sql_param_t* params, size_t param_count);
 
 cursor_ptr create_database(otterbrix_ptr ptr, string_view_t database_name);
 cursor_ptr create_collection(otterbrix_ptr ptr, string_view_t database_name, string_view_t collection_name);

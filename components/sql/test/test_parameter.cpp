@@ -1,4 +1,5 @@
 #include <catch2/catch.hpp>
+#include <components/logical_plan/execution_plan.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_update.hpp>
@@ -223,10 +224,10 @@ TEST_CASE("components::sql::limit_offset_bind") {
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
-    auto consumer_string = [](const core::result_wrapper_t<result_view>& result,
+    auto consumer_string = [](const core::result_wrapper_t<logical_plan::execution_plan_t>& result,
                               std::string_view expected) {
         REQUIRE(!result.has_error());
-        auto node = result.value().node;
+        auto node = result.value().sub_queries[0];
         if (node->type() == components::logical_plan::node_type::sequence_t) {
             node = node->children().back();
         }
@@ -242,23 +243,21 @@ TEST_CASE("components::sql::limit_offset_bind") {
     }
 
     SECTION("LIMIT $1 OFFSET $2 binds both") {
-        auto stmt = linitial(raw_parser(&arena_resource,
-                                        "SELECT * FROM TestDatabase.TestCollection ORDER BY id LIMIT $1 OFFSET $2;"));
+        auto stmt = linitial(
+            raw_parser(&arena_resource, "SELECT * FROM TestDatabase.TestCollection ORDER BY id LIMIT $1 OFFSET $2;"));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
         binder.bind(1, v(&resource, 7l)).bind(2, v(&resource, 3l));
-        consumer_string(binder.finalize(),
-                        R"_($aggregate: {$sort: {id: 1}, $limit: 7, $offset: 3})_");
+        consumer_string(binder.finalize(), R"_($aggregate: {$sort: {id: 1}, $limit: 7, $offset: 3})_");
     }
 
     SECTION("LIMIT and WHERE share parameters") {
-        auto stmt = linitial(raw_parser(
-            &arena_resource,
-            "SELECT * FROM TestDatabase.TestCollection WHERE flag = $1 ORDER BY id LIMIT $2 OFFSET $3;"));
+        auto stmt = linitial(
+            raw_parser(&arena_resource,
+                       "SELECT * FROM TestDatabase.TestCollection WHERE flag = $1 ORDER BY id LIMIT $2 OFFSET $3;"));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
         binder.bind(1, v(&resource, true)).bind(2, v(&resource, 4l)).bind(3, v(&resource, 1l));
-        consumer_string(
-            binder.finalize(),
-            R"_($aggregate: {$match: {"flag": {$eq: #0}}, $sort: {id: 1}, $limit: 4, $offset: 1})_");
+        consumer_string(binder.finalize(),
+                        R"_($aggregate: {$match: {"flag": {$eq: #0}}, $sort: {id: 1}, $limit: 4, $offset: 1})_");
     }
 
     SECTION("LIMIT param rebinding picks up the new value") {
@@ -282,13 +281,11 @@ TEST_CASE("components::sql::limit_offset_bind") {
     }
 
     SECTION("literal LIMIT with parameterized OFFSET") {
-        auto stmt = linitial(raw_parser(
-            &arena_resource,
-            "SELECT * FROM TestDatabase.TestCollection ORDER BY id LIMIT 5 OFFSET $1;"));
+        auto stmt = linitial(
+            raw_parser(&arena_resource, "SELECT * FROM TestDatabase.TestCollection ORDER BY id LIMIT 5 OFFSET $1;"));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
         binder.bind(1, v(&resource, 2l));
-        consumer_string(binder.finalize(),
-                        R"_($aggregate: {$sort: {id: 1}, $limit: 5, $offset: 2})_");
+        consumer_string(binder.finalize(), R"_($aggregate: {$sort: {id: 1}, $limit: 5, $offset: 2})_");
     }
 }
 

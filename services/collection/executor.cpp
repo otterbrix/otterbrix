@@ -154,6 +154,11 @@ namespace services::collection::executor {
         using namespace components::logical_plan;
         // take parameters to make them mutable
         auto parameters = plan.parameters->take_parameters();
+        // context_storage.parameters was set by the dispatcher to point into
+        // plan.parameters, which take_parameters() just emptied. Repoint it
+        // at the local copy so create_plan's index-selection helpers can look
+        // up parameter values correctly.
+        context_storage.parameters = &parameters;
 
         auto find_limit = [](const node_ptr& lp) {
             auto limit = limit_t::unlimit();

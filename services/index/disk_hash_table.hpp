@@ -4,13 +4,13 @@
 #include <core/file/file_handle.hpp>
 #include <core/file/local_file_system.hpp>
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
 #include <memory_resource>
 #include <optional>
-#include <atomic>
 #include <shared_mutex>
 #include <string>
 #include <string_view>
@@ -108,9 +108,8 @@ namespace services::index {
         uint16_t slot_dir_offset(uint16_t slot_index) const;
 
         decoded_entry_t decode_entry(const byte_buffer_t& page, const slot_t& slot) const;
-        bool keys_equal(std::string_view query_key,
-                        const decoded_entry_t& entry,
-                        const full_key_loader_t& key_loader) const;
+        bool
+        keys_equal(std::string_view query_key, const decoded_entry_t& entry, const full_key_loader_t& key_loader) const;
 
         bool try_insert_in_page(byte_buffer_t& page,
                                 std::string_view key,
@@ -135,7 +134,8 @@ namespace services::index {
         bool rehash_unlocked(uint32_t new_bucket_count, const full_key_loader_t& key_loader);
         bool maybe_rehash_if_needed_unlocked(const full_key_loader_t& key_loader);
 
-        byte_buffer_t make_entry_payload(std::string_view key, int64_t value, uint32_t log_file_id, uint64_t log_offset) const;
+        byte_buffer_t
+        make_entry_payload(std::string_view key, int64_t value, uint32_t log_file_id, uint64_t log_offset) const;
         uint64_t allocate_overflow_page();
         void persist_header();
         bool erase(std::string_view key, std::optional<int64_t> expected_value, const full_key_loader_t& key_loader);

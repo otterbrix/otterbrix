@@ -381,7 +381,7 @@ namespace components::sql::transform {
 
                 // JSONB key existence: '?' / '?|' / '?&'. Desugars to IS NOT NULL.
                 if (op_str == "?" || op_str == "?|" || op_str == "?&") {
-                    return transform_jsonb_exists(node, names, params, op_str);
+                    return transform_jsonb_exists(node, names, plan->parameters.get(), op_str);
                 }
 
                 auto comp_type = get_compare_type(op_str);
@@ -836,17 +836,16 @@ namespace components::sql::transform {
         return names.is_left_table(nm) || names.is_right_table(nm);
     }
 
-    bool transformer::resolve_jsonb_prefix_key(A_Expr* node,
-                                               const name_collection_t& names,
-                                               expressions::key_t& out_key) {
+    bool
+    transformer::resolve_jsonb_prefix_key(A_Expr* node, const name_collection_t& names, expressions::key_t& out_key) {
         std::pmr::vector<std::pmr::string> segments(resource_);
         expressions::side_t side = expressions::side_t::undefined;
         if (!collect_jsonb_path(node, names, segments, side)) {
             return false;
         }
         if (segments.empty()) {
-            error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                   std::pmr::string{"empty jsonb path", resource_});
+            error_ =
+                core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{"empty jsonb path", resource_});
             return false;
         }
         std::pmr::string joined(resource_);
@@ -857,26 +856,23 @@ namespace components::sql::transform {
             joined += segments[i];
         }
         out_key = expressions::key_t(resource_, std::move(joined), side);
-        if (out_key.side() == expressions::side_t::undefined && names.right_name.empty() &&
-            names.right_alias.empty()) {
+        if (out_key.side() == expressions::side_t::undefined && names.right_name.empty() && names.right_alias.empty()) {
             out_key.set_side(expressions::side_t::left);
         }
         return true;
     }
 
-    bool transformer::resolve_jsonb_scalar_key(A_Expr* node,
-                                               const name_collection_t& names,
-                                               expressions::key_t& out_key) {
+    bool
+    transformer::resolve_jsonb_scalar_key(A_Expr* node, const name_collection_t& names, expressions::key_t& out_key) {
         auto op = std::string_view(strVal(node->name->lst.front().data));
         if (!jsonb_nav_returns_scalar(op)) {
             // '->' / '#>' return jsonb (a sub-table) — only valid in a relation
             // position (FROM/JOIN), not as a scalar in SELECT/WHERE.
-            error_ = core::error_t(
-                core::error_code_t::sql_parse_error,
-                std::pmr::string{"jsonb operator '" + std::string(op) +
-                                     "' returns a table and cannot be used as a scalar value; "
-                                     "terminate the chain with '->>' or '#>>'",
-                                 resource_});
+            error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                   std::pmr::string{"jsonb operator '" + std::string(op) +
+                                                        "' returns a table and cannot be used as a scalar value; "
+                                                        "terminate the chain with '->>' or '#>>'",
+                                                    resource_});
             return false;
         }
         std::pmr::vector<std::pmr::string> segments(resource_);
@@ -885,8 +881,8 @@ namespace components::sql::transform {
             return false;
         }
         if (segments.empty()) {
-            error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                   std::pmr::string{"empty jsonb path", resource_});
+            error_ =
+                core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{"empty jsonb path", resource_});
             return false;
         }
         std::pmr::string joined(resource_);
@@ -899,8 +895,7 @@ namespace components::sql::transform {
         out_key = expressions::key_t(resource_, std::move(joined), side);
         // Single-table queries leave side undefined; pin to left so the value
         // getter can read it (mirrors transform_a_expr_func).
-        if (out_key.side() == expressions::side_t::undefined && names.right_name.empty() &&
-            names.right_alias.empty()) {
+        if (out_key.side() == expressions::side_t::undefined && names.right_name.empty() && names.right_alias.empty()) {
             out_key.set_side(expressions::side_t::left);
         }
         return true;

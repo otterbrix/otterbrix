@@ -1,7 +1,7 @@
 #pragma once
 
-#include "forward.hpp"
 #include "disk_hash_storage.hpp"
+#include "forward.hpp"
 #include "index.hpp"
 
 #include <cassert>
@@ -58,8 +58,14 @@ namespace components::index {
         iterator cbegin_impl() const final;
         iterator cend_impl() const final;
 
-        void insert_txn_impl(value_t key, int64_t row_index, uint64_t txn_id, core::date::timezone_offset_t local_timezone) final;
-        void mark_delete_impl(value_t key, int64_t row_index, uint64_t txn_id, core::date::timezone_offset_t local_timezone) final;
+        void insert_txn_impl(value_t key,
+                             int64_t row_index,
+                             uint64_t txn_id,
+                             core::date::timezone_offset_t local_timezone) final;
+        void mark_delete_impl(value_t key,
+                              int64_t row_index,
+                              uint64_t txn_id,
+                              core::date::timezone_offset_t local_timezone) final;
         void commit_insert_impl(uint64_t txn_id, uint64_t commit_id) final;
         void commit_delete_impl(uint64_t txn_id, uint64_t commit_id) final;
         void revert_insert_impl(uint64_t txn_id) final;
@@ -78,7 +84,6 @@ namespace components::index {
         value_t normalize_key(const value_t& key, core::date::timezone_offset_t local_timezone) const;
         std::string encode_key(const value_t& key, core::date::timezone_offset_t local_timezone) const;
         disk_hash_storage_t& storage_ref() const;
-
     };
 
 } // namespace components::index

@@ -76,7 +76,8 @@ namespace services::index {
         void merge_immutable_segments();
         static uint32_t segment_id_from_path(const std::filesystem::path& path);
         row_ids_t current_rows(const value_t& key) const;
-        bool read_rows_at(uint32_t segment_id, uint64_t value_offset, row_ids_t& rows, value_t* out_key = nullptr) const;
+        bool
+        read_rows_at(uint32_t segment_id, uint64_t value_offset, row_ids_t& rows, value_t* out_key = nullptr) const;
         std::string key_bytes_for_hash(const value_t& key) const;
         bool load_full_key_for_hash_ref(uint32_t log_file_id, uint64_t log_offset, std::string& out_key) const;
         void erase_all_refs_for_key(std::string_view key_bytes);

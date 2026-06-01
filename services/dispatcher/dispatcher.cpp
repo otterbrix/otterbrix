@@ -667,8 +667,9 @@ namespace services::dispatcher {
                 auto pass1_txn = txn_manager_.begin_transaction(session).data();
                 auto pass1_params = make_parameter_node(resource());
                 auto pass1_result = co_await execute_plan_impl(session,
-                                                               execution_plan_t{resource(), pass1_root, pass1_params, &collections_context_storage},
-                                                               pass1_txn);
+                                                               execution_plan_t{resource(), pass1_root, pass1_params},
+                                                               pass1_txn,
+                                                               &collections_context_storage);
                 if (pass1_result.cursor->is_error()) {
                     trace(log_,
                           "manager_dispatcher_t::execute_plan: Pass 1 resolve failed: {}",
@@ -767,7 +768,8 @@ namespace services::dispatcher {
                     auto pass2_result =
                         co_await execute_plan_impl(session,
                                                    execution_plan_t{resource(), pass2_root, pass2_params},
-                                                   ctx.txn, &collections_context_storage);
+                                                   ctx.txn,
+                                                   &collections_context_storage);
                     if (pass2_result.cursor->is_error()) {
                         trace(log_,
                               "manager_dispatcher_t::execute_plan: view sub-plan Pass 1 "
@@ -1170,7 +1172,8 @@ namespace services::dispatcher {
         // Enrich DML node fields with catalog metadata (NOT NULL, DEFAULT, CHECK exprs).
         // enrich reads exclusively from the plan-tree idx.
         {
-            auto ef = enrich_plan(resource(), logic_plan, disk_address_, ctx, index_address_, &collections_context_storage);
+            auto ef =
+                enrich_plan(resource(), logic_plan, disk_address_, ctx, index_address_, &collections_context_storage);
             co_await std::move(ef);
         }
         // Logical plan rewrite: insert constraint wrapper nodes driven by enriched fields.
@@ -1383,7 +1386,12 @@ namespace services::dispatcher {
             // call below reuses this same txn.
             auto enrich_txn = txn_manager_.begin_transaction(session).data();
             components::execution_context_t enriched_ctx{session, enrich_txn, ctx.session_tz, ctx.table_oid};
-            auto ef2 = enrich_plan(resource(), logic_plan, disk_address_, enriched_ctx, index_address_, &collections_context_storage);
+            auto ef2 = enrich_plan(resource(),
+                                   logic_plan,
+                                   disk_address_,
+                                   enriched_ctx,
+                                   index_address_,
+                                   &collections_context_storage);
             co_await std::move(ef2);
         }
 
@@ -1469,13 +1477,15 @@ namespace services::dispatcher {
                     exec_result.cursor = make_cursor(resource());
                 } else {
                     plan.sub_queries.back() = logic_plan;
-                    exec_result = co_await execute_plan_impl(session, std::move(plan), txn_data, &collections_context_storage);
+                    exec_result =
+                        co_await execute_plan_impl(session, std::move(plan), txn_data, &collections_context_storage);
                 }
                 break;
             }
             default:
                 plan.sub_queries.back() = logic_plan;
-                exec_result = co_await execute_plan_impl(session, std::move(plan), txn_data, &collections_context_storage);
+                exec_result =
+                    co_await execute_plan_impl(session, std::move(plan), txn_data, &collections_context_storage);
                 break;
         }
 
@@ -1886,7 +1896,7 @@ namespace services::dispatcher {
         // nodes contribute INVALID_OID and are filtered.
         for (const auto& sq : plan.sub_queries) {
             for (auto oid : sq->table_oid_dependencies()) {
-            context_copy.known_oids.insert(oid);
+                context_copy.known_oids.insert(oid);
             }
         }
         // Forward resolve_table metadata (relkind + live columns)

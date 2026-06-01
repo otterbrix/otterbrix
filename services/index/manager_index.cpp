@@ -5,9 +5,9 @@
 #include "disk_hash_table.hpp"
 
 #include <actor-zeta/spawn.hpp>
+#include <components/index/disk_hash_single_field_index.hpp>
 #include <components/index/hash_single_field_index.hpp>
 #include <components/index/index_engine.hpp>
-#include <components/index/disk_hash_single_field_index.hpp>
 #include <components/index/single_field_index.hpp>
 #include <core/b_plus_tree/b_plus_tree.hpp>
 #include <core/b_plus_tree/msgpack_reader/msgpack_reader.hpp>
@@ -65,7 +65,7 @@ namespace {
                 return value_t(r, complex_logical_type{logical_type::NA});
         }
     }
-} // anonymous namespace`
+} // namespace
 
 namespace {
     // Batched disk operation types — collect per-agent ops, send once
@@ -293,10 +293,9 @@ namespace services::index {
             }
             case components::logical_plan::index_type::hashed: {
                 if (path_db_.empty()) {
-                    id_index =
-                        components::index::make_index<components::index::hash_single_field_index_t>(engine,
-                                                                                                      index_name,
-                                                                                                      keys);
+                    id_index = components::index::make_index<components::index::hash_single_field_index_t>(engine,
+                                                                                                           index_name,
+                                                                                                           keys);
                 } else {
                     const auto base = path_db_ / std::to_string(static_cast<unsigned>(table_oid)) / index_name;
                     std::filesystem::create_directories(base);
@@ -305,18 +304,19 @@ namespace services::index {
                             engine,
                             index_name,
                             keys,
-                            std::make_unique<services::index::disk_hash_table_t>(base / "hash_index.bin",
-                                                                                 services::index::disk_hash_table_t::default_bucket_count,
-                                                                                 true,
-                                                                                 resource_));
+                            std::make_unique<services::index::disk_hash_table_t>(
+                                base / "hash_index.bin",
+                                services::index::disk_hash_table_t::default_bucket_count,
+                                true,
+                                resource_));
                     } catch (const std::exception& e) {
                         trace(log_,
                               "manager_index_t::create_index: disk hash storage init failed, fallback to memory: {}",
                               e.what());
-                        id_index = components::index::make_index<components::index::hash_single_field_index_t>(
-                            engine,
-                            index_name,
-                            keys);
+                        id_index =
+                            components::index::make_index<components::index::hash_single_field_index_t>(engine,
+                                                                                                        index_name,
+                                                                                                        keys);
                     }
                 }
                 break;

@@ -230,16 +230,15 @@ namespace components::sql::transform {
             if (deferred.limit_param) {
                 auto it = taken_params_.parameters.find(*deferred.limit_param);
                 if (it == taken_params_.parameters.end()) {
-                    last_error_ = core::error_t(
-                        core::error_code_t::sql_parse_error,
-                        std::pmr::string{"LIMIT parameter was not bound", resource_});
+                    last_error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                                std::pmr::string{"LIMIT parameter was not bound", resource_});
                     return last_error_;
                 }
                 auto resolved = try_value_to_int64(it->second);
                 if (!resolved) {
-                    last_error_ = core::error_t(
-                        core::error_code_t::sql_parse_error,
-                        std::pmr::string{"LIMIT parameter must be a non-NULL integer", resource_});
+                    last_error_ =
+                        core::error_t(core::error_code_t::sql_parse_error,
+                                      std::pmr::string{"LIMIT parameter must be a non-NULL integer", resource_});
                     return last_error_;
                 }
                 limit_val = *resolved;
@@ -248,16 +247,15 @@ namespace components::sql::transform {
             if (deferred.offset_param) {
                 auto it = taken_params_.parameters.find(*deferred.offset_param);
                 if (it == taken_params_.parameters.end()) {
-                    last_error_ = core::error_t(
-                        core::error_code_t::sql_parse_error,
-                        std::pmr::string{"OFFSET parameter was not bound", resource_});
+                    last_error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                                std::pmr::string{"OFFSET parameter was not bound", resource_});
                     return last_error_;
                 }
                 auto resolved = try_value_to_int64(it->second);
                 if (!resolved) {
-                    last_error_ = core::error_t(
-                        core::error_code_t::sql_parse_error,
-                        std::pmr::string{"OFFSET parameter must be a non-NULL integer", resource_});
+                    last_error_ =
+                        core::error_t(core::error_code_t::sql_parse_error,
+                                      std::pmr::string{"OFFSET parameter must be a non-NULL integer", resource_});
                     return last_error_;
                 }
                 offset_val = *resolved;

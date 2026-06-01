@@ -1007,12 +1007,9 @@ TEST_CASE("create_plan_match::union_compare_uses_full_scan") {
     auto union_expr = make_compare_union_expression(&resource, compare_type::union_and);
     union_expr->append_child(make_compare_expression(&resource, compare_type::gte, key(&resource, "age"), pid));
 
-    auto node =
-        make_node_match(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, union_expr);
+    auto node = make_node_match(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, union_expr);
     node->set_table_oid(table_oid);
 
     auto op = services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
-    REQUIRE(op->type() == components::operators::operator_type::match);
-    REQUIRE(op->left() != nullptr);
-    REQUIRE(op->left()->type() == components::operators::operator_type::full_scan);
+    REQUIRE(op->type() == components::operators::operator_type::full_scan);
 }

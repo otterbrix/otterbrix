@@ -22,8 +22,8 @@ namespace components::index {
         return *disk_table_;
     }
 
-    value_t
-    disk_hash_single_field_index_t::normalize_key(const value_t& key, core::date::timezone_offset_t local_timezone) const {
+    value_t disk_hash_single_field_index_t::normalize_key(const value_t& key,
+                                                          core::date::timezone_offset_t local_timezone) const {
         using namespace components::types;
         switch (key.type().type()) {
             case logical_type::TINYINT:
@@ -41,8 +41,8 @@ namespace components::index {
         }
     }
 
-    std::string
-    disk_hash_single_field_index_t::encode_key(const value_t& key, core::date::timezone_offset_t local_timezone) const {
+    std::string disk_hash_single_field_index_t::encode_key(const value_t& key,
+                                                           core::date::timezone_offset_t local_timezone) const {
         auto normalized = normalize_key(key, local_timezone);
         return codec::encode_disk_hash_key(normalized);
     }
@@ -59,7 +59,8 @@ namespace components::index {
 
     auto disk_hash_single_field_index_t::remove_impl(value_t, core::date::timezone_offset_t) -> void {}
 
-    index_t::range disk_hash_single_field_index_t::find_impl(const value_t& value, core::date::timezone_offset_t local_timezone) const {
+    index_t::range disk_hash_single_field_index_t::find_impl(const value_t& value,
+                                                             core::date::timezone_offset_t local_timezone) const {
         scratch_results_.clear();
         const auto encoded = encode_key(value, local_timezone);
         auto values = storage_ref().get_all(encoded);
@@ -89,11 +90,13 @@ namespace components::index {
         return {iterator(new impl_t(scratch_results_.cbegin())), iterator(new impl_t(scratch_results_.cend()))};
     }
 
-    index_t::range disk_hash_single_field_index_t::lower_bound_impl(const value_t&, core::date::timezone_offset_t) const {
+    index_t::range disk_hash_single_field_index_t::lower_bound_impl(const value_t&,
+                                                                    core::date::timezone_offset_t) const {
         throw "not supported"; // hash index has no ordering
     }
 
-    index_t::range disk_hash_single_field_index_t::upper_bound_impl(const value_t&, core::date::timezone_offset_t) const {
+    index_t::range disk_hash_single_field_index_t::upper_bound_impl(const value_t&,
+                                                                    core::date::timezone_offset_t) const {
         throw "not supported"; // hash index has no ordering
     }
 
@@ -105,12 +108,18 @@ namespace components::index {
         return iterator(new impl_t(scratch_results_.cend()));
     }
 
-    void disk_hash_single_field_index_t::insert_txn_impl(value_t key, int64_t row_index, uint64_t txn_id, core::date::timezone_offset_t local_timezone) {
+    void disk_hash_single_field_index_t::insert_txn_impl(value_t key,
+                                                         int64_t row_index,
+                                                         uint64_t txn_id,
+                                                         core::date::timezone_offset_t local_timezone) {
         auto encoded = encode_key(key, local_timezone);
         pending_inserts_[txn_id].emplace_back(std::pmr::string(encoded.data(), encoded.size(), resource()), row_index);
     }
 
-    void disk_hash_single_field_index_t::mark_delete_impl(value_t key, int64_t row_index, uint64_t txn_id, core::date::timezone_offset_t local_timezone) {
+    void disk_hash_single_field_index_t::mark_delete_impl(value_t key,
+                                                          int64_t row_index,
+                                                          uint64_t txn_id,
+                                                          core::date::timezone_offset_t local_timezone) {
         auto encoded = encode_key(key, local_timezone);
         pending_deletes_[txn_id].emplace_back(std::pmr::string(encoded.data(), encoded.size(), resource()), row_index);
     }
@@ -123,9 +132,7 @@ namespace components::index {
         pending_deletes_.erase(txn_id);
     }
 
-    void disk_hash_single_field_index_t::revert_insert_impl(uint64_t txn_id) {
-        pending_inserts_.erase(txn_id);
-    }
+    void disk_hash_single_field_index_t::revert_insert_impl(uint64_t txn_id) { pending_inserts_.erase(txn_id); }
 
     void disk_hash_single_field_index_t::cleanup_versions_impl(uint64_t) {}
 

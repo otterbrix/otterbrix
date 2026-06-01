@@ -14,8 +14,8 @@
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_catalog_resolve_table.hpp>
 #include <components/logical_plan/node_catalog_resolve_type.hpp>
-#include <services/collection/context_storage.hpp>
 #include <memory_resource>
+#include <services/collection/context_storage.hpp>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -68,13 +68,14 @@ namespace services::dispatcher {
     // table_oid / namespace_oid without async catalog probes. When null,
     // enrich gathers a local index from `root` itself (recursive calls then
     // thread the gathered pointer through children).
-    actor_zeta::unique_future<void> enrich_plan(std::pmr::memory_resource* resource,
-                                                components::logical_plan::node_ptr root,
-                                                actor_zeta::address_t disk_address,
-                                                components::execution_context_t ctx,
-                                                actor_zeta::address_t index_address = actor_zeta::address_t::empty_address(),
-                                                services::context_storage_t* collections_ctx = nullptr,
-                                                const enrich_resolve_idx_t* idx = nullptr);
+    actor_zeta::unique_future<void>
+    enrich_plan(std::pmr::memory_resource* resource,
+                components::logical_plan::node_ptr root,
+                actor_zeta::address_t disk_address,
+                components::execution_context_t ctx,
+                actor_zeta::address_t index_address = actor_zeta::address_t::empty_address(),
+                services::context_storage_t* collections_ctx = nullptr,
+                const enrich_resolve_idx_t* idx = nullptr);
 
     // Propagate OIDs from sibling catalog_resolve_* nodes onto their consumer
     // nodes (drop/create/DML/alter) inside each sequence_t. Idempotent.

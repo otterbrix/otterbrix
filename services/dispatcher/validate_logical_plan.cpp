@@ -1475,16 +1475,14 @@ namespace services::dispatcher {
                                         continue;
                                     }
                                     std::string alias(sc.type.alias());
-                                    const bool under =
-                                        alias == prefix || alias.rfind(prefix_slash, 0) == 0;
+                                    const bool under = alias == prefix || alias.rfind(prefix_slash, 0) == 0;
                                     if (is_delete) {
                                         if (!under) {
                                             cols.emplace_back(alias, alias);
                                         }
                                     } else if (under) {
-                                        std::string out = alias == prefix
-                                                              ? prefix.substr(prefix.find_last_of('/') + 1)
-                                                              : alias.substr(prefix_slash.size());
+                                        std::string out = alias == prefix ? prefix.substr(prefix.find_last_of('/') + 1)
+                                                                          : alias.substr(prefix_slash.size());
                                         cols.emplace_back(std::move(out), std::move(alias));
                                     }
                                 }

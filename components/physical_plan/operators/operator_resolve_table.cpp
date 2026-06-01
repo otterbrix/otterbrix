@@ -293,8 +293,8 @@ namespace components::operators {
                 cand.attversion = row[5].value<std::int64_t>();
                 cand.attrefcount = row[6].is_null() ? 0 : row[6].value<std::int64_t>();
 
-                std::string key = cand.attname + '\x1f' +
-                                  std::to_string(static_cast<unsigned>(cand.atttypid)) + '\x1f' + cand.atttypspec;
+                std::string key = cand.attname + '\x1f' + std::to_string(static_cast<unsigned>(cand.atttypid)) +
+                                  '\x1f' + cand.atttypspec;
                 auto it = latest_any.find(key);
                 if (it == latest_any.end() || it->second.attversion < cand.attversion) {
                     latest_any[std::move(key)] = std::move(cand);

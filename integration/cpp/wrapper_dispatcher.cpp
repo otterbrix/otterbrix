@@ -330,11 +330,10 @@ namespace otterbrix {
         }
     }
 
-    cursor_t_ptr
-    wrapper_dispatcher_t::execute_sql_with_params(const components::session::session_id_t& session,
-                                                  const std::string& query,
-                                                  const std::vector<std::pair<size_t, components::types::logical_value_t>>&
-                                                      params) {
+    cursor_t_ptr wrapper_dispatcher_t::execute_sql_with_params(
+        const components::session::session_id_t& session,
+        const std::string& query,
+        const std::vector<std::pair<size_t, components::types::logical_value_t>>& params) {
         using namespace components::sql::transform;
 
         trace(log_, "wrapper_dispatcher_t::execute sql (params) session: {}", session.data());
@@ -369,8 +368,8 @@ namespace otterbrix {
         if (finalized.has_error()) {
             return make_cursor(resource(), finalized.error());
         }
-        auto& view = std::move(finalized).value();
-        return execute_plan(session, std::move(view.node), std::move(view.params));
+        auto& plan = std::move(finalized).value();
+        return execute_plan(session, std::move(plan));
     }
 
     auto wrapper_dispatcher_t::get_schema(const components::session::session_id_t& session,

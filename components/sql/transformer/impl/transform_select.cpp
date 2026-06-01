@@ -509,8 +509,7 @@ namespace components::sql::transform {
                                 if (cast->variant_select) {
                                     field_key.set_variant_select(true);
                                 }
-                                std::string alias = res->name ? res->name
-                                                              : std::string(field_key.storage().back());
+                                std::string alias = res->name ? res->name : std::string(field_key.storage().back());
                                 has_non_star = true;
                                 select_node->append_expression(
                                     make_scalar_expression(resource_,
@@ -896,7 +895,7 @@ namespace components::sql::transform {
                         break;
                     }
                     case T_ParamRef:
-                        limit_param = add_param_value(node.limitCount, params);
+                        limit_param = add_param_value(node.limitCount, plan->parameters.get());
                         break;
                     default:
                         error_ = core::error_t(core::error_code_t::sql_parse_error,
@@ -928,7 +927,7 @@ namespace components::sql::transform {
                         break;
                     }
                     case T_ParamRef:
-                        offset_param = add_param_value(node.limitOffset, params);
+                        offset_param = add_param_value(node.limitOffset, plan->parameters.get());
                         break;
                     default:
                         error_ = core::error_t(core::error_code_t::sql_parse_error,

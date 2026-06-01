@@ -76,15 +76,16 @@ namespace services::index {
                                                         uint64_t txn_id,
                                                         core::date::timezone_offset_t session_tz);
         // Query (txn-aware)
-        unique_future<std::pmr::vector<int64_t>> search_with_preferred_type(session_id_t session,
-                                                        components::catalog::oid_t table_oid,
-                                                        components::index::keys_base_storage_t keys,
-                                                        components::types::logical_value_t value,
-                                                        components::expressions::compare_type compare,
-                                                        components::logical_plan::index_type preferred_index_type,
-                                                        uint64_t start_time,
-                                                        uint64_t txn_id,
-                                                        core::date::timezone_offset_t session_tz);
+        unique_future<std::pmr::vector<int64_t>>
+        search_with_preferred_type(session_id_t session,
+                                   components::catalog::oid_t table_oid,
+                                   components::index::keys_base_storage_t keys,
+                                   components::types::logical_value_t value,
+                                   components::expressions::compare_type compare,
+                                   components::logical_plan::index_type preferred_index_type,
+                                   uint64_t start_time,
+                                   uint64_t txn_id,
+                                   core::date::timezone_offset_t session_tz);
 
         unique_future<bool>
         has_index(session_id_t session, components::catalog::oid_t table_oid, index_name_t index_name);

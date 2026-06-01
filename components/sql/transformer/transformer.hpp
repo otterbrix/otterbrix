@@ -147,9 +147,7 @@ namespace components::sql::transform {
         // column contributes its name) followed by every operator's key(s).
         // On a table-returning top operator (-> / #>) in this scalar position,
         // or any malformed operand, sets error_ and returns false.
-        bool resolve_jsonb_scalar_key(A_Expr* node,
-                                      const name_collection_t& names,
-                                      expressions::key_t& out_key);
+        bool resolve_jsonb_scalar_key(A_Expr* node, const name_collection_t& names, expressions::key_t& out_key);
         // Recursive worker: appends this chain's path segments (in order) and
         // sets `side` from the base operand. Accepts any nav operator.
         bool collect_jsonb_path(A_Expr* node,
@@ -177,9 +175,9 @@ namespace components::sql::transform {
         // Desugars each key to an IS NOT NULL test on the flattened path, then
         // combines with OR ('?'/'?|') or AND ('?&').
         expressions::expression_ptr transform_jsonb_exists(A_Expr* node,
-                                                          const name_collection_t& names,
-                                                          logical_plan::parameter_node_t* params,
-                                                          std::string_view op);
+                                                           const name_collection_t& names,
+                                                           logical_plan::parameter_node_t* params,
+                                                           std::string_view op);
 
         expressions::expression_ptr
         transform_null_test(NullTest* node, const name_collection_t& names, logical_plan::parameter_node_t* params);

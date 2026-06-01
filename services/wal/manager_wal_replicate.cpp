@@ -8,6 +8,7 @@
 
 #include <actor-zeta/spawn.hpp>
 #include <core/executor.hpp>
+#include <core/slot_guard.hpp>
 #include <services/wal/wal_page_reader.hpp>
 
 namespace services::wal {
@@ -27,7 +28,10 @@ namespace services::wal {
         , log_(log.clone())
         , enabled_(config_.on)
         , manager_disk_(actor_zeta::address_t::empty_address())
-        , manager_dispatcher_(actor_zeta::address_t::empty_address()) {
+        , manager_dispatcher_(actor_zeta::address_t::empty_address())
+        // in_flight_behaviors_ is declared after run_fn_ — listed last to match
+        // member declaration order and avoid -Wreorder.
+        , in_flight_behaviors_(resource_) {
         trace(log_, "manager_wal_replicate start, enabled={}", enabled_);
         if (enabled_ && !config_.path.empty()) {
             std::filesystem::create_directories(config_.path);
@@ -83,20 +87,112 @@ namespace services::wal {
 
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_wal_replicate_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
-        current_behavior_ = behavior(msg.get());
-
-        while (current_behavior_.is_busy()) {
-            if (current_behavior_.is_awaited_ready()) {
-                auto cont = current_behavior_.take_awaited_continuation();
-                if (cont) {
-                    cont.resume();
-                }
-            } else {
-                run_fn_();
+        // Step 0: push placeholder entry and try to acquire pumping ownership.
+        bool drive = false;
+        {
+            std::lock_guard<std::mutex> guard(mutex_);
+            in_flight_behaviors_.emplace_back();
+            auto& slot = in_flight_behaviors_.back();
+            slot.pending_msg = std::move(msg);
+            if (pumping_) {
+                return {false, actor_zeta::detail::enqueue_result::success};
             }
+            pumping_ = true;
+            drive = true;
         }
 
+        // wal manager has no fire-and-forget call-sites (all sends are
+        // co_await'ed inline) — therefore no pending_<T>_ containers and no
+        // poll_pending(). See plan main-misty-castle.md.
+        while (drive) {
+            // (a) Create a behavior for the next entry that still needs one.
+            //     pending_msg STAYS in slot — coroutine holds raw pointer to
+            //     message across suspension points; msg must outlive behavior.
+            //     Marker = behavior handle null (not yet created).
+            {
+                in_flight_entry_t* slot = nullptr;
+                {
+                    std::lock_guard<std::mutex> guard(mutex_);
+                    for (auto& e : in_flight_behaviors_) {
+                        if (e.pending_msg && !e.behavior) {
+                            slot = &e;
+                            break;
+                        }
+                    }
+                }
+                if (slot) {
+                    core::slot_guard g(&current_slot_, slot);
+                    slot->behavior = behavior(slot->pending_msg.get());
+                    continue;
+                }
+            }
+
+            // (b) Resume any behavior whose awaited result is ready.
+            {
+                actor_zeta::detail::coroutine_handle<> cont{};
+                in_flight_entry_t* slot = nullptr;
+                {
+                    std::lock_guard<std::mutex> guard(mutex_);
+                    for (auto& e : in_flight_behaviors_) {
+                        if (e.behavior.is_awaited_ready()) {
+                            cont = e.behavior.take_awaited_continuation();
+                            if (cont) {
+                                slot = &e;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (cont) {
+                    {
+                        core::slot_guard g(&current_slot_, slot);
+                        cont.resume();
+                    }
+                    continue; // wal: no poll_pending — no pending_<T>_ containers.
+                }
+            }
+
+            // (c) Cleanup: erase one done entry per pass, destroying its
+            //     behavior_t outside the mutex (PMR dealloc may be nontrivial).
+            //     "Done" = behavior created (handle non-null) AND completed.
+            //     pending_msg released here together with behavior.
+            actor_zeta::behavior_t to_destroy;
+            actor_zeta::mailbox::message_ptr msg_to_destroy;
+            bool erased = false;
+            bool any_busy = false;
+            {
+                std::lock_guard<std::mutex> guard(mutex_);
+                for (auto it = in_flight_behaviors_.begin(); it != in_flight_behaviors_.end();) {
+                    if (it->behavior && it->behavior.done()) {
+                        to_destroy = std::move(it->behavior);
+                        msg_to_destroy = std::move(it->pending_msg);
+                        it = in_flight_behaviors_.erase(it);
+                        erased = true;
+                        break;
+                    } else {
+                        any_busy = true;
+                        ++it;
+                    }
+                }
+                if (!erased && !any_busy) {
+                    pumping_ = false;
+                    return {false, actor_zeta::detail::enqueue_result::success};
+                }
+            }
+            if (erased) {
+                continue; // to_destroy dtor runs here, outside the lock.
+            }
+
+            // All behaviors busy and not ready — yield to scheduler.
+            run_fn_();
+        }
         return {false, actor_zeta::detail::enqueue_result::success};
+    }
+
+    void manager_wal_replicate_t::record_session(components::session::session_id_t s) noexcept {
+        if (auto* slot = current_slot_) {
+            slot->session = s;
+        }
     }
 
     actor_zeta::behavior_t manager_wal_replicate_t::behavior(actor_zeta::mailbox::message* msg) {
@@ -198,13 +294,15 @@ namespace services::wal {
     // -----------------------------------------------------------------------
 
     manager_wal_replicate_t::unique_future<void>
-    manager_wal_replicate_t::register_active_build(session_id_t /*session*/, wal::id_t build_start_wal_position) {
+    manager_wal_replicate_t::register_active_build(session_id_t session, wal::id_t build_start_wal_position) {
+        record_session(session);
         register_active_build_sync(build_start_wal_position);
         co_return;
     }
 
     manager_wal_replicate_t::unique_future<void>
-    manager_wal_replicate_t::unregister_active_build(session_id_t /*session*/, wal::id_t build_start_wal_position) {
+    manager_wal_replicate_t::unregister_active_build(session_id_t session, wal::id_t build_start_wal_position) {
+        record_session(session);
         unregister_active_build_sync(build_start_wal_position);
         co_return;
     }
@@ -238,6 +336,7 @@ namespace services::wal {
 
     manager_wal_replicate_t::unique_future<std::vector<record_t>> manager_wal_replicate_t::load(session_id_t session,
                                                                                                 wal::id_t wal_id) {
+        record_session(session);
         if (!enabled_) {
             co_return std::vector<record_t>{};
         }
@@ -271,6 +370,7 @@ namespace services::wal {
                                         wal_sync_mode sync_mode,
                                         components::catalog::oid_t database_oid,
                                         uint64_t commit_id) {
+        record_session(session);
         if (!enabled_) {
             co_return wal::id_t{0};
         }
@@ -327,6 +427,7 @@ namespace services::wal {
 
     manager_wal_replicate_t::unique_future<void> manager_wal_replicate_t::truncate_before(session_id_t session,
                                                                                           wal::id_t checkpoint_wal_id) {
+        record_session(session);
         if (!enabled_) {
             co_return;
         }
@@ -365,6 +466,7 @@ namespace services::wal {
     // -----------------------------------------------------------------------
 
     manager_wal_replicate_t::unique_future<wal::id_t> manager_wal_replicate_t::current_wal_id(session_id_t session) {
+        record_session(session);
         if (!enabled_) {
             co_return wal::id_t{0};
         }
@@ -390,7 +492,8 @@ namespace services::wal {
     // -----------------------------------------------------------------------
 
     manager_wal_replicate_t::unique_future<wal::id_t>
-    manager_wal_replicate_t::auto_checkpoint_wal_id(session_id_t /*session*/) {
+    manager_wal_replicate_t::auto_checkpoint_wal_id(session_id_t session) {
+        record_session(session);
         if (!needs_auto_checkpoint()) {
             co_return wal::id_t{0};
         }
@@ -414,6 +517,7 @@ namespace services::wal {
                                                    uint64_t row_count,
                                                    uint64_t txn_id,
                                                    components::catalog::oid_t database_oid) {
+        record_session(session);
         if (!enabled_) {
             co_return wal::id_t{0};
         }
@@ -447,6 +551,7 @@ namespace services::wal {
                                                    uint64_t count,
                                                    uint64_t txn_id,
                                                    components::catalog::oid_t database_oid) {
+        record_session(session);
         if (!enabled_) {
             co_return wal::id_t{0};
         }
@@ -480,6 +585,7 @@ namespace services::wal {
                                                    uint64_t count,
                                                    uint64_t txn_id,
                                                    components::catalog::oid_t database_oid) {
+        record_session(session);
         if (!enabled_) {
             co_return wal::id_t{0};
         }

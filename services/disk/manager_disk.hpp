@@ -36,7 +36,9 @@
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <core/executor.hpp>
+#include <core/slot_guard.hpp>
 #include <limits>
+#include <list>
 #include <mutex>
 #include <optional>
 #include <services/wal/base.hpp>
@@ -242,6 +244,12 @@ namespace services::disk {
         using address_pack = std::tuple<actor_zeta::address_t>;
 
         using run_fn_t = std::function<void()>;
+
+        struct in_flight_entry_t {
+            components::session::session_id_t session{};
+            actor_zeta::mailbox::message_ptr pending_msg{};
+            actor_zeta::behavior_t behavior{};
+        };
 
         manager_disk_t(
             std::pmr::memory_resource*,
@@ -766,7 +774,11 @@ namespace services::disk {
             return 1 + (static_cast<std::size_t>(oid) % (pool_size - 1));
         }
 
-        actor_zeta::behavior_t current_behavior_;
+        std::pmr::list<in_flight_entry_t> in_flight_behaviors_;
+        bool pumping_{false};
+        in_flight_entry_t* current_slot_{nullptr};
+
+        void record_session(components::session::session_id_t s) noexcept;
     };
 
     template<typename ReturnType, typename... Args>
@@ -779,19 +791,8 @@ namespace services::disk {
         auto [msg, future] =
             actor_zeta::detail::make_message<R>(resource(), std::move(sender), cmd, std::forward<Args>(args)...);
 
-        std::lock_guard<std::mutex> guard(mutex_);
-        current_behavior_ = behavior(msg.get());
-
-        while (current_behavior_.is_busy()) {
-            if (current_behavior_.is_awaited_ready()) {
-                auto cont = current_behavior_.take_awaited_continuation();
-                if (cont) {
-                    cont.resume();
-                }
-            } else {
-                run_fn_();
-            }
-        }
+        auto enqueue_status = enqueue_impl(std::move(msg));
+        static_cast<void>(enqueue_status);
 
         return std::move(future);
     }

@@ -17,6 +17,8 @@
 #include <components/log/log.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <core/file/local_file_system.hpp>
+#include <core/slot_guard.hpp>
+#include <list>
 #include <mutex>
 #include <unordered_map>
 
@@ -49,11 +51,33 @@ namespace services::index {
         auto make_type() const noexcept -> const char*;
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
-        // Cooperative driver for actor_mixin + coroutine behavior(). The driver
-        // holds current_behavior_ across mailbox iterations and pumps resumable
-        // continuations under mutex_. mutex_ protects ACTOR SCHEDULING ONLY,
-        // not DML/DDL data coordination — Pure MVCC rule #12 (no locks for
-        // DML/DDL) remains satisfied.
+        // Public — required for slot_guard<in_flight_entry_t*> CTAD inside
+        // enqueue_impl, and for observability/tests. The session field is
+        // sentinel-default at push, filled lazily by record_session(s) which
+        // the handler invokes on its first line. pending_msg holds the
+        // deferred message until the pump-loop creates the behavior coroutine
+        // (outside the mutex). behavior is move-only and lives in a
+        // std::pmr::list to keep iterators stable across concurrent push and
+        // resume re-suspensions.
+        struct in_flight_entry_t {
+            components::session::session_id_t session{};
+            actor_zeta::mailbox::message_ptr pending_msg{};
+            actor_zeta::behavior_t behavior{};
+        };
+
+        // Unified pump driver for actor_mixin + coroutine behavior(). The
+        // pump maintains a std::pmr::list<in_flight_entry_t> in_flight_behaviors_
+        // and a top-level pumping_ ownership flag (both under mutex_). A
+        // single pump-owner thread (the first enqueue caller that flips
+        // pumping_ from false → true) drains the list: it creates behaviors
+        // for entries with pending_msg, resumes those whose awaited future
+        // is ready, and erases done ones. Other concurrent enqueues push a
+        // placeholder under the mutex and return immediately (no nested pump
+        // frames). current_slot_ is set via core::slot_guard around behavior()
+        // and cont.resume() so handlers can write their session_id through
+        // record_session(s). mutex_ guards ACTOR SCHEDULING ONLY — Pure MVCC
+        // rule #12 (no locks for DML/DDL) remains satisfied. mutex_ is never
+        // held across cont.resume() / run_fn_() / behavior_t destruction.
         [[nodiscard]] std::pair<bool, actor_zeta::detail::enqueue_result>
         enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
@@ -294,8 +318,24 @@ namespace services::index {
         void poll_pending();
 
         // Cooperative driver state (see enqueue_impl docstring above).
+        // mutex_ guards in_flight_behaviors_ + pumping_ ONLY. It is never
+        // held across cont.resume() / run_fn_() / behavior_t destruction.
+        // Stable iterators (std::pmr::list) are required because behavior_t
+        // is move-only and resume can re-suspend on a new await without us
+        // touching the node.
         std::mutex mutex_;
-        actor_zeta::behavior_t current_behavior_;
+        std::pmr::list<in_flight_entry_t> in_flight_behaviors_;
+        bool pumping_{false};
+
+        // current_slot_ — private; set ONLY by core::slot_guard inside
+        // enqueue_impl (which has private access without friend). Handlers
+        // call record_session(session) on their first line; that writes
+        // through current_slot_ into the entry's session field. Sentinel
+        // nullptr means "no pump-owner frame on this stack" — handler is
+        // running outside the pump (e.g. bootstrap path) and record_session
+        // is a no-op.
+        in_flight_entry_t* current_slot_{nullptr};
+        void record_session(components::session::session_id_t s) noexcept;
     };
 
     template<typename ReturnType, typename... Args>
@@ -308,20 +348,8 @@ namespace services::index {
         auto [msg, future] =
             actor_zeta::detail::make_message<R>(resource(), std::move(sender), cmd, std::forward<Args>(args)...);
 
-        std::lock_guard<std::mutex> guard(mutex_);
-        current_behavior_ = behavior(msg.get());
-
-        while (current_behavior_.is_busy()) {
-            if (current_behavior_.is_awaited_ready()) {
-                auto cont = current_behavior_.take_awaited_continuation();
-                if (cont) {
-                    cont.resume();
-                }
-            } else {
-                run_fn_();
-            }
-        }
-
+        // Forwards to the unified pump in the message_ptr overload.
+        (void) enqueue_impl(std::move(msg));
         return std::move(future);
     }
 

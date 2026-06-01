@@ -1438,9 +1438,15 @@ namespace services::collection::executor {
             // Option B (mailbox-send manager_dispatcher_t::allocate_oid)
             // is unnecessary for the same reason — the OID allocation
             // pipeline is driven inside this actor's coroutine.
+            // NOTE: lambda takes `executor_t* self` as first arg so that
+            // unique_future's coroutine promise_type::operator new can extract
+            // the PMR resource via self->resource(). Without this, the
+            // extract_resource_or_abort assert fires (the [this] capture is
+            // not visible to the coroutine frame allocator on lambda bodies).
             auto allocate_oids_inline =
-                [this, session, &context_storage](std::size_t count)
+                [this, session, &context_storage](executor_t* self, std::size_t count)
                 -> executor_t::unique_future<std::vector<components::catalog::oid_t>> {
+                (void)self;
                 auto node = components::logical_plan::make_node_allocate_oids(resource(), count);
                 components::compute::function_registry_t local_fn_registry{resource()};
                 services::context_storage_t cstor{resource(),
@@ -1553,7 +1559,7 @@ namespace services::collection::executor {
                     services::catalog_resolve::effective_root_node(logical_plan.get()));
                 const std::size_t need = 1 + cc->column_definitions().size();
                 components::catalog::oid_batch_t oid_batch;
-                oid_batch.oids = co_await allocate_oids_inline(need);
+                oid_batch.oids = co_await allocate_oids_inline(this, need);
                 components::planner::planner_t ddl_planner;
                 logical_plan = ddl_planner.create_plan(resource(), std::move(logical_plan), std::move(oid_batch));
             }
@@ -1563,7 +1569,7 @@ namespace services::collection::executor {
             if (original_type == node_type::create_database_t &&
                 disk_address_ != actor_zeta::address_t::empty_address()) {
                 components::catalog::oid_batch_t oid_batch;
-                oid_batch.oids = co_await allocate_oids_inline(std::size_t{1});
+                oid_batch.oids = co_await allocate_oids_inline(this, std::size_t{1});
                 components::planner::planner_t ddl_planner;
                 logical_plan = ddl_planner.create_plan(resource(), std::move(logical_plan), std::move(oid_batch));
             }
@@ -1579,7 +1585,7 @@ namespace services::collection::executor {
                                              ? std::size_t{1} + ct->type().child_types().size()
                                              : std::size_t{1};
                 components::catalog::oid_batch_t oid_batch;
-                oid_batch.oids = co_await allocate_oids_inline(need);
+                oid_batch.oids = co_await allocate_oids_inline(this, need);
                 components::planner::planner_t ddl_planner;
                 logical_plan = ddl_planner.create_plan(resource(), std::move(logical_plan), std::move(oid_batch));
             }
@@ -1594,7 +1600,7 @@ namespace services::collection::executor {
                 const std::size_t need =
                     (original_type == node_type::create_sequence_t) ? std::size_t{1} : std::size_t{2};
                 components::catalog::oid_batch_t oid_batch;
-                oid_batch.oids = co_await allocate_oids_inline(need);
+                oid_batch.oids = co_await allocate_oids_inline(this, need);
                 components::planner::planner_t ddl_planner;
                 logical_plan = ddl_planner.create_plan(resource(), std::move(logical_plan), std::move(oid_batch));
             }
@@ -1607,7 +1613,7 @@ namespace services::collection::executor {
                 const std::size_t col_count = cm ? cm->inferred_columns().size() : std::size_t{0};
                 const std::size_t need = 2 + col_count;
                 components::catalog::oid_batch_t oid_batch;
-                oid_batch.oids = co_await allocate_oids_inline(need);
+                oid_batch.oids = co_await allocate_oids_inline(this, need);
                 components::planner::planner_t ddl_planner;
                 logical_plan = ddl_planner.create_plan(resource(), std::move(logical_plan), std::move(oid_batch));
             }
@@ -1617,7 +1623,7 @@ namespace services::collection::executor {
             if (original_type == node_type::create_index_t &&
                 disk_address_ != actor_zeta::address_t::empty_address()) {
                 components::catalog::oid_batch_t oid_batch;
-                oid_batch.oids = co_await allocate_oids_inline(std::size_t{1});
+                oid_batch.oids = co_await allocate_oids_inline(this, std::size_t{1});
                 components::planner::planner_t ddl_planner;
                 logical_plan = ddl_planner.create_plan(resource(), std::move(logical_plan), std::move(oid_batch));
             }
@@ -1689,7 +1695,7 @@ namespace services::collection::executor {
                                                        resource()}})};
                 }
                 components::catalog::oid_batch_t oid_batch;
-                oid_batch.oids = co_await allocate_oids_inline(std::size_t{1});
+                oid_batch.oids = co_await allocate_oids_inline(this, std::size_t{1});
                 components::planner::planner_t ddl_planner;
                 logical_plan = ddl_planner.create_plan(resource(), std::move(logical_plan), std::move(oid_batch));
             }

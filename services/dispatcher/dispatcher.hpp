@@ -16,6 +16,8 @@
 
 #include <core/date/date_types.hpp>
 #include <core/executor.hpp>
+#include <core/slot_guard.hpp>
+#include <list>
 #include <mutex>
 
 #include <components/catalog/catalog_oids.hpp>
@@ -50,6 +52,20 @@ namespace services::dispatcher {
         using sync_pack = std::tuple<actor_zeta::address_t, actor_zeta::address_t, actor_zeta::address_t>;
 
         using run_fn_t = std::function<void()>;
+
+        // In-flight slot for the unified pump pattern. Each enqueue_impl
+        // entry pushes one of these; the pump-loop creates the behavior
+        // (corotine) lazily outside the mutex, resumes ready continuations,
+        // and erases done entries. session is sentinel-default until the
+        // handler calls record_session(); pending_msg holds the message
+        // until the pump-loop calls behavior(msg.get()).
+        // PUBLIC typedef so slot_guard<in_flight_entry_t*> CTAD works at the
+        // call-site inside enqueue_impl (rule: no friend declarations).
+        struct in_flight_entry_t {
+            components::session::session_id_t session{};
+            actor_zeta::mailbox::message_ptr pending_msg{};
+            actor_zeta::behavior_t behavior{};
+        };
 
         manager_dispatcher_t(
             std::pmr::memory_resource*,
@@ -237,7 +253,13 @@ namespace services::dispatcher {
                           components::table::transaction_data txn,
                           context_storage_t* collections_context_storage);
 
-        actor_zeta::behavior_t current_behavior_;
+        std::pmr::list<in_flight_entry_t> in_flight_behaviors_;
+        std::pmr::vector<actor_zeta::unique_future<void>> pending_void_;
+        bool pumping_{false};
+        in_flight_entry_t* current_slot_{nullptr};
+
+        void poll_pending();
+        void record_session(components::session::session_id_t s) noexcept;
     };
 
 } // namespace services::dispatcher

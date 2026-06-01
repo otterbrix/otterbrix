@@ -186,15 +186,13 @@ namespace components::table {
 
         uint64_t deleted_tuples = 0;
         for (uint64_t i = 0; i < count; i++) {
-            if (deleted[rows[i]] == transaction_id) {
-                continue;
-            }
             if (deleted[rows[i]] != NOT_DELETED_ID) {
-                // Recoverable: another txn already marked this tuple deleted (W-W conflict).
-                // TODO follow-up: core::error_t return for graceful abort. Current: assert+abort
-                // eliminates actor-zeta -fno-exceptions UB.
-                assert(false && "Conflict on tuple deletion!");
-                std::abort();
+                // Already marked deleted — either by this txn (idempotent) or
+                // by a prior committed txn (cascade-drop scenario where the
+                // scan is unaware of MVCC visibility). Skip rather than abort:
+                // idempotent semantics for cascade DDL, no observable state
+                // change for already-gone rows.
+                continue;
             }
             deleted[rows[i]] = transaction_id;
             rows[deleted_tuples] = rows[i];

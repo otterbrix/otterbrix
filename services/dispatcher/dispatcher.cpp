@@ -58,7 +58,10 @@
 #include <components/physical_plan/operators/operator_unregister_udf.hpp>
 #include <components/physical_plan_generator/impl/create_plan_register_udf.hpp>
 #include <core/executor.hpp>
+#include <core/slot_guard.hpp>
 #include <core/tracy/tracy.hpp>
+
+#include <algorithm>
 
 #include <components/physical_plan_generator/create_plan.hpp>
 #include <components/planner/optimizer.hpp>
@@ -189,7 +192,9 @@ namespace services::dispatcher {
         , collections_(resource_ptr)
         , executors_(resource_ptr)
         , executor_addresses_(resource_ptr)
-        , txn_manager_(resource_ptr) {
+        , txn_manager_(resource_ptr)
+        , in_flight_behaviors_(resource_ptr)
+        , pending_void_(resource_ptr) {
         ZoneScoped;
         trace(log_, "manager_dispatcher_t::manager_dispatcher_t");
     }
@@ -203,21 +208,113 @@ namespace services::dispatcher {
 
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_dispatcher_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
-        std::lock_guard<std::mutex> guard(mutex_);
-        current_behavior_ = behavior(msg.get());
-
-        while (current_behavior_.is_busy()) {
-            if (current_behavior_.is_awaited_ready()) {
-                auto cont = current_behavior_.take_awaited_continuation();
-                if (cont) {
-                    cont.resume();
-                }
-            } else {
-                run_fn_();
+        bool drive = false;
+        {
+            std::lock_guard<std::mutex> guard(mutex_);
+            in_flight_behaviors_.emplace_back();
+            auto& slot = in_flight_behaviors_.back();
+            slot.pending_msg = std::move(msg);
+            if (pumping_) {
+                return {false, actor_zeta::detail::enqueue_result::success};
             }
+            pumping_ = true;
+            drive = true;
         }
 
+        while (drive) {
+            // (a) Create behavior for next entry that still needs one.
+            //     pending_msg STAYS in slot — coroutine holds raw pointer to
+            //     message across suspension points; msg must outlive behavior.
+            //     Marker = behavior handle null (not yet created).
+            {
+                in_flight_entry_t* slot = nullptr;
+                {
+                    std::lock_guard<std::mutex> guard(mutex_);
+                    for (auto& e : in_flight_behaviors_) {
+                        if (e.pending_msg && !e.behavior) {
+                            slot = &e;
+                            break;
+                        }
+                    }
+                }
+                if (slot) {
+                    core::slot_guard g(&current_slot_, slot);
+                    slot->behavior = behavior(slot->pending_msg.get());
+                    continue;
+                }
+            }
+
+            // (b) Resume ready behavior.
+            {
+                actor_zeta::detail::coroutine_handle<> cont{};
+                in_flight_entry_t* slot = nullptr;
+                {
+                    std::lock_guard<std::mutex> guard(mutex_);
+                    for (auto& e : in_flight_behaviors_) {
+                        if (e.behavior.is_awaited_ready()) {
+                            cont = e.behavior.take_awaited_continuation();
+                            if (cont) {
+                                slot = &e;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (cont) {
+                    {
+                        core::slot_guard g(&current_slot_, slot);
+                        cont.resume();
+                    }
+                    poll_pending();
+                    continue;
+                }
+            }
+
+            // (c) Cleanup done behaviors.
+            //     "Done" = behavior created (handle non-null) AND completed.
+            //     pending_msg released here together with behavior.
+            actor_zeta::behavior_t to_destroy;
+            actor_zeta::mailbox::message_ptr msg_to_destroy;
+            bool erased = false;
+            bool any_busy = false;
+            {
+                std::lock_guard<std::mutex> guard(mutex_);
+                for (auto it = in_flight_behaviors_.begin(); it != in_flight_behaviors_.end();) {
+                    if (it->behavior && it->behavior.done()) {
+                        to_destroy = std::move(it->behavior);
+                        msg_to_destroy = std::move(it->pending_msg);
+                        it = in_flight_behaviors_.erase(it);
+                        erased = true;
+                        break;
+                    } else {
+                        any_busy = true;
+                        ++it;
+                    }
+                }
+                if (!erased && !any_busy) {
+                    pumping_ = false;
+                    return {false, actor_zeta::detail::enqueue_result::success};
+                }
+            }
+            if (erased) continue;
+
+            poll_pending();
+            run_fn_();
+        }
         return {false, actor_zeta::detail::enqueue_result::success};
+    }
+
+    void manager_dispatcher_t::poll_pending() {
+        pending_void_.erase(
+            std::remove_if(pending_void_.begin(), pending_void_.end(),
+                           [](auto& f) { return f.is_ready(); }),
+            pending_void_.end());
+    }
+
+    void manager_dispatcher_t::record_session(components::session::session_id_t s) noexcept {
+        if (auto* slot = current_slot_) {
+            slot->session = s;
+        }
     }
 
     actor_zeta::behavior_t manager_dispatcher_t::behavior(actor_zeta::mailbox::message* msg) {
@@ -325,21 +422,23 @@ namespace services::dispatcher {
             last_broadcast_horizon_ = new_lowest;
             if (disk_has_dropped_ && disk_address_ != actor_zeta::address_t::empty_address()) {
                 // Fire-and-forget: subscriber acks asynchronously via
-                // on_subscriber_empty mailbox message. Result is bound (not
-                // (void)-cast) so the [[nodiscard]] contract on
-                // actor_zeta::send is honoured; we let the future drop at end
-                // of scope because the ack is the only synchronisation we need
-                // and it comes back through the mailbox, not the future.
-                [[maybe_unused]] auto disk_send_result =
+                // on_subscriber_empty mailbox message. The unique_future<void>
+                // must outlive the statement that issued the send (otherwise
+                // the producer's promise dangles); we park it on
+                // pending_void_ and let poll_pending() drain it once the
+                // mailbox-side handler completes.
+                auto disk_send_result =
                     actor_zeta::send(disk_address_,
                                      &services::disk::manager_disk_t::on_horizon_advanced,
                                      new_lowest);
+                pending_void_.emplace_back(std::move(disk_send_result.second));
             }
             if (index_has_dropped_ && index_address_ != actor_zeta::address_t::empty_address()) {
-                [[maybe_unused]] auto index_send_result =
+                auto index_send_result =
                     actor_zeta::send(index_address_,
                                      &services::index::manager_index_t::on_horizon_advanced,
                                      new_lowest);
+                pending_void_.emplace_back(std::move(index_send_result.second));
             }
         }
     }
@@ -384,6 +483,7 @@ namespace services::dispatcher {
     manager_dispatcher_t::execute_plan(components::session::session_id_t session,
                                        node_ptr plan,
                                        parameter_node_ptr params) {
+        record_session(session);
         trace(log_, "manager_dispatcher_t::execute_plan session: {}, {}", session.data(), plan->to_string());
 
         auto params_for_wal = make_parameter_node(resource());
@@ -779,7 +879,7 @@ namespace services::dispatcher {
                             // schema not surfaced by drop_target_names_from_resolves;
                             // left empty until Step 3+ migration carries it through.
                             entry.name = cm->matviewname();
-                            [[maybe_unused]] auto reg = actor_zeta::otterbrix::send(
+                            auto reg = actor_zeta::otterbrix::send(
                                 executor_addresses_[pool_idx],
                                 &collection::executor::executor_t::register_collection_local,
                                 session,
@@ -788,6 +888,11 @@ namespace services::dispatcher {
                             if (reg.first && executors_[pool_idx]) {
                                 scheduler_->enqueue(executors_[pool_idx].get());
                             }
+                            // Park the unique_future<void> on pending_void_ so
+                            // the producer-side promise outlives this statement;
+                            // poll_pending() drains it once register_collection_local
+                            // completes on the executor side.
+                            pending_void_.emplace_back(std::move(reg.second));
                         }
                     }
                 }
@@ -817,7 +922,7 @@ namespace services::dispatcher {
                             // schema not surfaced by drop_target_names_from_resolves;
                             // left empty until Step 3+ migration carries it through.
                             entry.name = cc_child->relname();
-                            [[maybe_unused]] auto reg = actor_zeta::otterbrix::send(
+                            auto reg = actor_zeta::otterbrix::send(
                                 executor_addresses_[pool_idx],
                                 &collection::executor::executor_t::register_collection_local,
                                 session,
@@ -826,6 +931,9 @@ namespace services::dispatcher {
                             if (reg.first && executors_[pool_idx]) {
                                 scheduler_->enqueue(executors_[pool_idx].get());
                             }
+                            // Park unique_future<void> on pending_void_ — see
+                            // matview branch above for rationale.
+                            pending_void_.emplace_back(std::move(reg.second));
                         }
                     }
                 }
@@ -863,6 +971,7 @@ namespace services::dispatcher {
     manager_dispatcher_t::unique_future<bool>
     manager_dispatcher_t::register_udf(components::session::session_id_t session,
                                        components::compute::function_ptr function) {
+        record_session(session);
         trace(log_, "dispatcher_t::register_udf session: {}, function name: {}", session.data(), function->name());
 
         // Go through the operator pipeline. The logical leaf
@@ -945,6 +1054,7 @@ namespace services::dispatcher {
     manager_dispatcher_t::unregister_udf(components::session::session_id_t session,
                                          std::string function_name,
                                          std::pmr::vector<complex_logical_type> inputs) {
+        record_session(session);
         trace(log_, "dispatcher_t::unregister_udf: session {}, {}", session.data(), function_name);
 
         // Operator-pipeline replacement. The logical leaf
@@ -1000,6 +1110,7 @@ namespace services::dispatcher {
     manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr>
     manager_dispatcher_t::get_schema(components::session::session_id_t session,
                                      std::pmr::vector<std::pair<database_name_t, collection_name_t>> ids) {
+        record_session(session);
         trace(log_, "manager_dispatcher_t::get_schema session: {}, ids count: {}", session.data(), ids.size());
 
         // No disk → no pg_catalog → every id is unresolved (purely IN_MEMORY
@@ -1169,6 +1280,7 @@ namespace services::dispatcher {
 
     manager_dispatcher_t::unique_future<components::table::transaction_data>
     manager_dispatcher_t::begin_transaction(components::session::session_id_t session) {
+        record_session(session);
         trace(log_, "manager_dispatcher_t::begin_transaction, session: {}", session.data());
         auto& txn = txn_manager_.begin_transaction(session);
         co_return txn.data();
@@ -1179,6 +1291,7 @@ namespace services::dispatcher {
     // happens on a single owner — the executor only ever talks via mailbox.
     manager_dispatcher_t::unique_future<components::table::transaction_data>
     manager_dispatcher_t::txn_begin_msg(components::session::session_id_t session) {
+        record_session(session);
         trace(log_, "manager_dispatcher_t::txn_begin_msg, session: {}", session.data());
         auto& txn = txn_manager_.begin_transaction(session);
         co_return txn.data();
@@ -1186,12 +1299,14 @@ namespace services::dispatcher {
 
     manager_dispatcher_t::unique_future<uint64_t>
     manager_dispatcher_t::txn_commit_msg(components::session::session_id_t session) {
+        record_session(session);
         trace(log_, "manager_dispatcher_t::txn_commit_msg, session: {}", session.data());
         co_return txn_manager_.commit(session);
     }
 
     manager_dispatcher_t::unique_future<void>
     manager_dispatcher_t::txn_abort_msg(components::session::session_id_t session) {
+        record_session(session);
         trace(log_, "manager_dispatcher_t::txn_abort_msg, session: {}", session.data());
         txn_manager_.abort(session);
         co_return;
@@ -1218,6 +1333,7 @@ namespace services::dispatcher {
     manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr>
     manager_dispatcher_t::set_default_timezone_msg(components::session::session_id_t session,
                                                     std::pmr::string tz_name) {
+        record_session(session);
         trace(log_,
               "manager_dispatcher_t::set_default_timezone_msg, session: {}, tz: {}",
               session.data(),
@@ -1249,6 +1365,7 @@ namespace services::dispatcher {
 
     manager_dispatcher_t::unique_future<uint64_t>
     manager_dispatcher_t::commit_transaction(components::session::session_id_t session) {
+        record_session(session);
         trace(log_, "manager_dispatcher_t::commit_transaction, session: {}", session.data());
 
         // Go through the operator pipeline instead of inline
@@ -1305,6 +1422,7 @@ namespace services::dispatcher {
 
     manager_dispatcher_t::unique_future<void>
     manager_dispatcher_t::abort_transaction(components::session::session_id_t session) {
+        record_session(session);
         trace(log_, "manager_dispatcher_t::abort_transaction, session: {}", session.data());
 
         // Operator-pipeline replacement (mirrors commit above).

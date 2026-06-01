@@ -6,6 +6,7 @@
 #include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/detail/future.hpp>
 
+#include <core/slot_guard.hpp>
 #include <services/wal/wal.hpp>
 #include <services/wal/wal_contract.hpp>
 #include <services/wal/wal_sync_mode.hpp>
@@ -16,6 +17,8 @@
 #include <components/session/session.hpp>
 
 #include <functional>
+#include <list>
+#include <mutex>
 #include <set>
 #include <thread>
 #include <unordered_map>
@@ -28,6 +31,15 @@ namespace services::wal {
         using unique_future = actor_zeta::unique_future<T>;
         using address_pack = std::tuple<actor_zeta::address_t, actor_zeta::address_t>;
         using session_id_t = components::session::session_id_t;
+
+        // Public so observability/tests can inspect; needed for slot_guard CTAD
+        // inside enqueue_impl. The pump-loop manages the lifetime; handlers fill
+        // `session` via record_session().
+        struct in_flight_entry_t {
+            components::session::session_id_t session{};
+            actor_zeta::mailbox::message_ptr pending_msg{};
+            actor_zeta::behavior_t behavior{};
+        };
 
         manager_wal_replicate_t(std::pmr::memory_resource* resource,
                                 actor_zeta::scheduler_raw scheduler,
@@ -165,7 +177,13 @@ namespace services::wal {
         std::pmr::set<wal::id_t> active_build_start_positions_{resource_};
 
         run_fn_t run_fn_{[] { std::this_thread::yield(); }};
-        actor_zeta::behavior_t current_behavior_;
+
+        std::pmr::list<in_flight_entry_t> in_flight_behaviors_;
+        bool pumping_{false};
+        in_flight_entry_t* current_slot_{nullptr};
+        std::mutex mutex_; // NEW for wal — protects in_flight_behaviors_ / pumping_ only.
+
+        void record_session(components::session::session_id_t s) noexcept;
     };
 
 } // namespace services::wal

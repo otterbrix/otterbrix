@@ -114,6 +114,31 @@ namespace components::sql::transform {
             } else if (nodeTag(join->rarg) == T_RangeFunction) {
                 auto func = pg_ptr_cast<RangeFunction>(join->rarg);
                 node_join->append_child(transform_function(*func, names, plan->parameters.get()));
+            } else if (nodeTag(join->rarg) == T_RangeSubselect) {
+                auto* sub_select = pg_ptr_cast<RangeSubselect>(join->rarg);
+                auto agg_r = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+                agg_r->append_child(transform_select(*pg_ptr_cast<SelectStmt>(sub_select->subquery), plan));
+
+                if (sub_select->alias) {
+                    agg_r->children().back()->set_result_alias(sub_select->alias->aliasname);
+                    if (sub_select->alias->colnames &&
+                        agg_r->children().back()->type() == logical_plan::node_type::data_t) {
+                        auto& chunk =
+                            reinterpret_cast<logical_plan::node_data_t*>(agg_r->children().back().get())->data_chunk();
+                        if (sub_select->alias->colnames->lst.size() != chunk.column_count()) {
+                            error_ = core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"column names count has to equal actual column count", resource_});
+                            return;
+                        }
+                        size_t column_index = 0;
+                        for (auto colname : sub_select->alias->colnames->lst) {
+                            chunk.data[column_index].set_type_alias(strVal(colname.data));
+                            column_index++;
+                        }
+                    }
+                }
+                node_join->append_child(std::move(agg_r));
             }
         } else if (nodeTag(join->larg) == T_RangeFunction) {
             assert(!node_join);

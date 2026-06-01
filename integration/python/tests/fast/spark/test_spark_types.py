@@ -45,7 +45,6 @@ from otterbrix.experimental.spark.sql.types import (
 
 class TestTypes(object):
     def test_all_types_schema(self):
-        #pass
         assert OtterBrixPyType('NULL') == NullType().otterbrix_type; 
         assert OtterBrixPyType('VARCHAR') == StringType().otterbrix_type; 
         assert OtterBrixPyType('BLOB') == BinaryType().otterbrix_type; 
@@ -82,4 +81,18 @@ class TestTypes(object):
         assert len(struct) == 4
         assert OtterBrixPyType('INTEGER') == struct[2].dataType[0].otterbrix_type
         assert OtterBrixPyType('INTEGER') == struct[2].dataType['inner'].otterbrix_type
+
+    def test_types_boundary_values(self, spark):
+        df = spark.createDataFrame(
+            [(9999999999, -2147483648, "")], ["big", "neg", "empty"]
+        )
+        assert df.collect() == [Row(big=9999999999, neg=-2147483648, empty="")]
+
+    def test_types_null_roundtrip(self, spark):
+        # NULL produced by a left join must round-trip back to Python as None.
+        left = spark.createDataFrame([(1, 10), (2, 99)], ["id", "k"])
+        right = spark.createDataFrame([(10, "x")], ["k", "v"])
+        rows = left.join(right, "k", "left").collect()
+        by_id = {r.id: r.v for r in rows}
+        assert by_id == {1: "x", 2: None}
 

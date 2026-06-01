@@ -2,12 +2,13 @@ FROM quay.io/pypa/manylinux_2_28_x86_64 AS build_wheel
 
 ENV PYTHONFAULTHANDLER=1
 
-RUN yum install -y ninja-build python3-pip python3-devel wget unzip zip flex bison
+RUN yum install -y ninja-build python3-pip python3-devel wget unzip zip flex bison git
 
 RUN    pip3 install --upgrade pip && \
        pip3 install --no-cache-dir setuptools wheel scikit-build conan==2.19.0 pytest==6.2.5 cmake==3.28.3 && \
        conan profile detect --force && \
-       conan remote add otterbrix http://conan.otterbrix.com
+       git clone --depth 1 https://github.com/duckstax/conan-duckstax.git /tmp/conan-duckstax && \
+       conan remote add duckstax /tmp/conan-duckstax --type=local-recipes-index
 
 WORKDIR /app
 

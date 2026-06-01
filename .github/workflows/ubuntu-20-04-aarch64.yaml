@@ -27,11 +27,12 @@ jobs:
           githubToken: ${{ github.token }}
 
           run: |
-            apt update && apt install -y  build-essential ninja-build python3-pip python3-dev curl gnupg apt-transport-https cmake flex bison
+            apt update && apt install -y  build-essential ninja-build python3-pip python3-dev curl gnupg apt-transport-https cmake flex bison git
             
-            pip install conan==2.20.0 pytest==6.2.5
+            python3 -m pip install conan==2.20.0 pytest==6.2.5
             conan profile detect --force
-            conan remote add otterbrix http://conan.otterbrix.com --insert 0
+            git clone --depth 1 https://github.com/duckstax/conan-duckstax.git /tmp/conan-duckstax
+            conan remote add duckstax /tmp/conan-duckstax --type=local-recipes-index
             
             mkdir build
             pwd

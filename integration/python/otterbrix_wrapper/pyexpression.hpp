@@ -26,16 +26,12 @@ namespace otterbrix {
         ~PyExpression();
         static void Initialize(py::module_ &m);
 
-        static pyexpr_ptr ColumnExpression(const string& column_name, PyConnection& conn);
+        static pyexpr_ptr ColumnExpression(const string& column_name, PyConnection& conn, const string& side = "");
 
         static pyexpr_ptr ConstantExpression(const py::object& value, PyConnection& conn);
         
         static pyexpr_ptr CountExpression(PyConnection& conn);
 
-
-    public:
-
-        //pyexpr_ptr ConstantExpression(const py::object& value);
 
     public:
 
@@ -89,7 +85,7 @@ namespace otterbrix {
         
         const Expression& GetExpression();
 
-        static pyexpr_ptr AggregationExpression(components::expressions::aggregate_type type, 
+        static pyexpr_ptr AggregationExpression(const std::string& function_name,
             const PyExpression& expr);
 
         static pyexpr_ptr ScalarBinaryExpression(components::expressions::scalar_type type, 

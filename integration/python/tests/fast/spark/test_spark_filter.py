@@ -16,7 +16,6 @@ from otterbrix.experimental.spark.sql.types import (
 )
 from otterbrix.experimental.spark.sql.functions import col
 from otterbrix.experimental.spark.errors import PySparkTypeError
-import duckdb
 import re
 
 
@@ -94,3 +93,44 @@ class TestDataFrameFilter(object):
 
         with pytest.raises(PySparkTypeError):
             df = df.filter(dict(a=1))
+
+    def test_filter_matches_no_rows(self, spark):
+        df = spark.createDataFrame([("OH", "M"), ("CA", "F")], ["state", "gender"])
+        res = df.filter(df.state == "ZZ").collect()
+        assert res == []
+
+    def test_filter_matches_all_rows(self, spark):
+        data = [("OH", "M"), ("CA", "F"), ("NY", "M")]
+        df = spark.createDataFrame(data, ["state", "gender"])
+        res = df.filter(df.state != "ZZ").collect()
+        assert len(res) == len(data)
+
+    def test_filter_or_condition(self, spark):
+        data = [("OH", "M"), ("CA", "F"), ("OH", "F"), ("NY", "M")]
+        df = spark.createDataFrame(data, ["state", "gender"])
+        res = df.filter((df.state == "OH") | (df.state == "NY")).collect()
+        assert sorted(r.state for r in res) == ["NY", "OH", "OH"]
+        for r in res:
+            assert r.state in ("OH", "NY")
+
+    def test_filter_chained_equals_conjunction(self, spark):
+        data = [("OH", "M"), ("CA", "F"), ("OH", "F"), ("NY", "M"), ("OH", "M")]
+        df = spark.createDataFrame(data, ["state", "gender"])
+        chained = df.filter(df.state == "OH").filter(df.gender == "M").collect()
+        conjunction = df.filter((df.state == "OH") & (df.gender == "M")).collect()
+        assert sorted(chained) == sorted(conjunction)
+        assert len(chained) == 2
+
+    def test_filter_empty_dataframe(self, spark):
+        empty = spark.createDataFrame([], ["state", "gender"])
+        res = empty.filter(col("state") == "OH").collect()
+        assert res == []
+
+    def test_filter_equality_excludes_nulls(self, spark):
+        # NULL values arise from a left join with non-matching rows;
+        # createDataFrame does not accept None directly.
+        left = spark.createDataFrame([(1, 10), (2, 99), (3, 10)], ["id", "k"])
+        right = spark.createDataFrame([(10, "x")], ["k", "v"])
+        joined = left.join(right, "k", "left")
+        res = joined.filter(joined.v == "x").collect()
+        assert sorted(r.id for r in res) == [1, 3]

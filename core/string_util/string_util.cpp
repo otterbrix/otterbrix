@@ -42,7 +42,7 @@ bool string_utils::CIEquals(const std::string &l1, const std::string &l2) {
     if (l1.length() != l2.length()) {
         return false;
     } else {
-        for (auto i = 0; i < l1.length(); i++) {
+        for (size_t i = 0; i < l1.length(); i++) {
             auto low1 = string_utils::CharacterToLower(static_cast<char>(l1[i]));
             auto low2 = string_utils::CharacterToLower(static_cast<char>(l2[i]));
             if (low1 != low2) {
@@ -56,7 +56,7 @@ bool string_utils::CIEquals(const std::string &l1, const std::string &l2) {
 
 bool string_utils::CILessThan(const std::string &l1, const std::string &l2) {
     auto min_len = std::min(l1.length(), l2.length());
-    for (auto i = 0; i < min_len; i++) {
+    for (size_t i = 0; i < min_len; i++) {
         auto low1 = string_utils::CharacterToLower(static_cast<char>(l1[i]));
         auto low2 = string_utils::CharacterToLower(static_cast<char>(l2[i]));
         if (low1 != low2) {

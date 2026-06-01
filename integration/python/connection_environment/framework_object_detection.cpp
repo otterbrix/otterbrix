@@ -2,7 +2,6 @@
 #include "python_abstract.hpp"
 #include "connection_environment.hpp"
 
-//#include <components/arrow/arrow.hpp>
 #include <core/types/string.hpp>
 
 #include <cassert>
@@ -25,52 +24,6 @@ namespace otterbrix {
         return dim == cur_dim;
     }
 
-
-    /*PyArrowObjectType FrameworkObjectDetection::GetArrowType(const py::handle &object) {
-        assert(py::gil_check());
-      
-        if (py::isinstance<py::capsule>(object)) {
-            auto capsule = py::reinterpret_borrow<py::capsule>(object);
-            if (string(capsule.name()) != "arrow_array_stream") {
-                throw std::runtime_error("Expected a 'arrow_array_stream' PyCapsule, got: " + string(capsule.name()));
-            }
-            auto stream = capsule.get_pointer<struct ArrowArrayStream>();
-            if (!stream->release) {
-                throw std::runtime_error("The ArrowArrayStream was already released");
-            }
-            return PyArrowObjectType::PyCapsule;
-        }
-      
-        if (ModuleIsLoaded<PyarrowCacheItem>()) {
-            auto &import_cache = ConnectionEnvironment::ImportCache();
-            // First Verify Lib Types   
-            auto table_class = import_cache.pyarrow.Table();
-            auto record_batch_reader_class = import_cache.pyarrow.RecordBatchReader();
-            if (py::isinstance(object, table_class)) {
-                return PyArrowObjectType::Table;
-            } else if (py::isinstance(object, record_batch_reader_class)) {
-                return PyArrowObjectType::RecordBatchReader;
-            }
-              
-            if (ModuleIsLoaded<PyarrowDatasetCacheItem>()) {
-                // Then Verify dataset types
-                auto dataset_class = import_cache.pyarrow.dataset.Dataset();
-                auto scanner_class = import_cache.pyarrow.dataset.Scanner();
-            
-                if (py::isinstance(object, scanner_class)) {
-                    return PyArrowObjectType::Scanner; 
-                } else if (py::isinstance(object, dataset_class)) {
-                    return PyArrowObjectType::Dataset;
-                }
-            }   
-        }       
-                
-        if (py::hasattr(object, "__arrow_c_stream__")) {
-            return PyArrowObjectType::PyCapsuleInterface;
-        }   
-    
-        return PyArrowObjectType::Invalid;
-    } */
 
     NumpyObjectType FrameworkObjectDetection::GetNumpyObjectType(const py::object &object) {
         if (!ModuleIsLoaded<NumpyCacheItem>()) {

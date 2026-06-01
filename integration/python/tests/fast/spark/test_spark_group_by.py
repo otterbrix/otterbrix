@@ -72,12 +72,13 @@ class TestDataFrameGroupBy(object):
         res = df2.collect()
         assert (
             str(res)
-            == "[Row(department='Finance', avg(salary)=87750.0), Row(department='Marketing', avg(salary)=85500.0), Row(department='Sales', avg(salary)=85666.6640625)]"
+            == "[Row(department='Finance', avg(salary)=87750.0), Row(department='Marketing', avg(salary)=85500.0), Row(department='Sales', avg(salary)=85666.66666666667)]"
         )
 
         df2 = df.groupBy("department").mean("salary").sort("department")
         res = df2.collect()
-        expected_res_str = "[Row(department='Finance', avg(salary)=87750.0), Row(department='Marketing', avg(salary)=85500.0), Row(department='Sales', avg(salary)=85666.6640625)]"
+        expected_res_str = "[Row(department='Finance', avg(salary)=87750.0), Row(department='Marketing', avg(salary)=85500.0), Row(department='Sales', avg(salary)=85666.66666666667)]"
+        assert str(res) == expected_res_str
 
         df2 = df.groupBy("department", "state").sum("salary", "bonus").sort("department", "state")
         res = df2.collect()
@@ -99,7 +100,7 @@ class TestDataFrameGroupBy(object):
         res = df2.collect()
         assert (
             str(res)
-            == "[Row(department='Finance', sum_salary=351000, avg_salary=87750.0, sum_bonus=81000, max_bonus=24000), Row(department='Marketing', sum_salary=171000, avg_salary=85500.0, sum_bonus=39000, max_bonus=21000), Row(department='Sales', sum_salary=257000, avg_salary=85666.6640625, sum_bonus=53000, max_bonus=23000)]"
+            == "[Row(department='Finance', sum_salary=351000, avg_salary=87750.0, sum_bonus=81000, max_bonus=24000), Row(department='Marketing', sum_salary=171000, avg_salary=85500.0, sum_bonus=39000, max_bonus=21000), Row(department='Sales', sum_salary=257000, avg_salary=85666.66666666667, sum_bonus=53000, max_bonus=23000)]"
         )
 
         df2 = (
@@ -114,10 +115,9 @@ class TestDataFrameGroupBy(object):
             .sort("department")
         )
         res = df2.collect()
-        print(str(res))
         assert (
             str(res)
-            == "[Row(department='Finance', sum_salary=351000, avg_salary=87750.0, sum_bonus=81000, max_bonus=24000), Row(department='Sales', sum_salary=257000, avg_salary=85666.6640625, sum_bonus=53000, max_bonus=23000)]"
+            == "[Row(department='Finance', sum_salary=351000, avg_salary=87750.0, sum_bonus=81000, max_bonus=24000), Row(department='Sales', sum_salary=257000, avg_salary=85666.66666666667, sum_bonus=53000, max_bonus=23000)]"
         )
 
     def test_group_by_empty(self, spark):
@@ -136,3 +136,34 @@ class TestDataFrameGroupBy(object):
 
         res = df.groupBy("name").count().columns
         assert res == ['name', 'count']
+
+    def test_group_by_empty_dataframe(self, spark):
+        empty = spark.createDataFrame([], ["dep", "salary"])
+        res = empty.groupBy("dep").count().collect()
+        assert res == []
+
+    def test_group_by_single_row_groups(self, spark):
+        df = spark.createDataFrame([("a", 10), ("b", 20), ("c", 30)], ["name", "val"])
+        res = df.groupBy("name").sum("val").collect()
+        sums = {r.name: r[1] for r in res}
+        assert sums == {"a": 10, "b": 20, "c": 30}
+
+    def test_group_by_null_in_key(self, spark):
+        # A left join preserves every left row, so the join key "k" keeps the
+        # left value even for non-matching rows (k=99). Only non-key right-side
+        # columns become NULL — the grouping key itself is never NULL here.
+        left = spark.createDataFrame([(1, 10), (2, 99), (3, 10)], ["id", "k"])
+        right = spark.createDataFrame([(10, 100)], ["k", "val"])
+        joined = left.join(right, "k", "left")
+        counts = {r.k: r[1] for r in joined.groupBy("k").count().collect()}
+        assert counts == {10: 2, 99: 1}
+
+    def test_group_by_aggregate_over_nulls(self, spark):
+        # k=99 has no match, so its joined `val` is NULL for the whole group;
+        # summing an all-NULL group yields NULL. The group key stays 99 (the
+        # left value is preserved by the left join).
+        left = spark.createDataFrame([(1, 10), (2, 99), (3, 10)], ["id", "k"])
+        right = spark.createDataFrame([(10, 100)], ["k", "val"])
+        joined = left.join(right, "k", "left")
+        sums = {r.k: r[1] for r in joined.groupBy("k").sum("val").collect()}
+        assert sums == {10: 200, 99: None}

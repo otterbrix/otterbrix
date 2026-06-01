@@ -15,8 +15,9 @@ namespace otterbrix {
             py::arg("value"), py::arg("pyconnection"), docs);
         
 	    // ColumnRef Expression
-	    docs = "Create a column reference from the provided column name";
-	    m.def("ColumnExpression", &PyExpression::ColumnExpression, py::arg("name"), py::arg("pyconnection"), docs);
+	    docs = "Create a column reference from the provided column name. `side` is one of \"left\", \"right\" or empty, used to disambiguate join conditions where both sides have the same column name.";
+	    m.def("ColumnExpression", &PyExpression::ColumnExpression,
+              py::arg("name"), py::arg("pyconnection"), py::arg("side") = std::string{}, docs);
        
         // Count Expression 
         docs = "Create a count expression for aggregation operations";
@@ -261,14 +262,7 @@ namespace otterbrix {
     	m.def("__ror__", &PyExpression::Or, docs);
     }
     
-    static void InitializeImplicitConversion(py::class_<PyExpression, shared_ptr<PyExpression>> &m) {
-    	// m.def(py::init<>([](const string &name) { return PyExpression::ColumnExpression(name); }));
-        /*m.def(py::init<>([](const py::object &obj) {
-    		auto val = TransformPythonValue(obj);
-    		return PyExpression::InternalConstantExpression(std::move(val));
-    	}));*/
-    	// py::implicitly_convertible<py::str, PyExpression>();
-    	//py::implicitly_convertible<py::object, PyExpression>();
+    static void InitializeImplicitConversion(py::class_<PyExpression, shared_ptr<PyExpression>> & /*m*/) {
     }
     void PyExpression::Initialize(py::module_ &m) {
         auto expression =

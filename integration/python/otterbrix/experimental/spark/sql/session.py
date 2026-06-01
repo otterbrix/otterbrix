@@ -1,3 +1,5 @@
+# This code is based on code from Apache Spark under the license found in the LICENSE file located in the 'spark' folder.
+
 from typing import Optional, List, Any, Union, Iterable, TYPE_CHECKING
 import uuid
 
@@ -37,79 +39,27 @@ class SparkSession:
         self._context = context
         self._conf = RuntimeConfig(self.conn)
 
-    def _create_dataframe(self, data: Union[Iterable[Any], "PandasDataFrame"]) -> DataFrame:
-        try:
-            import pandas
-            has_pandas = True
-        except ImportError:
-            has_pandas = False
-        if has_pandas and isinstance(data, pandas.DataFrame):
-            #unique_name = f'pyspark_pandas_df_{uuid.uuid1()}'
-            #self.conn.register(unique_name, data)
-            #return DataFrame(self.conn.sql(f'select * from "{unique_name}"'), self)
-            return DataFrame(self.conn.from_df(data), self)
-
-        def verify_tuple_integrity(tuples):
-            if len(tuples) <= 1:
-                return
-            expected_length = len(tuples[0])
-            for i, item in enumerate(tuples[1:]):
-                actual_length = len(item)
-                if expected_length == actual_length:
-                    continue
-                raise PySparkTypeError(
-                    error_class="LENGTH_SHOULD_BE_THE_SAME",
-                    message_parameters={
-                        "arg1": f"data{i}",
-                        "arg2": f"data{i+1}",
-                        "arg1_length": str(expected_length),
-                        "arg2_length": str(actual_length)
-                    },
-                )
-
-        if not isinstance(data, list):
-            data = list(data)
-        verify_tuple_integrity(data)
-
-        def construct_query(tuples) -> str:
-            def construct_values_list(row, start_param_idx):
-                parameter_count = len(row)
-                parameters = [f'${x+start_param_idx}' for x in range(parameter_count)]
-                parameters = '(' + ', '.join(parameters) + ')'
-                return parameters
-
-            row_size = len(tuples[0])
-            values_list = [construct_values_list(x, 1 + (i * row_size)) for i, x in enumerate(tuples)]
-            values_list = ', '.join(values_list)
-
-            query = f"""
-                select * from (values {values_list})
-            """
-            return query
-
-        query = construct_query(data)
-
-        def construct_parameters(tuples):
-            parameters = []
-            for row in tuples:
-                parameters.extend(list(row))
-            return parameters
-
-        parameters = construct_parameters(data)
-
-        rel = self.conn.sql(query, params=parameters)
-        return DataFrame(rel, self)
+    def _create_dataframe(self, data: "PandasDataFrame") -> DataFrame:
+        return DataFrame(self.conn.from_df(data), self)
 
     def _createDataFrameFromPandas(self, data: "PandasDataFrame", types, names) -> DataFrame:
-        df = self._create_dataframe(data)
-
-        # Cast to types
-        #if types:
-        #    df = df._cast_types(*types)
-        # Alias to names
+        # Convert pandas dtypes to the declared schema before handing the frame to conn.from_df
+        # The engine doesn't cast values itself, so this is the only place a declared schema can change column types
+        if names or types:
+            data = data.copy()
         if names:
-            df = df.toDF(*names)
-        return df
+            data.columns = names
+        if types:
+            from .type_utils import spark_type_to_pandas_dtype
+            dtype_map = {}
+            target_names = names if names else list(data.columns)
+            for col, t in zip(target_names, types):
+                pandas_dtype = spark_type_to_pandas_dtype(t)
+                if pandas_dtype is not None:
+                    dtype_map[col] = pandas_dtype
+            if dtype_map:
+                data = data.astype(dtype_map)
+        return self._create_dataframe(data)
 
     def createDataFrame(
         self,
@@ -117,6 +67,7 @@ class SparkSession:
         schema: Optional[Union[StructType, List[str]]] = None,
         samplingRatio: Optional[float] = None,
         verifySchema: bool = True,
+        optimize: bool = False,
     ) -> DataFrame:
         if samplingRatio:
             raise NotImplementedError
@@ -143,37 +94,23 @@ class SparkSession:
             has_pandas = True
         except ImportError:
             has_pandas = False
-        # Falsey check on pandas dataframe is not defined, so first check if it's not a pandas dataframe
-        # Then check if 'data' is None or []
-        if has_pandas and isinstance(data, pandas.DataFrame):
-            return self._createDataFrameFromPandas(data, types, names)
+        if not has_pandas:
+            raise ImportError(
+                "pandas is required to create a DataFrame from non-pandas data"
+            )
 
-        # TODO temporary decision
-        if has_pandas:
-            return DataFrame(self.conn.from_df(pandas.DataFrame(data=data, columns=names)), self)
-        
-        raise RuntimeError("Has no select value in OtterBrix to continue process")
+        # Non-pandas inputs are converted to pandas: 
+        # SQL VALUES segfaults
+        # conn.from_object crashes on dict/list inputs
+        if isinstance(data, pandas.DataFrame):
+            pandas_df = data
+            forward_names = names
+        else:
+            pandas_df = pandas.DataFrame(data=data, columns=names)
+            forward_names = None
 
-        # Finally check if a schema was provided
-        is_empty = False
-        if not data and names:
-            # Create NULLs for every type in our dataframe
-            is_empty = True
-            data = [tuple(None for _ in names)]
-
-        df = self._create_dataframe(data)
-        if is_empty:
-            rel = df.relation
-            # Add impossible where clause
-            #rel = rel.filter('1=0')
-            df = DataFrame(rel, self)
-
-        # Cast to types
-        if types:
-            df = df._cast_types(*types)
-        # Alias to names
-        if names:
-            df = df.toDF(*names)
+        df = self._createDataFrameFromPandas(pandas_df, types, forward_names)
+        df._optimize = optimize
         return df
 
     def newSession(self) -> "SparkSession":

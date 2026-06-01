@@ -18,13 +18,14 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt update && sudo apt install -y build-essential ninja-build python3-pip curl gnupg apt-transport-https flex bison
+          sudo apt update && sudo apt install -y build-essential ninja-build python3-pip curl gnupg apt-transport-https flex bison git
 
       - name: conan installation and configuration
         run: |
-          pip install conan==2.15.0
+          python3 -m pip install conan==2.15.0
           conan profile detect --force
-          conan remote add otterbrix http://conan.otterbrix.com
+          git clone --depth 1 https://github.com/duckstax/conan-duckstax.git /tmp/conan-duckstax
+          conan remote add duckstax /tmp/conan-duckstax --type=local-recipes-index
 
       - name: download dependencies
         run: |

@@ -14,6 +14,7 @@ from otterbrix.experimental.spark.sql.types import (
     ArrayType,
     MapType,
 )
+from otterbrix.experimental.spark.sql import SparkSession
 from otterbrix.experimental.spark.sql.functions import col, struct, when, lit, array_contains
 
 
@@ -270,6 +271,111 @@ class TestDataFrameJoin(object):
         )
 
 
+    def test_inner_join_by_column_name(self):
+        """Inner equi-join by column name — exercises hash join path."""
+        spark = SparkSession.builder.master("local[1]").appName("test").getOrCreate()
+        left = spark.createDataFrame(
+            [(1, "a", 10), (2, "b", 20), (3, "c", 10), (4, "d", 50)],
+            schema=["id", "name", "dept_id"],
+        )
+        right = spark.createDataFrame(
+            [(10, "Eng"), (20, "Sales"), (30, "HR")],
+            schema=["dept_id", "dept_name"],
+        )
+        result = left.join(right, "dept_id", "inner").collect()
+        assert len(result) == 3  # id 1,3 -> Eng, id 2 -> Sales; id 4 no match
+
+    def test_left_join_by_column_name(self):
+        spark = SparkSession.builder.master("local[1]").appName("test").getOrCreate()
+        left = spark.createDataFrame(
+            [(1, 10), (2, 20), (3, 50)], schema=["id", "dept_id"]
+        )
+        right = spark.createDataFrame(
+            [(10, "Eng"), (20, "Sales"), (30, "HR")], schema=["dept_id", "dept_name"]
+        )
+        result = left.join(right, "dept_id", "left").collect()
+        assert len(result) == 3  # all left rows; id=3 has None dept_name
+
+    def test_right_join_by_column_name(self):
+        spark = SparkSession.builder.master("local[1]").appName("test").getOrCreate()
+        left = spark.createDataFrame(
+            [(1, 10), (2, 20)], schema=["id", "dept_id"]
+        )
+        right = spark.createDataFrame(
+            [(10, "Eng"), (20, "Sales"), (30, "HR")], schema=["dept_id", "dept_name"]
+        )
+        result = left.join(right, "dept_id", "right").collect()
+        assert len(result) == 3  # all right rows; dept_id=30 has None id
+
+    def test_full_join_by_column_name(self):
+        spark = SparkSession.builder.master("local[1]").appName("test").getOrCreate()
+        left = spark.createDataFrame(
+            [(1, 10), (2, 50)], schema=["id", "dept_id"]
+        )
+        right = spark.createDataFrame(
+            [(10, "Eng"), (30, "HR")], schema=["dept_id", "dept_name"]
+        )
+        result = left.join(right, "dept_id", "full").collect()
+        assert len(result) == 3  # 1 match + 1 left-only + 1 right-only
+
+    def test_join_duplicate_keys(self):
+        """Multiple matches: 2 left x 3 right with same key = 6 result rows."""
+        spark = SparkSession.builder.master("local[1]").appName("test").getOrCreate()
+        left = spark.createDataFrame(
+            [(1, 10), (2, 10)], schema=["id", "dept_id"]
+        )
+        right = spark.createDataFrame(
+            [(10, "a"), (10, "b"), (10, "c")], schema=["dept_id", "label"]
+        )
+        result = left.join(right, "dept_id", "inner").collect()
+        assert len(result) == 6  # 2 x 3
+
+    def test_join_null_keys_never_match(self):
+        """NULL keys must not match each other (SQL semantics)."""
+        spark = SparkSession.builder.master("local[1]").appName("test").getOrCreate()
+        left = spark.createDataFrame(
+            [(1, 10), (2, -1)], schema=["id", "dept_id"]
+        )
+        right = spark.createDataFrame(
+            [(10, "Eng"), (99, "Unknown")], schema=["dept_id", "dept_name"]
+        )
+        result = left.join(right, "dept_id", "inner").collect()
+        assert len(result) == 1  # only id=1 matches dept_id=10
+
+    def test_join_no_match_left_join(self):
+        """Left join: non-matching left rows appear with NULL right side."""
+        spark = SparkSession.builder.master("local[1]").appName("test").getOrCreate()
+        left = spark.createDataFrame(
+            [(1, 10), (2, 99)], schema=["id", "dept_id"]
+        )
+        right = spark.createDataFrame(
+            [(10, "Eng")], schema=["dept_id", "dept_name"]
+        )
+        result = left.join(right, "dept_id", "left").collect()
+        assert len(result) == 2  # id=1 matches, id=2 gets NULL right side
+
+    def test_join_no_matching_keys(self):
+        """When no keys match, inner join returns empty result."""
+        spark = SparkSession.builder.master("local[1]").appName("test").getOrCreate()
+        left = spark.createDataFrame([(1, 100), (2, 200)], schema=["id", "dept_id"])
+        right = spark.createDataFrame([(10, "Eng"), (20, "Sales")], schema=["dept_id", "dept_name"])
+        result = left.join(right, "dept_id", "inner").collect()
+        assert len(result) == 0
+
+    def test_join_multi_key(self):
+        """Equi-join on two columns."""
+        spark = SparkSession.builder.master("local[1]").appName("test").getOrCreate()
+        left = spark.createDataFrame(
+            [(1, 10, "A"), (2, 10, "B"), (3, 20, "A")],
+            schema=["id", "dept_id", "region"],
+        )
+        right = spark.createDataFrame(
+            [(10, "A", "x"), (10, "B", "y"), (20, "C", "z")],
+            schema=["dept_id", "region", "label"],
+        )
+        result = left.join(right, ["dept_id", "region"], "inner").collect()
+        assert len(result) == 2  # (10,A) and (10,B) match
+
     def test_cross_join(self, spark):
         data1 = [(1, "Carol"), (2, "Alice"), (3, "Dave")]
         data2 = [(4, "A"), (5, "B")]
@@ -290,3 +396,15 @@ class TestDataFrameJoin(object):
                 Row(age=3, name="Dave", id=5, rank="B"),
             ]
         )
+
+    def test_join_with_empty_side(self, spark):
+        non_empty = spark.createDataFrame([(1, 10), (2, 20)], ["id", "k"])
+        empty = spark.createDataFrame([], ["k", "v"])
+        assert non_empty.join(empty, "k", "inner").collect() == []
+        assert empty.join(non_empty, "k", "inner").collect() == []
+
+    def test_self_join(self, spark):
+        df = spark.createDataFrame([(1, 10), (2, 20)], ["id", "k"])
+        res = df.join(df, "k", "inner").collect()
+        assert len(res) == 2
+        assert sorted((r.id, r.k) for r in res) == [(1, 10), (2, 20)]

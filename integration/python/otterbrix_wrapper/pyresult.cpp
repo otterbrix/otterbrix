@@ -6,7 +6,7 @@ using namespace components;
 
 namespace otterbrix {
     PyResult::PyResult(ConnectionEnvironment* env, components::cursor::cursor_t_ptr result_p,
-            const vector<components::table::column_definition_t>& defs) 
+            const vector<components::table::column_definition_t>& defs)
         : env(env), result(std::move(result_p)) {
         if (!result) {
             throw std::runtime_error("PyResult created without a result object");
@@ -14,7 +14,7 @@ namespace otterbrix {
         columns.reserve(defs.size());
 
         for (const auto& col : defs) {
-            columns.emplace_back(col.name(), col.type());    
+            columns.emplace_back(col.name(), col.type());
         }
     }
 
@@ -24,35 +24,29 @@ namespace otterbrix {
             py::gil_scoped_release gil;
             result.reset();
         } catch (...) { // NOLINT
-        } 
+        }
     }
 
     Optional<py::tuple> PyResult::Fetchone() {
-        py::gil_scoped_release release;
         if (!result) {
             throw std::runtime_error("result closed");
         }
-        if (result->size() == 0) {
-            return py::none();
+        bool has_data = false;
+        {
+            py::gil_scoped_release release;
+            if (result->size() > 0 && result->has_next()) {
+                result->advance();
+                has_data = true;
+            }
         }
-            
-        if (!result->has_next()) {
+        if (!has_data) {
             return py::none();
         }
         py::tuple res(columns.size());
-
-        auto doc_ptr = result->next();
-
         for (idx_t col_idx = 0; col_idx < columns.size(); col_idx++) {
-            const auto& name = columns[col_idx].name();
+            auto val = result->value(col_idx);
             const auto& type = columns[col_idx].type();
-            auto doc_val = doc_ptr->get_value(name);
-            if (doc_val.physical_type() == components::types::physical_type::NA) {
-                res[col_idx] = py::none();
-            }
-            auto log_val = util::ToLogicalValue(doc_ptr, columns[col_idx]);
-            res[col_idx] = PythonObject::FromValue(log_val, type);
-
+            res[col_idx] = util::LogicalValueToPython(val, type);
         }
         return res;
     }
@@ -90,7 +84,7 @@ namespace otterbrix {
         if (result->size() == 0) {
             return py::none();
         }
-            
+
         if (!result->has_next()) {
             return py::none();
         }
@@ -98,11 +92,11 @@ namespace otterbrix {
         py::list df_param;
 
         while (result->has_next()) {
-            auto data = result->next();
-            
-            py::dict row = util::DocumentToPythonDict(data, columns);
+            result->advance();
+            auto row_idx = result->current_index();
+            py::dict row = util::CursorRowToPythonDict(result, static_cast<uint64_t>(row_idx), columns);
             df_param.append(row);
-        } 
+        }
         PandasDataFrame df = py::cast<PandasDataFrame>(
                 py::module::import("pandas").attr("DataFrame")(df_param));
         return df;
@@ -113,15 +107,7 @@ namespace otterbrix {
     }
 
     bool PyResult::IsClosed() const {
-       return result == nullptr; 
+       return result == nullptr;
     }
-    
-    /*const vector<components::types::complex_logical_type>& PyResult::GetTypes() {
-        return {};
-    }
-
-    const vector<string>& PyResult::GetNames() {
-        return {};
-    }*/
 
 } // namespace otterbrix

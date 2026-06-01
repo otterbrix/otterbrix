@@ -1,12 +1,11 @@
+# This code is based on code from Apache Spark under the license found in the LICENSE file located in the 'spark' folder.
+
 from typing import Any, Callable, Union, overload, Optional
 
 from otterbrix import (
-#    CaseExpression,
-#    CoalesceOperator,
     ColumnExpression,
     ConstantExpression,
     Expression,
-#    FunctionExpression,
 )
 
 from ..errors import PySparkTypeError
@@ -59,7 +58,6 @@ def upper(col: "ColumnOrName") -> Column:
     |  PANDAS API|
     +------------+
     """
-    # return _invoke_function_over_columns("upper", col)
     raise NotImplementedError
 
 
@@ -67,8 +65,6 @@ def when(condition: "Column", value: Any) -> Column:
     if not isinstance(condition, Column):
         raise TypeError("condition should be a Column")
     v = _get_expr(value)
-    # expr = CaseExpression(condition.expr, v)
-    # return Column(expr)
     raise NotImplementedError
 
 def _inner_expr_or_val(val):
@@ -76,9 +72,6 @@ def _inner_expr_or_val(val):
 
 
 def struct(*cols: Column) -> Column:
-    # return Column(
-    #     FunctionExpression("struct_pack", *[_inner_expr_or_val(x) for x in cols])
-    # )
     raise NotImplementedError
 
 def lit(col: Any) -> Column:
@@ -86,7 +79,6 @@ def lit(col: Any) -> Column:
 
 
 def _invoke_function(function: str, *arguments):
-    # return Column(FunctionExpression(function, *arguments))
     raise NotImplementedError
 
 
@@ -113,13 +105,6 @@ def regexp_replace(str: "ColumnOrName", pattern: str, replacement: str) -> Colum
     >>> df.select(regexp_replace('str', r'(\d+)', '--').alias('d')).collect()
     [Row(d='-----')]
     """
-    # return _invoke_function(
-    #     "regexp_replace",
-    #     _to_column_expr(str),
-    #     ConstantExpression(pattern),
-    #     ConstantExpression(replacement),
-    #     ConstantExpression("g"),
-    # )
     raise NotImplementedError
 
 
@@ -150,7 +135,6 @@ def array_contains(col: "ColumnOrName", value: Any) -> Column:
     [Row(array_contains(data, a)=True), Row(array_contains(data, a)=False)]
     """
     value = _get_expr(value)
-    # return _invoke_function("array_contains", _to_column_expr(col), value)
     raise NotImplementedError
 
 
@@ -180,7 +164,6 @@ def array_distinct(col: "ColumnOrName") -> Column:
     >>> df.select(array_distinct(df.data)).collect()
     [Row(array_distinct(data)=[1, 2, 3]), Row(array_distinct(data)=[4, 5])]
     """
-    # return _invoke_function_over_columns("array_distinct", col)
     raise NotImplementedError
 
 
@@ -213,7 +196,6 @@ def array_intersect(col1: "ColumnOrName", col2: "ColumnOrName") -> Column:
     >>> df.select(array_intersect(df.c1, df.c2)).collect()
     [Row(array_intersect(c1, c2)=['a', 'c'])]
     """
-    # return _invoke_function_over_columns("array_intersect", col1, col2)
     raise NotImplementedError
 
 
@@ -246,7 +228,6 @@ def array_union(col1: "ColumnOrName", col2: "ColumnOrName") -> Column:
     >>> df.select(array_union(df.c1, df.c2)).collect()
     [Row(array_union(c1, c2)=['b', 'a', 'c', 'd', 'f'])]
     """
-    # return _invoke_function_over_columns("array_distinct", _invoke_function_over_columns("array_concat", col1, col2))
     raise NotImplementedError
 
 
@@ -275,7 +256,6 @@ def array_max(col: "ColumnOrName") -> Column:
     >>> df.select(array_max(df.data).alias('max')).collect()
     [Row(max=3), Row(max=10)]
     """
-    # return _invoke_function("array_extract", _to_column_expr(_invoke_function_over_columns("array_sort", col)), _get_expr(-1))
     raise NotImplementedError
 
 
@@ -305,7 +285,6 @@ def array_min(col: "ColumnOrName") -> Column:
     >>> df.select(array_min(df.data).alias('min')).collect()
     [Row(min=1), Row(min=-1)]
     """
-    # return _invoke_function("array_extract", _to_column_expr(_invoke_function_over_columns("array_sort", col)), _get_expr(1))
     raise NotImplementedError
 
 
@@ -338,7 +317,6 @@ def avg(col: "ColumnOrName") -> Column:
     |    4.5|
     +-------+
     """
-    #return _invoke_function_over_columns("avg", col)
     return Column(_to_column_expr(col).avg())
 
 
@@ -371,7 +349,6 @@ def sum(col: "ColumnOrName") -> Column:
     |     45|
     +-------+
     """
-    #return _invoke_function_over_columns("sum", col)
     return Column(_to_column_expr(col).sum())
 
 
@@ -404,8 +381,7 @@ def max(col: "ColumnOrName") -> Column:
     |      9|
     +-------+
     """
-    #return _invoke_function_over_columns("max", col)
-    return Column(_to_column_expr(col).max())    
+    return Column(_to_column_expr(col).max())
 
 
 
@@ -439,8 +415,7 @@ def mean(col: "ColumnOrName") -> Column:
     |    4.5|
     +-------+
     """
-    #return _invoke_function_over_columns("mean", col)
-    return Column(_to_column_expr(col).avg())   
+    return Column(_to_column_expr(col).avg())
 
 
 
@@ -473,8 +448,7 @@ def min(col: "ColumnOrName") -> Column:
     |      0|
     +-------+
     """
-    #return _invoke_function_over_columns("min", col)
-    return Column(_to_column_expr(col).min())    
+    return Column(_to_column_expr(col).min())
 
 
 
@@ -507,7 +481,6 @@ def any_value(col: "ColumnOrName") -> Column:
     >>> df.select(any_value('c1', True), any_value('c2', True)).collect()
     [Row(any_value(c1)='a', any_value(c2)=1)]
     """
-    # return _invoke_function_over_columns("any_value", col)
     raise NotImplementedError
 
 
@@ -542,8 +515,7 @@ def count(col: "ColumnOrName") -> Column:
     |       4|               3|
     +--------+----------------+
     """
-    #return _invoke_function_over_columns("count", col)
-    return Column(_to_column_expr(col).count())    
+    return Column(_to_column_expr(col).count())
 
 
 
@@ -580,8 +552,7 @@ def approx_count_distinct(col: "ColumnOrName", rsd: Optional[float] = None) -> C
     +---------------+
     """
     if rsd is not None:
-        raise ValueError("rsd is not supported by DuckDB")
-    # return _invoke_function_over_columns("approx_count_distinct", col)
+        raise ValueError("rsd is not supported")
     raise NotImplementedError
 
 
@@ -681,7 +652,6 @@ def concat_ws(sep: str, *cols: "ColumnOrName") -> "Column":
     [Row(s='abcd-123')]
     """
     cols = [_to_column_expr(expr) for expr in cols]
-    # return _invoke_function("concat_ws", ConstantExpression(sep), *cols)
     raise NotImplementedError
 
 
@@ -717,7 +687,6 @@ def lower(col: "ColumnOrName") -> Column:
     |  pandas api|
     +------------+
     """
-    # return _invoke_function_over_columns("lower", col)
     raise NotImplementedError
 
 
@@ -854,7 +823,6 @@ def isnan(col: "ColumnOrName") -> Column:
     |NaN|2.0| true|false|
     +---+---+-----+-----+
     """
-    # return _invoke_function_over_columns("isnan", col)
     raise NotImplementedError
 
 
@@ -887,7 +855,6 @@ def isnull(col: "ColumnOrName") -> Column:
     |NULL|   2| true|false|
     +----+----+-----+-----+
     """
-    # return _invoke_function_over_columns("isnull", col)
     raise NotImplementedError
 
 
@@ -920,7 +887,6 @@ def sqrt(col: "ColumnOrName") -> Column:
     |    2.0|
     +-------+
     """
-    # return _invoke_function_over_columns("sqrt", col)
     raise NotImplementedError
 
 
@@ -955,7 +921,6 @@ def greatest(*cols: "ColumnOrName") -> Column:
         raise ValueError("greatest should take at least 2 columns")
 
     cols = [_to_column_expr(expr) for expr in cols]
-    # return _invoke_function("greatest", *cols)
     raise NotImplementedError
 
 
@@ -989,7 +954,6 @@ def least(*cols: "ColumnOrName") -> Column:
         raise ValueError("least should take at least 2 columns")
 
     cols = [_to_column_expr(expr) for expr in cols]
-    # return _invoke_function("least", *cols)
     raise NotImplementedError
 
 
@@ -1024,7 +988,6 @@ def trim(col: "ColumnOrName") -> Column:
     |  Spark|     5|
     +-------+------+
     """
-    # return _invoke_function_over_columns("trim", col)
     raise NotImplementedError
 
 
@@ -1059,7 +1022,6 @@ def rtrim(col: "ColumnOrName") -> Column:
     |   Spark|     6|
     +--------+------+
     """
-    # return _invoke_function_over_columns("rtrim", col)
     raise NotImplementedError
 
 
@@ -1094,7 +1056,6 @@ def ltrim(col: "ColumnOrName") -> Column:
     |  Spark|     5|
     +-------+------+
     """
-    # return _invoke_function_over_columns("ltrim", col)
     raise NotImplementedError
 
 
@@ -1132,7 +1093,6 @@ def endswith(str: "ColumnOrName", suffix: "ColumnOrName") -> Column:
     |          true|         false|
     +--------------+--------------+
     """
-    # return _invoke_function_over_columns("suffix", str, suffix)
     raise NotImplementedError
 
 
@@ -1170,7 +1130,6 @@ def startswith(str: "ColumnOrName", prefix: "ColumnOrName") -> Column:
     |            true|           false|
     +----------------+----------------+
     """
-    # return _invoke_function_over_columns("starts_with", str, prefix)
     raise NotImplementedError
 
 
@@ -1199,7 +1158,6 @@ def length(col: "ColumnOrName") -> Column:
     >>> spark.createDataFrame([('ABC ',)], ['a']).select(length('a').alias('length')).collect()
     [Row(length=4)]
     """
-    # return _invoke_function_over_columns("length", col)
     raise NotImplementedError
 
 
@@ -1246,7 +1204,6 @@ def coalesce(*cols: "ColumnOrName") -> Column:
     """
 
     cols = [_to_column_expr(expr) for expr in cols]
-    # return Column(CoalesceOperator(*cols))
     raise NotImplementedError
 
 
@@ -1265,7 +1222,6 @@ def nvl(col1: "ColumnOrName", col2: "ColumnOrName") -> Column:
     [Row(r=8), Row(r=1)]
     """
 
-    # return coalesce(col1, col2)
     raise NotImplementedError
 
 
@@ -1289,7 +1245,6 @@ def ifnull(col1: "ColumnOrName", col2: "ColumnOrName") -> Column:
     |           1|
     +------------+
     """
-    # return coalesce(col1, col2)
     raise NotImplementedError
 
 
@@ -1316,7 +1271,6 @@ def md5(col: "ColumnOrName") -> Column:
     >>> spark.createDataFrame([('ABC',)], ['a']).select(md5('a').alias('hash')).collect()
     [Row(hash='902fbdd2b1df0c4f70b4a5d23525e932')]
     """
-    # return _invoke_function_over_columns("md5", col)
     raise NotImplementedError
 
 
@@ -1388,7 +1342,6 @@ def curdate() -> Column:
     |    2022-08-26|
     +--------------+
     """
-    # return _invoke_function("today")
     raise NotImplementedError
 
 
@@ -1418,7 +1371,6 @@ def current_date() -> Column:
     |    2022-08-26|
     +--------------+
     """
-    # return curdate()
 
 
 def now() -> Column:
@@ -1442,7 +1394,6 @@ def now() -> Column:
     |2022-08-26 21:23:22.716|
     +-----------------------+
     """
-    # return _invoke_function("now")
 
 
 def date_trunc(format: str, timestamp: "ColumnOrName") -> Column:
@@ -1475,7 +1426,6 @@ def date_trunc(format: str, timestamp: "ColumnOrName") -> Column:
         format = "day"
     elif format == "hh":
         format = "hour"
-    # return _invoke_function_over_columns("date_trunc", lit(format), timestamp)
 
 
 def date_part(field: "ColumnOrName", source: "ColumnOrName") -> Column:
@@ -1511,7 +1461,6 @@ def date_part(field: "ColumnOrName", source: "ColumnOrName") -> Column:
     ... ).collect()
     [Row(year=2015, month=4, week=15, day=8, minute=8, second=Decimal('15.000000'))]
     """
-    # return _invoke_function_over_columns("date_part", field, source)
 
 
 def extract(field: "ColumnOrName", source: "ColumnOrName") -> Column:
@@ -1546,7 +1495,6 @@ def extract(field: "ColumnOrName", source: "ColumnOrName") -> Column:
     ... ).collect()
     [Row(year=2015, month=4, week=15, day=8, minute=8, second=Decimal('15.000000'))]
     """
-    # return date_part(field, source)
 
 
 def datepart(field: "ColumnOrName", source: "ColumnOrName") -> Column:
@@ -1582,7 +1530,6 @@ def datepart(field: "ColumnOrName", source: "ColumnOrName") -> Column:
     ... ).collect()
     [Row(year=2015, month=4, week=15, day=8, minute=8, second=Decimal('15.000000'))]
     """
-    # return date_part(field, source)
     raise NotImplementedError
 
 
@@ -1611,7 +1558,6 @@ def year(col: "ColumnOrName") -> Column:
     >>> df.select(year('dt').alias('year')).collect()
     [Row(year=2015)]
     """
-    # return _invoke_function_over_columns("year", col)
     raise NotImplementedError
 
 
@@ -1641,7 +1587,6 @@ def quarter(col: "ColumnOrName") -> Column:
     >>> df.select(quarter('dt').alias('quarter')).collect()
     [Row(quarter=2)]
     """
-    # return _invoke_function_over_columns("quarter", col)
     raise NotImplementedError
 
 
@@ -1670,7 +1615,6 @@ def month(col: "ColumnOrName") -> Column:
     >>> df.select(month('dt').alias('month')).collect()
     [Row(month=4)]
     """
-    # return _invoke_function_over_columns("month", col)
     raise NotImplementedError
 
 
@@ -1700,7 +1644,6 @@ def dayofweek(col: "ColumnOrName") -> Column:
     >>> df.select(dayofweek('dt').alias('day')).collect()
     [Row(day=4)]
     """
-    # return _invoke_function_over_columns("dayofweek", col) + lit(1)
     raise NotImplementedError
 
 
@@ -1726,7 +1669,6 @@ def day(col: "ColumnOrName") -> Column:
     >>> df.select(day('dt').alias('day')).collect()
     [Row(day=8)]
     """
-    # return _invoke_function_over_columns("day", col)
     raise NotImplementedError
 
 
@@ -1755,7 +1697,6 @@ def dayofmonth(col: "ColumnOrName") -> Column:
     >>> df.select(dayofmonth('dt').alias('day')).collect()
     [Row(day=8)]
     """
-    # return day(col)
     raise NotImplementedError
 
 
@@ -1784,7 +1725,6 @@ def dayofyear(col: "ColumnOrName") -> Column:
     >>> df.select(dayofyear('dt').alias('day')).collect()
     [Row(day=98)]
     """
-    # return _invoke_function_over_columns("dayofyear", col)
     raise NotImplementedError
 
 
@@ -1814,7 +1754,6 @@ def hour(col: "ColumnOrName") -> Column:
     >>> df.select(hour('ts').alias('hour')).collect()
     [Row(hour=13)]
     """
-    # return _invoke_function_over_columns("hour", col)
     raise NotImplementedError
 
 
@@ -1844,7 +1783,6 @@ def minute(col: "ColumnOrName") -> Column:
     >>> df.select(minute('ts').alias('minute')).collect()
     [Row(minute=8)]
     """
-    # return _invoke_function_over_columns("minute", col)
     raise NotImplementedError
 
 
@@ -1874,7 +1812,6 @@ def second(col: "ColumnOrName") -> Column:
     >>> df.select(second('ts').alias('second')).collect()
     [Row(second=15)]
     """
-    # return _invoke_function_over_columns("second", col)
     raise NotImplementedError
 
 
@@ -1905,7 +1842,6 @@ def weekofyear(col: "ColumnOrName") -> Column:
     >>> df.select(weekofyear(df.dt).alias('week')).collect()
     [Row(week=15)]
     """
-    # return _invoke_function_over_columns("weekofyear", col)
     raise NotImplementedError
 
 
@@ -1935,7 +1871,6 @@ def cos(col: "ColumnOrName") -> Column:
     >>> df.select(cos(lit(math.pi))).first()
     Row(COS(3.14159...)=-1.0)
     """
-    # return _invoke_function_over_columns("cos", col)
     raise NotImplementedError
 
 
@@ -1969,7 +1904,6 @@ def acos(col: "ColumnOrName") -> Column:
     |     NaN|
     +--------+
     """
-    # return _invoke_function_over_columns("acos", col)
     raise NotImplementedError
 
 
@@ -2037,7 +1971,6 @@ def call_function(funcName: str, *cols: "ColumnOrName") -> Column:
     |                               102.0|
     +------------------------------------+
     """
-    # return _invoke_function_over_columns(funcName, *cols)
     raise NotImplementedError
 
 
@@ -2070,7 +2003,6 @@ def covar_pop(col1: "ColumnOrName", col2: "ColumnOrName") -> Column:
     >>> df.agg(covar_pop("a", "b").alias('c')).collect()
     [Row(c=0.0)]
     """
-    # return _invoke_function_over_columns("covar_pop", col1, col2)
     raise NotImplementedError
 
 
@@ -2103,7 +2035,6 @@ def covar_samp(col1: "ColumnOrName", col2: "ColumnOrName") -> Column:
     >>> df.agg(covar_samp("a", "b").alias('c')).collect()
     [Row(c=0.0)]
     """
-    # return _invoke_function_over_columns("covar_samp", col1, col2)
     raise NotImplementedError
 
 
@@ -2136,7 +2067,6 @@ def exp(col: "ColumnOrName") -> Column:
     |   1.0|
     +------+
     """
-    # return _invoke_function_over_columns("exp", col)
     raise NotImplementedError
 
 
@@ -2165,7 +2095,6 @@ def factorial(col: "ColumnOrName") -> Column:
     >>> df.select(factorial(df.n).alias('f')).collect()
     [Row(f=120)]
     """
-    # return _invoke_function_over_columns("factorial", col)
     raise NotImplementedError
 
 
@@ -2197,7 +2126,6 @@ def log2(col: "ColumnOrName") -> Column:
     | 2.0|
     +----+
     """
-    # return _invoke_function_over_columns("log2", col)
     raise NotImplementedError
 
 
@@ -2226,7 +2154,6 @@ def ln(col: "ColumnOrName") -> Column:
     |1.3862943611198906|
     +------------------+
     """
-    # return _invoke_function_over_columns("ln", col)
     raise NotImplementedError
 
 
@@ -2257,7 +2184,6 @@ def degrees(col: "ColumnOrName") -> Column:
     >>> df.select(degrees(lit(math.pi))).first()
     Row(DEGREES(3.14159...)=180.0)
     """
-    # return _invoke_function_over_columns("degrees", col)
     raise NotImplementedError
 
 
@@ -2288,7 +2214,6 @@ def radians(col: "ColumnOrName") -> Column:
     >>> df.select(radians(lit(180))).first()
     Row(RADIANS(180)=3.14159...)
     """
-    # return _invoke_function_over_columns("radians", col)
     raise NotImplementedError
 
 
@@ -2321,7 +2246,6 @@ def atan(col: "ColumnOrName") -> Column:
     |     0.0|
     +--------+
     """
-    # return _invoke_function_over_columns("atan", col)
     raise NotImplementedError
 
 
@@ -2354,11 +2278,6 @@ def atan2(col1: Union["ColumnOrName", float], col2: Union["ColumnOrName", float]
     >>> df.select(atan2(lit(1), lit(2))).first()
     Row(ATAN2(1, 2)=0.46364...)
     """
-    # def lit_or_column(x: Union["ColumnOrName", float]) -> Column:
-    #     if isinstance(x, (int, float)):
-    #         return lit(x)
-    #     return x
-    # return _invoke_function_over_columns("atan2", lit_or_column(col1), lit_or_column(col2))
     raise NotImplementedError
 
 
@@ -2418,7 +2337,6 @@ def round(col: "ColumnOrName", scale: int = 0) -> Column:
     >>> spark.createDataFrame([(2.5,)], ['a']).select(round('a', 0).alias('r')).collect()
     [Row(r=3.0)]
     """
-    # return _invoke_function_over_columns("round", col, lit(scale))
     raise NotImplementedError
 
 
@@ -2449,7 +2367,6 @@ def bround(col: "ColumnOrName", scale: int = 0) -> Column:
     >>> spark.createDataFrame([(2.5,)], ['a']).select(bround('a', 0).alias('r')).collect()
     [Row(r=2.0)]
     """
-    # return _invoke_function_over_columns("round_even", col, lit(scale))
     raise NotImplementedError
 
 
@@ -2477,7 +2394,6 @@ def hex(col: "ColumnOrName") -> Column:
     >>> spark.createDataFrame([('ABC', 3)], ['a', 'b']).select(hex('a'), hex('b')).collect()
     [Row(hex(a)='414243', hex(b)='3')]
     """
-    # return _invoke_function_over_columns("hex", col)
     raise NotImplementedError
 
 
@@ -2505,7 +2421,6 @@ def unhex(col: "ColumnOrName") -> Column:
     >>> spark.createDataFrame([('414243',)], ['a']).select(unhex('a')).collect()
     [Row(unhex(a)=bytearray(b'ABC'))]
     """
-    # return _invoke_function_over_columns("unhex", col)
     raise NotImplementedError
 
 
@@ -2542,7 +2457,6 @@ def base64(col: "ColumnOrName") -> Column:
     """
     if isinstance(col,str):
         col = Column(ColumnExpression(col, SparkContext._active_spark_context))
-    # return _invoke_function_over_columns("base64", col.cast("BLOB"))
     raise NotImplementedError
 
 
@@ -2579,5 +2493,4 @@ def unbase64(col: "ColumnOrName") -> Column:
     |[50 61 6E 64 61 7...|
     +--------------------+
     """
-    # return _invoke_function_over_columns("from_base64", col)
     raise NotImplementedError

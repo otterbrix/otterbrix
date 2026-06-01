@@ -6,7 +6,7 @@ namespace pybind11 {
 
 // NOLINTNEXTLINE(readability-identifier-naming)
 bool gil_check() {
-	return (bool)PyGILState_Check();
+	return PyGILState_Check() != 0;
 }
 
 // NOLINTNEXTLINE(readability-identifier-naming)

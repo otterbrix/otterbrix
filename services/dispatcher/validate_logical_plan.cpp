@@ -137,31 +137,19 @@ namespace services::dispatcher {
             size_t key_order;
         };
 
-        // JOIN merge: keep both same-named columns when they come from different
-        // tables; only drop entries that are truly identical (same alias AND same result_alias).
         named_schema merge_schemas(std::pmr::memory_resource* resource, named_schema lhs, named_schema rhs) {
             named_schema merged(resource);
             for (auto&& type : lhs) {
-                auto it = std::find_if(merged.begin(), merged.end(), [&type](const auto& t) {
-                    return t.type.alias() == type.type.alias() && t.result_alias == type.result_alias;
-                });
-                if (it == merged.end()) {
-                    if (type.side == side_t::undefined) {
-                        type.side = side_t::left;
-                    }
-                    merged.emplace_back(std::move(type));
+                if (type.side == side_t::undefined) {
+                    type.side = side_t::left;
                 }
+                merged.emplace_back(std::move(type));
             }
             for (auto&& type : rhs) {
-                auto it = std::find_if(merged.begin(), merged.end(), [&type](const auto& t) {
-                    return t.type.alias() == type.type.alias() && t.result_alias == type.result_alias;
-                });
-                if (it == merged.end()) {
-                    if (type.side == side_t::undefined) {
-                        type.side = side_t::right;
-                    }
-                    merged.emplace_back(std::move(type));
+                if (type.side == side_t::undefined) {
+                    type.side = side_t::right;
                 }
+                merged.emplace_back(std::move(type));
             }
             return merged;
         }
@@ -1498,8 +1486,7 @@ namespace services::dispatcher {
                             }
                         }
 
-                        // Resolve key paths in node_select scalar expressions against incoming schema.
-                        // Aggregates are always in node_group_t now, so only scalar expressions appear here.
+                        bool has_computed_column = false;
                         for (auto& expr : node_select->expressions()) {
                             if (expr->group() != expression_group::scalar) {
                                 continue;
@@ -1517,41 +1504,40 @@ namespace services::dispatcher {
                                         return res.convert_error<named_schema>();
                                     }
                                 }
-                            } else if (scalar_expr->type() != scalar_type::constant &&
-                                       scalar_expr->type() != scalar_type::star_expand) {
-                                auto res =
-                                    impl::resolve_key_paths_in_group(resource, scalar_expr->params(), incoming_schema);
-                                if (res.has_error()) {
-                                    return res.convert_error<named_schema>();
+                                const auto& col_type = incoming_schema[key.path()[0]].type;
+                                const components::types::complex_logical_type* res_type = &col_type;
+                                for (size_t j = 1; j < key.path().size(); j++) {
+                                    if (!res_type->is_nested()) {
+                                        return core::error_t(
+                                            core::error_code_t::schema_error,
+                                            std::pmr::string{"trying to access field of non-nested type", resource});
+                                    } else if (res_type->type() == logical_type::STRUCT) {
+                                        res_type = &res_type->child_types()[key.path()[j]];
+                                    } else {
+                                        res_type = &res_type->child_type();
+                                    }
                                 }
+                                result.emplace_back(type_from_t{node->result_alias(), *res_type});
+                            } else if (scalar_expr->type() == scalar_type::star_expand) {
+                                for (const auto& col : incoming_schema) {
+                                    result.emplace_back(col);
+                                }
+                            } else {
+                                if (scalar_expr->type() != scalar_type::constant) {
+                                    auto res = impl::resolve_key_paths_in_group(resource,
+                                                                                scalar_expr->params(),
+                                                                                incoming_schema);
+                                    if (res.has_error()) {
+                                        return res.convert_error<named_schema>();
+                                    }
+                                }
+                                has_computed_column = true;
                             }
+                        }
+                        if (!has_computed_column) {
+                            return result;
                         }
                     } else {
-                        // "SELECT *" / "SELECT t.*" — emit every column, including
-                        // several same-name columns of different types (multi-type
-                        // fields on a computing table); the wildcard simply returns
-                        // them all (an EXPLICIT reference to such a name still errors
-                        // as ambiguous in find_types and must use type selection).
-                        // Duplicate names across JOIN'd tables are likewise legitimate
-                        // (PostgreSQL semantics). Reject only a truly-identical column:
-                        // same output alias AND same source name AND same physical type.
-                        struct column_key {
-                            std::string result_alias;
-                            std::string name;
-                            logical_type type;
-                            auto operator<=>(const column_key&) const = default;
-                        };
-                        std::set<column_key> seen_cols;
-                        for (const auto& col : incoming_schema) {
-                            column_key key{col.result_alias, std::string(col.type.alias()), col.type.type()};
-                            if (!seen_cols.insert(std::move(key)).second) {
-                                return core::error_t(
-                                    core::error_code_t::schema_error,
-                                    std::pmr::string{"column '" + col.type.alias() +
-                                                         "' has multiple types; use explicit type selection",
-                                                     resource});
-                            }
-                        }
                     }
                     return incoming_schema;
                 } else {

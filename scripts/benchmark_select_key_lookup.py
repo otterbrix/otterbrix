@@ -13,7 +13,15 @@ def die(msg: str):
     print(f"ERROR: {msg}", file=sys.stderr)
     sys.exit(1)
 
-def generate_csv(csv_path: Path, rows: int, payload_bytes: int, shuffle_ids: bool):
+def format_key(row_id: int, key_bytes: int) -> str:
+    if key_bytes <= 0:
+        return str(row_id)
+    base = f"k{row_id:020d}"
+    if len(base) >= key_bytes:
+        return base[:key_bytes]
+    return base + ("x" * (key_bytes - len(base)))
+
+def generate_csv(csv_path: Path, rows: int, payload_bytes: int, shuffle_ids: bool, key_bytes: int):
     payload = "x" * payload_bytes
     with csv_path.open("w", encoding="utf-8", newline="") as f:
         f.write("id,payload\n")
@@ -21,10 +29,12 @@ def generate_csv(csv_path: Path, rows: int, payload_bytes: int, shuffle_ids: boo
             step = rows - 1
             for i in range(rows):
                 row_id = ((i * step) % rows) + 1
-                f.write(f"{row_id},{payload}\n")
+                key = format_key(row_id, key_bytes)
+                f.write(f"{key},{payload}\n")
         else:
             for i in range(rows):
-                f.write(f"{i + 1},{payload}\n")
+                key = format_key(i + 1, key_bytes)
+                f.write(f"{key},{payload}\n")
 
 def create_benchmark_layout(directory: Path, setup_sql: str):
     directory.mkdir(parents=True, exist_ok=True)
@@ -35,11 +45,16 @@ def generate_lookup_sql(
     database_name: str,
     rows: int,
     seed: int,
+    key_bytes: int,
 ):
     lines = ["-- @expected_rows 1"]
     rng = random.Random(seed)
     key = rng.randrange(1, rows + 1)
-    lines.append(f"SELECT * FROM {database_name}.kv WHERE id = {key};")
+    key_value = format_key(key, key_bytes)
+    if key_bytes > 0:
+        lines.append(f"SELECT * FROM {database_name}.kv WHERE id = '{key_value}';")
+    else:
+        lines.append(f"SELECT * FROM {database_name}.kv WHERE id = {key_value};")
     query_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 def run_process(args: list[str], cwd: Path | None = None, suppress_output: bool = True):
@@ -92,6 +107,7 @@ def main():
     parser.add_argument("--workspace", default="/tmp/otterbrix_key_lookup_bench", help="Workspace path.")
     parser.add_argument("--rows", type=int, default=0, help="Number of rows.")
     parser.add_argument("--payload-bytes", type=int, default=512, help="Payload size in bytes.")
+    parser.add_argument("--key-bytes", type=int, default=0, help="Key size in bytes (0 = INTEGER keys).")
     parser.add_argument("--runs", type=int, default=7, help="Timed runs per scenario.")
     parser.add_argument("--shuffle-ids", action="store_true", help="Use pseudo-random id permutation.")
     parser.add_argument("--seed", type=int, default=1234567, help="Pseudo-random seed.")
@@ -111,7 +127,7 @@ def main():
 
     csv_path = workspace / "data.csv"
     print(f"Generating dataset: rows={rows}, payload_bytes={args.payload_bytes}")
-    generate_csv(csv_path, rows, args.payload_bytes, args.shuffle_ids)
+    generate_csv(csv_path, rows, args.payload_bytes, args.shuffle_ids, args.key_bytes)
     print(f"Dataset file: {csv_path} ({human_size(csv_path)})")
 
     bench_tag = f"{int(time.time())}_{os.getpid()}"
@@ -121,23 +137,24 @@ def main():
     single_index_dir = workspace / "scenario_single_field_index"
     hash_index_dir = workspace / "scenario_hash_single_field_index"
 
+    id_type = "STRING" if args.key_bytes > 0 else "INTEGER"
     load_setup_sql = (
         f"-- @database {db_name}\n"
-        "CREATE TABLE kv (id INTEGER, payload STRING);\n"
+        f"CREATE TABLE kv (id {id_type}, payload STRING);\n"
         f"-- @load_csv {csv_path} kv ,"
     )
 
     create_benchmark_layout(no_index_dir, load_setup_sql)
-    generate_lookup_sql(no_index_dir / "lookup.sql", db_name, rows, args.seed)
+    generate_lookup_sql(no_index_dir / "lookup.sql", db_name, rows, args.seed, args.key_bytes)
 
     create_benchmark_layout(single_index_dir, load_setup_sql + f"\nCREATE INDEX idx_id ON {db_name}.kv (id);")
-    generate_lookup_sql(single_index_dir / "lookup.sql", db_name, rows, args.seed)
+    generate_lookup_sql(single_index_dir / "lookup.sql", db_name, rows, args.seed, args.key_bytes)
 
     create_benchmark_layout(
         hash_index_dir,
         load_setup_sql + f"\nCREATE INDEX idx_id_hash ON {db_name}.kv USING hash (id);",
     )
-    generate_lookup_sql(hash_index_dir / "lookup.sql", db_name, rows, args.seed)
+    generate_lookup_sql(hash_index_dir / "lookup.sql", db_name, rows, args.seed, args.key_bytes)
 
     print()
     print(f"Running benchmark scenarios with {args.runs} timed runs each...")
@@ -154,7 +171,7 @@ def main():
             runner,
             d,
             args.runs,
-            suppress_runner_output=not args.show_runner_output,
+            suppress_runner_output=True,
         )
         print(f"{name},{avg_ms:.3f},{median_ms:.3f},{wall_ms:.3f},{setup_overhead_ms:.3f},{verified}")
 

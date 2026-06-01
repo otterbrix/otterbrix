@@ -320,6 +320,10 @@ typedef struct TypeCast {
     Node* arg;          /* the expression being casted */
     TypeName* typeName; /* the target type */
     int location;       /* token location, or -1 if unknown */
+    /* '::?' type-variant selection: pick the same-named column whose physical
+     * type matches typeName (computing multi-type fields), instead of casting.
+     * false for a normal '::' cast. */
+    bool variant_select;
 } TypeCast;
 
 /*

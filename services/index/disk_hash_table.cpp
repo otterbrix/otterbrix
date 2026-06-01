@@ -1,0 +1,634 @@
+#include "disk_hash_table.hpp"
+
+#include <components/index/logical_value_binary_codec.hpp>
+
+#include <cstring>
+#include <mutex>
+#include <stdexcept>
+
+namespace services::index {
+    namespace codec = components::index::codec;
+
+    namespace {
+        uint32_t fnv1a_32(std::string_view s) {
+            constexpr uint32_t offset = 2166136261u;
+            constexpr uint32_t prime = 16777619u;
+            uint32_t h = offset;
+            for (char ch : s) {
+                const auto c = static_cast<uint8_t>(ch);
+                h ^= c;
+                h *= prime;
+            }
+            return h;
+        }
+    } // namespace
+
+    using core::filesystem::file_flags;
+    using core::filesystem::file_lock_type;
+    using core::filesystem::open_file;
+
+    disk_hash_table_t::disk_hash_table_t(const std::filesystem::path& file_path,
+                                         uint32_t bucket_count,
+                                         bool auto_rehash_enabled,
+                                         std::pmr::memory_resource* memory_resource)
+        : file_path_(file_path)
+        , auto_rehash_enabled_(auto_rehash_enabled)
+        , memory_resource_(memory_resource) {
+        if (!memory_resource) {
+            throw std::runtime_error("disk_hash_table: resource required");
+        }
+        if (bucket_count == 0) {
+            throw std::runtime_error("disk_hash_table: bucket_count must be > 0");
+        }
+        header_.bucket_count_value = bucket_count;
+        open_or_create();
+    }
+
+    disk_hash_table_t::~disk_hash_table_t() {
+        sync();
+    }
+
+    bool disk_hash_table_t::put(std::string_view key,
+                                int64_t value,
+                                uint32_t log_file_id,
+                                uint64_t log_offset,
+                                const full_key_loader_t& key_loader) {
+        std::unique_lock lock(mutex_);
+        return put_unlocked(key, value, log_file_id, log_offset, key_loader, true);
+    }
+
+    bool disk_hash_table_t::put_unlocked(std::string_view key,
+                                         int64_t value,
+                                         uint32_t log_file_id,
+                                         uint64_t log_offset,
+                                         const full_key_loader_t& key_loader,
+                                         bool allow_rehash) {
+        (void) key_loader;
+        const uint32_t key_hash = hash_key(key);
+        const uint32_t bucket_id = bucket_id_for_key(key);
+        uint64_t page_id = bucket_primary_page_id(bucket_id);
+
+        byte_buffer_t page(memory_resource_);
+        page.resize(page_size);
+        while (true) {
+            read_page(page_id, page);
+            bool changed = false;
+            if (try_insert_in_page(page, key, key_hash, value, log_file_id, log_offset, changed)) {
+                if (changed) {
+                    write_page(page_id, page);
+                }
+                ++entry_count_;
+                if (allow_rehash) {
+                    maybe_rehash_if_needed_unlocked(key_loader);
+                }
+                return true;
+            }
+            auto overflow = page_overflow(page);
+            if (overflow == 0) {
+                const auto new_page = allocate_overflow_page();
+                set_page_overflow(page, new_page);
+                write_page(page_id, page);
+                page_id = new_page;
+                continue;
+            }
+            page_id = overflow;
+        }
+    }
+
+    std::optional<disk_hash_table_t::value_ref_t> disk_hash_table_t::get(std::string_view key,
+                                                                          const full_key_loader_t& key_loader) const {
+        auto all = get_all(key, key_loader);
+        if (all.empty()) {
+            return std::nullopt;
+        }
+        return all.front();
+    }
+
+    std::vector<disk_hash_table_t::value_ref_t> disk_hash_table_t::get_all(std::string_view key,
+                                                                            const full_key_loader_t& key_loader) const {
+        std::shared_lock lock(mutex_);
+        const uint32_t key_hash = hash_key(key);
+        uint64_t page_id = bucket_primary_page_id(bucket_id_for_key(key));
+        std::pmr::vector<value_ref_t> values(memory_resource_);
+
+        byte_buffer_t page(memory_resource_);
+        page.resize(page_size);
+        while (page_id != 0) {
+            read_page(page_id, page);
+            const auto cnt = page_count(page);
+            for (uint16_t i = 0; i < cnt; ++i) {
+                auto slot = read_slot(page, i);
+                if (slot.flags != slot_flag_used || slot.key_hash != key_hash || slot.length == 0) {
+                    continue;
+                }
+                const auto entry = decode_entry(page, slot);
+                if (!keys_equal(key, entry, key_loader)) {
+                    continue;
+                }
+                values.push_back(
+                    value_ref_t{entry.value, entry.log_file_id, entry.log_offset, (entry.entry_flags & entry_flag_truncated) != 0});
+            }
+            page_id = page_overflow(page);
+        }
+        return {values.begin(), values.end()};
+    }
+
+    bool disk_hash_table_t::erase(std::string_view key, const full_key_loader_t& key_loader) {
+        return erase(key, std::nullopt, key_loader);
+    }
+
+    bool disk_hash_table_t::erase(std::string_view key, int64_t value, const full_key_loader_t& key_loader) {
+        return erase(key, std::optional<int64_t>(value), key_loader);
+    }
+
+    bool disk_hash_table_t::erase(std::string_view key,
+                                  std::optional<int64_t> expected_value,
+                                  const full_key_loader_t& key_loader) {
+        std::unique_lock lock(mutex_);
+        const uint32_t key_hash = hash_key(key);
+        uint64_t page_id = bucket_primary_page_id(bucket_id_for_key(key));
+        byte_buffer_t page(memory_resource_);
+        page.resize(page_size);
+        while (page_id != 0) {
+            read_page(page_id, page);
+            bool erased = false;
+            if (try_erase_in_page(page, key, key_hash, expected_value, key_loader, erased)) {
+                if (erased) {
+                    write_page(page_id, page);
+                    if (entry_count_ > 0) {
+                        --entry_count_;
+                    }
+                }
+                return erased;
+            }
+            page_id = page_overflow(page);
+        }
+        return false;
+    }
+
+    void disk_hash_table_t::for_each(const std::function<void(const value_ref_t&)>& cb) const {
+        std::shared_lock lock(mutex_);
+        byte_buffer_t page(memory_resource_);
+        page.resize(page_size);
+        for (uint32_t bucket = 0; bucket < header_.bucket_count_value; ++bucket) {
+            uint64_t page_id = bucket_primary_page_id(bucket);
+            while (page_id != 0) {
+                read_page(page_id, page);
+                const auto cnt = page_count(page);
+                for (uint16_t i = 0; i < cnt; ++i) {
+                    const auto slot = read_slot(page, i);
+                    if (slot.flags != slot_flag_used || slot.length == 0) {
+                        continue;
+                    }
+                    const auto entry = decode_entry(page, slot);
+                    cb(value_ref_t{entry.value,
+                                   entry.log_file_id,
+                                   entry.log_offset,
+                                   (entry.entry_flags & entry_flag_truncated) != 0});
+                }
+                page_id = page_overflow(page);
+            }
+        }
+    }
+
+    bool disk_hash_table_t::rehash(uint32_t new_bucket_count, const full_key_loader_t& key_loader) {
+        std::unique_lock lock(mutex_);
+        return rehash_unlocked(new_bucket_count, key_loader);
+    }
+
+    bool disk_hash_table_t::trigger_rehash_if_needed(const full_key_loader_t& key_loader) {
+        std::unique_lock lock(mutex_);
+        return maybe_rehash_if_needed_unlocked(key_loader);
+    }
+
+    double disk_hash_table_t::load_factor() const {
+        std::shared_lock lock(mutex_);
+        if (header_.bucket_count_value == 0) {
+            return 0.0;
+        }
+        return static_cast<double>(entry_count_) / static_cast<double>(header_.bucket_count_value);
+    }
+
+    bool disk_hash_table_t::rehash_unlocked(uint32_t new_bucket_count, const full_key_loader_t& key_loader) {
+        if (new_bucket_count == 0) {
+            throw std::runtime_error("disk_hash_table: rehash bucket_count must be > 0");
+        }
+        if (new_bucket_count == header_.bucket_count_value) {
+            return false;
+        }
+        rehash_in_progress_ = true;
+        struct reset_flag_t {
+            bool& flag;
+            ~reset_flag_t() { flag = false; }
+        } reset{rehash_in_progress_};
+        struct entry_t {
+            std::pmr::string key;
+            int64_t value{0};
+            uint32_t log_file_id{0};
+            uint64_t log_offset{0};
+        };
+        std::pmr::vector<entry_t> entries(memory_resource_);
+
+        byte_buffer_t page(memory_resource_);
+        page.resize(page_size);
+        for (uint32_t bucket = 0; bucket < header_.bucket_count_value; ++bucket) {
+            uint64_t page_id = bucket_primary_page_id(bucket);
+            while (page_id != 0) {
+                read_page(page_id, page);
+                const auto cnt = page_count(page);
+                for (uint16_t i = 0; i < cnt; ++i) {
+                    const auto slot = read_slot(page, i);
+                    if (slot.flags != slot_flag_used || slot.length == 0) {
+                        continue;
+                    }
+                    const auto decoded = decode_entry(page, slot);
+                    entry_t e{std::pmr::string(memory_resource_), 0, 0, 0};
+                    e.value = decoded.value;
+                    e.log_file_id = decoded.log_file_id;
+                    e.log_offset = decoded.log_offset;
+
+                    if ((decoded.entry_flags & entry_flag_truncated) == 0) {
+                        e.key.assign(decoded.stored_key.data(), decoded.stored_key.size());
+                    } else {
+                        if (!key_loader) {
+                            throw std::runtime_error("disk_hash_table: rehash requires key loader for truncated keys");
+                        }
+                        std::string full_key;
+                        if (!key_loader(decoded.log_file_id, decoded.log_offset, full_key)) {
+                            throw std::runtime_error("disk_hash_table: rehash key loader failed");
+                        }
+                        e.key.assign(full_key.data(), full_key.size());
+                    }
+                    entries.emplace_back(std::move(e));
+                }
+                page_id = page_overflow(page);
+            }
+        }
+
+        file_.reset();
+        std::error_code ec;
+        std::filesystem::remove(file_path_, ec);
+
+        header_.bucket_count_value = new_bucket_count;
+        header_.next_overflow_page = 1 + header_.bucket_count_value;
+        open_or_create();
+        entry_count_ = 0;
+
+        for (const auto& e : entries) {
+            put_unlocked(e.key, e.value, e.log_file_id, e.log_offset, key_loader, false);
+        }
+        if (file_) {
+            file_->sync();
+        }
+        return true;
+    }
+
+    bool disk_hash_table_t::maybe_rehash_if_needed_unlocked(const full_key_loader_t& key_loader) {
+        if (!auto_rehash_enabled_) {
+            return false;
+        }
+        if (rehash_in_progress_ || header_.bucket_count_value == 0) {
+            return false;
+        }
+        if (suppress_auto_rehash_.load(std::memory_order_acquire)) {
+            return false;
+        }
+        const auto lf = static_cast<double>(entry_count_) / static_cast<double>(header_.bucket_count_value);
+        if (lf <= max_load_factor_) {
+            return false;
+        }
+        uint64_t target = static_cast<uint64_t>(header_.bucket_count_value) * 2U;
+        while (target < entry_count_ && target < (static_cast<uint64_t>(UINT32_MAX) / 2U)) {
+            target *= 2U;
+        }
+        if (target > UINT32_MAX) {
+            target = UINT32_MAX;
+        }
+        if (target <= header_.bucket_count_value) {
+            return false;
+        }
+        return rehash_unlocked(static_cast<uint32_t>(target), key_loader);
+    }
+
+    uint32_t disk_hash_table_t::bucket_count() const {
+        std::shared_lock lock(mutex_);
+        return header_.bucket_count_value;
+    }
+
+    void disk_hash_table_t::sync() {
+        std::shared_lock lock(mutex_);
+        if (file_) {
+            file_->sync();
+        }
+    }
+
+    void disk_hash_table_t::open_or_create() {
+        file_ = open_file(fs_,
+                          file_path_,
+                          file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
+                          file_lock_type::NO_LOCK);
+        if (!file_) {
+            throw std::runtime_error("disk_hash_table: failed to open file " + file_path_.string());
+        }
+        if (file_->file_size() == 0) {
+            initialize_new_file();
+            return;
+        }
+        load_existing_file();
+        entry_count_ = count_entries_unlocked();
+    }
+
+    void disk_hash_table_t::initialize_new_file() {
+        header_.page_size_value = page_size;
+        header_.next_overflow_page = 1 + header_.bucket_count_value;
+
+        persist_header();
+        byte_buffer_t page(memory_resource_);
+        page.resize(page_size);
+        for (uint32_t i = 0; i < header_.bucket_count_value; ++i) {
+            init_empty_page(page);
+            write_page(bucket_primary_page_id(i), page);
+        }
+        entry_count_ = 0;
+        file_->sync();
+    }
+
+    void disk_hash_table_t::load_existing_file() {
+        byte_buffer_t hdr(memory_resource_);
+        hdr.resize(page_size, 0);
+        if (!file_->read(hdr.data(), page_size, 0)) {
+            throw std::runtime_error("disk_hash_table: failed to read header page");
+        }
+        header_.page_size_value = codec::read_le_ptr<uint32_t>(hdr.data() + 12);
+        header_.bucket_count_value = codec::read_le_ptr<uint32_t>(hdr.data() + 16);
+        header_.next_overflow_page = codec::read_le_ptr<uint64_t>(hdr.data() + 20);
+        if (header_.page_size_value != page_size ||
+            header_.bucket_count_value == 0) {
+            throw std::runtime_error("disk_hash_table: incompatible header");
+        }
+        if (header_.next_overflow_page < 1 + header_.bucket_count_value) {
+            header_.next_overflow_page = 1 + header_.bucket_count_value;
+        }
+    }
+
+    uint64_t disk_hash_table_t::data_page_count() const {
+        return file_ ? (file_->file_size() / page_size) : 0;
+    }
+
+    uint64_t disk_hash_table_t::page_offset(uint64_t page_id) const {
+        return page_id * page_size;
+    }
+
+    uint64_t disk_hash_table_t::bucket_primary_page_id(uint32_t bucket_id) const {
+        return 1 + bucket_id;
+    }
+
+    uint32_t disk_hash_table_t::hash_key(std::string_view key) {
+        return fnv1a_32(key);
+    }
+
+    uint32_t disk_hash_table_t::bucket_id_for_key(std::string_view key) const {
+        return hash_key(key) % header_.bucket_count_value;
+    }
+
+    uint64_t disk_hash_table_t::count_entries_unlocked() const {
+        uint64_t count = 0;
+        byte_buffer_t page(memory_resource_);
+        page.resize(page_size);
+        for (uint32_t bucket = 0; bucket < header_.bucket_count_value; ++bucket) {
+            uint64_t page_id = bucket_primary_page_id(bucket);
+            while (page_id != 0) {
+                read_page(page_id, page);
+                const auto cnt = page_count(page);
+                for (uint16_t i = 0; i < cnt; ++i) {
+                    const auto slot = read_slot(page, i);
+                    if (slot.flags == slot_flag_used && slot.length != 0) {
+                        ++count;
+                    }
+                }
+                page_id = page_overflow(page);
+            }
+        }
+        return count;
+    }
+
+    void disk_hash_table_t::read_page(uint64_t page_id, byte_buffer_t& page) const {
+        if (page.size() != page_size) {
+            page.resize(page_size);
+        }
+        const auto pages = data_page_count();
+        if (page_id >= pages) {
+            throw std::runtime_error("disk_hash_table: page read out of range");
+        }
+        if (!file_->read(page.data(), page_size, page_offset(page_id))) {
+            throw std::runtime_error("disk_hash_table: failed to read page");
+        }
+    }
+
+    void disk_hash_table_t::write_page(uint64_t page_id, const byte_buffer_t& page) {
+        if (page.size() != page_size) {
+            throw std::runtime_error("disk_hash_table: invalid page size");
+        }
+        if (!file_->write(const_cast<uint8_t*>(page.data()), page_size, page_offset(page_id))) {
+            throw std::runtime_error("disk_hash_table: failed to write page");
+        }
+    }
+
+    void disk_hash_table_t::init_empty_page(byte_buffer_t& page) const {
+        page.assign(page_size, 0);
+        set_page_count(page, 0);
+        set_page_free_offset(page, page_header_size);
+        set_page_overflow(page, 0);
+    }
+
+    uint16_t disk_hash_table_t::page_count(const byte_buffer_t& page) const {
+        return codec::read_le_ptr<uint16_t>(page.data());
+    }
+
+    uint16_t disk_hash_table_t::page_free_offset(const byte_buffer_t& page) const {
+        return codec::read_le_ptr<uint16_t>(page.data() + 2);
+    }
+
+    uint64_t disk_hash_table_t::page_overflow(const byte_buffer_t& page) const {
+        return codec::read_le_ptr<uint64_t>(page.data() + 4);
+    }
+
+    void disk_hash_table_t::set_page_count(byte_buffer_t& page, uint16_t v) const {
+        codec::write_le_ptr<uint16_t>(page.data(), v);
+    }
+
+    void disk_hash_table_t::set_page_free_offset(byte_buffer_t& page, uint16_t v) const {
+        codec::write_le_ptr<uint16_t>(page.data() + 2, v);
+    }
+
+    void disk_hash_table_t::set_page_overflow(byte_buffer_t& page, uint64_t v) const {
+        codec::write_le_ptr<uint64_t>(page.data() + 4, v);
+    }
+
+    disk_hash_table_t::slot_t disk_hash_table_t::read_slot(const byte_buffer_t& page, uint16_t slot_index) const {
+        const auto off = slot_dir_offset(slot_index);
+        slot_t s{};
+        s.offset = codec::read_le_ptr<uint16_t>(page.data() + off);
+        s.length = codec::read_le_ptr<uint16_t>(page.data() + off + 2);
+        s.flags = page[off + 4];
+        s.key_hash = codec::read_le_ptr<uint32_t>(page.data() + off + 5);
+        return s;
+    }
+
+    void disk_hash_table_t::write_slot(byte_buffer_t& page, uint16_t slot_index, const slot_t& slot) const {
+        const auto off = slot_dir_offset(slot_index);
+        codec::write_le_ptr<uint16_t>(page.data() + off, slot.offset);
+        codec::write_le_ptr<uint16_t>(page.data() + off + 2, slot.length);
+        page[off + 4] = slot.flags;
+        codec::write_le_ptr<uint32_t>(page.data() + off + 5, slot.key_hash);
+    }
+
+    uint16_t disk_hash_table_t::slot_dir_offset(uint16_t slot_index) const {
+        const auto idx = static_cast<uint32_t>(slot_index) + 1U;
+        return static_cast<uint16_t>(static_cast<uint32_t>(page_size) - static_cast<uint32_t>(slot_size) * idx);
+    }
+
+    disk_hash_table_t::decoded_entry_t disk_hash_table_t::decode_entry(const byte_buffer_t& page, const slot_t& slot) const {
+        if (slot.offset + slot.length > page_size || slot.length < (2 + 4 + 1 + 8 + 4 + 8)) {
+            throw std::runtime_error("disk_hash_table: invalid entry slot");
+        }
+        const auto* p = page.data() + slot.offset;
+        decoded_entry_t e{};
+        e.stored_key_len = codec::read_le_ptr<uint16_t>(p);
+        e.full_key_len = codec::read_le_ptr<uint32_t>(p + 2);
+        e.entry_flags = *(p + 6);
+        const uint16_t header_len = 7;
+        const uint16_t min_tail = 8 + 4 + 8;
+        if (header_len + e.stored_key_len + min_tail > slot.length) {
+            throw std::runtime_error("disk_hash_table: invalid entry length");
+        }
+        e.stored_key = std::string_view(reinterpret_cast<const char*>(p + header_len), e.stored_key_len);
+        const auto* vptr = p + header_len + e.stored_key_len;
+        e.value = codec::read_le_ptr<int64_t>(vptr);
+        e.log_file_id = codec::read_le_ptr<uint32_t>(vptr + 8);
+        e.log_offset = codec::read_le_ptr<uint64_t>(vptr + 12);
+        return e;
+    }
+
+    bool disk_hash_table_t::keys_equal(std::string_view query_key,
+                                       const decoded_entry_t& entry,
+                                       const full_key_loader_t& key_loader) const {
+        if ((entry.entry_flags & entry_flag_truncated) == 0) {
+            return query_key.size() == entry.full_key_len && query_key == entry.stored_key;
+        }
+        if (query_key.size() < entry.stored_key.size() || query_key.substr(0, entry.stored_key.size()) != entry.stored_key) {
+            return false;
+        }
+        if (!key_loader) {
+            return query_key.size() == entry.full_key_len;
+        }
+        std::string full;
+        if (!key_loader(entry.log_file_id, entry.log_offset, full)) {
+            return false;
+        }
+        return full == query_key;
+    }
+
+    bool disk_hash_table_t::try_insert_in_page(byte_buffer_t& page,
+                                               std::string_view key,
+                                               uint32_t key_hash,
+                                               int64_t value,
+                                               uint32_t log_file_id,
+                                               uint64_t log_offset,
+                                               bool& changed) {
+        auto payload = make_entry_payload(key, value, log_file_id, log_offset);
+        const uint16_t free_off = page_free_offset(page);
+        const uint16_t cnt = page_count(page);
+        const uint16_t dir_start = slot_dir_offset(cnt);
+        const auto required = static_cast<size_t>(free_off) + payload.size() + static_cast<size_t>(slot_size);
+        const auto available_limit = static_cast<size_t>(dir_start) + static_cast<size_t>(slot_size);
+        if (required > available_limit) {
+            return false;
+        }
+
+        const uint16_t new_off = free_off;
+        std::memcpy(page.data() + new_off, payload.data(), payload.size());
+        slot_t slot{};
+        slot.offset = new_off;
+        slot.length = static_cast<uint16_t>(payload.size());
+        slot.flags = slot_flag_used;
+        slot.key_hash = key_hash;
+        write_slot(page, cnt, slot);
+        set_page_count(page, cnt + 1);
+        set_page_free_offset(page, static_cast<uint16_t>(free_off + payload.size()));
+        changed = true;
+        return true;
+    }
+
+    bool disk_hash_table_t::try_erase_in_page(byte_buffer_t& page,
+                                              std::string_view key,
+                                              uint32_t key_hash,
+                                              std::optional<int64_t> expected_value,
+                                              const full_key_loader_t& key_loader,
+                                              bool& erased) {
+        const auto cnt = page_count(page);
+        for (uint16_t i = 0; i < cnt; ++i) {
+            auto slot = read_slot(page, i);
+            if (slot.flags != slot_flag_used || slot.key_hash != key_hash || slot.length == 0) {
+                continue;
+            }
+            const auto entry = decode_entry(page, slot);
+            if (!keys_equal(key, entry, key_loader)) {
+                continue;
+            }
+            if (expected_value.has_value() && entry.value != *expected_value) {
+                continue;
+            }
+            slot.flags = slot_flag_free;
+            write_slot(page, i, slot);
+            erased = true;
+            return true;
+        }
+        return false;
+    }
+
+    disk_hash_table_t::byte_buffer_t
+    disk_hash_table_t::make_entry_payload(std::string_view key, int64_t value, uint32_t log_file_id, uint64_t log_offset) const {
+        const bool truncated = key.size() > inline_key_limit;
+        const uint16_t stored_len =
+            static_cast<uint16_t>(truncated ? std::min<size_t>(truncated_prefix_len, key.size()) : key.size());
+        const uint32_t full_len = static_cast<uint32_t>(std::min<size_t>(key.size(), UINT32_MAX));
+        const size_t total = 2 + 4 + 1 + stored_len + 8 + 4 + 8;
+        byte_buffer_t payload(memory_resource_);
+        payload.resize(total);
+        codec::write_le_ptr<uint16_t>(payload.data(), stored_len);
+        codec::write_le_ptr<uint32_t>(payload.data() + 2, full_len);
+        payload[6] = truncated ? entry_flag_truncated : 0;
+        if (stored_len > 0) {
+            std::memcpy(payload.data() + 7, key.data(), stored_len);
+        }
+        auto* tail = payload.data() + 7 + stored_len;
+        codec::write_le_ptr<int64_t>(tail, value);
+        codec::write_le_ptr<uint32_t>(tail + 8, log_file_id);
+        codec::write_le_ptr<uint64_t>(tail + 12, log_offset);
+        return payload;
+    }
+
+    uint64_t disk_hash_table_t::allocate_overflow_page() {
+        const uint64_t page_id = header_.next_overflow_page++;
+        byte_buffer_t page(memory_resource_);
+        page.resize(page_size);
+        init_empty_page(page);
+        write_page(page_id, page);
+        persist_header();
+        return page_id;
+    }
+
+    void disk_hash_table_t::persist_header() {
+        byte_buffer_t hdr(memory_resource_);
+        hdr.resize(page_size, 0);
+        codec::write_le_ptr<uint32_t>(hdr.data() + 12, header_.page_size_value);
+        codec::write_le_ptr<uint32_t>(hdr.data() + 16, header_.bucket_count_value);
+        codec::write_le_ptr<uint64_t>(hdr.data() + 20, header_.next_overflow_page);
+        if (!file_->write(hdr.data(), page_size, 0)) {
+            throw std::runtime_error("disk_hash_table: failed to write header page");
+        }
+    }
+
+
+} // namespace services::index

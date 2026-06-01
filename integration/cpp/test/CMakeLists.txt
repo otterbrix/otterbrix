@@ -24,6 +24,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_column_projection.cpp
         test_computed_schema.cpp
         test_subqueries.cpp
+        test_hash_join.cpp
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})

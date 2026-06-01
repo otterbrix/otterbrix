@@ -133,7 +133,8 @@ namespace services::dispatcher {
         unique_future<services::collection::executor::execute_result_t>
         execute_plan_impl(components::session::session_id_t session,
                           components::logical_plan::execution_plan_t plan,
-                          components::table::transaction_data txn);
+                          components::table::transaction_data txn,
+                          context_storage_t* collections_context_storage);
 
         actor_zeta::behavior_t current_behavior_;
     };

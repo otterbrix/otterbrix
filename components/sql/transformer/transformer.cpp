@@ -37,7 +37,8 @@ namespace components::sql::transform {
                     std::move(plan),
                     std::move(parameter_map_),
                     std::move(parameter_insert_map_),
-                    std::move(parameter_insert_rows_)};
+                    std::move(parameter_insert_rows_),
+                    std::move(deferred_limits_)};
         }
     }
 

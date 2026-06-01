@@ -629,6 +629,7 @@ namespace services::dispatcher {
             drop_target_collection = qualified_name_t{names.first, names.second};
         }
         auto logic_plan = std::move(plan.sub_queries.back());
+        context_storage_t collections_context_storage(resource(), log_.clone(), session_tz(session));
         // Optimizer + catalog resolve wrap injection for every sub_query.
         // sub_queries.back() lives in logic_plan; the rest are processed first so
         // all plans are ready before the batched Pass 1 below.
@@ -666,7 +667,7 @@ namespace services::dispatcher {
                 auto pass1_txn = txn_manager_.begin_transaction(session).data();
                 auto pass1_params = make_parameter_node(resource());
                 auto pass1_result = co_await execute_plan_impl(session,
-                                                               execution_plan_t{resource(), pass1_root, pass1_params},
+                                                               execution_plan_t{resource(), pass1_root, pass1_params, &collections_context_storage},
                                                                pass1_txn);
                 if (pass1_result.cursor->is_error()) {
                     trace(log_,
@@ -674,7 +675,16 @@ namespace services::dispatcher {
                           pass1_result.cursor->get_error().what);
                     co_return std::move(pass1_result.cursor);
                 }
+                // Propagate the established txn into ctx so validate /
+                // enrich reads (which still take `ctx`) see the same MVCC
+                // snapshot the resolves saw.
                 ctx = components::execution_context_t{session, pass1_txn, ctx.session_tz, ctx.table_oid};
+                // Note: resolves stay in plan tree so validate/enrich's
+                // gather walks find them. create_plan_sequence skips
+                // catalog_resolve_*_t children when building the executor's
+                // left-chain (they have already run in Pass 1; putting
+                // them in operator_insert.left_ would corrupt insert's
+                // data input — see create_plan_sequence.cpp note).
             }
         }
         // Pass 1 stamps OIDs on resolve_* siblings via back-pointer
@@ -757,7 +767,7 @@ namespace services::dispatcher {
                     auto pass2_result =
                         co_await execute_plan_impl(session,
                                                    execution_plan_t{resource(), pass2_root, pass2_params},
-                                                   ctx.txn);
+                                                   ctx.txn, &collections_context_storage);
                     if (pass2_result.cursor->is_error()) {
                         trace(log_,
                               "manager_dispatcher_t::execute_plan: view sub-plan Pass 1 "
@@ -1152,10 +1162,15 @@ namespace services::dispatcher {
             co_return std::move(error);
         }
 
+        // Late logical optimization. Runs after validate_schema has stamped key
+        // side()/path(), so schema-aware rewrites are safe here. Currently rewrites
+        // eligible nested-loop joins into hash joins (node_join_t -> node_hash_join_t).
+        logic_plan = components::planner::post_validate_optimize(resource(), std::move(logic_plan));
+
         // Enrich DML node fields with catalog metadata (NOT NULL, DEFAULT, CHECK exprs).
         // enrich reads exclusively from the plan-tree idx.
         {
-            auto ef = enrich_plan(resource(), logic_plan, disk_address_, ctx);
+            auto ef = enrich_plan(resource(), logic_plan, disk_address_, ctx, index_address_, &collections_context_storage);
             co_await std::move(ef);
         }
         // Logical plan rewrite: insert constraint wrapper nodes driven by enriched fields.
@@ -1368,7 +1383,7 @@ namespace services::dispatcher {
             // call below reuses this same txn.
             auto enrich_txn = txn_manager_.begin_transaction(session).data();
             components::execution_context_t enriched_ctx{session, enrich_txn, ctx.session_tz, ctx.table_oid};
-            auto ef2 = enrich_plan(resource(), logic_plan, disk_address_, enriched_ctx);
+            auto ef2 = enrich_plan(resource(), logic_plan, disk_address_, enriched_ctx, index_address_, &collections_context_storage);
             co_await std::move(ef2);
         }
 
@@ -1454,13 +1469,13 @@ namespace services::dispatcher {
                     exec_result.cursor = make_cursor(resource());
                 } else {
                     plan.sub_queries.back() = logic_plan;
-                    exec_result = co_await execute_plan_impl(session, std::move(plan), txn_data);
+                    exec_result = co_await execute_plan_impl(session, std::move(plan), txn_data, &collections_context_storage);
                 }
                 break;
             }
             default:
                 plan.sub_queries.back() = logic_plan;
-                exec_result = co_await execute_plan_impl(session, std::move(plan), txn_data);
+                exec_result = co_await execute_plan_impl(session, std::move(plan), txn_data, &collections_context_storage);
                 break;
         }
 
@@ -1854,8 +1869,10 @@ namespace services::dispatcher {
     manager_dispatcher_t::unique_future<collection::executor::execute_result_t>
     manager_dispatcher_t::execute_plan_impl(components::session::session_id_t session,
                                             execution_plan_t plan,
-                                            components::table::transaction_data txn) {
+                                            components::table::transaction_data txn,
+                                            context_storage_t* collections_context_storage) {
         auto& logical_plan = plan.sub_queries.back();
+        auto context_copy = *collections_context_storage;
         trace(log_,
               "manager_dispatcher_t:execute_plan_impl: node_type: {}, table_oid: {}, session: {}",
               components::logical_plan::to_string(logical_plan->type()),
@@ -1867,12 +1884,9 @@ namespace services::dispatcher {
         // for it). Walk the plan, collect every table_oid stamped by enrich,
         // and forward the set to the executor. Wrapper / parser-window / DDL
         // nodes contribute INVALID_OID and are filtered.
-        context_storage_t collections_context_storage(resource(), log_.clone(), session_tz(session));
-        // Collect table OIDs from all sub_queries, not just the main query.
-        // Sub-queries may scan tables different from the main query's table.
         for (const auto& sq : plan.sub_queries) {
             for (auto oid : sq->table_oid_dependencies()) {
-                collections_context_storage.known_oids.insert(oid);
+            context_copy.known_oids.insert(oid);
             }
         }
         // Forward resolve_table metadata (relkind + live columns)
@@ -1887,7 +1901,7 @@ namespace services::dispatcher {
                 impl::gather_plan_resolve_index(sq.get(), &local_idx);
             }
             for (const auto& [oid, md_ptr] : local_idx.tbl_md_by_oid) {
-                collections_context_storage.table_metadata[oid] = md_ptr;
+                context_copy.table_metadata[oid] = md_ptr;
             }
         }
 
@@ -1898,10 +1912,10 @@ namespace services::dispatcher {
             if (tbl_oid != components::catalog::INVALID_OID) {
                 auto [_ik, ikf] =
                     actor_zeta::send(index_address_, &index::manager_index_t::get_indexed_keys, session, tbl_oid);
-                collections_context_storage.indexed_keys = co_await std::move(ikf);
+                context_copy.indexed_keys = co_await std::move(ikf);
             }
         }
-        collections_context_storage.parameters = &plan.parameters->parameters();
+        context_copy.parameters = &plan.parameters->parameters();
 
         assert(!executors_.empty());
         // Oid-only pool routing. For wrapper nodes (sequence_t etc.)
@@ -1921,7 +1935,7 @@ namespace services::dispatcher {
                                                                  &collection::executor::executor_t::execute_plan,
                                                                  session,
                                                                  std::move(plan),
-                                                                 std::move(collections_context_storage),
+                                                                 std::move(context_copy),
                                                                  txn);
         if (needs_sched && executors_[pool_idx]) {
             scheduler_->enqueue(executors_[pool_idx].get());

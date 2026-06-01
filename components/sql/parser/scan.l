@@ -336,6 +336,7 @@ ident_cont		[A-Za-z\200-\377_0-9\$]
 identifier		{ident_start}{ident_cont}*
 
 typecast		"::"
+typecast_q		"::?"
 dot_dot			\.\.
 colon_equals	":="
 
@@ -795,6 +796,11 @@ other			.
 					ident = downcase_truncate_identifier(yyextra->resource, yytext, yyleng, true);
 					yylval->str = ident;
 					return IDENT;
+				}
+
+{typecast_q}	{
+					SET_YYLLOC();
+					return TYPECAST_Q;
 				}
 
 {typecast}		{

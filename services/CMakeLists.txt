@@ -28,6 +28,7 @@ set(${PROJECT_NAME}_SOURCES
     # index
         index/bitcask_task_executor.cpp
         index/bitcask_index_disk.cpp
+        index/disk_hash_table.cpp
         index/btree_index_disk.cpp
         index/index_agent_disk.cpp
         index/manager_index.cpp

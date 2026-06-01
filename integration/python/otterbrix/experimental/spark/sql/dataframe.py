@@ -1,3 +1,5 @@
+# This code is based on code from Apache Spark under the license found in the LICENSE file located in the 'spark' folder.
+
 from functools import reduce
 from typing import (
     TYPE_CHECKING,
@@ -34,17 +36,21 @@ from .functions import _to_column_expr, col
 from otterbrix.experimental.spark.context import SparkContext
 
 class DataFrame:
-    def __init__(self, relation: otterbrix.OtterBrixPyRelation, session: "SparkSession"):
+    def __init__(self, relation: otterbrix.OtterBrixPyRelation, session: "SparkSession",
+                 *, optimize=False):
         self.relation = relation
         self.session = session
+        self._optimize = optimize
         self._schema = None
         if self.relation is not None:
             self._schema = otterbrix_to_spark_schema(self.relation.columns, self.relation.types)
 
     def show(self, **kwargs) -> None:
+        self.relation.optimize = self._optimize
         self.relation.show()
 
     def toPandas(self) -> "PandasDataFrame":
+        self.relation.optimize = self._optimize
         return self.relation.df()
 
     def createOrReplaceTempView(self, name: str) -> None:
@@ -91,7 +97,7 @@ class DataFrame:
                 col = col.alias(newName)
             cols.append(col)
         rel = self.relation.select(*cols)
-        return DataFrame(rel, self.session)
+        return DataFrame(rel, self.session, optimize=self._optimize)
 
     def withColumn(self, columnName: str, col: Column) -> "DataFrame":
         if not isinstance(col, Column):
@@ -111,7 +117,7 @@ class DataFrame:
             cols = [ColumnExpression(x, SparkContext._active_spark_context) for x in self.relation.columns]
             cols.append(col.expr.alias(columnName))
         rel = self.relation.select(*cols)
-        return DataFrame(rel, self.session)
+        return DataFrame(rel, self.session, optimize=self._optimize)
 
     def transform(
         self, func: Callable[..., "DataFrame"], *args: Any, **kwargs: Any
@@ -302,10 +308,15 @@ class DataFrame:
                 error_class="NOT_BOOL_OR_LIST",
                 message_parameters={"arg_name": "ascending", "arg_type": type(ascending).__name__},
             )
-       
-        columns = [_to_column_expr(c) for c in columns]
-        rel = self.relation.sort(*columns)
-        return DataFrame(rel, self.session)
+
+        resolved = []
+        for c in columns:
+            if isinstance(c, Column):
+                resolved.append(c.expr)
+            else:
+                resolved.append(c)
+        new_relation = self.relation.sort(*resolved)
+        return DataFrame(new_relation, self.session, optimize=self._optimize)
 
     orderBy = sort
 
@@ -380,8 +391,15 @@ class DataFrame:
                 error_class="NOT_COLUMN_OR_STR",
                 message_parameters={"arg_name": "condition", "arg_type": type(condition).__name__},
             )
-        rel = self.relation.filter(cond)
-        return DataFrame(rel, self.session)
+
+        if isinstance(condition, Column):
+            new_relation = self.relation.filter(condition.expr)
+            return DataFrame(new_relation, self.session, optimize=self._optimize)
+
+        raise RuntimeError(
+            f"String filter conditions are not supported via C++ engine. "
+            f"Use Column expressions instead: df.filter(col('x') > 5)"
+        )
 
     where = filter
 
@@ -397,8 +415,9 @@ class DataFrame:
             projections = [
                 cols.expr if isinstance(cols, Column) else ColumnExpression(cols, SparkContext._active_spark_context)
             ]
+
         rel = self.relation.select(*projections)
-        return DataFrame(rel, self.session)
+        return DataFrame(rel, self.session, optimize=self._optimize)
 
     @property
     def columns(self) -> List[str]:
@@ -431,8 +450,7 @@ class DataFrame:
         how : str, optional
             default ``inner``. Must be one of: ``inner``, ``cross``, ``outer``,
             ``full``, ``fullouter``, ``full_outer``, ``left``, ``leftouter``, ``left_outer``,
-            ``right``, ``rightouter``, ``right_outer``, ``semi``, ``leftsemi``, ``left_semi``,
-            ``anti``, ``leftanti`` and ``left_anti``.
+            ``right``, ``rightouter`` and ``right_outer``.
 
         Returns
         -------
@@ -508,45 +526,71 @@ class DataFrame:
         if on is not None and not isinstance(on, list):
             on = [on]  # type: ignore[assignment]
 
-        if on is not None:
-            assert isinstance(on, list)
-            # Get (or create) the Expressions from the list of Columns
-            on = [_to_column_expr(x) for x in on]
-
-            # & all the Expressions together to form one Expression
-            assert isinstance(
-                on[0], Expression
-            ), "on should be Column or list of Column"
-            on = reduce(lambda x, y: x.__and__(y), cast(List[Expression], on))
+        def map_to_recognized_jointype(how):
+            known_aliases = {
+                "inner": [],
+                "full": ["outer", "fullouter", "full_outer"],
+                "left": ["leftouter", "left_outer"],
+                "right": ["rightouter", "right_outer"],
+                "cross": [],
+            }
+            mapped_type = None
+            for type, aliases in known_aliases.items():
+                if how == type or how in aliases:
+                    mapped_type = type
+                    break
+            if not mapped_type:
+                mapped_type = how
+            return mapped_type
 
         if on is None and how is None:
-            result = self.relation.join(other.relation)
+            join_type = "cross"
         else:
             if how is None:
                 how = "inner"
+            join_type = map_to_recognized_jointype(how)
 
-            def map_to_recognized_jointype(how):
-                known_aliases = {
-                    "inner": [],
-                    "full": ["outer", "fullouter", "full_outer"],
-                    "left": ["leftouter", "left_outer"],
-                    "right": ["rightouter", "right_outer"],
-                    "anti": ["leftanti", "left_anti"],
-                    "semi": ["leftsemi", "left_semi"],
-                }
-                mapped_type = None
-                for type, aliases in known_aliases.items():
-                    if how == type or how in aliases:
-                        mapped_type = type
-                        break
+        sc = SparkContext._active_spark_context
 
-                if not mapped_type:
-                    mapped_type = how
-                return mapped_type
-
-            how = map_to_recognized_jointype(how)
-            result = self.relation.join(other.relation, on, how)
-        return DataFrame(result, self.session)
+        if on is not None:
+            assert isinstance(on, list)
+            all_strings = all(isinstance(x, str) for x in on)
+            if all_strings:
+                cond_expr = None
+                for key in on:
+                    eq = ColumnExpression(key, sc, "left").__eq__(
+                        ColumnExpression(key, sc, "right"))
+                    cond_expr = eq if cond_expr is None else cond_expr.__and__(eq)
+                new_relation = self.relation.join(other.relation, cond_expr, join_type)
+                key_set = set(on)
+                projections = [
+                    ColumnExpression(c, sc, "left") for c in self.relation.columns
+                ] + [
+                    ColumnExpression(c, sc, "right")
+                    for c in other.relation.columns
+                    if c not in key_set
+                ]
+                new_relation = new_relation.select(*projections)
+            else:
+                cond_exprs = []
+                for x in on:
+                    if isinstance(x, Column):
+                        cond_exprs.append(x.expr)
+                    else:
+                        cond_exprs.append(x)
+                if len(cond_exprs) == 1:
+                    cond_expr = cond_exprs[0]
+                else:
+                    cond_expr = cond_exprs[0]
+                    for e in cond_exprs[1:]:
+                        cond_expr = cond_expr.__and__(e)
+                new_relation = self.relation.join(other.relation, cond_expr, join_type)
+        else:
+            if join_type == "cross":
+                new_relation = self.relation.cross(other.relation)
+            else:
+                new_relation = self.relation.join(other.relation, None, join_type)
+        return DataFrame(new_relation, self.session, optimize=self._optimize)
 
     def crossJoin(self, other: "DataFrame") -> "DataFrame":
         """Returns the cartesian product with another :class:`DataFrame`.
@@ -585,7 +629,8 @@ class DataFrame:
         | 16|  Bob|    85|
         +---+-----+------+
         """
-        return DataFrame(self.relation.cross(other.relation), self.session)
+        new_relation = self.relation.cross(other.relation)
+        return DataFrame(new_relation, self.session, optimize=self._optimize)
 
     def alias(self, alias: str) -> "DataFrame":
         """Returns a new :class:`DataFrame` with an alias set.
@@ -619,7 +664,7 @@ class DataFrame:
         +-----+-----+---+
         """
         assert isinstance(alias, str), "alias should be a string"
-        return DataFrame(self.relation.set_alias(alias), self.session)
+        return DataFrame(self.relation.set_alias(alias), self.session, optimize=self._optimize)
 
     def drop(self, *cols: "ColumnOrName") -> "DataFrame":  # type: ignore[misc]
         if len(cols) == 1:
@@ -638,7 +683,7 @@ class DataFrame:
         # Filter out the columns that don't exist in the relation
         exclude = [x for x in exclude if x in self.relation.columns]
         expr = None#StarExpression(exclude=exclude)
-        return DataFrame(self.relation.select(expr), self.session)
+        return DataFrame(self.relation.select(expr), self.session, optimize=self._optimize)
 
     def __repr__(self) -> str:
         return str(self.relation)
@@ -673,8 +718,15 @@ class DataFrame:
         +---+----+
         +---+----+
         """
+
+        if num <= 0:
+            cols = self.columns
+            if cols:
+                first = col(cols[0])
+                return self.filter(first != first)
+
         rel = self.relation.limit(num)
-        return DataFrame(rel, self.session)
+        return DataFrame(rel, self.session, optimize=self._optimize)
 
     def __contains__(self, item: str):
         """
@@ -684,7 +736,7 @@ class DataFrame:
 
     @property
     def schema(self) -> StructType:
-        """Returns the schema of this :class:`DataFrame` as a :class:`duckdb.experimental.spark.sql.types.StructType`.
+        """Returns the schema of this :class:`DataFrame` as a :class:`otterbrix.experimental.spark.sql.types.StructType`.
 
         Examples
         --------
@@ -821,7 +873,8 @@ class DataFrame:
             columns = cols[0]
         else:
             columns = cols
-        return GroupedData(Grouping(*columns), self)
+
+        return GroupedData(Grouping(*columns), self, optimize=self._optimize)
 
     @property
     def write(self) -> DataFrameWriter:
@@ -873,7 +926,7 @@ class DataFrame:
         |   1|   2|   3|
         +----+----+----+
         """
-        return DataFrame(self.relation.union(other.relation), self.session)
+        return DataFrame(self.relation.union(other.relation), self.session, optimize=self._optimize)
 
     unionAll = union
 
@@ -938,8 +991,6 @@ class DataFrame:
         if not allowMissingColumns:
             raise ContributionsAcceptedError
         raise NotImplementedError
-        # The relational API does not have support for 'union_by_name' yet
-        # return DataFrame(self.relation.union_by_name(other.relation, allowMissingColumns), self.session)
 
     def dropDuplicates(self, subset: Optional[List[str]] = None) -> "DataFrame":
         """Return a new :class:`DataFrame` with duplicate rows removed,
@@ -995,7 +1046,7 @@ class DataFrame:
             rn_col = f"tmp_col_{uuid.uuid1().hex}"
             subset_str = ', '.join([f'"{c}"' for c in subset])
             window_spec = f"OVER(PARTITION BY {subset_str}) AS {rn_col}"
-            df = DataFrame(self.relation.row_number(window_spec, "*"), self.session)
+            df = DataFrame(self.relation.row_number(window_spec, "*"), self.session, optimize=self._optimize)
             return df.filter(f"{rn_col} = 1").drop(rn_col)
 
         return self.distinct()
@@ -1020,7 +1071,7 @@ class DataFrame:
         2
         """
         distinct_rel = self.relation.distinct()
-        return DataFrame(distinct_rel, self.session)
+        return DataFrame(distinct_rel, self.session, optimize=self._optimize)
 
     def count(self) -> int:
         """Returns the number of rows in this :class:`DataFrame`.
@@ -1040,21 +1091,9 @@ class DataFrame:
         >>> df.count()
         3
         """
-        count_rel = self.relation.count("*")
-        return int(count_rel.fetchone()[0])
-
-    def _cast_types(self, *types) -> "DataFrame":
-        existing_columns = self.relation.columns
-        types_count = len(types)
-        assert types_count == len(existing_columns)
-
-        cast_expressions = [
-            f"{existing}::{target_type} as {existing}"
-            for existing, target_type in zip(existing_columns, types)
-        ]
-        cast_expressions = ", ".join(cast_expressions)
-        new_rel = self.relation.project(cast_expressions)
-        return DataFrame(new_rel, self.session)
+        # The optimize flag propagates through self.groupBy()
+        rows = self.groupBy().count().collect()
+        return int(rows[0][0]) if rows else 0
 
     def toDF(self, *cols) -> "DataFrame":
         existing_columns = self.relation.columns
@@ -1069,19 +1108,24 @@ class DataFrame:
             existing.alias(new) for existing, new in zip(existing_columns, cols)
         ]
         new_rel = self.relation.project(*projections)
-        return DataFrame(new_rel, self.session)
+        return DataFrame(new_rel, self.session, optimize=self._optimize)
 
-    def collect(self) -> List[Row]:
-        columns = self.relation.columns
-        result = self.relation.fetchall()
+    def collect(self, optimize=None) -> List[Row]:
 
         def construct_row(values, names) -> Row:
             row = tuple.__new__(Row, list(values))
             row.__fields__ = list(names)
             return row
 
+        effective_optimize = self._optimize if optimize is None else optimize
+        if hasattr(self.relation, 'optimize'):
+            self.relation.optimize = effective_optimize
+        columns = self.relation.columns
+        result = self.relation.fetchall()
         rows = [construct_row(x, columns) for x in result]
         return rows
+
+
 
 
 __all__ = ["DataFrame"]

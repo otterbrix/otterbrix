@@ -61,7 +61,8 @@ namespace services::index {
                                              components::catalog::oid_t table_oid,
                                              index_name_t index_name,
                                              components::index::keys_base_storage_t keys,
-                                             components::logical_plan::index_type type);
+                                             components::logical_plan::index_type type,
+                                             core::date::timezone_offset_t session_tz);
         unique_future<void>
         drop_index(session_id_t session, components::catalog::oid_t table_oid, index_name_t index_name);
 
@@ -72,7 +73,18 @@ namespace services::index {
                                                         components::types::logical_value_t value,
                                                         components::expressions::compare_type compare,
                                                         uint64_t start_time,
-                                                        uint64_t txn_id);
+                                                        uint64_t txn_id,
+                                                        core::date::timezone_offset_t session_tz);
+        // Query (txn-aware)
+        unique_future<std::pmr::vector<int64_t>> search_with_preferred_type(session_id_t session,
+                                                        components::catalog::oid_t table_oid,
+                                                        components::index::keys_base_storage_t keys,
+                                                        components::types::logical_value_t value,
+                                                        components::expressions::compare_type compare,
+                                                        components::logical_plan::index_type preferred_index_type,
+                                                        uint64_t start_time,
+                                                        uint64_t txn_id,
+                                                        core::date::timezone_offset_t session_tz);
 
         unique_future<bool>
         has_index(session_id_t session, components::catalog::oid_t table_oid, index_name_t index_name);
@@ -81,6 +93,8 @@ namespace services::index {
 
         unique_future<std::pmr::vector<components::index::keys_base_storage_t>>
         get_indexed_keys(session_id_t session, components::catalog::oid_t table_oid);
+        unique_future<std::pmr::vector<components::index::index_description_t>>
+        get_indexed_descriptions(session_id_t session, components::catalog::oid_t table_oid);
 
         using dispatch_traits = actor_zeta::dispatch_traits<&index_contract::register_collection,
                                                             &index_contract::unregister_collection,
@@ -95,9 +109,11 @@ namespace services::index {
                                                             &index_contract::create_index,
                                                             &index_contract::drop_index,
                                                             &index_contract::search,
+                                                            &index_contract::search_with_preferred_type,
                                                             &index_contract::has_index,
                                                             &index_contract::flush_all_indexes,
-                                                            &index_contract::get_indexed_keys>;
+                                                            &index_contract::get_indexed_keys,
+                                                            &index_contract::get_indexed_descriptions>;
 
         index_contract() = delete;
     };

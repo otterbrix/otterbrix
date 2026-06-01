@@ -34,6 +34,7 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_select.cpp
         operators/operator_sort.cpp
         operators/operator_join.cpp
+        operators/operator_hash_join.cpp
 
         operators/operator_check_constraint.cpp
         operators/operator_fk_check.cpp
@@ -82,6 +83,7 @@ set_property(TARGET otterbrix_${PROJECT_NAME} PROPERTY EXPORT_NAME ${PROJECT_NAM
 
 target_link_libraries(
         otterbrix_${PROJECT_NAME} PUBLIC
+        otterbrix::date
         otterbrix::types
         otterbrix::vector
         otterbrix::cursor

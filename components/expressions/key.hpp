@@ -21,7 +21,8 @@ namespace components::expressions {
             : side_{key.side_}
             , storage_{std::move(key.storage_)}
             , path_{std::move(key.path_)}
-            , cast_type_{std::move(key.cast_type_)} {}
+            , cast_type_{std::move(key.cast_type_)}
+            , variant_select_{key.variant_select_} {}
 
         key_t(const key_t& key) = default;
         key_t& operator=(const key_t& key) = default;
@@ -104,6 +105,13 @@ namespace components::expressions {
 
         void set_cast_type(types::complex_logical_type type) { cast_type_ = std::move(type); }
 
+        // '::?' type-variant selection: among several columns sharing this key's
+        // name (computing multi-type fields), pick the one whose physical type
+        // matches cast_type(). Unlike a '::' cast, no value conversion is done.
+        bool is_variant_select() const { return variant_select_; }
+
+        void set_variant_select(bool v) { variant_select_ = v; }
+
         auto is_null() const -> bool { return storage_.empty(); }
 
         auto side() const -> side_t { return side_; }
@@ -137,6 +145,7 @@ namespace components::expressions {
         std::pmr::vector<std::pmr::string> storage_;
         std::pmr::vector<size_t> path_;
         std::optional<types::complex_logical_type> cast_type_;
+        bool variant_select_ = false;
     };
 
     template<class OStream>

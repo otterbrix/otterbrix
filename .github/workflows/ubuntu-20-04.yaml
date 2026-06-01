@@ -18,14 +18,15 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt update && sudo apt install -y  build-essential ninja-build python3-pip curl gnupg apt-transport-https clang-format-11 flex bison
-          pip3 install termcolor
+          sudo apt update && sudo apt install -y  build-essential ninja-build python3-pip curl gnupg apt-transport-https clang-format-11 flex bison git
+          python3 -m pip install termcolor
 
       - name: conan installation and configuration
         run: |
-          pip install conan==2.20.0
+          python3 -m pip install conan==2.20.0
           conan profile detect --force
-          conan remote add otterbrix http://conan.otterbrix.com
+          git clone --depth 1 https://github.com/duckstax/conan-duckstax.git /tmp/conan-duckstax
+          conan remote add duckstax /tmp/conan-duckstax --type=local-recipes-index
 
       - name: download dependencies
         run: |

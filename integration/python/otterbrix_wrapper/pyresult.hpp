@@ -33,9 +33,6 @@ namespace otterbrix {
 
         bool IsClosed() const;
 
-//        const vector<components::types::complex_logical_type>& GetTypes();
-//        const vector<string>& GetNames();
-
     private:
         ConnectionEnvironment* env;
         

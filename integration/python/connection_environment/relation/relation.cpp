@@ -4,8 +4,6 @@
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/expression.hpp>
 
-#include <magic_enum.hpp>
-
 using namespace components;
 
 using namespace components::logical_plan;
@@ -56,29 +54,27 @@ namespace otterbrix {
                 if (aggregate_expr->params().size() > 1) {
                     return column_definition_t(name, type);
                 }
-                bool is_count = aggregate_expr->type() == expressions::aggregate_type::count;
+                bool is_count = aggregate_expr->function_name() == "count";
                 if (is_count) {
-                    name = (aggregate_expr->key().is_null()?"count":aggregate_expr->key().as_string());
-                    type = types::logical_type::INTEGER;
+                    name = "count";
+                    type = types::logical_type::UBIGINT;
                 } else {
 
                     const auto& param = aggregate_expr->params().front();
                     auto founded_name = find_param_name(param);
                 
                     if (aggregate_expr->key().is_null()) {
-                        string agg_str = string(magic_enum::enum_name(aggregate_expr->type()));
+                        string agg_str = aggregate_expr->function_name();
                         name =  agg_str + 
                         "(" + founded_name.first +")";
                     } else {
                         name = aggregate_expr->key().as_string();
                     }   
-                    auto base_type = find_type(founded_name.first, initial); 
-                    switch (aggregate_expr->type()) {
-                        case aggregate_type::avg:
-                            type = types::logical_type::FLOAT;
-                            break;
-                        default:
-                            type = base_type;
+                    auto base_type = find_type(founded_name.first, initial);
+                    if (aggregate_expr->function_name() == "avg") {
+                        type = types::logical_type::DOUBLE;
+                    } else {
+                        type = base_type;
                     }
                 }
                 return column_definition_t(name, type); 
@@ -96,22 +92,18 @@ namespace otterbrix {
                 if (scalar_expr->params().size() > 1) {
                     return column_definition_t(name, type);
                 }
-                if (!scalar_expr->key().is_null()) {
-                    name = scalar_expr->key().as_string();
-                }
-
                 if (scalar_expr->params().size() == 1) {
                     auto param_name = find_param_name(scalar_expr->params().front());
+                    name = scalar_expr->key().is_null() ? param_name.first
+                                                        : scalar_expr->key().as_string();
                     type = find_type(param_name.first, initial);
                 } else {
+                    if (!scalar_expr->key().is_null()) {
+                        name = scalar_expr->key().as_string();
+                    }
                     type = find_type(name, initial);
                 }
 
-                /*if (scalar_expr->key().is_null()) {
-                    name = founded_name.first;
-                } else {
-                    name = scalar_expr->key().as_string();
-                }*/
                 return column_definition_t(name, type);
         }
     public:
@@ -130,7 +122,7 @@ namespace otterbrix {
             auto left = join.left->GetColumns();
             auto right = join.right->GetColumns();
             result.reserve(left.size() + right.size());
- 
+
             for (const auto& col : left) {
                 result.emplace_back(col.name(), col.type());
             }
@@ -140,11 +132,33 @@ namespace otterbrix {
             return result;
         }
 
+        vector<column_definition_t> operator()(const Relation::Limit& limit) {
+            return limit.resource->GetColumns();
+        }
+
         vector<column_definition_t> operator()(const Relation::Aggregate& aggregate) {
-            // define types
             auto initial = aggregate.resource->GetColumns();
             vector<column_definition_t> result;
             auto group = aggregate.group;
+            auto select = aggregate.select;
+
+            if (select && !group) {
+                const auto& exprs = select->expressions();
+                result.reserve(exprs.size());
+                for (const auto& expr : exprs) {
+                    switch (expr->group()) {
+                        case expression_group::scalar:
+                            result.push_back(process_scalar(
+                                boost::static_pointer_cast<scalar_expression_t>(expr),
+                                initial));
+                            break;
+                        default:
+                            result.emplace_back(error_str, components::types::logical_type::UNKNOWN);
+                    }
+                }
+                return result;
+            }
+
             if (!group) {
                 result.reserve(initial.size());
                 for (const auto& col : initial) {
@@ -168,7 +182,7 @@ namespace otterbrix {
                             initial));
                         break;
                     default:
-                        result.emplace_back(error_str, components::types::logical_type::UNKNOWN);                        
+                        result.emplace_back(error_str, components::types::logical_type::UNKNOWN);
                 }
             }
             return result;
@@ -186,11 +200,13 @@ namespace otterbrix {
     }
 
     
-    Relation::Relation(shared_ptr<Relation> resource, 
-            node_group_ptr group, 
-            node_match_ptr match, 
-            node_sort_ptr sort, string name) 
-            : relation(Aggregate(resource, group, match, sort, std::move(name))) {
+    Relation::Relation(shared_ptr<Relation> resource,
+            node_group_ptr group,
+            node_match_ptr match,
+            node_sort_ptr sort,
+            node_select_ptr select, string name,
+            node_limit_ptr limit)
+            : relation(Aggregate(resource, group, match, sort, select, std::move(name), limit)) {
     }
 
 
@@ -199,6 +215,10 @@ namespace otterbrix {
             logical_plan::join_type join_type) 
             : relation(Relation::Join(left, right, std::move(conditions), join_type)) {
 
+    }
+
+    Relation::Relation(shared_ptr<Relation> resource, int64_t limit_count)
+            : relation(Limit(resource, limit_count)) {
     }
 
     Relation::Relation(Relation&& other) noexcept = default;

@@ -146,7 +146,7 @@ namespace components::operators {
                 continue;
 
             const auto count = scan_data->size();
-            components::execution_context_t ix_ctx{ctx->session, ctx->txn, tbl.table_oid};
+            components::execution_context_t ix_ctx{ctx->session, ctx->txn, ctx->session_tz, tbl.table_oid};
             auto [_ir, irf] = actor_zeta::send(ctx->index_address,
                                                &services::index::manager_index_t::insert_rows,
                                                ix_ctx,

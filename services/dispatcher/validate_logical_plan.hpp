@@ -58,7 +58,8 @@ namespace services::dispatcher {
     // Validate plan node types against the plan-tree idx (populated by Pass 1).
     [[nodiscard]] core::error_t validate_types(std::pmr::memory_resource* resource,
                                                const impl::plan_resolve_index_t* idx,
-                                               components::logical_plan::node_t* node);
+                                               components::logical_plan::node_t* node,
+                                               core::date::timezone_offset_t session_tz);
 
     [[nodiscard]] core::result_wrapper_t<named_schema>
     validate_schema(std::pmr::memory_resource* resource,

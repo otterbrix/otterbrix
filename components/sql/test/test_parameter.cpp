@@ -183,8 +183,8 @@ TEST_CASE("components::sql::insert_bind") {
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
         REQUIRE(chunk.size() == 1);
-        REQUIRE(chunk.value(0, 0) == v(&resource, 123));
-        REQUIRE(chunk.value(1, 0) == v(&resource, 123));
+        REQUIRE(chunk.value(0, 0) == v(&resource, 123l));
+        REQUIRE(chunk.value(1, 0) == v(&resource, 123l));
     }
 
     SECTION("insert multi-bind") {
@@ -209,12 +209,86 @@ TEST_CASE("components::sql::insert_bind") {
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
         REQUIRE(chunk.size() == 2);
-        REQUIRE(chunk.value(0, 0) == v(&resource, 1));
+        REQUIRE(chunk.value(0, 0) == v(&resource, 1ul));
         REQUIRE(chunk.value(1, 0) == v(&resource, "Name1"));
-        REQUIRE(chunk.value(2, 0) == v(&resource, 10));
-        REQUIRE(chunk.value(0, 1) == v(&resource, 2));
+        REQUIRE(chunk.value(2, 0) == v(&resource, 10ul));
+        REQUIRE(chunk.value(0, 1) == v(&resource, 2ul));
         REQUIRE(chunk.value(1, 1) == v(&resource, "Name2"));
-        REQUIRE(chunk.value(2, 1) == v(&resource, 20));
+        REQUIRE(chunk.value(2, 1) == v(&resource, 20ul));
+    }
+}
+
+TEST_CASE("components::sql::limit_offset_bind") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    auto consumer_string = [](const core::result_wrapper_t<result_view>& result,
+                              std::string_view expected) {
+        REQUIRE(!result.has_error());
+        auto node = result.value().node;
+        if (node->type() == components::logical_plan::node_type::sequence_t) {
+            node = node->children().back();
+        }
+        REQUIRE(node->to_string() == expected);
+    };
+
+    SECTION("LIMIT $1 binds an integer") {
+        auto stmt =
+            linitial(raw_parser(&arena_resource, "SELECT * FROM TestDatabase.TestCollection ORDER BY id LIMIT $1;"));
+        auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
+        binder.bind(1, v(&resource, 5l));
+        consumer_string(binder.finalize(), R"_($aggregate: {$sort: {id: 1}, $limit: 5})_");
+    }
+
+    SECTION("LIMIT $1 OFFSET $2 binds both") {
+        auto stmt = linitial(raw_parser(&arena_resource,
+                                        "SELECT * FROM TestDatabase.TestCollection ORDER BY id LIMIT $1 OFFSET $2;"));
+        auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
+        binder.bind(1, v(&resource, 7l)).bind(2, v(&resource, 3l));
+        consumer_string(binder.finalize(),
+                        R"_($aggregate: {$sort: {id: 1}, $limit: 7, $offset: 3})_");
+    }
+
+    SECTION("LIMIT and WHERE share parameters") {
+        auto stmt = linitial(raw_parser(
+            &arena_resource,
+            "SELECT * FROM TestDatabase.TestCollection WHERE flag = $1 ORDER BY id LIMIT $2 OFFSET $3;"));
+        auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
+        binder.bind(1, v(&resource, true)).bind(2, v(&resource, 4l)).bind(3, v(&resource, 1l));
+        consumer_string(
+            binder.finalize(),
+            R"_($aggregate: {$match: {"flag": {$eq: #0}}, $sort: {id: 1}, $limit: 4, $offset: 1})_");
+    }
+
+    SECTION("LIMIT param rebinding picks up the new value") {
+        auto stmt =
+            linitial(raw_parser(&arena_resource, "SELECT * FROM TestDatabase.TestCollection ORDER BY id LIMIT $1;"));
+        auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
+        binder.bind(1, v(&resource, 2l));
+        consumer_string(binder.finalize(), R"_($aggregate: {$sort: {id: 1}, $limit: 2})_");
+
+        binder.bind(1, v(&resource, 11l));
+        consumer_string(binder.finalize(), R"_($aggregate: {$sort: {id: 1}, $limit: 11})_");
+    }
+
+    SECTION("non-integer LIMIT parameter is rejected at finalize") {
+        auto stmt =
+            linitial(raw_parser(&arena_resource, "SELECT * FROM TestDatabase.TestCollection ORDER BY id LIMIT $1;"));
+        auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
+        binder.bind(1, v(&resource, std::string("oops")));
+        auto result = binder.finalize();
+        REQUIRE(result.has_error());
+    }
+
+    SECTION("literal LIMIT with parameterized OFFSET") {
+        auto stmt = linitial(raw_parser(
+            &arena_resource,
+            "SELECT * FROM TestDatabase.TestCollection ORDER BY id LIMIT 5 OFFSET $1;"));
+        auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
+        binder.bind(1, v(&resource, 2l));
+        consumer_string(binder.finalize(),
+                        R"_($aggregate: {$sort: {id: 1}, $limit: 5, $offset: 2})_");
     }
 }
 

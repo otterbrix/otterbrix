@@ -41,7 +41,8 @@ namespace components::operators {
                                                                         expression_,
                                                                         types_left,
                                                                         types_right,
-                                                                        &pipeline_context->parameters)
+                                                                        &pipeline_context->parameters,
+                                                                        pipeline_context->session_tz)
                                          : predicates::create_all_true_predicate(output_->resource());
 
             size_t index = 0;
@@ -77,7 +78,8 @@ namespace components::operators {
                                                                         expression_,
                                                                         types,
                                                                         types,
-                                                                        &pipeline_context->parameters)
+                                                                        &pipeline_context->parameters,
+                                                                        pipeline_context->session_tz)
                                          : predicates::create_all_true_predicate(left_->output()->resource());
 
             size_t index = 0;
@@ -118,7 +120,7 @@ namespace components::operators {
 
         auto& ids = modified_->ids();
         const size_t modified_size = modified_->size();
-        components::execution_context_t exec_ctx{ctx->session, ctx->txn, table_oid_};
+        components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz, table_oid_};
 
         // When a resolver sibling supplied catalog metadata, build a
         // translation against the scan-output chunk to surface any

@@ -29,8 +29,6 @@ namespace otterbrix {
         m.def("from_object", &PyConnection::FromObject, 
                 "Create a relation object from the object in obj", py::arg("obj"));
         m.def("close", &PyConnection::Close, "Close the connection");
-        // m.def("fetchone", &PyConnection::FetchOne, 
-        //         "Fetch a single row from a result following execute");
 
         m.def("begin", &PyConnection::Begin, "Start a new transaction");
         m.def("commit", &PyConnection::Commit, 
@@ -52,13 +50,9 @@ namespace otterbrix {
     
         connection_module
             .def("__enter__", &PyConnection::Enter)
-            .def("__exit__", &PyConnection::Exit, 
+            .def("__exit__", &PyConnection::Exit,
                     py::arg("exc_type"), py::arg("exc"), py::arg("traceback"))
             .def("__del__", &PyConnection::Close);
-            //.def("test", &PyConnection::test, py::arg("test"));
         InitializeConnectionMethods(connection_module);
-
-        //PyDataTime_IMPORT;
-        //PyConnection::ImportCache();
     }
 } // namespace otterbrix

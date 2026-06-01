@@ -35,6 +35,7 @@ namespace components::pipeline {
         actor_zeta::address_t wal_address{actor_zeta::address_t::empty_address()};
 
         table::transaction_data txn{0, 0};
+        core::date::timezone_offset_t session_tz{};
         // VACUUM/MVCC GC threshold: snapshots older than this start_time are
         // safe to drop. Populated by the executor from txn_manager_t before
         // each operator invocation; consumed by operator_vacuum_t (and any

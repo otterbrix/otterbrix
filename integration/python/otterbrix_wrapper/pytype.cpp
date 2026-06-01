@@ -7,11 +7,101 @@
 #include <connection_environment/connection_environment.hpp>
 #include <core/types/vector.hpp>
 
-#include <magic_enum.hpp>
-
 using namespace components::types;
 
 namespace otterbrix {
+
+    namespace {
+        std::string logical_type_name(logical_type type) {
+            switch (type) {
+                case logical_type::NA:
+                    return "NA";
+                case logical_type::ANY:
+                    return "ANY";
+                case logical_type::USER:
+                    return "USER";
+                case logical_type::BOOLEAN:
+                    return "BOOLEAN";
+                case logical_type::TINYINT:
+                    return "TINYINT";
+                case logical_type::SMALLINT:
+                    return "SMALLINT";
+                case logical_type::INTEGER:
+                    return "INTEGER";
+                case logical_type::BIGINT:
+                    return "BIGINT";
+                case logical_type::HUGEINT:
+                    return "HUGEINT";
+                case logical_type::DATE:
+                    return "DATE";
+                case logical_type::TIME:
+                    return "TIME";
+                case logical_type::TIME_TZ:
+                    return "TIME_TZ";
+                case logical_type::TIMESTAMP:
+                    return "TIMESTAMP";
+                case logical_type::TIMESTAMP_TZ:
+                    return "TIMESTAMP_TZ";
+                case logical_type::DECIMAL:
+                    return "DECIMAL";
+                case logical_type::FLOAT:
+                    return "FLOAT";
+                case logical_type::DOUBLE:
+                    return "DOUBLE";
+                case logical_type::BLOB:
+                    return "BLOB";
+                case logical_type::INTERVAL:
+                    return "INTERVAL";
+                case logical_type::UTINYINT:
+                    return "UTINYINT";
+                case logical_type::USMALLINT:
+                    return "USMALLINT";
+                case logical_type::UINTEGER:
+                    return "UINTEGER";
+                case logical_type::UBIGINT:
+                    return "UBIGINT";
+                case logical_type::UHUGEINT:
+                    return "UHUGEINT";
+                case logical_type::BIT:
+                    return "BIT";
+                case logical_type::STRING_LITERAL:
+                    return "STRING_LITERAL";
+                case logical_type::INTEGER_LITERAL:
+                    return "INTEGER_LITERAL";
+                case logical_type::POINTER:
+                    return "POINTER";
+                case logical_type::VALIDITY:
+                    return "VALIDITY";
+                case logical_type::UUID:
+                    return "UUID";
+                case logical_type::STRUCT:
+                    return "STRUCT";
+                case logical_type::LIST:
+                    return "LIST";
+                case logical_type::MAP:
+                    return "MAP";
+                case logical_type::TABLE:
+                    return "TABLE";
+                case logical_type::ENUM:
+                    return "ENUM";
+                case logical_type::FUNCTION:
+                    return "FUNCTION";
+                case logical_type::LAMBDA:
+                    return "LAMBDA";
+                case logical_type::UNION:
+                    return "UNION";
+                case logical_type::VARIANT:
+                    return "VARIANT";
+                case logical_type::ARRAY:
+                    return "ARRAY";
+                case logical_type::UNKNOWN:
+                    return "UNKNOWN";
+                case logical_type::INVALID:
+                    return "INVALID";
+            }
+            return "UNKNOWN";
+        }
+    } // namespace
 
     // NOLINTNEXTLINE(readability-identifier-naming)
     bool PyGenericAlias::check_(const py::handle &object) {
@@ -53,7 +143,6 @@ namespace otterbrix {
     
     shared_ptr<OtterBrixPyType> OtterBrixPyType::GetAttribute(const string &name) const {
     	if (type.type() == logical_type::STRUCT || type.type() == logical_type::UNION) {
-    		//auto &children = StructType::GetChildTypes(type);
             const auto& children = type.child_types();
     		for (idx_t i = 0; i < children.size(); i++) {
     			const auto &child = children[i];
@@ -66,13 +155,13 @@ namespace otterbrix {
     		return make_shared_ptr<OtterBrixPyType>(type.child_type());
     	}
     	if (type.type() == logical_type::MAP) {
-            auto* extention = static_cast<map_logical_type_extention*>(type.extention());
+            auto* extension = static_cast<map_logical_type_extension*>(type.extension());
     		auto is_key = string_utils::CIEquals(name, "key");
     		auto is_value = string_utils::CIEquals(name, "value");
     		if (is_key) {
-    			return make_shared_ptr<OtterBrixPyType>(extention->key());
+    			return make_shared_ptr<OtterBrixPyType>(extension->key());
     		} else if (is_value) {
-    			return make_shared_ptr<OtterBrixPyType>(extention->value());
+    			return make_shared_ptr<OtterBrixPyType>(extension->value());
     		} else {
     			throw py::attribute_error("Tried to get a child from a map by the name of " + name + 
                     ", but this type only has 'key' and 'value' children");
@@ -127,10 +216,10 @@ namespace otterbrix {
             {"UUID", logical_type::UUID},
             {"BLOB", logical_type::BLOB},
             {"BOOLEAN", logical_type::BOOLEAN},
-            {"TIMESTAMP", logical_type::TIMESTAMP_US},
-            {"TIMESTAMP_S", logical_type::TIMESTAMP_SEC},
-            {"TIMESTAMP_MS", logical_type::TIMESTAMP_MS},
-            {"TIMESTAMP_NS", logical_type::TIMESTAMP_NS},
+            {"TIMESTAMP", logical_type::TIMESTAMP},
+            {"TIMESTAMP_S", logical_type::TIMESTAMP},
+            {"TIMESTAMP_MS", logical_type::TIMESTAMP},
+            {"TIMESTAMP_NS", logical_type::TIMESTAMP},
             {"DOUBLE", logical_type::DOUBLE},
             {"FLOAT", logical_type::FLOAT},
             {"TINYINT", logical_type::TINYINT},
@@ -179,7 +268,6 @@ namespace otterbrix {
     	} else if (type_str == "uint64") {
     		result = logical_type::UBIGINT;
     	} else if (type_str == "float16") {
-    		// FIXME: should we even support this?
     		result = logical_type::FLOAT;
     	} else if (type_str == "float32") {
     		result = logical_type::FLOAT;
@@ -256,8 +344,7 @@ namespace otterbrix {
             members.back().set_alias(name);
     	}
     
-    	//return LogicalType::UNION(std::move(members));
-        throw std::runtime_error("Could\'t transrom object to OtterBrix Union. "
+    	throw std::runtime_error("Could\'t transrom object to OtterBrix Union. "
                 "Has no complex_logical_type::create_union");
     }
     
@@ -265,7 +352,7 @@ namespace otterbrix {
     	py::tuple args = obj.attr("__args__");
     
     	// Optional inserts NoneType into the Union
-    	// all types are nullable in DuckDB so we just filter the Nones
+    	// all types are nullable so we just filter the Nones
     	auto filtered_args = FilterNones(args);
     	if (filtered_args.size() == 1) {
     		// If only a single type is left, dont construct a UNION
@@ -301,9 +388,9 @@ namespace otterbrix {
     
     static complex_logical_type FromDictionary(const py::object &obj) {
     	auto dict = py::reinterpret_steal<py::dict>(obj);
-    	vector<complex_logical_type> children;
+    	std::pmr::vector<complex_logical_type> children(std::pmr::get_default_resource());
     	if (dict.size() == 0) {
-    		throw std::runtime_error("Could not convert empty dictionary to a duckdb STRUCT type");
+    		throw std::runtime_error("Could not convert empty dictionary to a STRUCT type");
     	}
     	children.reserve(dict.size());
     	for (auto &item : dict) {
@@ -314,7 +401,7 @@ namespace otterbrix {
     		children.push_back(std::move(type));
             children.back().set_alias(name);
     	}
-    	return complex_logical_type::create_struct(std::move(children));
+    	return complex_logical_type::create_struct("struct", std::move(children));
     }
     
     static complex_logical_type FromObject(const py::object &object) {
@@ -348,22 +435,12 @@ namespace otterbrix {
     
     	type_module.def("__repr__", &OtterBrixPyType::ToString, "Stringified representation of the type object");
     	type_module.def("__eq__", &OtterBrixPyType::Equals, "Compare two types for equality", py::arg("other"));
-    	//type_module.def("__eq__", &OtterBrixPyType::EqualsString, "Compare two types for equality", py::arg("other"));
     	type_module.def_property_readonly("id", &OtterBrixPyType::GetId);
     	type_module.def_property_readonly("children", &OtterBrixPyType::Children);
-    	type_module.def(py::init<>([](const string &type_str) //shared_ptr<PyConnection> connection = nullptr) {
-        {	
-            auto ltype = FromString(type_str);//, std::move(connection));
+    	type_module.def(py::init<>([](const string &type_str) {
+            auto ltype = FromString(type_str);
     		return make_shared_ptr<OtterBrixPyType>(ltype);
     	}));
-    	/*type_module.def(py::init<>([](const PyGenericAlias &obj) {
-    		auto ltype = FromGenericAlias(obj);
-    		return make_shared_ptr<OtterBrixPyType>(ltype);
-    	}));
-    	type_module.def(py::init<>([](const PyUnionType &obj) {
-    		auto ltype = FromUnionType(obj);
-    		return make_shared_ptr<OtterBrixPyType>(ltype);
-    	}));*/
     	type_module.def(py::init<>([](const py::object &obj) {
     		auto ltype = FromObject(obj);
     		return make_shared_ptr<OtterBrixPyType>(ltype);
@@ -373,14 +450,10 @@ namespace otterbrix {
     
     	py::implicitly_convertible<py::object, OtterBrixPyType>();
     	py::implicitly_convertible<py::str, OtterBrixPyType>();
-    	// py::implicitly_convertible<PyGenericAlias, OtterBrixPyType>();
-    	// py::implicitly_convertible<PyUnionType, OtterBrixPyType>();
     }
     
     string OtterBrixPyType::ToString() const {
-		auto name = magic_enum::enum_name(type.type());
-    	return string(name);
-        //std::runtime_error("OtterBrix doesn\'t implement ToString method");
+        return logical_type_name(type.type());
     }
     
     py::list OtterBrixPyType::Children() const {
@@ -406,19 +479,11 @@ namespace otterbrix {
     	}
     	if (id == logical_type::ARRAY) {
     		children.append(py::make_tuple("child", make_shared_ptr<OtterBrixPyType>(type.child_type())));
-			auto* extention = static_cast<array_logical_type_extention*>(type.extention());
-    		children.append(py::make_tuple("size", extention->size()));
+			auto* extension = static_cast<array_logical_type_extension*>(type.extension());
+    		children.append(py::make_tuple("size", extension->size()));
     		return children;
     	}
     	if (id == logical_type::ENUM) {
-    		/*auto &values_insert_order = EnumType::GetValuesInsertOrder(type);
-    		auto strings = FlatVector::GetData<string_t>(values_insert_order);
-    		py::list strings_list;
-    		for (size_t i = 0; i < EnumType::GetSize(type); i++) {
-    			strings_list.append(py::str(strings[i].GetString()));
-    		}
-    		children.append(py::make_tuple("values", strings_list));
-    		return children;*/
             std::runtime_error("OtterBrix doesn\'t implement OtterBrix Enum methods");
     	}
     	if (id == logical_type::STRUCT || id == logical_type::UNION) {
@@ -431,37 +496,32 @@ namespace otterbrix {
     		return children;
     	}
     	if (id == logical_type::MAP) {
-            auto* extention = static_cast<map_logical_type_extention*>(type.extention());
-    		children.append(py::make_tuple("key", make_shared_ptr<OtterBrixPyType>(extention->key())));
-    		children.append(py::make_tuple("value", make_shared_ptr<OtterBrixPyType>(extention->value())));
+            auto* extension = static_cast<map_logical_type_extension*>(type.extension());
+    		children.append(py::make_tuple("key", make_shared_ptr<OtterBrixPyType>(extension->key())));
+    		children.append(py::make_tuple("value", make_shared_ptr<OtterBrixPyType>(extension->value())));
     		return children;
     	}
     	if (id == logical_type::DECIMAL) {
-            auto* extention = static_cast<decimal_logical_type_extention*>(type.extention());
-    		children.append(py::make_tuple("precision", extention->width()));
-    		children.append(py::make_tuple("scale", extention->scale()));
+            auto* extension = static_cast<decimal_logical_type_extension*>(type.extension());
+    		children.append(py::make_tuple("precision", extension->width()));
+    		children.append(py::make_tuple("scale", extension->scale()));
     		return children;
     	}
     	throw std::runtime_error("Children is not implemented for this type");
     }
     
     string OtterBrixPyType::GetId() const {
-    	//return string_utils::Lower(LogicalTypeIdToString(type.type()));
         if (type.type() == logical_type::NA) {
             return "null";
         }
-        if (type.type() == logical_type::TIMESTAMP_US) {
+        if (type.type() == logical_type::TIMESTAMP) {
             return "timestamp";
-        }
-		if (type.type() == logical_type::TIMESTAMP_SEC) {
-            return "timestamp_s";
         }
 		if (type.type() == logical_type::STRING_LITERAL) {
             return "varchar";
         }
-		auto name = magic_enum::enum_name(type.type());
-    	const string cv(name);
-		return string_utils::Lower(cv);
+        auto name = logical_type_name(type.type());
+        return string_utils::Lower(name);
     }
     
     const complex_logical_type &OtterBrixPyType::Type() const {

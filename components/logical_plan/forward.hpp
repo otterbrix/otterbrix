@@ -21,6 +21,11 @@ namespace components::logical_plan {
         function_t,
         insert_t,
         join_t,
+        // Equi-join variant produced by the optimizer (rewrite_hash_joins) from a
+        // join_t whose ON condition is a single eq(left.key, right.key). Carries the
+        // matched column indices so the planner lowers it straight to
+        // operator_hash_join_t — the equi-detection no longer lives in the planner.
+        hash_join_t,
         intersect_t,
         limit_t,
         match_t,
@@ -103,6 +108,7 @@ namespace components::logical_plan {
         // manager_disk_t::allocate_oids_batch — DDL planner reads the
         // resulting batch via node_allocate_oids_t::oids().
         allocate_oids_t,
+        set_timezone_t,
         unused
     };
 

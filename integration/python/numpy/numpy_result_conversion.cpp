@@ -35,7 +35,7 @@ void NumpyResultConversion::Append(components::vector::data_chunk_t &chunk) {
 		Resize(capacity * 2);
 	}
 	auto chunk_types = chunk.types();
-	auto source_offset = 0;
+	idx_t source_offset = 0;
 	auto source_size = chunk.size();
 	auto to_append = chunk.size();
 	for (idx_t col_idx = 0; col_idx < owned_data.size(); col_idx++) {

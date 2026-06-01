@@ -25,7 +25,8 @@ from .functions import _to_column_expr
 from .types import NumericType
 from ._typing import ColumnOrName
 
-from otterbrix import CountExpression
+from otterbrix import CountExpression, ColumnExpression
+from otterbrix.experimental.spark.context import SparkContext
 
 if TYPE_CHECKING:
     from ._typing import LiteralType
@@ -42,7 +43,7 @@ def _api_internal(self: "GroupedData", name: str, *cols: str) -> DataFrame:
         group_expr=group_by,  # groups
         projected_columns=projections,  # projections
     )
-    return DataFrame(jdf, self.session)
+    return DataFrame(jdf, self.session, optimize=self._optimize)
 
 def df_varargs_api(f: Callable[..., DataFrame]) -> Callable[..., DataFrame]:
     def _api(self: "GroupedData", *cols: str) -> DataFrame:
@@ -58,6 +59,7 @@ class Grouping:
     def __init__(self, *cols: "ColumnOrName", **kwargs):
         self._type = ""
         self._cols = [_to_column_expr(x) for x in cols]
+        self._key_names = [c if isinstance(c, str) else str(c) for c in cols]
         if 'special' in kwargs:
             special = kwargs['special']
             accepted_special = ["cube", "rollup"]
@@ -74,6 +76,10 @@ class Grouping:
             return self._type + '(' + columns + ')'
         return columns
 
+    def copy(self):
+        import copy
+        return copy.copy(self)
+
 
 class GroupedData:
     """
@@ -82,11 +88,11 @@ class GroupedData:
 
     """
 
-    def __init__(self, grouping: Grouping, df: DataFrame):
+    def __init__(self, grouping: Grouping, df: DataFrame, optimize: bool = False):
         self._grouping = grouping
         self._df = df
         self.session: SparkSession = df.session
-
+        self._optimize = optimize
     def __repr__(self) -> str:
         return str(self._df)
 
@@ -117,9 +123,9 @@ class GroupedData:
         |  Bob|    2|
         +-----+-----+
         """
-        #return _api_internal(self, "count").withColumnRenamed('count_star()', 'count')
-        self._grouping._cols.append(CountExpression(self.session.sparkContext.connection))
-        return DataFrame(self._df.relation.group(*self._grouping._cols), self.session)
+        sc = SparkContext._active_spark_context
+        count_expr = CountExpression(sc)
+        return self.agg(Column(count_expr))
 
     def mean(self, *cols: str) -> DataFrame:
         """Computes average values for each numeric columns for each group.
@@ -131,15 +137,12 @@ class GroupedData:
         cols : str
             column names. Non-numeric columns are ignored.
         """
-        if len(self._grouping._cols) == 0:
-            self._grouping._cols = [
-                    _to_column_expr(field.name).avg() 
-                    for field in self._df.schema 
-                    if isinstance(field.dataType, NumericType)
-            ]
-        expr_cols = [_to_column_expr(x).avg() for x in cols]
-        self._grouping._cols.extend(expr_cols)
-        return DataFrame(self._df.relation.group(*self._grouping._cols), self.session)
+        agg_cols = list(cols)
+        if not agg_cols:
+            agg_cols = [field.name for field in self._df.schema if isinstance(field.dataType, NumericType)]
+        from .functions import avg as avg_func
+        agg_columns = [avg_func(c) for c in agg_cols]
+        return self.agg(*agg_columns)
 
     def avg(self, *cols: str) -> DataFrame:
         """Computes average values for each numeric columns for each group.
@@ -224,15 +227,12 @@ class GroupedData:
         |      10|        140|
         +--------+-----------+
         """
-        if len(self._grouping._cols) == 0:
-            self._grouping._cols = [
-                    _to_column_expr(field.name).max() 
-                    for field in self._df.schema 
-                    if isinstance(field.dataType, NumericType)
-            ]
-        expr_cols = [_to_column_expr(x).max() for x in cols]
-        self._grouping._cols.extend(expr_cols)
-        return DataFrame(self._df.relation.group(*self._grouping._cols), self.session)
+        agg_cols = list(cols)
+        if not agg_cols:
+            agg_cols = [field.name for field in self._df.schema if isinstance(field.dataType, NumericType)]
+        from .functions import max as max_func
+        agg_columns = [max_func(c) for c in agg_cols]
+        return self.agg(*agg_columns)
 
     def min(self, *cols: str) -> DataFrame:
         """Computes the min value for each numeric column for each group.
@@ -276,15 +276,12 @@ class GroupedData:
         |       2|         80|
         +--------+-----------+
         """
-        if len(self._grouping._cols) == 0:
-            self._grouping._cols = [
-                    _to_column_expr(field.name).min() 
-                    for field in self._df.schema 
-                    if isinstance(field.dataType, NumericType)
-            ]
-        expr_cols = [_to_column_expr(x).min() for x in cols]
-        self._grouping._cols.extend(expr_cols)
-        return DataFrame(self._df.relation.group(*self._grouping._cols), self.session)
+        agg_cols = list(cols)
+        if not agg_cols:
+            agg_cols = [field.name for field in self._df.schema if isinstance(field.dataType, NumericType)]
+        from .functions import min as min_func
+        agg_columns = [min_func(c) for c in agg_cols]
+        return self.agg(*agg_columns)
 
     def sum(self, *cols: str) -> DataFrame:
         """Computes the sum for each numeric columns for each group.
@@ -328,15 +325,12 @@ class GroupedData:
         |      20|        440|
         +--------+-----------+
         """
-        if len(self._grouping._cols) == 0:
-            self._grouping._cols = [
-                    _to_column_expr(field.name).sum() 
-                    for field in self._df.schema 
-                    if isinstance(field.dataType, NumericType)
-            ]
-        expr_cols = [_to_column_expr(x).sum() for x in cols]
-        self._grouping._cols.extend(expr_cols)
-        return DataFrame(self._df.relation.group(*self._grouping._cols), self.session)
+        agg_cols = list(cols)
+        if not agg_cols:
+            agg_cols = [field.name for field in self._df.schema if isinstance(field.dataType, NumericType)]
+        from .functions import sum as sum_func
+        agg_columns = [sum_func(c) for c in agg_cols]
+        return self.agg(*agg_columns)
 
     @overload
     def agg(self, *exprs: Column) -> DataFrame:
@@ -440,10 +434,15 @@ class GroupedData:
         if len(exprs) == 1 and isinstance(exprs[0], dict):
             raise ContributionsAcceptedError
         else:
-            # Columns
             assert all(isinstance(c, Column) for c in exprs), "all exprs should be Column"
-            expressions = list(self._grouping._cols)
-            expressions.extend([x.expr for x in exprs])
-            rel = self._df.relation.group(*expressions)
-        return DataFrame(rel, self.session)
+            group_keys = self._grouping._key_names
+
+            sc = SparkContext._active_spark_context
+            all_exprs = []
+            for key in group_keys:
+                all_exprs.append(ColumnExpression(key, sc))
+            for c in exprs:
+                all_exprs.append(c.expr)
+            new_relation = self._df.relation.group(*all_exprs)
+        return DataFrame(new_relation, self._df.session, optimize=self._df._optimize)
 

@@ -1,0 +1,52 @@
+name: rust integration
+
+on:
+  push:
+    paths-ignore:
+      - '**.md'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+
+jobs:
+  rust:
+    name: Build & test Rust integration
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            build-essential ninja-build python3-pip \
+            curl gnupg apt-transport-https flex bison \
+            clang libclang-dev pkg-config
+
+      - name: Install conan
+        run: |
+          pip install conan==2.20.0
+          conan profile detect --force
+          conan remote add otterbrix http://conan.otterbrix.com
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt,clippy
+
+      - name: Build Otterbrix C++ side (libotterbrix.so)
+        env:
+          CC: gcc
+        run: |
+          mkdir -p build
+          cd build
+          cp ../conanfile.py .
+          conan install . --build missing -s build_type=Release -s compiler.cppstd=20
+          cmake .. -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_toolchain.cmake \
+            -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON
+          cmake --build . --target c_otterbrix -- -j "$(nproc)"
+
+      - name: Run Rust checks (fmt, clippy, doc, tests)
+        run: ./scripts/CI/run-rust-checks.sh

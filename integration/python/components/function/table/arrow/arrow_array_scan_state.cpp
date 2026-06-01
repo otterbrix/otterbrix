@@ -1,6 +1,4 @@
-#include "duckdb/function/table/arrow.hpp"
-#include "duckdb/common/printer.hpp"
-#include "duckdb/common/types/arrow_aux_data.hpp"
+#include <components/function/table/arrow.hpp>
 
 namespace components::function::table {
 

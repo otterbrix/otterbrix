@@ -5,6 +5,7 @@
 #include <components/logical_plan/param_storage.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/indexing_vector.hpp>
+#include <core/date/date_types.hpp>
 
 namespace components::operators::predicates {
 
@@ -55,7 +56,8 @@ namespace components::operators::predicates {
                                    const expressions::expression_ptr& expr,
                                    const std::pmr::vector<types::complex_logical_type>& types_left,
                                    const std::pmr::vector<types::complex_logical_type>& types_right,
-                                   const logical_plan::storage_parameters* parameters);
+                                   const logical_plan::storage_parameters* parameters,
+                                   core::date::timezone_offset_t session_tz);
 
     predicate_ptr create_all_true_predicate(std::pmr::memory_resource* resource);
 

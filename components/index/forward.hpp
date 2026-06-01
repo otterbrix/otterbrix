@@ -17,4 +17,9 @@ namespace components::index {
     using query_t = expressions::compare_expression_ptr;
     using result_set_t = cursor::cursor_t;
 
+    struct index_description_t {
+        keys_base_storage_t keys;
+        index_type type{index_type::no_valid};
+    };
+
 } // namespace components::index

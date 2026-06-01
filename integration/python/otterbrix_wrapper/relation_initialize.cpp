@@ -43,6 +43,9 @@ namespace otterbrix {
                     py::arg("other_rel"), py::arg("condition") = py::none(), py::arg("how") = "inner")
             .def("cross", &PyRelation::Cross, "Create cross/cartesian product of two relational objects", py::arg("other_rel"));
 
+        relation_module.def("limit", &PyRelation::Limit, "Limit the number of rows returned", py::arg("count"));
+        relation_module.def_readwrite("optimize", &PyRelation::optimize_);
+
     }
     
 } // namespace otterbrix

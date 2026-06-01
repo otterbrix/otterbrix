@@ -39,16 +39,15 @@ namespace services::planner::impl {
             writes.emplace_back(w.table_oid, std::move(w.row));
         }
 
-        return boost::intrusive_ptr(
-            new components::operators::operator_create_matview_t(context.resource,
-                                                                 context.log.clone(),
-                                                                 cm->matview_oid(),
-                                                                 cm->namespace_oid(),
-                                                                 std::vector<components::table::column_definition_t>(
-                                                                     cm->inferred_columns()),
-                                                                 /*is_disk_storage=*/true,
-                                                                 std::move(writes),
-                                                                 std::move(body_op)));
+        return boost::intrusive_ptr(new components::operators::operator_create_matview_t(
+            context.resource,
+            context.log.clone(),
+            cm->matview_oid(),
+            cm->namespace_oid(),
+            std::vector<components::table::column_definition_t>(cm->inferred_columns()),
+            /*is_disk_storage=*/true,
+            std::move(writes),
+            std::move(body_op)));
     }
 
 } // namespace services::planner::impl

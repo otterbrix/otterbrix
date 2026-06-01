@@ -27,7 +27,6 @@
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/logical_plan/node_create_macro.hpp>
 #include <components/logical_plan/node_create_matview.hpp>
-#include <components/logical_plan/node_refresh_matview.hpp>
 #include <components/logical_plan/node_create_sequence.hpp>
 #include <components/logical_plan/node_create_type.hpp>
 #include <components/logical_plan/node_create_view.hpp>
@@ -45,8 +44,10 @@
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_primitive_write.hpp>
+#include <components/logical_plan/node_refresh_matview.hpp>
 #include <components/logical_plan/node_register_udf.hpp>
 #include <components/logical_plan/node_sequence.hpp>
+#include <components/logical_plan/node_set_timezone.hpp>
 #include <components/logical_plan/node_unregister_udf.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/physical_plan/operators/operator_abort_transaction.hpp>
@@ -55,7 +56,6 @@
 #include <components/physical_plan/operators/operator_register_udf.hpp>
 #include <components/physical_plan/operators/operator_unregister_udf.hpp>
 #include <components/physical_plan_generator/impl/create_plan_register_udf.hpp>
-
 #include <core/executor.hpp>
 #include <core/tracy/tracy.hpp>
 
@@ -69,6 +69,7 @@
 #include "enrich_logical_plan.hpp"
 
 #include <services/collection/context_storage.hpp>
+#include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 #include <services/wal/wal_sync_mode.hpp>
@@ -261,39 +262,35 @@ namespace services::dispatcher {
         // Parse view body SQL and transform it into a fresh logical plan.
         // The transformer is instantiated per-call (its mutable state lives on
         // the instance — re-entrant when allocated fresh per call).
-        view_expansion_result_t
-        expand_view_body(std::pmr::memory_resource* resource, const std::string& view_sql) {
+        view_expansion_result_t expand_view_body(std::pmr::memory_resource* resource, const std::string& view_sql) {
             view_expansion_result_t out;
             std::pmr::monotonic_buffer_resource parser_arena(resource);
             void* parse_cell = nullptr;
             try {
                 auto* parsed = raw_parser(&parser_arena, view_sql.c_str());
                 if (!parsed) {
-                    out.error = make_cursor(
-                        resource,
-                        core::error_t(core::error_code_t::sql_parse_error,
-                                      std::pmr::string{"view body re-parse returned null", resource}));
+                    out.error =
+                        make_cursor(resource,
+                                    core::error_t(core::error_code_t::sql_parse_error,
+                                                  std::pmr::string{"view body re-parse returned null", resource}));
                     return out;
                 }
                 parse_cell = linitial(parsed);
             } catch (const std::exception& ex) {
                 out.error = make_cursor(
                     resource,
-                    core::error_t(core::error_code_t::sql_parse_error,
-                                  std::pmr::string{ex.what(), resource}));
+                    core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{ex.what(), resource}));
                 return out;
             }
             if (!parse_cell) {
-                out.error = make_cursor(
-                    resource,
-                    core::error_t(core::error_code_t::sql_parse_error,
-                                  std::pmr::string{"empty view body parse", resource}));
+                out.error = make_cursor(resource,
+                                        core::error_t(core::error_code_t::sql_parse_error,
+                                                      std::pmr::string{"empty view body parse", resource}));
                 return out;
             }
             components::sql::transform::transformer local_transformer(resource, view_sql.c_str());
-            auto tr = local_transformer
-                          .transform(components::sql::transform::pg_cell_to_node_cast(parse_cell))
-                          .finalize();
+            auto tr =
+                local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_cell)).finalize();
             if (tr.has_error()) {
                 out.error = make_cursor(resource, tr.error());
                 return out;
@@ -320,13 +317,15 @@ namespace services::dispatcher {
                 return out;
             }
             for (auto& c : root->children()) {
-                if (!c) continue;
+                if (!c)
+                    continue;
                 const auto t = c->type();
                 const bool is_resolve =
                     t == node_type::catalog_resolve_namespace_t || t == node_type::catalog_resolve_table_t ||
                     t == node_type::catalog_resolve_type_t || t == node_type::catalog_resolve_function_t ||
                     t == node_type::catalog_resolve_constraint_t;
-                if (!is_resolve) continue;
+                if (!is_resolve)
+                    continue;
                 if (t == node_type::catalog_resolve_table_t) {
                     auto* rt = static_cast<node_catalog_resolve_table_t*>(c.get());
                     if (rt->resolved_metadata().has_value()) {
@@ -485,6 +484,7 @@ namespace services::dispatcher {
             drop_target_collection = qualified_name_t{names.first, names.second};
         }
         auto logic_plan = std::move(plan);
+        context_storage_t collections_context_storage(resource(), log_.clone(), session_tz(session));
         // Optimizer: constant folding, etc.
         logic_plan = components::planner::optimize(resource(), logic_plan, params.get());
 
@@ -689,7 +689,7 @@ namespace services::dispatcher {
                 }
                 auto pass1_params = make_parameter_node(resource());
                 auto pass1_result =
-                    co_await execute_plan_impl(session, pass1_root, pass1_params->take_parameters(), pass1_txn);
+                    co_await execute_plan_impl(session, pass1_root, pass1_params->take_parameters(), pass1_txn, &collections_context_storage);
                 if (pass1_result.cursor->is_error()) {
                     trace(log_,
                           "manager_dispatcher_t::execute_plan: Pass 1 "
@@ -700,7 +700,7 @@ namespace services::dispatcher {
                 // Propagate the established txn into ctx so validate /
                 // enrich reads (which still take `ctx`) see the same MVCC
                 // snapshot the resolves saw.
-                ctx = components::execution_context_t{session, pass1_txn, ctx.table_oid};
+                ctx = components::execution_context_t{session, pass1_txn, ctx.session_tz, ctx.table_oid};
                 // Note: resolves stay in plan tree so validate/enrich's
                 // gather walks find them. create_plan_sequence skips
                 // catalog_resolve_*_t children when building the executor's
@@ -760,7 +760,7 @@ namespace services::dispatcher {
                     }
                     auto pass2_params = make_parameter_node(resource());
                     auto pass2_result =
-                        co_await execute_plan_impl(session, pass2_root, pass2_params->take_parameters(), ctx.txn);
+                        co_await execute_plan_impl(session, pass2_root, pass2_params->take_parameters(), ctx.txn, &collections_context_storage);
                     if (pass2_result.cursor->is_error()) {
                         trace(log_,
                               "manager_dispatcher_t::execute_plan: view sub-plan Pass 1 "
@@ -1045,6 +1045,34 @@ namespace services::dispatcher {
                 }
                 break;
             }
+            case node_type::set_timezone_t: {
+                const auto& tz_node = reinterpret_cast<node_set_timezone_ptr&>(logic_plan);
+                auto tz_err = default_tz_cat_.set_timezone(resource(), tz_node->timezone_name());
+                if (!tz_err.contains_error() && disk_address_ != actor_zeta::address_t::empty_address()) {
+                    const auto* settings_def = components::catalog::find_system_table("pg_settings");
+                    if (settings_def) {
+                        std::pmr::vector<components::types::complex_logical_type> types(resource());
+                        for (const auto& col : settings_def->columns) {
+                            types.push_back(col.type());
+                        }
+                        components::vector::data_chunk_t row(resource(), types, 1);
+                        row.set_cardinality(1);
+                        row.set_value(0, 0, components::types::logical_value_t(resource(), std::string{"TimeZone"}));
+                        row.set_value(
+                            1,
+                            0,
+                            components::types::logical_value_t(resource(), std::string{tz_node->timezone_name()}));
+                        components::execution_context_t exec_ctx{session, {0, 0}, session_tz(session)};
+                        auto [_u, uf] = actor_zeta::send(disk_address_,
+                                                         &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                         exec_ctx,
+                                                         components::catalog::well_known_oid::pg_settings_table,
+                                                         std::move(row));
+                        co_await std::move(uf);
+                    }
+                }
+                co_return make_cursor(resource(), std::move(tz_err));
+            }
             case node_type::checkpoint_t:
             case node_type::vacuum_t:
             case node_type::create_sequence_t:
@@ -1109,7 +1137,7 @@ namespace services::dispatcher {
                 break;
             }
             default: {
-                auto vt_err = validate_types(resource(), &dispatcher_idx, logic_plan.get());
+                auto vt_err = validate_types(resource(), &dispatcher_idx, logic_plan.get(), session_tz(session));
                 if (vt_err.contains_error()) {
                     error = make_cursor(resource(), vt_err);
                 } else {
@@ -1127,10 +1155,15 @@ namespace services::dispatcher {
             co_return std::move(error);
         }
 
+        // Late logical optimization. Runs after validate_schema has stamped key
+        // side()/path(), so schema-aware rewrites are safe here. Currently rewrites
+        // eligible nested-loop joins into hash joins (node_join_t -> node_hash_join_t).
+        logic_plan = components::planner::post_validate_optimize(resource(), std::move(logic_plan));
+
         // Enrich DML node fields with catalog metadata (NOT NULL, DEFAULT, CHECK exprs).
         // enrich reads exclusively from the plan-tree idx.
         {
-            auto ef = enrich_plan(logic_plan, disk_address_, ctx, resource());
+            auto ef = enrich_plan(resource(), logic_plan, disk_address_, ctx, index_address_, &collections_context_storage);
             co_await std::move(ef);
         }
         // Logical plan rewrite: insert constraint wrapper nodes driven by enriched fields.
@@ -1237,7 +1270,7 @@ namespace services::dispatcher {
             logic_plan = ddl_planner.create_plan(resource(), std::move(logic_plan), std::move(oid_batch));
         }
 
-        // CREATE DATABASE → planner rewrite в sequence_t(primitive_write на pg_namespace).
+        // CREATE DATABASE → planner rewrite to sequence_t(primitive_write on pg_namespace).
         if (original_type == node_type::create_database_t && disk_address_ != actor_zeta::address_t::empty_address()) {
             catalog::oid_batch_t oid_batch;
             oid_batch.oids = co_await allocate_oids_via_pipeline(session, std::size_t{1});
@@ -1278,15 +1311,14 @@ namespace services::dispatcher {
             logic_plan = ddl_planner.create_plan(resource(), std::move(logic_plan), std::move(oid_batch));
         }
 
-        // CREATE MATERIALIZED VIEW → standard DDL pattern (как CREATE TABLE):
+        // CREATE MATERIALIZED VIEW → standard DDL pattern (like CREATE TABLE):
         // allocate OIDs → planner stamps mv_oid + catalog_writes on the matview node →
         // physical_plan_generator produces composite operator_create_matview_t that
         // does heap+catalog+populate atomically in one async coroutine.
         // OID batch holds: mv_oid + N×attoid + rule_oid = 2 + N (where N is the
         // matview's inferred column count populated by enrich's
         // derive_matview_output_schema).
-        if (original_type == node_type::create_matview_t &&
-            disk_address_ != actor_zeta::address_t::empty_address()) {
+        if (original_type == node_type::create_matview_t && disk_address_ != actor_zeta::address_t::empty_address()) {
             auto* cm = static_cast<node_create_matview_t*>(effective_root_node(logic_plan.get()));
             const std::size_t col_count = cm ? cm->inferred_columns().size() : std::size_t{0};
             const std::size_t need = 2 + col_count;
@@ -1343,8 +1375,8 @@ namespace services::dispatcher {
             // components/table/transaction_manager.cpp:12), so the unchanged
             // call below reuses this same txn.
             auto enrich_txn = txn_manager_.begin_transaction(session).data();
-            components::execution_context_t enriched_ctx{session, enrich_txn, ctx.table_oid};
-            auto ef2 = enrich_plan(logic_plan, disk_address_, enriched_ctx, resource());
+            components::execution_context_t enriched_ctx{session, enrich_txn, ctx.session_tz, ctx.table_oid};
+            auto ef2 = enrich_plan(resource(), logic_plan, disk_address_, enriched_ctx, index_address_, &collections_context_storage);
             co_await std::move(ef2);
         }
 
@@ -1362,7 +1394,7 @@ namespace services::dispatcher {
             logic_plan = ddl_planner.create_plan(resource(), std::move(logic_plan), std::move(oid_batch));
         }
 
-        // CREATE CONSTRAINT → planner rewrite в sequence_t(primitive_write на pg_constraint+pg_depend).
+        // CREATE CONSTRAINT → planner rewrite to sequence_t(primitive_write on pg_constraint+pg_depend).
         // Resolved attoids/table_oid/ref_table_oid populated by enrich_plan above.
         if (original_type == node_type::create_constraint_t &&
             disk_address_ != actor_zeta::address_t::empty_address()) {
@@ -1429,12 +1461,12 @@ namespace services::dispatcher {
                 if (logic_plan->type() == node_type::alter_table_t) {
                     exec_result = {make_cursor(resource()), {}, {}, {}};
                 } else {
-                    exec_result = co_await execute_plan_impl(session, logic_plan, params->take_parameters(), txn_data);
+                    exec_result = co_await execute_plan_impl(session, logic_plan, params->take_parameters(), txn_data, &collections_context_storage);
                 }
                 break;
             }
             default:
-                exec_result = co_await execute_plan_impl(session, logic_plan, params->take_parameters(), txn_data);
+                exec_result = co_await execute_plan_impl(session, logic_plan, params->take_parameters(), txn_data, &collections_context_storage);
                 break;
         }
 
@@ -1488,7 +1520,7 @@ namespace services::dispatcher {
                     ddl_commit_node->set_txn_id(txn_data.transaction_id);
                     ddl_commit_node->set_database_oid(db_oid);
 
-                    services::context_storage_t cstor{resource(), log_.clone()};
+                    services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
                     components::compute::function_registry_t fn_registry{resource()};
                     auto commit_op = services::planner::create_plan(cstor,
                                                                     fn_registry,
@@ -1624,7 +1656,7 @@ namespace services::dispatcher {
         std::shared_ptr<components::compute::function> shared_fn(function.release());
         auto plan = boost::intrusive_ptr(new components::logical_plan::node_register_udf_t(resource(), shared_fn));
 
-        services::context_storage_t cstor{resource(), log_.clone()};
+        services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
         // Build the executor fan-out callable. The dispatcher captures
         // executor_addresses_, scheduler_, and executors_ so the operator can
         // drive per-executor register_udf without needing direct scheduler
@@ -1697,7 +1729,7 @@ namespace services::dispatcher {
                                                                 core::function_name_t{std::move(function_name)},
                                                                 std::move(inputs)));
 
-        services::context_storage_t cstor{resource(), log_.clone()};
+        services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
         components::compute::function_registry_t fn_registry{resource()};
         auto op = services::planner::create_plan(cstor,
                                                  fn_registry,
@@ -1773,7 +1805,7 @@ namespace services::dispatcher {
         auto plan =
             boost::intrusive_ptr(new components::logical_plan::node_get_schema_t(resource(), std::move(id_pairs)));
 
-        services::context_storage_t cstor{resource(), log_.clone()};
+        services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
         components::compute::function_registry_t fn_registry{resource()};
         auto op = services::planner::create_plan(cstor,
                                                  fn_registry,
@@ -1829,7 +1861,9 @@ namespace services::dispatcher {
     manager_dispatcher_t::execute_plan_impl(components::session::session_id_t session,
                                             node_ptr logical_plan,
                                             storage_parameters parameters,
-                                            components::table::transaction_data txn) {
+                                            components::table::transaction_data txn,
+                                            context_storage_t* collections_context_storage) {
+        auto context_copy = *collections_context_storage;
         trace(log_,
               "manager_dispatcher_t:execute_plan_impl: node_type: {}, table_oid: {}, session: {}",
               components::logical_plan::to_string(logical_plan->type()),
@@ -1842,9 +1876,9 @@ namespace services::dispatcher {
         // and forward the set to the executor. Wrapper / parser-window / DDL
         // nodes contribute INVALID_OID and are filtered.
         auto dependency_oids = logical_plan->table_oid_dependencies();
-        context_storage_t collections_context_storage(resource(), log_.clone());
+
         for (auto oid : dependency_oids) {
-            collections_context_storage.known_oids.insert(oid);
+            context_copy.known_oids.insert(oid);
         }
         // Forward resolve_table metadata (relkind + live columns)
         // so plan generators can build transfer_scan with the right
@@ -1856,21 +1890,11 @@ namespace services::dispatcher {
             impl::plan_resolve_index_t local_idx;
             impl::gather_plan_resolve_index(logical_plan.get(), local_idx);
             for (const auto& [oid, md_ptr] : local_idx.tbl_md_by_oid) {
-                collections_context_storage.table_metadata[oid] = md_ptr;
+                context_copy.table_metadata[oid] = md_ptr;
             }
         }
 
-        // Populate index metadata for optimizer-driven index selection.
-        // Keyed on table_oid (stamped by enrich_logical_plan).
-        if (index_address_ != actor_zeta::address_t::empty_address()) {
-            const auto tbl_oid = logical_plan->table_oid();
-            if (tbl_oid != components::catalog::INVALID_OID) {
-                auto [_ik, ikf] =
-                    actor_zeta::send(index_address_, &index::manager_index_t::get_indexed_keys, session, tbl_oid);
-                collections_context_storage.indexed_keys = co_await std::move(ikf);
-            }
-        }
-        collections_context_storage.parameters = &parameters;
+        context_copy.parameters = &parameters;
 
         assert(!executors_.empty());
         // Oid-only pool routing. For wrapper nodes (sequence_t etc.)
@@ -1891,7 +1915,7 @@ namespace services::dispatcher {
                                                                  session,
                                                                  logical_plan,
                                                                  parameters,
-                                                                 std::move(collections_context_storage),
+                                                                 std::move(context_copy),
                                                                  txn);
         if (needs_sched && executors_[pool_idx]) {
             scheduler_->enqueue(executors_[pool_idx].get());
@@ -1917,7 +1941,7 @@ namespace services::dispatcher {
         // the commit_transaction RPC pattern below.
         auto node = components::logical_plan::make_node_allocate_oids(resource(), count);
 
-        services::context_storage_t cstor{resource(), log_.clone()};
+        services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
         components::compute::function_registry_t fn_registry{resource()};
         auto op = services::planner::create_plan(cstor,
                                                  fn_registry,
@@ -1965,7 +1989,7 @@ namespace services::dispatcher {
         // pipeline::context_t we build here.
         auto plan = boost::intrusive_ptr(new components::logical_plan::node_commit_transaction_t(resource()));
 
-        services::context_storage_t cstor{resource(), log_.clone()};
+        services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
         components::compute::function_registry_t fn_registry{resource()};
         auto op = services::planner::create_plan(cstor,
                                                  fn_registry,
@@ -2018,7 +2042,7 @@ namespace services::dispatcher {
         // Operator-pipeline replacement (mirrors commit above).
         auto plan = boost::intrusive_ptr(new components::logical_plan::node_abort_transaction_t(resource()));
 
-        services::context_storage_t cstor{resource(), log_.clone()};
+        services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
         components::compute::function_registry_t fn_registry{resource()};
         auto op = services::planner::create_plan(cstor,
                                                  fn_registry,

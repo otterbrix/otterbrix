@@ -47,7 +47,7 @@ namespace services::collection::executor {
             , updates(std::move(updates))
             , pg_catalog_appends(std::move(pg_catalog_appends))
             , pg_catalog_delete_tables(std::move(pg_catalog_delete_tables)) {}
-            
+
         components::cursor::cursor_t_ptr cursor;
         components::operators::operator_write_data_t::updated_types_map_t updates;
         // pg_catalog ranges/tables collected during this execute_plan call.

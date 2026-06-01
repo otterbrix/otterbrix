@@ -159,7 +159,8 @@ namespace components::sql::transform {
                         if (sub_expr->lexpr) {
                             sub_scalar->append_param(resolve_select_operand(sub_expr->lexpr, names, plan, group));
                         } else {
-                            auto zero_id = plan->parameters->add_parameter(types::logical_value_t(resource_, int64_t(0)));
+                            auto zero_id =
+                                plan->parameters->add_parameter(types::logical_value_t(resource_, int64_t(0)));
                             sub_scalar->append_param(zero_id);
                         }
                         sub_scalar->append_param(resolve_select_operand(sub_expr->rexpr, names, plan, group));
@@ -271,9 +272,8 @@ namespace components::sql::transform {
         }
     }
 
-    expression_ptr transformer::transform_a_expr(A_Expr* node,
-                                                 const name_collection_t& names,
-                                                 logical_plan::execution_plan_t* plan) {
+    expression_ptr
+    transformer::transform_a_expr(A_Expr* node, const name_collection_t& names, logical_plan::execution_plan_t* plan) {
         switch (node->kind) {
             case AEXPR_AND: // fall-through
             case AEXPR_OR: {
@@ -353,19 +353,12 @@ namespace components::sql::transform {
                     auto pattern = like_to_regex(std::string(raw_val.value().value<std::string_view>()));
                     auto param_id = plan->parameters->add_parameter(types::logical_value_t(resource_, pattern));
                     if (op_str == "!~~") {
-                        auto inner = make_compare_expression(resource_,
-                                                             compare_type::regex,
-                                                             key_left.field,
-                                                             param_id);
-                        auto not_expr =
-                            make_compare_union_expression(resource_, compare_type::union_not);
+                        auto inner = make_compare_expression(resource_, compare_type::regex, key_left.field, param_id);
+                        auto not_expr = make_compare_union_expression(resource_, compare_type::union_not);
                         not_expr->append_child(inner);
                         return not_expr;
                     }
-                    return make_compare_expression(resource_,
-                                                   compare_type::regex,
-                                                   key_left.field,
-                                                   param_id);
+                    return make_compare_expression(resource_, compare_type::regex, key_left.field, param_id);
                 }
 
                 auto comp_type = get_compare_type(op_str);
@@ -438,27 +431,30 @@ namespace components::sql::transform {
                                     key.deduce_side(names);
                                     args.emplace_back(std::move(key.field));
                                 } else if (nodeTag(arg.data) == T_FuncCall) {
-                                    args.emplace_back(
-                                        transform_a_expr_func(pg_ptr_cast<FuncCall>(arg.data), names, plan->parameters.get()));
+                                    args.emplace_back(transform_a_expr_func(pg_ptr_cast<FuncCall>(arg.data),
+                                                                            names,
+                                                                            plan->parameters.get()));
                                 } else if (nodeTag(arg.data) == T_A_Expr) {
                                     auto sub = pg_ptr_cast<A_Expr>(arg.data);
                                     if (sub->kind == AEXPR_OP &&
                                         is_arithmetic_operator(strVal(sub->name->lst.front().data))) {
-                                        args.emplace_back(transform_a_expr_arithmetic(sub, names, plan->parameters.get()));
+                                        args.emplace_back(
+                                            transform_a_expr_arithmetic(sub, names, plan->parameters.get()));
                                     } else {
-                                        args.emplace_back(add_param_value(pg_ptr_cast<Node>(arg.data), plan->parameters.get()));
+                                        args.emplace_back(
+                                            add_param_value(pg_ptr_cast<Node>(arg.data), plan->parameters.get()));
                                     }
                                 } else {
-                                    args.emplace_back(add_param_value(pg_ptr_cast<Node>(arg.data), plan->parameters.get()));
+                                    args.emplace_back(
+                                        add_param_value(pg_ptr_cast<Node>(arg.data), plan->parameters.get()));
                                 }
                             }
-                            return make_function_expression(resource_,
-                                                            std::move(funcname),
-                                                            std::move(args));
+                            return make_function_expression(resource_, std::move(funcname), std::move(args));
                         }
                         case T_SubLink: {
                             auto sub = pg_ptr_cast<SubLink>(node);
-                            auto param_id = plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
+                            auto param_id = plan->parameters->add_parameter(
+                                types::logical_value_t{resource_, types::logical_type::NA});
                             // Transform first so nested sub_queries/sub_query_results are appended
                             // before this level's entries — executor runs sub_queries front-to-back
                             // and sub_query_results[i] must correspond to sub_queries[i].
@@ -486,7 +482,7 @@ namespace components::sql::transform {
                     right = transform_a_indirection(pg_ptr_cast<A_Indirection>(node->rexpr), names, plan);
                 } else if (nodeTag(node->rexpr) == T_FuncCall) {
                     right = transform_a_expr_func(pg_ptr_cast<FuncCall>(node->rexpr), names, plan->parameters.get());
-                }  else if (nodeTag(node->rexpr) == T_SubLink) {
+                } else if (nodeTag(node->rexpr) == T_SubLink) {
                     right = transform_sublink_expr(pg_ptr_cast<SubLink>(node->rexpr), names, plan);
                 } else {
                     error_ = core::error_t(
@@ -530,8 +526,7 @@ namespace components::sql::transform {
                 auto union_expr = make_compare_union_expression(resource_, union_type);
                 for (const auto& elem : list_node->lst) {
                     auto param_id = add_param_value(pg_ptr_cast<Node>(elem.data), plan->parameters.get());
-                    union_expr->append_child(
-                        make_compare_expression(resource_, cmp_type, key_in.field, param_id));
+                    union_expr->append_child(make_compare_expression(resource_, cmp_type, key_in.field, param_id));
                 }
                 return union_expr;
             }
@@ -543,12 +538,14 @@ namespace components::sql::transform {
         }
     }
 
-    expression_ptr
-    transformer::transform_sublink_expr(SubLink* node, const name_collection_t& names, logical_plan::execution_plan_t* plan) {
+    expression_ptr transformer::transform_sublink_expr(SubLink* node,
+                                                       const name_collection_t& names,
+                                                       logical_plan::execution_plan_t* plan) {
         switch (node->subLinkType) {
             case EXISTS_SUBLINK: {
                 auto param_id1 = plan->parameters->add_parameter(types::logical_value_t{resource_, true});
-                auto param_id2 = plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
+                auto param_id2 =
+                    plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
                 // Transform before appending so nested sub_queries/sub_query_results come first.
                 auto sub_node = transform(*node->subselect, plan);
                 plan->sub_query_results.emplace_back(&vector::compact_to_bool_value, param_id2);
@@ -568,12 +565,13 @@ namespace components::sql::transform {
                     return nullptr;
                 }
                 auto key = nodeTag(node->testexpr) == T_ColumnRef
-                                  ? columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node->testexpr), names)
-                                  : indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(node->testexpr), names);
+                               ? columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node->testexpr), names)
+                               : indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(node->testexpr), names);
                 key.deduce_side(names);
                 auto op_str = std::string_view(strVal(node->operName->lst.front().data));
                 auto inner_op = get_compare_type(op_str);
-                auto param_id = plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
+                auto param_id =
+                    plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
                 // Transform before appending so nested sub_queries/sub_query_results come first.
                 auto sub_node = transform(*node->subselect, plan);
                 plan->sub_query_results.emplace_back(&vector::compact_to_array_value, param_id);
@@ -704,8 +702,7 @@ namespace components::sql::transform {
                 auto col_key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node->arg), names);
                 col_key.deduce_side(names);
                 auto param_id = add_param_value(pg_ptr_cast<Node>(when->expr), plan->parameters.get());
-                auto cond =
-                    make_compare_expression(resource_, compare_type::eq, col_key.field, param_id);
+                auto cond = make_compare_expression(resource_, compare_type::eq, col_key.field, param_id);
                 expr->append_param(expression_ptr(cond));
             } else {
                 // Searched CASE: CASE WHEN condition THEN ... → boolean expression
@@ -714,7 +711,8 @@ namespace components::sql::transform {
                     auto condition = transform_a_expr(pg_ptr_cast<A_Expr>(cond_node), names, plan);
                     expr->append_param(condition);
                 } else if (nodeTag(cond_node) == T_FuncCall) {
-                    auto condition = transform_a_expr_func(pg_ptr_cast<FuncCall>(cond_node), names, plan->parameters.get());
+                    auto condition =
+                        transform_a_expr_func(pg_ptr_cast<FuncCall>(cond_node), names, plan->parameters.get());
                     expr->append_param(condition);
                 } else {
                     error_ = core::error_t(core::error_code_t::sql_parse_error,
@@ -782,9 +780,7 @@ namespace components::sql::transform {
                     }
                 }
                 std::string alias = "__having_" + funcname + "_" + std::to_string(aggregate_counter_++);
-                auto agg_expr = make_aggregate_expression(resource_,
-                                                          funcname,
-                                                          expressions::key_t{resource_, alias});
+                auto agg_expr = make_aggregate_expression(resource_, funcname, expressions::key_t{resource_, alias});
                 for (auto& arg : args) {
                     agg_expr->append_param(arg);
                 }
@@ -821,7 +817,8 @@ namespace components::sql::transform {
                 return add_param_value(node, plan->parameters.get());
             }
             case T_SubLink: {
-                auto param_id = plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
+                auto param_id =
+                    plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
                 // Transform before appending so nested sub_queries/sub_query_results come first.
                 auto sub_node = transform(*pg_ptr_cast<SubLink>(node)->subselect, plan);
                 plan->sub_query_results.emplace_back(&vector::compact_to_single_value, param_id);

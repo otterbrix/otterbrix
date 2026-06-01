@@ -15,8 +15,8 @@ using namespace components::sql::transform;
             REQUIRE_FALSE(_w.has_error());                                                                             \
             return _w.value();                                                                                         \
         }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));                                            \
-        auto node = result.sub_queries.back();                                                                                       \
-        auto agg = result.parameters;                                                                                      \
+        auto node = result.sub_queries.back();                                                                         \
+        auto agg = result.parameters;                                                                                  \
         REQUIRE(node->to_string() == RESULT);                                                                          \
         REQUIRE(agg->parameters().parameters.size() == PARAMS.size());                                                 \
         for (auto i = 0ul; i < PARAMS.size(); ++i) {                                                                   \

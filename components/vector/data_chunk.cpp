@@ -423,7 +423,8 @@ namespace components::vector {
         if (data.size() == 1 && data.column_count() == 1) {
             return data.value(0, 0);
         } else {
-            return core::error_t(core::error_code_t::conversion_failure, std::pmr::string{"could not convert data_chunk_t to a single value", data.resource()});
+            return core::error_t(core::error_code_t::conversion_failure,
+                                 std::pmr::string{"could not convert data_chunk_t to a single value", data.resource()});
         }
     }
 
@@ -436,7 +437,8 @@ namespace components::vector {
             }
             return types::logical_value_t::create_array(data.resource(), data.data[0].type(), array);
         } else {
-            return core::error_t(core::error_code_t::conversion_failure, std::pmr::string{"could not convert data_chunk_t to a array value", data.resource()});
+            return core::error_t(core::error_code_t::conversion_failure,
+                                 std::pmr::string{"could not convert data_chunk_t to a array value", data.resource()});
         }
     }
 
@@ -449,7 +451,8 @@ namespace components::vector {
             }
             return types::logical_value_t::create_struct(data.resource(), "", fields);
         } else {
-            return core::error_t(core::error_code_t::conversion_failure, std::pmr::string{"could not convert data_chunk_t to a row value", data.resource()});
+            return core::error_t(core::error_code_t::conversion_failure,
+                                 std::pmr::string{"could not convert data_chunk_t to a row value", data.resource()});
         }
     }
 

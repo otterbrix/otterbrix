@@ -116,7 +116,9 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 collection,
                 logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_plan(session, components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
+            auto cur = dispatcher->execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
         };
@@ -141,7 +143,9 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 collection,
                 logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_plan(session, components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
+            auto cur = dispatcher->execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
         };
@@ -166,7 +170,9 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 collection,
                 logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_plan(session, components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
+            auto cur = dispatcher->execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
         };
@@ -198,7 +204,9 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                                                std::move(chunk),
                                                std::pmr::vector<expressions::key_t>{fields}));
             auto session = otterbrix::session_id_t();
-            return dispatcher->execute_plan(session, components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
+            return dispatcher->execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
         };
         auto select_all = [&](const collection_name_t& collection) {
             auto session = otterbrix::session_id_t();
@@ -324,7 +332,9 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                                                std::move(chunk),
                                                std::pmr::vector<expressions::key_t>{fields}));
             auto session = otterbrix::session_id_t();
-            return dispatcher->execute_plan(session, components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
+            return dispatcher->execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
         };
         auto select_all = [&](const collection_name_t& collection) {
             auto session = otterbrix::session_id_t();
@@ -444,7 +454,9 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                                                std::move(chunk),
                                                std::pmr::vector<expressions::key_t>{fields}));
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_plan(session, components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
+            auto cur = dispatcher->execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_error());
         };
 

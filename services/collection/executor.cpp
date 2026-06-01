@@ -160,10 +160,8 @@ namespace services::collection::executor {
             auto* node = lp.get();
             if (node && node->type() == node_type::sequence_t) {
                 auto is_resolve = [](node_type t) {
-                    return t == node_type::catalog_resolve_namespace_t ||
-                           t == node_type::catalog_resolve_table_t ||
-                           t == node_type::catalog_resolve_type_t ||
-                           t == node_type::catalog_resolve_function_t ||
+                    return t == node_type::catalog_resolve_namespace_t || t == node_type::catalog_resolve_table_t ||
+                           t == node_type::catalog_resolve_type_t || t == node_type::catalog_resolve_function_t ||
                            t == node_type::catalog_resolve_constraint_t;
                 };
                 for (const auto& child : node->children()) {
@@ -190,10 +188,11 @@ namespace services::collection::executor {
             auto physical_plan =
                 planner::create_plan(context_storage, function_registry_, logical_plan, limit, &parameters);
             if (!physical_plan) {
-                co_return execute_result_t{resource(),
-                                           make_cursor(resource(),
-                                                       core::error_t(core::error_code_t::create_physical_plan_error,
-                                                                     std::pmr::string{"invalid query plan", resource()}))};
+                co_return execute_result_t{
+                    resource(),
+                    make_cursor(resource(),
+                                core::error_t(core::error_code_t::create_physical_plan_error,
+                                              std::pmr::string{"invalid query plan", resource()}))};
             }
             physical_plan->set_as_root();
             auto plan_data = traverse_plan_(std::move(physical_plan), parameters, std::move(context_storage));
@@ -227,7 +226,7 @@ namespace services::collection::executor {
             // that is_dml is correct even when the plan is wrapped by check_constraint etc.
             const auto effective_type = find_effective_dml_type(logical_plan);
             const bool is_dml = (effective_type == node_type::insert_t || effective_type == node_type::update_t ||
-                                  effective_type == node_type::delete_t);
+                                 effective_type == node_type::delete_t);
 
             // Step 1: Begin transaction for DML (executor owns full lifecycle)
             // Direct call to txn_manager_ avoids static_cast to dispatcher and bypasses actor mutex.
@@ -245,10 +244,11 @@ namespace services::collection::executor {
                 if (is_dml) {
                     txn_manager_->abort(session);
                 }
-                co_return execute_result_t{resource(),
-                                           make_cursor(resource(),
-                                                       core::error_t(core::error_code_t::create_physical_plan_error,
-                                                                     std::pmr::string{"invalid query plan", resource()}))};
+                co_return execute_result_t{
+                    resource(),
+                    make_cursor(resource(),
+                                core::error_t(core::error_code_t::create_physical_plan_error,
+                                              std::pmr::string{"invalid query plan", resource()}))};
             }
             physical_plan->set_as_root();
             auto plan_data = traverse_plan_(std::move(physical_plan), parameters, std::move(context_storage));
@@ -270,7 +270,10 @@ namespace services::collection::executor {
 
                 // Step 4: Commit transaction
                 uint64_t commit_id = txn_manager_->commit(session);
-                trace(log_, "executor::execute_plan: committed txn {}, commit_id {}", txn_data.transaction_id, commit_id);
+                trace(log_,
+                      "executor::execute_plan: committed txn {}, commit_id {}",
+                      txn_data.transaction_id,
+                      commit_id);
 
                 // Step 5: Commit side-effects on storage and index.
                 // Routing is by table_oid only — never read cfn from
@@ -350,9 +353,8 @@ namespace services::collection::executor {
                     }
                     if (!result.pg_catalog_delete_tables.empty()) {
                         components::execution_context_t pgc_ctx{session, txn_data, {}};
-                        std::set<components::catalog::oid_t> deletes_tmp(
-                            result.pg_catalog_delete_tables.begin(),
-                            result.pg_catalog_delete_tables.end());
+                        std::set<components::catalog::oid_t> deletes_tmp(result.pg_catalog_delete_tables.begin(),
+                                                                         result.pg_catalog_delete_tables.end());
                         result.pg_catalog_delete_tables.clear();
                         auto [_pd, pdf] = actor_zeta::send(disk_address_,
                                                            &disk::manager_disk_t::storage_commit_deletes,

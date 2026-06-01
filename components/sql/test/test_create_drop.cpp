@@ -15,7 +15,7 @@ using namespace components::sql::transform;
         auto stmt = raw_parser(&arena_resource, QUERY)->lst.front().data;                                              \
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();                                    \
         REQUIRE(!result.has_error());                                                                                  \
-        auto node = result.value().sub_queries.back();                                                                               \
+        auto node = result.value().sub_queries.back();                                                                 \
         REQUIRE(node->to_string() == EXPECTED);                                                                        \
     }
 
@@ -30,7 +30,7 @@ using namespace components::sql::transform;
         auto stmt = linitial(raw_parser(&arena_resource, QUERY));                                                      \
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();                                    \
         REQUIRE(!result.has_error());                                                                                  \
-        auto node = result.value().sub_queries.back();                                                                               \
+        auto node = result.value().sub_queries.back();                                                                 \
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);                                               \
         const auto& schema = data->schema();                                                                           \
         CHECK_FN(schema);                                                                                              \

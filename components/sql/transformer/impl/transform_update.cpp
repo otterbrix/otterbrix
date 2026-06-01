@@ -199,7 +199,8 @@ namespace components::sql::transform {
         if (node.whereClause) {
             expressions::expression_ptr where_expr;
             if (nodeTag(node.whereClause) == T_NullTest) {
-                where_expr = transform_null_test(pg_ptr_cast<NullTest>(node.whereClause), names, plan->parameters.get());
+                where_expr =
+                    transform_null_test(pg_ptr_cast<NullTest>(node.whereClause), names, plan->parameters.get());
             } else if (nodeTag(node.whereClause) == T_SubLink) {
                 where_expr = transform_sublink_expr(pg_ptr_cast<SubLink>(node.whereClause), names, plan);
             } else {

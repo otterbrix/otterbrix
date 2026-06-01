@@ -31,7 +31,8 @@ namespace actor_zeta {
                     return {false, make_ready_future(resource)};
                 } else if constexpr (std::is_same_v<value_type, actor::address_t>) {
                     return {false, make_ready_future<value_type>(resource, actor::address_t::empty_address())};
-                } else if constexpr (std::is_constructible_v<value_type, std::pmr::memory_resource*> && !std::is_convertible_v<std::pmr::memory_resource*, value_type>) {
+                } else if constexpr (std::is_constructible_v<value_type, std::pmr::memory_resource*> &&
+                                     !std::is_convertible_v<std::pmr::memory_resource*, value_type>) {
                     return {false, make_ready_future<value_type>(resource, value_type{resource})};
                 } else {
                     return {false, make_ready_future<value_type>(resource)};

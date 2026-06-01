@@ -326,7 +326,8 @@ namespace services::dispatcher {
         // Inject missing catalog_resolve_namespace_t / catalog_resolve_table_t
         // siblings into sq_root for every (db, rel) pair referenced in the plan
         // tree that is not already covered by an existing resolve child.
-        void inject_catalog_resolve_wrap(std::pmr::memory_resource* resource, components::logical_plan::node_ptr& sq_root) {
+        void inject_catalog_resolve_wrap(std::pmr::memory_resource* resource,
+                                         components::logical_plan::node_ptr& sq_root) {
             using namespace components::logical_plan;
             std::pmr::set<std::string> existing_dbs{resource};
             std::pmr::set<std::pair<std::string, std::string>> existing_tbls{resource};
@@ -335,8 +336,7 @@ namespace services::dispatcher {
                     if (!c)
                         continue;
                     if (c->type() == node_type::catalog_resolve_namespace_t) {
-                        existing_dbs.insert(
-                            static_cast<const node_catalog_resolve_namespace_t*>(c.get())->dbname());
+                        existing_dbs.insert(static_cast<const node_catalog_resolve_namespace_t*>(c.get())->dbname());
                     } else if (c->type() == node_type::catalog_resolve_table_t) {
                         auto* r = static_cast<const node_catalog_resolve_table_t*>(c.get());
                         existing_tbls.insert({r->dbname(), r->relname()});
@@ -386,13 +386,10 @@ namespace services::dispatcher {
                     default:
                         break;
                 }
-                for (const auto& c : n->children())
-                    stack.push_back(c.get());
+                for (const auto& c : n->children()) stack.push_back(c.get());
             }
-            for (const auto& db : existing_dbs)
-                wrap_dbs.erase(db);
-            for (const auto& tbl : existing_tbls)
-                wrap_tbls.erase(tbl);
+            for (const auto& db : existing_dbs) wrap_dbs.erase(db);
+            for (const auto& tbl : existing_tbls) wrap_tbls.erase(tbl);
             if (wrap_dbs.empty() && wrap_tbls.empty())
                 return;
             std::pmr::vector<node_ptr> new_resolves{resource};
@@ -408,10 +405,8 @@ namespace services::dispatcher {
                     make_node_catalog_resolve_table(resource, core::dbname_t{db}, core::relname_t{rel}));
             }
             auto is_resolve_node = [](node_type t) {
-                return t == node_type::catalog_resolve_namespace_t ||
-                       t == node_type::catalog_resolve_table_t ||
-                       t == node_type::catalog_resolve_type_t ||
-                       t == node_type::catalog_resolve_function_t ||
+                return t == node_type::catalog_resolve_namespace_t || t == node_type::catalog_resolve_table_t ||
+                       t == node_type::catalog_resolve_type_t || t == node_type::catalog_resolve_function_t ||
                        t == node_type::catalog_resolve_constraint_t;
             };
             if (sq_root->type() == node_type::sequence_t) {
@@ -423,17 +418,13 @@ namespace services::dispatcher {
                     merged.push_back(std::move(kids[split]));
                     ++split;
                 }
-                for (auto& r : new_resolves)
-                    merged.push_back(std::move(r));
-                for (; split < kids.size(); ++split)
-                    merged.push_back(std::move(kids[split]));
+                for (auto& r : new_resolves) merged.push_back(std::move(r));
+                for (; split < kids.size(); ++split) merged.push_back(std::move(kids[split]));
                 kids.clear();
-                for (auto& m : merged)
-                    kids.push_back(std::move(m));
+                for (auto& m : merged) kids.push_back(std::move(m));
             } else {
                 auto seq = boost::intrusive_ptr<node_t>(new node_sequence_t(resource));
-                for (auto& r : new_resolves)
-                    seq->append_child(std::move(r));
+                for (auto& r : new_resolves) seq->append_child(std::move(r));
                 seq->append_child(std::move(sq_root));
                 sq_root = seq;
             }
@@ -575,9 +566,11 @@ namespace services::dispatcher {
     }
 
     manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr>
-    manager_dispatcher_t::execute_plan(components::session::session_id_t session,
-                                       execution_plan_t plan) {
-        trace(log_, "manager_dispatcher_t::execute_plan session: {}, sub_queries: {}", session.data(), plan.sub_queries.size());
+    manager_dispatcher_t::execute_plan(components::session::session_id_t session, execution_plan_t plan) {
+        trace(log_,
+              "manager_dispatcher_t::execute_plan session: {}, sub_queries: {}",
+              session.data(),
+              plan.sub_queries.size());
         assert(!plan.sub_queries.empty());
 
         auto params_for_wal = make_parameter_node(resource());
@@ -589,8 +582,7 @@ namespace services::dispatcher {
                     co_return make_cursor(
                         resource(),
                         core::error_t{core::error_code_t::sql_parse_error,
-                                      std::pmr::string{"DDL statement must be the only query in a batch",
-                                                       resource()}});
+                                      std::pmr::string{"DDL statement must be the only query in a batch", resource()}});
                 }
             }
             // SQL standard: DML is not permitted in sub-queries.
@@ -601,8 +593,7 @@ namespace services::dispatcher {
                     co_return make_cursor(
                         resource(),
                         core::error_t{core::error_code_t::sql_parse_error,
-                                      std::pmr::string{"DML statement is not allowed in a sub-query",
-                                                       resource()}});
+                                      std::pmr::string{"DML statement is not allowed in a sub-query", resource()}});
                 }
             }
         }
@@ -656,14 +647,11 @@ namespace services::dispatcher {
         // plan.sub_queries[1..N-1]. One async round-trip resolves all tables.
         {
             auto is_resolve = [](node_type t) {
-                return t == node_type::catalog_resolve_namespace_t ||
-                       t == node_type::catalog_resolve_table_t ||
-                       t == node_type::catalog_resolve_type_t ||
-                       t == node_type::catalog_resolve_function_t ||
+                return t == node_type::catalog_resolve_namespace_t || t == node_type::catalog_resolve_table_t ||
+                       t == node_type::catalog_resolve_type_t || t == node_type::catalog_resolve_function_t ||
                        t == node_type::catalog_resolve_constraint_t;
             };
-            auto collect_resolves = [&](node_ptr& root,
-                                        boost::intrusive_ptr<node_t>& dest) {
+            auto collect_resolves = [&](node_ptr& root, boost::intrusive_ptr<node_t>& dest) {
                 if (!root || root->type() != node_type::sequence_t)
                     return;
                 auto& kids = root->children();
@@ -677,10 +665,12 @@ namespace services::dispatcher {
             if (!pass1_root->children().empty()) {
                 auto pass1_txn = txn_manager_.begin_transaction(session).data();
                 auto pass1_params = make_parameter_node(resource());
-                auto pass1_result = co_await execute_plan_impl(
-                    session, execution_plan_t{resource(), pass1_root, pass1_params}, pass1_txn);
+                auto pass1_result = co_await execute_plan_impl(session,
+                                                               execution_plan_t{resource(), pass1_root, pass1_params},
+                                                               pass1_txn);
                 if (pass1_result.cursor->is_error()) {
-                    trace(log_, "manager_dispatcher_t::execute_plan: Pass 1 resolve failed: {}",
+                    trace(log_,
+                          "manager_dispatcher_t::execute_plan: Pass 1 resolve failed: {}",
                           pass1_result.cursor->get_error().what);
                     co_return std::move(pass1_result.cursor);
                 }
@@ -765,7 +755,9 @@ namespace services::dispatcher {
                     }
                     auto pass2_params = make_parameter_node(resource());
                     auto pass2_result =
-                        co_await execute_plan_impl(session, execution_plan_t{resource(), pass2_root, pass2_params}, ctx.txn);
+                        co_await execute_plan_impl(session,
+                                                   execution_plan_t{resource(), pass2_root, pass2_params},
+                                                   ctx.txn);
                     if (pass2_result.cursor->is_error()) {
                         trace(log_,
                               "manager_dispatcher_t::execute_plan: view sub-plan Pass 1 "

@@ -50,7 +50,9 @@ constexpr int kDocuments = 100;
             components::logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));                     \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
-            dispatcher->execute_plan(session, components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});                                                                    \
+            dispatcher->execute_plan(                                                                                  \
+                session,                                                                                               \
+                components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});                     \
         }                                                                                                              \
     } while (false)
 
@@ -92,7 +94,8 @@ constexpr int kDocuments = 100;
         auto plan = components::sql::transform::maybe_wrap_with_catalog_resolve_tables(dispatcher->resource(),         \
                                                                                        std::move(targets),             \
                                                                                        node);                          \
-        dispatcher->execute_plan(session, components::logical_plan::execution_plan_t{dispatcher->resource(), plan, nullptr});                                                            \
+        dispatcher->execute_plan(session,                                                                              \
+                                 components::logical_plan::execution_plan_t{dispatcher->resource(), plan, nullptr});   \
     } while (false)
 
 #define CHECK_FIND_ALL()                                                                                               \
@@ -354,7 +357,9 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
                                                                   id_par{1}))));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), 90));
-            auto cur = dispatcher->execute_plan(session, components::logical_plan::execution_plan_t{dispatcher->resource(), del, params});
+            auto cur = dispatcher->execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{dispatcher->resource(), del, params});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 10);
         }
@@ -387,7 +392,9 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), 50));
             params->add_parameter(id_par{2}, logical_value_t(dispatcher->resource(), 999));
-            auto cur = dispatcher->execute_plan(session, components::logical_plan::execution_plan_t{dispatcher->resource(), upd, params});
+            auto cur = dispatcher->execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{dispatcher->resource(), upd, params});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
         }

@@ -51,10 +51,10 @@ namespace components::expressions {
     void compare_expression_t::append_child(const expression_ptr& child) { children_.push_back(child); }
 
     bool compare_expression_t::is_union() const { return is_union_compare_condition(type_); }
-    
+
     compare_type compare_expression_t::inner_op() const noexcept { return inner_op_; }
     void compare_expression_t::set_inner_op(compare_type op) noexcept { inner_op_ = op; }
-    
+
     bool compare_expression_t::do_not_fold() const noexcept { return do_not_fold_; }
     void compare_expression_t::make_unfoldable() noexcept { do_not_fold_ = true; }
 

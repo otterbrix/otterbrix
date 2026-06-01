@@ -78,8 +78,9 @@ namespace services::planner::impl {
             }
 
             // union compare expressions have nullptr in left and right slots
-            if (!is_union_compare_condition(comp_expr->type()) && (std::holds_alternative<expression_ptr>(comp_expr->left()) ||
-                std::holds_alternative<expression_ptr>(comp_expr->right()))) {
+            if (!is_union_compare_condition(comp_expr->type()) &&
+                (std::holds_alternative<expression_ptr>(comp_expr->left()) ||
+                 std::holds_alternative<expression_ptr>(comp_expr->right()))) {
                 return false;
             }
             return true;

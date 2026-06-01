@@ -33,12 +33,11 @@ namespace components::expressions {
 
         bool is_union() const;
 
-
         // Only meaningful for compare_type::any and compare_type::all.
         // compare_type::invalid means not set.
         compare_type inner_op() const noexcept;
         void set_inner_op(compare_type op) noexcept;
-        
+
         bool do_not_fold() const noexcept;
         void make_unfoldable() noexcept;
 

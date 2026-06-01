@@ -1,8 +1,8 @@
 #pragma once
 #include "vector.hpp"
 
-#include <core/result_wrapper.hpp>
 #include <components/types/logical_value.hpp>
+#include <core/result_wrapper.hpp>
 
 namespace components::vector {
 

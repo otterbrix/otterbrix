@@ -104,9 +104,10 @@ namespace components::operators {
                 const auto& col_type = types[indices[0]];
                 const auto& arr = parameters->parameters.at(param_id).children();
                 const bool is_any = expression->type() == expressions::compare_type::any;
-                auto filter = is_any
-                                  ? std::unique_ptr<table::conjunction_filter_t>(std::make_unique<table::conjunction_or_filter_t>())
-                                  : std::unique_ptr<table::conjunction_filter_t>(std::make_unique<table::conjunction_and_filter_t>());
+                auto filter = is_any ? std::unique_ptr<table::conjunction_filter_t>(
+                                           std::make_unique<table::conjunction_or_filter_t>())
+                                     : std::unique_ptr<table::conjunction_filter_t>(
+                                           std::make_unique<table::conjunction_and_filter_t>());
                 filter->child_filters.reserve(arr.size());
                 for (const auto& val : arr) {
                     auto coerced = val.type() == col_type ? val : val.cast_as(col_type, session_tz);
@@ -214,8 +215,7 @@ namespace components::operators {
         // col OP ALL(empty) is vacuously true → skip filter, scan all rows.
         // Excludes is_null/is_not_null which use a dummy null parameter on the right.
         bool null_param_skip_filter = false;
-        if (expression_ && !expression_->is_union() &&
-            expression_->type() != expressions::compare_type::is_null &&
+        if (expression_ && !expression_->is_union() && expression_->type() != expressions::compare_type::is_null &&
             expression_->type() != expressions::compare_type::is_not_null &&
             std::holds_alternative<core::parameter_id_t>(expression_->right())) {
             auto pid = std::get<core::parameter_id_t>(expression_->right());

@@ -20,11 +20,11 @@ using vec = std::vector<v>;
                 REQUIRE_FALSE(_w.has_error());                                                                         \
                 return _w.value();                                                                                     \
             }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));                                        \
-            auto node = result.sub_queries.back();                                                                                   \
+            auto node = result.sub_queries.back();                                                                     \
             if (node->type() == components::logical_plan::node_type::sequence_t) {                                     \
                 node = node->children().back();                                                                        \
             }                                                                                                          \
-            auto agg = result.parameters;                                                                                  \
+            auto agg = result.parameters;                                                                              \
             REQUIRE(node->to_string() == RESULT);                                                                      \
             REQUIRE(agg->parameters().parameters.size() == PARAMS.size());                                             \
             for (auto i = 0ul; i < PARAMS.size(); ++i) {                                                               \

@@ -199,8 +199,7 @@ namespace components::planner::optimizer {
             }
         }
 
-        void
-        fold_expression(std::pmr::memory_resource* resource, expression_ptr& expr, parameter_node_t* parameters);
+        void fold_expression(std::pmr::memory_resource* resource, expression_ptr& expr, parameter_node_t* parameters);
 
         void
         fold_scalar(std::pmr::memory_resource* resource, scalar_expression_t* scalar, parameter_node_t* parameters) {
@@ -230,8 +229,8 @@ namespace components::planner::optimizer {
             try_fold_compare(*comp, parameters);
             simplify_union(comp);
             if (comp->type() == compare_type::union_and || comp->type() == compare_type::union_or) {
-                const auto neutral = (comp->type() == compare_type::union_and) ? compare_type::all_true
-                                                                                : compare_type::all_false;
+                const auto neutral =
+                    (comp->type() == compare_type::union_and) ? compare_type::all_true : compare_type::all_false;
                 auto& ch = comp->children();
                 ch.erase(std::remove_if(ch.begin(),
                                         ch.end(),
@@ -246,8 +245,7 @@ namespace components::planner::optimizer {
             }
         }
 
-        void
-        fold_expression(std::pmr::memory_resource* resource, expression_ptr& expr, parameter_node_t* parameters) {
+        void fold_expression(std::pmr::memory_resource* resource, expression_ptr& expr, parameter_node_t* parameters) {
             if (!expr) {
                 return;
             }

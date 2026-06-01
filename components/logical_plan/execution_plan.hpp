@@ -3,8 +3,8 @@
 #include "node.hpp"
 #include "param_storage.hpp"
 
-#include <core/result_wrapper.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <core/result_wrapper.hpp>
 
 namespace components::logical_plan {
 
@@ -34,4 +34,4 @@ namespace components::logical_plan {
         parameter_node_ptr parameters;
     };
 
-}
+} // namespace components::logical_plan

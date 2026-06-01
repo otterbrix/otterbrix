@@ -92,8 +92,7 @@ namespace otterbrix {
                           components::logical_plan::node_create_index_ptr node) -> components::cursor::cursor_t_ptr;
         auto drop_index(const session_id_t& session, components::logical_plan::node_drop_index_ptr node)
             -> components::cursor::cursor_t_ptr;
-        auto execute_plan(const session_id_t& session,
-                          components::logical_plan::execution_plan_t plan)
+        auto execute_plan(const session_id_t& session, components::logical_plan::execution_plan_t plan)
             -> components::cursor::cursor_t_ptr;
         auto execute_sql(const session_id_t& session, const std::string& query) -> components::cursor::cursor_t_ptr;
         auto set_timezone(const session_id_t& session, std::string timezone_name) -> components::cursor::cursor_t_ptr;
@@ -115,8 +114,8 @@ namespace otterbrix {
         T wait_future(unique_future<T>& future);
         void wait_future_void(unique_future<void>& future);
 
-        auto send_plan(const session_id_t& session,
-                       components::logical_plan::execution_plan_t node) -> components::cursor::cursor_t_ptr;
+        auto send_plan(const session_id_t& session, components::logical_plan::execution_plan_t node)
+            -> components::cursor::cursor_t_ptr;
     };
 
     template<typename T>

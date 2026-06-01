@@ -69,9 +69,8 @@ namespace services::dispatcher {
 
         void sync(sync_pack pack);
 
-        unique_future<components::cursor::cursor_t_ptr>
-        execute_plan(components::session::session_id_t session,
-                     components::logical_plan::execution_plan_t plan);
+        unique_future<components::cursor::cursor_t_ptr> execute_plan(components::session::session_id_t session,
+                                                                     components::logical_plan::execution_plan_t plan);
         unique_future<components::cursor::cursor_t_ptr>
         get_schema(components::session::session_id_t session,
                    std::pmr::vector<std::pair<database_name_t, collection_name_t>> ids);

@@ -149,7 +149,8 @@ namespace components::sql::transform {
                 return;
             }
             node_join = logical_plan::make_node_join(resource, core::dbname_t{}, core::relname_t{}, j_type);
-            node_join->append_child(transform_function(*pg_ptr_cast<RangeFunction>(join->larg), names, plan->parameters.get()));
+            node_join->append_child(
+                transform_function(*pg_ptr_cast<RangeFunction>(join->larg), names, plan->parameters.get()));
             if (nodeTag(join->rarg) == T_RangeVar) {
                 auto table_r = pg_ptr_cast<RangeVar>(join->rarg);
                 names.right_name = rangevar_to_qualified_name(table_r);
@@ -182,7 +183,8 @@ namespace components::sql::transform {
                 node_join->append_expression(
                     transform_a_indirection(pg_ptr_cast<A_Indirection>(join->quals), names, plan));
             } else if (nodeTag(join->quals) == T_FuncCall) {
-                node_join->append_expression(transform_a_expr_func(pg_ptr_cast<FuncCall>(join->quals), names, plan->parameters.get()));
+                node_join->append_expression(
+                    transform_a_expr_func(pg_ptr_cast<FuncCall>(join->quals), names, plan->parameters.get()));
             } else {
                 error_ = core::error_t(core::error_code_t::sql_parse_error,
                                        std::pmr::string{"incorrect type for join join->quals node" +
@@ -380,8 +382,9 @@ namespace components::sql::transform {
                                     args.emplace_back(add_param_value(arg_value, plan->parameters.get()));
                                 }
                             } else if (nodeTag(arg_value) == T_FuncCall) {
-                                args.emplace_back(
-                                    transform_a_expr_func(pg_ptr_cast<FuncCall>(arg_value), names, plan->parameters.get()));
+                                args.emplace_back(transform_a_expr_func(pg_ptr_cast<FuncCall>(arg_value),
+                                                                        names,
+                                                                        plan->parameters.get()));
                             } else if (nodeTag(arg_value) == T_CaseExpr) {
                                 // CASE WHEN ... inside aggregate arg (SUM(CASE WHEN ...))
                                 args.emplace_back(case_expr_to_scalar(pg_ptr_cast<CaseExpr>(arg_value),

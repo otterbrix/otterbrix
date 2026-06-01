@@ -39,55 +39,55 @@ This requires replanning into a join
 
 namespace {
 
-void setup_subquery_db(otterbrix::wrapper_dispatcher_t* dispatcher) {
-    {
-        auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+    void setup_subquery_db(otterbrix::wrapper_dispatcher_t* dispatcher) {
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE TABLE TestDatabase.Departments "
+                                               "(id bigint, name string, budget bigint);");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.Departments (id, name, budget) VALUES "
+                                               "(1, 'Engineering', 100000), "
+                                               "(2, 'Marketing',    50000), "
+                                               "(3, 'HR',           30000), "
+                                               "(4, 'Sales',        80000), "
+                                               "(5, 'Finance',      70000);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 5);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE TABLE TestDatabase.Employees "
+                                               "(id bigint, name string, dept_id bigint, salary bigint);");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.Employees (id, name, dept_id, salary) VALUES "
+                                               "(1,  'Alice',   1, 90000), "
+                                               "(2,  'Bob',     1, 80000), "
+                                               "(3,  'Charlie', 2, 60000), "
+                                               "(4,  'Diana',   2, 55000), "
+                                               "(5,  'Eve',     3, 45000), "
+                                               "(6,  'Frank',   3, 40000), "
+                                               "(7,  'Grace',   4, 70000), "
+                                               "(8,  'Henry',   4, 65000), "
+                                               "(9,  'Iris',    5, 75000), "
+                                               "(10, 'Jack',    5, 72000);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 10);
+        }
     }
-    {
-        auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-            "CREATE TABLE TestDatabase.Departments "
-            "(id bigint, name string, budget bigint);");
-        REQUIRE(cur->is_success());
-    }
-    {
-        auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-            "INSERT INTO TestDatabase.Departments (id, name, budget) VALUES "
-            "(1, 'Engineering', 100000), "
-            "(2, 'Marketing',    50000), "
-            "(3, 'HR',           30000), "
-            "(4, 'Sales',        80000), "
-            "(5, 'Finance',      70000);");
-        REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 5);
-    }
-    {
-        auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-            "CREATE TABLE TestDatabase.Employees "
-            "(id bigint, name string, dept_id bigint, salary bigint);");
-        REQUIRE(cur->is_success());
-    }
-    {
-        auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-            "INSERT INTO TestDatabase.Employees (id, name, dept_id, salary) VALUES "
-            "(1,  'Alice',   1, 90000), "
-            "(2,  'Bob',     1, 80000), "
-            "(3,  'Charlie', 2, 60000), "
-            "(4,  'Diana',   2, 55000), "
-            "(5,  'Eve',     3, 45000), "
-            "(6,  'Frank',   3, 40000), "
-            "(7,  'Grace',   4, 70000), "
-            "(8,  'Henry',   4, 65000), "
-            "(9,  'Iris',    5, 75000), "
-            "(10, 'Jack',    5, 72000);");
-        REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 10);
-    }
-}
 
 } // namespace
 
@@ -109,8 +109,8 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
         // Highest-paid employee: Alice (salary 90000)
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "SELECT name FROM TestDatabase.Employees "
-            "WHERE salary = (SELECT MAX(salary) FROM TestDatabase.Employees);");
+                                           "SELECT name FROM TestDatabase.Employees "
+                                           "WHERE salary = (SELECT MAX(salary) FROM TestDatabase.Employees);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         REQUIRE(cur->chunk_data().value(0, 0).value<std::string_view>() == "Alice");
@@ -120,8 +120,8 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
         // Employees above overall average (65200): Alice, Bob, Grace, Iris, Jack
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "SELECT name FROM TestDatabase.Employees "
-            "WHERE salary > (SELECT AVG(salary) FROM TestDatabase.Employees);");
+                                           "SELECT name FROM TestDatabase.Employees "
+                                           "WHERE salary > (SELECT AVG(salary) FROM TestDatabase.Employees);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
     }
@@ -131,10 +131,10 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
         // employees with salary < 70000: Charlie, Diana, Eve, Frank, Henry → 5
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "SELECT name FROM TestDatabase.Employees "
-            "WHERE salary < ("
-            "  SELECT MIN(budget) FROM TestDatabase.Departments WHERE budget > 60000"
-            ");");
+                                           "SELECT name FROM TestDatabase.Employees "
+                                           "WHERE salary < ("
+                                           "  SELECT MIN(budget) FROM TestDatabase.Departments WHERE budget > 60000"
+                                           ");");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
     }
@@ -144,10 +144,10 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
         // Employees in those 3 departments: Alice, Bob, Grace, Henry, Iris, Jack → 6
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "SELECT name FROM TestDatabase.Employees "
-            "WHERE dept_id IN ("
-            "  SELECT id FROM TestDatabase.Departments WHERE budget > 60000"
-            ");");
+                                           "SELECT name FROM TestDatabase.Employees "
+                                           "WHERE dept_id IN ("
+                                           "  SELECT id FROM TestDatabase.Departments WHERE budget > 60000"
+                                           ");");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 6);
     }
@@ -157,10 +157,10 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
         // Employees in those departments: Charlie, Diana, Eve, Frank → 4
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "SELECT name FROM TestDatabase.Employees "
-            "WHERE dept_id NOT IN ("
-            "  SELECT id FROM TestDatabase.Departments WHERE budget > 60000"
-            ");");
+                                           "SELECT name FROM TestDatabase.Employees "
+                                           "WHERE dept_id NOT IN ("
+                                           "  SELECT id FROM TestDatabase.Departments WHERE budget > 60000"
+                                           ");");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
     }
@@ -170,8 +170,8 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
         // All 5 departments are returned
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "SELECT name FROM TestDatabase.Departments "
-            "WHERE EXISTS (SELECT 1 FROM TestDatabase.Employees WHERE salary > 85000);");
+                                           "SELECT name FROM TestDatabase.Departments "
+                                           "WHERE EXISTS (SELECT 1 FROM TestDatabase.Employees WHERE salary > 85000);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
     }
@@ -180,9 +180,10 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
         // Subquery finds no employee earning > 999999 → EXISTS is false for every outer row
         // 0 departments are returned
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-            "SELECT name FROM TestDatabase.Departments "
-            "WHERE EXISTS (SELECT 1 FROM TestDatabase.Employees WHERE salary > 999999);");
+        auto cur =
+            dispatcher->execute_sql(session,
+                                    "SELECT name FROM TestDatabase.Departments "
+                                    "WHERE EXISTS (SELECT 1 FROM TestDatabase.Employees WHERE salary > 999999);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 0);
     }
@@ -191,9 +192,10 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
         // Subquery returns no rows → NOT EXISTS is true for every outer row
         // All 5 departments are returned
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-            "SELECT name FROM TestDatabase.Departments "
-            "WHERE NOT EXISTS (SELECT 1 FROM TestDatabase.Employees WHERE salary > 999999);");
+        auto cur =
+            dispatcher->execute_sql(session,
+                                    "SELECT name FROM TestDatabase.Departments "
+                                    "WHERE NOT EXISTS (SELECT 1 FROM TestDatabase.Employees WHERE salary > 999999);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
     }
@@ -250,8 +252,8 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
         // Engineering(100k), Marketing(50k), Sales(80k), Finance(70k) satisfy; HR(30k) does not → 4
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "SELECT name FROM TestDatabase.Departments "
-            "WHERE budget > ANY (SELECT salary FROM TestDatabase.Employees);");
+                                           "SELECT name FROM TestDatabase.Departments "
+                                           "WHERE budget > ANY (SELECT salary FROM TestDatabase.Employees);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
     }
@@ -261,8 +263,8 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
         // (budget > MAX(salary) = 90000): only Engineering (100000) → 1 row
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "SELECT name FROM TestDatabase.Departments "
-            "WHERE budget > ALL (SELECT salary FROM TestDatabase.Employees);");
+                                           "SELECT name FROM TestDatabase.Departments "
+                                           "WHERE budget > ALL (SELECT salary FROM TestDatabase.Employees);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         REQUIRE(cur->chunk_data().value(0, 0).value<std::string_view>() == "Engineering");
@@ -272,10 +274,10 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
         // Subquery for a non-existent dept returns no rows → NULL comparison → 0 matches
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "SELECT name FROM TestDatabase.Employees "
-            "WHERE salary = ("
-            "  SELECT MAX(salary) FROM TestDatabase.Employees WHERE dept_id = 999"
-            ");");
+                                           "SELECT name FROM TestDatabase.Employees "
+                                           "WHERE salary = ("
+                                           "  SELECT MAX(salary) FROM TestDatabase.Employees WHERE dept_id = 999"
+                                           ");");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 0);
     }
@@ -348,7 +350,8 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
         // Select from a derived table that filters high earners
         // salary > 70000: Alice(90k), Bob(80k), Iris(75k), Jack(72k) → 4 rows
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
+        auto cur = dispatcher->execute_sql(
+            session,
             "SELECT name FROM "
             "  (SELECT name, salary FROM TestDatabase.Employees WHERE salary > 70000) AS high_earners;");
         REQUIRE(cur->is_success());
@@ -359,7 +362,8 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
         // Derived table produces salary > 60000 rows, outer query restricts to dept 1
         // salary > 60000 AND dept_id = 1: Alice(90k), Bob(80k) → 2 rows
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
+        auto cur = dispatcher->execute_sql(
+            session,
             "SELECT name, salary FROM "
             "  (SELECT name, salary, dept_id FROM TestDatabase.Employees WHERE salary > 60000) AS mid_up "
             "WHERE dept_id = 1;");
@@ -372,12 +376,12 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
         // Outer derived table: salary < 80000 → Grace(70k),Henry(65k),Iris(75k),Jack(72k) → 4 rows
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "SELECT name FROM ("
-            "  SELECT name, salary FROM ("
-            "    SELECT name, salary FROM TestDatabase.Employees WHERE salary > 60000"
-            "  ) AS above_60k "
-            "  WHERE salary < 80000"
-            ") AS mid_earners;");
+                                           "SELECT name FROM ("
+                                           "  SELECT name, salary FROM ("
+                                           "    SELECT name, salary FROM TestDatabase.Employees WHERE salary > 60000"
+                                           "  ) AS above_60k "
+                                           "  WHERE salary < 80000"
+                                           ") AS mid_earners;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
     }
@@ -386,14 +390,14 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
         // Join the derived per-department stats back to departments
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "SELECT d.name, stats.avg_sal "
-            "FROM TestDatabase.Departments d "
-            "JOIN ("
-            "  SELECT dept_id, AVG(salary) AS avg_sal "
-            "  FROM TestDatabase.Employees GROUP BY dept_id"
-            ") AS stats ON d.id = stats.dept_id "
-            "WHERE stats.avg_sal > 70000 "
-            "ORDER BY d.id;");
+                                           "SELECT d.name, stats.avg_sal "
+                                           "FROM TestDatabase.Departments d "
+                                           "JOIN ("
+                                           "  SELECT dept_id, AVG(salary) AS avg_sal "
+                                           "  FROM TestDatabase.Employees GROUP BY dept_id"
+                                           ") AS stats ON d.id = stats.dept_id "
+                                           "WHERE stats.avg_sal > 70000 "
+                                           "ORDER BY d.id;");
         REQUIRE(cur->is_success());
         // dept1 avg=85000>70k ✓, dept4 avg=67500<70k ✗, dept5 avg=73500>70k ✓ → 2 rows
         REQUIRE(cur->size() == 2);
@@ -418,13 +422,13 @@ TEST_CASE("integration::cpp::test_subqueries::join") {
         // One above-average earner per department → 5 rows
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "SELECT e.name "
-            "FROM TestDatabase.Employees e "
-            "JOIN ("
-            "  SELECT dept_id, AVG(salary) AS avg_sal "
-            "  FROM TestDatabase.Employees GROUP BY dept_id"
-            ") AS dept_avg ON e.dept_id = dept_avg.dept_id "
-            "WHERE e.salary > dept_avg.avg_sal;");
+                                           "SELECT e.name "
+                                           "FROM TestDatabase.Employees e "
+                                           "JOIN ("
+                                           "  SELECT dept_id, AVG(salary) AS avg_sal "
+                                           "  FROM TestDatabase.Employees GROUP BY dept_id"
+                                           ") AS dept_avg ON e.dept_id = dept_avg.dept_id "
+                                           "WHERE e.salary > dept_avg.avg_sal;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
     }
@@ -433,13 +437,14 @@ TEST_CASE("integration::cpp::test_subqueries::join") {
         // Each employee joins the max-salary-per-dept subquery and keeps only the match
         // Top earner per dept: Alice(dept1), Charlie(dept2), Eve(dept3), Grace(dept4), Iris(dept5) → 5
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-            "SELECT e.name "
-            "FROM TestDatabase.Employees e "
-            "JOIN ("
-            "  SELECT dept_id, MAX(salary) AS max_sal "
-            "  FROM TestDatabase.Employees GROUP BY dept_id"
-            ") AS dept_max ON e.dept_id = dept_max.dept_id AND e.salary = dept_max.max_sal;");
+        auto cur =
+            dispatcher->execute_sql(session,
+                                    "SELECT e.name "
+                                    "FROM TestDatabase.Employees e "
+                                    "JOIN ("
+                                    "  SELECT dept_id, MAX(salary) AS max_sal "
+                                    "  FROM TestDatabase.Employees GROUP BY dept_id"
+                                    ") AS dept_max ON e.dept_id = dept_max.dept_id AND e.salary = dept_max.max_sal;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
     }
@@ -454,15 +459,16 @@ TEST_CASE("integration::cpp::test_subqueries::join") {
         // dept5 avg=73500: Iris(75k, diff=1500 ✓), Jack(72k, diff=1500 ✓)
         // All 10 employees are within 5000 of their dept average
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-            "SELECT e.name "
-            "FROM TestDatabase.Employees e "
-            "JOIN ("
-            "  SELECT dept_id, AVG(salary) AS avg_sal, "
-            "         MAX(salary) AS max_sal, MIN(salary) AS min_sal "
-            "  FROM TestDatabase.Employees GROUP BY dept_id"
-            ") AS stats ON e.dept_id = stats.dept_id "
-            "WHERE e.salary >= stats.avg_sal - 5000 AND e.salary <= stats.avg_sal + 5000;");
+        auto cur =
+            dispatcher->execute_sql(session,
+                                    "SELECT e.name "
+                                    "FROM TestDatabase.Employees e "
+                                    "JOIN ("
+                                    "  SELECT dept_id, AVG(salary) AS avg_sal, "
+                                    "         MAX(salary) AS max_sal, MIN(salary) AS min_sal "
+                                    "  FROM TestDatabase.Employees GROUP BY dept_id"
+                                    ") AS stats ON e.dept_id = stats.dept_id "
+                                    "WHERE e.salary >= stats.avg_sal - 5000 AND e.salary <= stats.avg_sal + 5000;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 10);
     }
@@ -487,10 +493,10 @@ TEST_CASE("integration::cpp::test_subqueries::having") {
         // dept1=85000✓, dept2=57500✗, dept3=42500✗, dept4=67500✓, dept5=73500✓ → 3
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "SELECT dept_id, AVG(salary) AS avg_sal "
-            "FROM TestDatabase.Employees "
-            "GROUP BY dept_id "
-            "HAVING AVG(salary) > (SELECT AVG(salary) FROM TestDatabase.Employees);");
+                                           "SELECT dept_id, AVG(salary) AS avg_sal "
+                                           "FROM TestDatabase.Employees "
+                                           "GROUP BY dept_id "
+                                           "HAVING AVG(salary) > (SELECT AVG(salary) FROM TestDatabase.Employees);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
     }
@@ -501,10 +507,10 @@ TEST_CASE("integration::cpp::test_subqueries::having") {
         // dept4 min=65000 ✗, dept5 min=72000>65200 ✓ → 2
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "SELECT dept_id "
-            "FROM TestDatabase.Employees "
-            "GROUP BY dept_id "
-            "HAVING MIN(salary) > (SELECT AVG(salary) FROM TestDatabase.Employees);");
+                                           "SELECT dept_id "
+                                           "FROM TestDatabase.Employees "
+                                           "GROUP BY dept_id "
+                                           "HAVING MIN(salary) > (SELECT AVG(salary) FROM TestDatabase.Employees);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
     }
@@ -515,12 +521,12 @@ TEST_CASE("integration::cpp::test_subqueries::having") {
         // dept4=135000>30k ✓, dept5=147000>30k ✓ → all 5
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "SELECT dept_id, SUM(salary) AS total_payroll "
-            "FROM TestDatabase.Employees "
-            "GROUP BY dept_id "
-            "HAVING SUM(salary) > ("
-            "  SELECT budget FROM TestDatabase.Departments WHERE name = 'HR'"
-            ");");
+                                           "SELECT dept_id, SUM(salary) AS total_payroll "
+                                           "FROM TestDatabase.Employees "
+                                           "GROUP BY dept_id "
+                                           "HAVING SUM(salary) > ("
+                                           "  SELECT budget FROM TestDatabase.Departments WHERE name = 'HR'"
+                                           ");");
         REQUIRE(cur->is_success());
         // Every dept's total payroll (≥85000) > HR budget (30000) → all 5
         REQUIRE(cur->size() == 5);
@@ -548,13 +554,13 @@ TEST_CASE("integration::cpp::test_subqueries::nested") {
         // Employees with salary > 75333: Alice(90k), Bob(80k) → 2
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "SELECT name FROM TestDatabase.Employees "
-            "WHERE salary > ("
-            "  SELECT AVG(salary) FROM TestDatabase.Employees "
-            "  WHERE dept_id IN ("
-            "    SELECT id FROM TestDatabase.Departments WHERE budget > 60000"
-            "  )"
-            ");");
+                                           "SELECT name FROM TestDatabase.Employees "
+                                           "WHERE salary > ("
+                                           "  SELECT AVG(salary) FROM TestDatabase.Employees "
+                                           "  WHERE dept_id IN ("
+                                           "    SELECT id FROM TestDatabase.Departments WHERE budget > 60000"
+                                           "  )"
+                                           ");");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
     }
@@ -628,19 +634,19 @@ TEST_CASE("integration::cpp::test_subqueries::nested") {
         // Employees in dept 1: Alice, Bob → 2
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "SELECT name FROM TestDatabase.Employees "
-            "WHERE dept_id IN ("
-            "  SELECT id FROM TestDatabase.Departments "
-            "  WHERE budget > ("
-            "    SELECT AVG(budget) FROM TestDatabase.Departments "
-            "    WHERE id IN ("
-            "      SELECT dept_id FROM TestDatabase.Employees "
-            "      WHERE salary > ("
-            "        SELECT AVG(salary) FROM TestDatabase.Employees"
-            "      )"
-            "    )"
-            "  )"
-            ");");
+                                           "SELECT name FROM TestDatabase.Employees "
+                                           "WHERE dept_id IN ("
+                                           "  SELECT id FROM TestDatabase.Departments "
+                                           "  WHERE budget > ("
+                                           "    SELECT AVG(budget) FROM TestDatabase.Departments "
+                                           "    WHERE id IN ("
+                                           "      SELECT dept_id FROM TestDatabase.Employees "
+                                           "      WHERE salary > ("
+                                           "        SELECT AVG(salary) FROM TestDatabase.Employees"
+                                           "      )"
+                                           "    )"
+                                           "  )"
+                                           ");");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
     }
@@ -658,22 +664,22 @@ TEST_CASE("integration::cpp::test_subqueries::nested") {
         // Main: employees in dept 1: Alice, Bob → 2
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "SELECT name FROM TestDatabase.Employees "
-            "WHERE dept_id = ("
-            "  SELECT id FROM TestDatabase.Departments "
-            "  WHERE budget = ("
-            "    SELECT MAX(budget) FROM TestDatabase.Departments "
-            "    WHERE budget > ("
-            "      SELECT AVG(budget) FROM TestDatabase.Departments "
-            "      WHERE id IN ("
-            "        SELECT dept_id FROM TestDatabase.Employees "
-            "        WHERE salary > ("
-            "          SELECT AVG(salary) FROM TestDatabase.Employees"
-            "        )"
-            "      )"
-            "    )"
-            "  )"
-            ");");
+                                           "SELECT name FROM TestDatabase.Employees "
+                                           "WHERE dept_id = ("
+                                           "  SELECT id FROM TestDatabase.Departments "
+                                           "  WHERE budget = ("
+                                           "    SELECT MAX(budget) FROM TestDatabase.Departments "
+                                           "    WHERE budget > ("
+                                           "      SELECT AVG(budget) FROM TestDatabase.Departments "
+                                           "      WHERE id IN ("
+                                           "        SELECT dept_id FROM TestDatabase.Employees "
+                                           "        WHERE salary > ("
+                                           "          SELECT AVG(salary) FROM TestDatabase.Employees"
+                                           "        )"
+                                           "      )"
+                                           "    )"
+                                           "  )"
+                                           ");");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
     }
@@ -690,22 +696,22 @@ TEST_CASE("integration::cpp::test_subqueries::nested") {
         // Main: employees with salary > 67500: Alice(90k),Bob(80k),Grace(70k),Iris(75k),Jack(72k) → 5
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "SELECT name FROM TestDatabase.Employees "
-            "WHERE salary > ("
-            "  SELECT AVG(salary) FROM TestDatabase.Employees "
-            "  WHERE dept_id = ("
-            "    SELECT id FROM TestDatabase.Departments "
-            "    WHERE budget = ("
-            "      SELECT MAX(budget) FROM TestDatabase.Departments "
-            "      WHERE budget < ("
-            "        SELECT MAX(budget) FROM TestDatabase.Departments "
-            "        WHERE id IN ("
-            "          SELECT dept_id FROM TestDatabase.Employees"
-            "        )"
-            "      )"
-            "    )"
-            "  )"
-            ");");
+                                           "SELECT name FROM TestDatabase.Employees "
+                                           "WHERE salary > ("
+                                           "  SELECT AVG(salary) FROM TestDatabase.Employees "
+                                           "  WHERE dept_id = ("
+                                           "    SELECT id FROM TestDatabase.Departments "
+                                           "    WHERE budget = ("
+                                           "      SELECT MAX(budget) FROM TestDatabase.Departments "
+                                           "      WHERE budget < ("
+                                           "        SELECT MAX(budget) FROM TestDatabase.Departments "
+                                           "        WHERE id IN ("
+                                           "          SELECT dept_id FROM TestDatabase.Employees"
+                                           "        )"
+                                           "      )"
+                                           "    )"
+                                           "  )"
+                                           ");");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
     }
@@ -728,23 +734,22 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
     INFO("INSERT SELECT — copy high earners to new table") {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                "CREATE TABLE TestDatabase.TopEarners (name string, salary bigint);");
+            auto cur =
+                dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.TopEarners (name string, salary bigint);");
             REQUIRE(cur->is_success());
         }
         {
             // salary > 70000: Alice(90k), Bob(80k), Iris(75k), Jack(72k) → 4 rows
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
-                "INSERT INTO TestDatabase.TopEarners (name, salary) "
-                "SELECT name, salary FROM TestDatabase.Employees WHERE salary > 70000;");
+                                               "INSERT INTO TestDatabase.TopEarners (name, salary) "
+                                               "SELECT name, salary FROM TestDatabase.Employees WHERE salary > 70000;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 4);
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                "SELECT name FROM TestDatabase.TopEarners;");
+            auto cur = dispatcher->execute_sql(session, "SELECT name FROM TestDatabase.TopEarners;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 4);
         }
@@ -754,12 +759,13 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
-                "CREATE TABLE TestDatabase.RankedEarners (name string, salary bigint);");
+                                               "CREATE TABLE TestDatabase.RankedEarners (name string, salary bigint);");
             REQUIRE(cur->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
+            auto cur = dispatcher->execute_sql(
+                session,
                 "INSERT INTO TestDatabase.RankedEarners (name, salary) "
                 "SELECT name, salary FROM TestDatabase.Employees ORDER BY salary DESC LIMIT 3;");
             REQUIRE(cur->is_success());
@@ -774,19 +780,18 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
-                "DELETE FROM TestDatabase.Employees "
-                "WHERE dept_id IN ("
-                "  SELECT id FROM TestDatabase.Departments WHERE budget = ("
-                "    SELECT MIN(budget) FROM TestDatabase.Departments"
-                "  )"
-                ");");
+                                               "DELETE FROM TestDatabase.Employees "
+                                               "WHERE dept_id IN ("
+                                               "  SELECT id FROM TestDatabase.Departments WHERE budget = ("
+                                               "    SELECT MIN(budget) FROM TestDatabase.Departments"
+                                               "  )"
+                                               ");");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 2);
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                "SELECT COUNT(*) AS cnt FROM TestDatabase.Employees;");
+            auto cur = dispatcher->execute_sql(session, "SELECT COUNT(*) AS cnt FROM TestDatabase.Employees;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
             REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 8);
@@ -805,10 +810,10 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
         // Marketing employees: Charlie(60k), Diana(55k); set salary to overall avg floor
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "UPDATE TestDatabase.Employees SET salary = 65200 "
-            "WHERE dept_id IN ("
-            "  SELECT id FROM TestDatabase.Departments WHERE budget = 50000"
-            ");");
+                                           "UPDATE TestDatabase.Employees SET salary = 65200 "
+                                           "WHERE dept_id IN ("
+                                           "  SELECT id FROM TestDatabase.Departments WHERE budget = 50000"
+                                           ");");
         REQUIRE(cur->is_success());
         // Marketing dept: Charlie and Diana → 2 rows updated
         REQUIRE(cur->size() == 2);
@@ -820,12 +825,12 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
-                "DELETE FROM TestDatabase.Employees "
-                "WHERE dept_id NOT IN ("
-                "  SELECT id FROM TestDatabase.Departments WHERE budget = ("
-                "    SELECT MAX(budget) FROM TestDatabase.Departments"
-                "  )"
-                ");");
+                                               "DELETE FROM TestDatabase.Employees "
+                                               "WHERE dept_id NOT IN ("
+                                               "  SELECT id FROM TestDatabase.Departments WHERE budget = ("
+                                               "    SELECT MAX(budget) FROM TestDatabase.Departments"
+                                               "  )"
+                                               ");");
             REQUIRE(cur->is_success());
             // After previous DELETE (HR removed) and this DELETE (non-Engineering removed):
             // dept2 (Marketing): Charlie, Diana  → 2
@@ -836,8 +841,7 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                "SELECT COUNT(*) AS cnt FROM TestDatabase.Employees;");
+            auto cur = dispatcher->execute_sql(session, "SELECT COUNT(*) AS cnt FROM TestDatabase.Employees;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
             // Only Alice and Bob remain (dept 1 = Engineering)

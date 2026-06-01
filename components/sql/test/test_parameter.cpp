@@ -35,11 +35,11 @@ using vec = std::vector<v>;
             REQUIRE_FALSE(_w.has_error());                                                                             \
             return _w.value();                                                                                         \
         }(binder.finalize()));                                                                                         \
-        auto node = result.sub_queries.back();                                                                                       \
+        auto node = result.sub_queries.back();                                                                         \
         if (node->type() == components::logical_plan::node_type::sequence_t) {                                         \
             node = node->children().back();                                                                            \
         }                                                                                                              \
-        auto agg = result.parameters;                                                                                      \
+        auto agg = result.parameters;                                                                                  \
         REQUIRE(node->to_string() == RESULT);                                                                          \
         REQUIRE(agg->parameters().parameters.size() == BIND.size());                                                   \
         for (auto i = 0ul; i < BIND.size(); ++i) {                                                                     \
@@ -58,11 +58,11 @@ using vec = std::vector<v>;
             REQUIRE_FALSE(_w.has_error());                                                                             \
             return _w.value();                                                                                         \
         }(binder.finalize()));                                                                                         \
-        auto node = result.sub_queries.back();                                                                                       \
+        auto node = result.sub_queries.back();                                                                         \
         if (node->type() == components::logical_plan::node_type::sequence_t) {                                         \
             node = node->children().back();                                                                            \
         }                                                                                                              \
-        auto agg = result.parameters;                                                                                      \
+        auto agg = result.parameters;                                                                                  \
         REQUIRE(node->to_string() == RESULT);                                                                          \
         REQUIRE(agg->parameters().parameters.size() == BIND.size());                                                   \
         for (auto i = 0ul; i < BIND.size(); ++i) {                                                                     \

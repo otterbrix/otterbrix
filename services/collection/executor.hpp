@@ -17,6 +17,7 @@
 
 #include <components/table/row_version_manager.hpp>
 #include <core/btree/btree.hpp>
+#include <core/date/date_types.hpp>
 #include <services/collection/context_storage.hpp>
 #include <stack>
 #include <string>
@@ -29,6 +30,20 @@ namespace components::table {
 
 namespace services::collection::executor {
 
+    // Accumulate per-table DML ranges across sub-plans so FK cascade DELETE
+    // on >=2 tables publishes each child's flip — previously
+    // last-DML-fragment-wins overwrote earlier ranges and silently dropped
+    // publishes for non-last child tables.
+    struct dml_append_range_t {
+        components::catalog::oid_t table_oid;
+        int64_t row_start;
+        uint64_t row_count;
+    };
+    struct dml_delete_range_t {
+        components::catalog::oid_t table_oid;
+        uint64_t txn_id;
+    };
+
     struct execute_result_t {
         components::cursor::cursor_t_ptr cursor;
         components::operators::operator_write_data_t::updated_types_map_t updates{};
@@ -40,6 +55,24 @@ namespace services::collection::executor {
         // them onto transaction_t so operator_commit_transaction can patch
         // the rows after commit_id allocation.
         std::vector<components::pg_attribute_commit_id_backfill_t> pg_attribute_commit_id_backfills{};
+        // Per-range DML accumulators flowing through to the dispatcher's
+        // commit/abort phase (Option Delta). For the implicit (auto-commit)
+        // path these are populated and the dispatcher drives
+        // storage_publish_commit / commit_insert / publish() (or the abort
+        // mirror) per range. For the explicit BEGIN/COMMIT path these are
+        // EMPTY — ranges were drained into transaction_t and
+        // operator_commit_transaction_t will publish them in a batch.
+        // Non-pmr to match sub_plan_result_t's existing convention.
+        std::vector<dml_append_range_t> dml_appends{};
+        std::vector<dml_delete_range_t> dml_deletes{};
+        // True when this DML executed under an explicit SQL BEGIN — the
+        // dispatcher must SKIP its DML commit/abort phase (ranges live on
+        // transaction_t; operator_commit_transaction_t handles publish).
+        bool explicit_txn_no_commit{false};
+        // Session timezone propagated to the dispatcher so it can construct
+        // components::execution_context_t for the storage_publish_* /
+        // commit_* / revert_* sends without re-resolving the session's tz.
+        core::date::timezone_offset_t session_tz{};
     };
 
     using function_result_t = core::result_wrapper_t<components::compute::function_uid>;
@@ -56,20 +89,6 @@ namespace services::collection::executor {
                         components::logical_plan::limit_t limit = components::logical_plan::limit_t::unlimit());
     };
     using plan_storage_t = core::pmr::btree::btree_t<components::session::session_id_t, plan_t>;
-
-    // Accumulate per-table DML ranges across sub-plans so FK cascade DELETE
-    // on >=2 tables publishes each child's flip — previously
-    // last-DML-fragment-wins overwrote earlier ranges and silently dropped
-    // publishes for non-last child tables.
-    struct dml_append_range_t {
-        components::catalog::oid_t table_oid;
-        int64_t row_start;
-        uint64_t row_count;
-    };
-    struct dml_delete_range_t {
-        components::catalog::oid_t table_oid;
-        uint64_t txn_id;
-    };
 
     // Internal result with MVCC tracking (not exposed to dispatcher).
     // DML operators self-contain WAL/storage/index I/O and record swap-info on

@@ -697,26 +697,36 @@ namespace services::dispatcher {
         // DDL needs a real (non-zero) txn so that mid-DDL crash → WAL replay rolls back
         // partially-written pg_catalog.* records.
         components::table::transaction_data txn_data{0, 0};
-        {
-            // create_collection_t/create_constraint_t are checked via original_type:
-            // after the DDL planner rewrite they become sequence_t, but still need a
-            // DDL txn so that append_pg_catalog_row records ranges on
-            // txn_t->pg_catalog_appends and storage_publish_commits rebuilds
-            // table_to_oid_ on success.
-            const bool needs_ddl_txn =
-                original_type == node_type::create_collection_t || original_type == node_type::create_constraint_t ||
-                original_type == node_type::create_sequence_t || original_type == node_type::create_view_t ||
-                original_type == node_type::create_macro_t || original_type == node_type::create_type_t ||
-                original_type == node_type::create_index_t || original_type == node_type::drop_index_t ||
-                original_type == node_type::drop_database_t || original_type == node_type::drop_collection_t ||
-                original_type == node_type::drop_type_t || original_type == node_type::drop_sequence_t ||
-                original_type == node_type::drop_view_t || original_type == node_type::drop_macro_t ||
-                original_type == node_type::create_database_t || original_type == node_type::alter_table_t ||
-                original_type == node_type::create_matview_t;
-            if (needs_ddl_txn) {
-                txn_data = txn_manager_.begin_transaction(session).data();
-                trace(log_, "manager_dispatcher_t::execute_plan: DDL began txn {}", txn_data.transaction_id);
-            }
+        // create_collection_t/create_constraint_t are checked via original_type:
+        // after the DDL planner rewrite they become sequence_t, but still need a
+        // DDL txn so that append_pg_catalog_row records ranges on
+        // txn_t->pg_catalog_appends and storage_publish_commits rebuilds
+        // table_to_oid_ on success.
+        const bool needs_ddl_txn =
+            original_type == node_type::create_collection_t || original_type == node_type::create_constraint_t ||
+            original_type == node_type::create_sequence_t || original_type == node_type::create_view_t ||
+            original_type == node_type::create_macro_t || original_type == node_type::create_type_t ||
+            original_type == node_type::create_index_t || original_type == node_type::drop_index_t ||
+            original_type == node_type::drop_database_t || original_type == node_type::drop_collection_t ||
+            original_type == node_type::drop_type_t || original_type == node_type::drop_sequence_t ||
+            original_type == node_type::drop_view_t || original_type == node_type::drop_macro_t ||
+            original_type == node_type::create_database_t || original_type == node_type::alter_table_t ||
+            original_type == node_type::create_matview_t;
+        // DML txn begin moved here from executor::execute_plan to avoid the
+        // cross-actor await + cooperative_actor.hpp:310-320 bug. Same
+        // execution semantics — executor receives txn_data via the
+        // execute_plan(_full) parameter and uses it for its DML path,
+        // skipping its own redundant txn_begin_msg send. Hoisted out of an
+        // inner scope so the DML auto-commit block at ~line 774 can read it.
+        const bool needs_dml_txn =
+            original_type == node_type::insert_t || original_type == node_type::update_t ||
+            original_type == node_type::delete_t;
+        if (needs_ddl_txn || needs_dml_txn) {
+            txn_data = txn_manager_.begin_transaction(session).data();
+            trace(log_,
+                  "manager_dispatcher_t::execute_plan: {} began txn {}",
+                  needs_ddl_txn ? "DDL" : "DML",
+                  txn_data.transaction_id);
         }
 
         collection::executor::execute_result_t exec_result;
@@ -748,10 +758,183 @@ namespace services::dispatcher {
                 break;
         }
 
+        // ===== DML auto-commit / abort phase (Option Delta) =====
+        // Moved out of services/collection/executor.cpp to escape the
+        // cooperative_actor.hpp:310-320 framework bug that hangs executor on
+        // multi-await sequences. actor_mixin pump (this actor) drives the
+        // chain — txn_manager_.commit() → storage_publish_* fanout →
+        // index commit_insert/commit_delete fanout → WAL commit_txn (real
+        // commit_id) → txn_manager_.publish() — and mirrors the abort cascade
+        // on failure. txn_manager_ is dispatcher's own member (intra-actor
+        // sync access is OK, no shared state across actors). All cross-actor
+        // calls go through actor_zeta::send + unique_future<value-type>.
+        // No exceptions; index commit errors flip cursor via make_cursor
+        // and run the abort cascade by disjunction (no goto).
+        if (needs_dml_txn && !exec_result.explicit_txn_no_commit) {
+            bool need_abort = false;
+
+            if (exec_result.cursor->is_success()) {
+                // Allocate commit_id (sync intra-actor member access).
+                uint64_t commit_id = txn_manager_.commit(session);
+                core::error_t commit_err = core::error_t::no_error();
+
+                // Per-range storage publish + index commit_insert.
+                for (auto& app : exec_result.dml_appends) {
+                    components::execution_context_t ctx{session,
+                                                        txn_data,
+                                                        exec_result.session_tz,
+                                                        app.table_oid};
+                    auto [_p, pf] = actor_zeta::send(disk_address_,
+                                                    &disk::manager_disk_t::storage_publish_commit,
+                                                    ctx,
+                                                    app.table_oid,
+                                                    commit_id,
+                                                    app.row_start,
+                                                    app.row_count);
+                    co_await std::move(pf);
+
+                    if (index_address_ != actor_zeta::address_t::empty_address()) {
+                        auto [_ci, cif] = actor_zeta::send(index_address_,
+                                                          &index::manager_index_t::commit_insert,
+                                                          ctx,
+                                                          app.table_oid,
+                                                          commit_id);
+                        auto ci_result = co_await std::move(cif);
+                        if (ci_result.contains_error()) {
+                            commit_err = std::move(ci_result);
+                            need_abort = true;
+                            break;
+                        }
+                    }
+                }
+
+                // Per-range delete publish + index commit_delete.
+                if (!need_abort) {
+                    for (auto& del : exec_result.dml_deletes) {
+                        components::execution_context_t del_ctx{session,
+                                                                txn_data,
+                                                                exec_result.session_tz,
+                                                                del.table_oid};
+                        auto [_pd, cdf] = actor_zeta::send(disk_address_,
+                                                          &disk::manager_disk_t::storage_publish_delete,
+                                                          del_ctx,
+                                                          del.table_oid,
+                                                          commit_id);
+                        co_await std::move(cdf);
+
+                        if (index_address_ != actor_zeta::address_t::empty_address()) {
+                            auto [_cd, cdif] = actor_zeta::send(index_address_,
+                                                               &index::manager_index_t::commit_delete,
+                                                               del_ctx,
+                                                               del.table_oid,
+                                                               commit_id);
+                            auto cd_result = co_await std::move(cdif);
+                            if (cd_result.contains_error()) {
+                                commit_err = std::move(cd_result);
+                                need_abort = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Batched pg_catalog publish (DML typically empty; kept for
+                // symmetry with explicit-txn commit operator path). Moves the
+                // vectors out of exec_result so the downstream merge block
+                // below is a no-op (no double-push onto transaction_t).
+                if (!need_abort && !exec_result.pg_catalog_appends.empty()) {
+                    components::execution_context_t pgc_ctx{session, txn_data, {}};
+                    auto [_pc, pcf] = actor_zeta::send(disk_address_,
+                                                      &disk::manager_disk_t::storage_publish_commits,
+                                                      pgc_ctx,
+                                                      commit_id,
+                                                      std::move(exec_result.pg_catalog_appends));
+                    co_await std::move(pcf);
+                }
+                if (!need_abort && !exec_result.pg_catalog_delete_tables.empty()) {
+                    components::execution_context_t pgc_ctx{session, txn_data, {}};
+                    auto [_pdl, pdf] = actor_zeta::send(disk_address_,
+                                                       &disk::manager_disk_t::storage_publish_deletes,
+                                                       pgc_ctx,
+                                                       commit_id,
+                                                       std::move(exec_result.pg_catalog_delete_tables));
+                    co_await std::move(pdf);
+                }
+
+                if (need_abort) {
+                    // Flip cursor; the abort phase below runs by disjunction
+                    // (need_abort || cursor->is_error()) — no goto.
+                    exec_result.cursor = make_cursor(resource(), std::move(commit_err));
+                } else {
+                    // WAL commit_txn carries the real commit_id (mirrors the
+                    // ordering the old executor's commit phase used:
+                    // storage_publish_* → WAL commit_txn → txn_manager publish).
+                    // Snapshot-aware replay restores published_horizon_ from
+                    // this record's commit_id.
+                    if (wal_address_ != actor_zeta::address_t::empty_address()) {
+                        constexpr auto db_oid = components::catalog::well_known_oid::main_database;
+                        auto [_wc, wcf] = actor_zeta::send(wal_address_,
+                                                          &wal::manager_wal_replicate_t::commit_txn,
+                                                          session,
+                                                          txn_data.transaction_id,
+                                                          wal::wal_sync_mode::FULL,
+                                                          db_oid,
+                                                          commit_id);
+                        co_await std::move(wcf);
+                    }
+                    // ProcArray publish barrier (sync intra-actor) — after
+                    // this call concurrent readers see commit_id as visible.
+                    txn_manager_.publish(commit_id);
+                }
+            }
+
+            // Abort cascade (disjunction: executor-side error OR commit-phase
+            // index error). Reverts every accumulated range, then aborts the
+            // txn in txn_manager_.
+            if (need_abort || exec_result.cursor->is_error()) {
+                for (auto& app : exec_result.dml_appends) {
+                    components::execution_context_t abort_ctx{session,
+                                                              txn_data,
+                                                              exec_result.session_tz,
+                                                              app.table_oid};
+                    auto [_ra, raf] = actor_zeta::send(disk_address_,
+                                                      &disk::manager_disk_t::storage_revert_append,
+                                                      abort_ctx,
+                                                      app.table_oid,
+                                                      app.row_start,
+                                                      app.row_count);
+                    co_await std::move(raf);
+
+                    if (index_address_ != actor_zeta::address_t::empty_address()) {
+                        auto [_ri, rif] = actor_zeta::send(index_address_,
+                                                          &index::manager_index_t::revert_insert,
+                                                          abort_ctx,
+                                                          app.table_oid);
+                        co_await std::move(rif);
+                    }
+                }
+
+                if (!exec_result.pg_catalog_appends.empty()) {
+                    components::execution_context_t pgc_ctx{session, txn_data, {}};
+                    auto [_pa, paf] = actor_zeta::send(disk_address_,
+                                                      &disk::manager_disk_t::storage_revert_appends,
+                                                      pgc_ctx,
+                                                      std::move(exec_result.pg_catalog_appends));
+                    co_await std::move(paf);
+                }
+
+                txn_manager_.abort(session);
+            }
+        }
+
         // Hand pg_catalog swap-info up to the transaction so commit/abort
         // operators (or the inline DDL commit blocks below) can apply
         // storage_publish_commits / storage_revert_appends after txn_manager_.commit()/abort().
         // Skip txn=0 (auto-commit / bootstrap path).
+        // Note: for the DML auto-commit path above, exec_result.pg_catalog_*
+        // were moved out into storage_publish_commits/_deletes (or
+        // storage_revert_appends), so the loops below iterate empty ranges —
+        // no double-merge onto txn_t.
         if (txn_data.transaction_id != 0) {
             if (auto* txn_t = txn_manager_.find_transaction(session)) {
                 for (auto& a : exec_result.pg_catalog_appends) {

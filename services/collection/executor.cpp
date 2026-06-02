@@ -250,17 +250,19 @@ namespace services::collection::executor {
             }
         }
 
-        // Begin transaction for DML (executor owns full lifecycle).
-        // txn_begin_msg mailbox handler instead of dereferencing the shared
-        // txn_manager_ pointer directly. The dispatcher serializes the
-        // txn_manager_ mutation in its own actor context.
+        // DML txn lifecycle (begin / commit / abort) is now owned by the
+        // dispatcher (Option Delta). The dispatcher's execute_plan handler
+        // pre-begins the txn and passes it via the `txn` parameter; the
+        // executor's commit / abort phase has moved into the dispatcher as
+        // well (see services/dispatcher/dispatcher.cpp DML commit phase
+        // after co_await execute_plan_impl). Rule #6: no fallback /
+        // self-bootstrap path — if the dispatcher did not pre-begin for a
+        // DML, the downstream operator pipeline will surface the missing
+        // transaction state through cursor->is_error and the dispatcher's
+        // abort branch handles cleanup.
         components::table::transaction_data txn_data = txn;
         if (is_dml) {
-            auto [_tb, tbf] = actor_zeta::send(parent_address_,
-                                               &services::dispatcher::manager_dispatcher_t::txn_begin_msg,
-                                               session);
-            txn_data = co_await std::move(tbf);
-            trace(log_, "executor::execute_plan: began txn {}", txn_data.transaction_id);
+            trace(log_, "executor::execute_plan: dispatcher-provided txn {}", txn_data.transaction_id);
         }
 
         // With the transformer wrap, logical_plan may be
@@ -297,15 +299,23 @@ namespace services::collection::executor {
             planner::create_plan(context_storage, function_registry_, logical_plan, limit, &parameters);
 
         if (!plan) {
-            if (is_dml) {
-                auto [_ta, taf] = actor_zeta::send(parent_address_,
-                                                   &services::dispatcher::manager_dispatcher_t::txn_abort_msg,
-                                                   session);
-                co_await std::move(taf);
-            }
-            co_return execute_result_t{make_cursor(resource(),
-                                                   core::error_t(core::error_code_t::create_physical_plan_error,
-                                                                 std::pmr::string{"invalid query plan", resource()}))};
+            // Option Delta: txn abort is owned by the dispatcher. Surface
+            // the error via cursor and propagate the failure flag so the
+            // dispatcher's DML commit/abort phase routes through abort.
+            // session_tz is propagated so the dispatcher's revert sends can
+            // construct execution_context_t without re-resolving session tz.
+            co_return execute_result_t{
+                make_cursor(resource(),
+                            core::error_t(core::error_code_t::create_physical_plan_error,
+                                          std::pmr::string{"invalid query plan", resource()})),
+                {},
+                {},
+                {},
+                {},
+                {},
+                {},
+                false,
+                context_storage.session_timezone};
         }
 
         plan->set_as_root();
@@ -383,274 +393,57 @@ namespace services::collection::executor {
                 // markers down. They were accumulated onto current_txn via the
                 // mark below before this co_return; see drain in
                 // operator_commit_transaction_t.
+                //
+                // Option Delta: explicit_txn_no_commit=true tells the
+                // dispatcher to SKIP its DML commit/abort phase entirely
+                // (ranges live on transaction_t and will be drained by
+                // operator_commit_transaction_t at SQL COMMIT). dml_appends /
+                // dml_deletes are deliberately empty here for the same
+                // reason.
                 co_return execute_result_t{std::move(result.cursor),
                                            std::move(result.updates),
                                            std::move(result.pg_catalog_appends),
                                            std::move(result.pg_catalog_delete_tables),
-                                           std::move(result.pg_attribute_commit_id_backfills)};
+                                           std::move(result.pg_attribute_commit_id_backfills),
+                                           {},
+                                           {},
+                                           true,
+                                           context_storage.session_timezone};
             }
 
-            // Commit transaction (implicit / auto-commit txn path).
-            // txn_commit_msg is the low-level alloc-commit_id wrapper — it
-            // does NOT run the operator pipeline / WAL / storage_publish /
-            // publish() barrier. Those side-effects continue to run inline in
-            // the executor's per-statement commit phase below.
-            uint64_t commit_id = 0;
-            {
-                auto [_tc, tcf] = actor_zeta::send(parent_address_,
-                                                   &services::dispatcher::manager_dispatcher_t::txn_commit_msg,
-                                                   session);
-                commit_id = co_await std::move(tcf);
-            }
-            trace(log_, "executor::execute_plan: committed txn {}, commit_id {}", txn_data.transaction_id, commit_id);
-
-            // Commit side-effects on storage and index.
-            // Routing is by table_oid only — never read cfn from
-            // logical_plan, since wrappers (sequence_t etc.) have no cfn and
-            // would shadow the inner DML node's identity. Each range's table_oid
-            // is stamped by the inner DML operator; it identifies the
-            // storage/index target unambiguously.
-            // Iterate ALL accumulated ranges so FK cascade DELETE on multiple
-            // tables publishes each child's flip (previously only the last
-            // range was published).
-            if (commit_id > 0) {
-                for (const auto& app : result.dml_appends) {
-                    components::execution_context_t ctx{session,
-                                                        txn_data,
-                                                        context_storage.session_timezone,
-                                                        app.table_oid};
-                    auto [_ca, caf] = actor_zeta::send(disk_address_,
-                                                       &disk::manager_disk_t::storage_publish_commit,
-                                                       ctx,
-                                                       app.table_oid,
-                                                       commit_id,
-                                                       app.row_start,
-                                                       app.row_count);
-                    co_await std::move(caf);
-                    if (index_address_ != actor_zeta::address_t::empty_address()) {
-                        auto [_ci, cif] = actor_zeta::send(index_address_,
-                                                           &index::manager_index_t::commit_insert,
-                                                           ctx,
-                                                           app.table_oid,
-                                                           commit_id);
-                        // commit_insert returns a core::error_t carrying its
-                        // error state. Bitcask is assert+abort terminal today
-                        // so contains_error() never trips, but the branch is
-                        // plumbed in for a future index-side abort path.
-                        auto ci_result = co_await std::move(cif);
-                        if (ci_result.contains_error()) {
-                            // propagate via cursor and route through the
-                            // existing abort path below. publish() is NOT
-                            // called: the commit_id stays in
-                            // in_flight_commits_, so concurrent readers keep
-                            // filtering it out of their snapshots. The
-                            // already-allocated commit_id is effectively
-                            // stranded; txn_manager_->abort(session) is a
-                            // no-op here (active_ entry was removed by
-                            // commit()), but the revert side-effects on
-                            // storage and index still run uniformly.
-                            result.cursor = make_cursor(
-                                resource(),
-                                core::error_t(ci_result.type,
-                                              std::pmr::string{ci_result.what.c_str(), resource()}));
-                            goto __block_c_3_1_abort_label;
-                        }
-                    }
-                }
-                for (const auto& del : result.dml_deletes) {
-                    components::execution_context_t del_ctx{session,
-                                                            txn_data,
-                                                            context_storage.session_timezone,
-                                                            del.table_oid};
-                    auto [_cd, cdf] = actor_zeta::send(disk_address_,
-                                                       &disk::manager_disk_t::storage_publish_delete,
-                                                       del_ctx,
-                                                       del.table_oid,
-                                                       commit_id);
-                    co_await std::move(cdf);
-                    if (index_address_ != actor_zeta::address_t::empty_address()) {
-                        auto [_cdi, cdif] = actor_zeta::send(index_address_,
-                                                             &index::manager_index_t::commit_delete,
-                                                             del_ctx,
-                                                             del.table_oid,
-                                                             commit_id);
-                        // commit_delete returns a core::error_t. Same
-                        // assert+abort terminal semantics as commit_insert
-                        // apply today.
-                        auto cd_result = co_await std::move(cdif);
-                        if (cd_result.contains_error()) {
-                            // failure path. Goto routes execution to the
-                            // shared revert + abort block; publish() stays
-                            // unreached so the commit_id remains in-flight.
-                            result.cursor = make_cursor(
-                                resource(),
-                                core::error_t(cd_result.type,
-                                              std::pmr::string{cd_result.what.c_str(), resource()}));
-                            goto __block_c_3_1_abort_label;
-                        }
-                    }
-                    // Fire-and-forget auto-GC check (single per call — uses last range's ctx).
-                    // lowest_active_start_time read so the executor stays
-                    // free of the shared txn_manager_ pointer.
-                    auto [_tl, tlf] = actor_zeta::send(parent_address_,
-                                                       &services::dispatcher::manager_dispatcher_t::txn_lowest_active_msg);
-                    auto lowest = co_await std::move(tlf);
-                    auto [gc_sched, gc_fut] =
-                        actor_zeta::send(disk_address_, &disk::manager_disk_t::maybe_cleanup, del_ctx, lowest);
-                    pending_void_.push_back(std::move(gc_fut));
-                }
-            }
-
-            // Flip MVCC tags for pg_catalog rows written during this DML
-            // fragment (e.g. pg_computed_column appends produced by
-            // operator_computed_field_register_t). Same txn; same commit_id;
-            // swap inline so the rows become visible to the next reader
-            // without dispatcher round-trips. Without this block the catalog
-            // rows would carry insert_id == txn_id and be permanently
-            // invisible (since txn_manager has already removed the active
-            // txn entry by the time of return).
-            if (commit_id > 0) {
-                // added_at_commit_id / dropped_at_commit_id BEFORE
-                // storage_publish_commits so the published row already
-                // carries the correct visibility endpoints.
-                //
-                // The manager_disk_t::update_pg_attribute_commit_id_field
-                // API has landed (manager_disk_ddl.cpp:171) — it locates the
-                // pg_attribute row by attoid and patches column 10 (added_at)
-                // or 11 (dropped_at) with the committing commit_id. WAL-replay
-                // safe: the patch is a metadata-only field update on a row the
-                // CURRENT txn just wrote (insert_id == txn_id, not yet
-                // committed), so no concurrent reader observes it pre-flip.
-                //
-                // TODO follow-up: wire the per-backfill mailbox send here so
-                // the visibility endpoints are stamped before
-                // storage_publish_commits. Today the markers still propagate
-                // through execute_result_t / transaction_t and surface in
-                // operator_commit_transaction_t for diagnostic logging;
-                // OPTION Z 0-placeholder semantics remain in effect on disk.
-                (void) result.pg_attribute_commit_id_backfills;
-
-                if (!result.pg_catalog_appends.empty()) {
-                    components::execution_context_t pgc_ctx{session, txn_data, {}};
-                    auto [_pa, paf] = actor_zeta::send(disk_address_,
-                                                       &disk::manager_disk_t::storage_publish_commits,
-                                                       pgc_ctx,
-                                                       commit_id,
-                                                       std::move(result.pg_catalog_appends));
-                    co_await std::move(paf);
-                    result.pg_catalog_appends.clear();
-                }
-                if (!result.pg_catalog_delete_tables.empty()) {
-                    components::execution_context_t pgc_ctx{session, txn_data, {}};
-                    auto [_pd, pdf] = actor_zeta::send(disk_address_,
-                                                       &disk::manager_disk_t::storage_publish_deletes,
-                                                       pgc_ctx,
-                                                       commit_id,
-                                                       std::move(result.pg_catalog_delete_tables));
-                    co_await std::move(pdf);
-                    result.pg_catalog_delete_tables.clear();
-                }
-            }
-
-            if (wal_address_ != actor_zeta::address_t::empty_address()) {
-                // WAL workers keyed by database_oid. Single-worker model uses
-                // main_database for all DML; multi-database routing follows
-                // once CREATE DATABASE allocates per-namespace workers.
-                constexpr auto db_oid = components::catalog::well_known_oid::main_database;
-                // commit_id carried into the COMMIT record so
-                // snapshot-aware replay restores published_horizon_ without
-                // re-running business logic.
-                auto [_wc, wcf] = actor_zeta::send(wal_address_,
-                                                   &wal::manager_wal_replicate_t::commit_txn,
-                                                   session,
-                                                   txn_data.transaction_id,
-                                                   wal::wal_sync_mode::FULL,
-                                                   db_oid,
-                                                   commit_id);
-                co_await std::move(wcf);
-            }
-
-            // ProcArray publish barrier. After WAL
-            // FULL fsync + storage_publish_* + commit_insert, advance
-            // published_horizon_ so the next snapshot sees this commit_id as
-            // visible. Until this call, the commit_id sits in in_flight_commits_
-            // and is filtered out of every concurrent reader's snapshot.
-            if (commit_id > 0) {
-                auto [_tp, tpf] = actor_zeta::send(parent_address_,
-                                                   &services::dispatcher::manager_dispatcher_t::txn_publish_msg,
-                                                   commit_id);
-                co_await std::move(tpf);
-            }
-
-            co_return execute_result_t{std::move(result.cursor),
-                                       std::move(result.updates),
-                                       std::move(result.pg_catalog_appends),
-                                       std::move(result.pg_catalog_delete_tables),
-                                       std::move(result.pg_attribute_commit_id_backfills)};
-
-        } else if (is_dml && result.cursor->is_error()) {
-        __block_c_3_1_abort_label:
-            // label reached both from the existing
-            // operator-error abort path (cursor flipped to error inside
-            // execute_sub_plan_) and from the commit-phase index failure
-            // branches above. Sharing one label keeps revert+abort logic in
-            // exactly one place.
-            // Abort path
-            trace(log_, "executor::execute_plan: DML error, aborting txn");
-            // Oid-only routing on abort path; same rationale as commit path.
-            // Revert ALL accumulated ranges (mirrors commit-phase iteration).
-            for (const auto& app : result.dml_appends) {
-                components::execution_context_t abort_ctx{session,
-                                                          txn_data,
-                                                          context_storage.session_timezone,
-                                                          app.table_oid};
-                auto [_ra, raf] = actor_zeta::send(disk_address_,
-                                                   &disk::manager_disk_t::storage_revert_append,
-                                                   abort_ctx,
-                                                   app.table_oid,
-                                                   app.row_start,
-                                                   app.row_count);
-                co_await std::move(raf);
-                if (index_address_ != actor_zeta::address_t::empty_address()) {
-                    auto [_ri, rif] = actor_zeta::send(index_address_,
-                                                       &index::manager_index_t::revert_insert,
-                                                       abort_ctx,
-                                                       app.table_oid);
-                    co_await std::move(rif);
-                }
-            }
-            // Revert pg_catalog appends written in this fragment before
-            // aborting the txn (otherwise the rows linger with
-            // insert_id = txn_id and are unreachable). delete_tables
-            // tombstones with delete_id = txn_id are reverted by storage's
-            // abort path on txn_manager_->abort.
-            if (!result.pg_catalog_appends.empty()) {
-                components::execution_context_t pgc_ctx{session, txn_data, {}};
-                auto [_pa, paf] = actor_zeta::send(disk_address_,
-                                                   &disk::manager_disk_t::storage_revert_appends,
-                                                   pgc_ctx,
-                                                   std::move(result.pg_catalog_appends));
-                co_await std::move(paf);
-                result.pg_catalog_appends.clear();
-            }
-            result.pg_catalog_delete_tables.clear();
-            // OPTION X: pg_attribute backfills are tied to the appended rows
-            // that were just reverted above (same pg_catalog_appends batch),
-            // so the markers are moot on abort. Drop them.
-            result.pg_attribute_commit_id_backfills.clear();
-            {
-                auto [_ta, taf] = actor_zeta::send(parent_address_,
-                                                   &services::dispatcher::manager_dispatcher_t::txn_abort_msg,
-                                                   session);
-                co_await std::move(taf);
-            }
+            // Option Delta: implicit (auto-commit) DML commit/abort phase
+            // has moved to the dispatcher. The executor co_returns with
+            // dml_appends / dml_deletes / pg_catalog_appends /
+            // pg_catalog_delete_tables / pg_attribute_commit_id_backfills
+            // populated; the dispatcher drives storage_publish_commit /
+            // commit_insert / storage_publish_delete / commit_delete /
+            // storage_publish_commits / storage_publish_deletes / WAL
+            // commit_txn / txn_publish_msg per-range, or the
+            // storage_revert_* / revert_insert mirror on the abort path.
+            // explicit_txn_no_commit stays false for this branch — the
+            // dispatcher's commit phase is the one that runs.
         }
 
+        // Fallthrough co_return covers:
+        //   * non-DML plans (DDL, SELECT, …): cursor + updates flow
+        //     through; dml_* / pg_catalog_* / backfill vectors are empty
+        //     by default; dispatcher skips its DML commit phase.
+        //   * implicit DML success: cursor->is_success(), dml_appends /
+        //     dml_deletes / pg_catalog_* / backfills populated — the
+        //     dispatcher's DML commit phase drains them.
+        //   * implicit DML error (cursor->is_error() set by
+        //     execute_sub_plan_): dml_appends / pg_catalog_appends still
+        //     carry the not-yet-published ranges — the dispatcher's DML
+        //     abort phase reverts them.
         co_return execute_result_t{std::move(result.cursor),
                                    std::move(result.updates),
                                    std::move(result.pg_catalog_appends),
                                    std::move(result.pg_catalog_delete_tables),
-                                   std::move(result.pg_attribute_commit_id_backfills)};
+                                   std::move(result.pg_attribute_commit_id_backfills),
+                                   std::move(result.dml_appends),
+                                   std::move(result.dml_deletes),
+                                   false,
+                                   context_storage.session_timezone};
     }
 
     executor_t::unique_future<execute_result_t>

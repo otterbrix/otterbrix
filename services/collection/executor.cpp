@@ -1198,6 +1198,32 @@ namespace services::collection::executor {
             components::planner::planner_t planner;
             logical_plan = planner.create_plan(resource(), std::move(logical_plan));
 
+            // Re-populate context_storage's known_oids and table_metadata
+            // from the just-stamped logical_plan tree. The dispatcher
+            // captured these BEFORE this executor's resolve loop ran (so
+            // table_oid_dependencies returned empty for SELECT WHERE plans
+            // that depend on resolve-stamped table_oids on aggregate_t /
+            // match_t). On main this worked because the dispatcher did
+            // resolve itself before capturing — the executor now owns
+            // resolve, so re-capture must happen here. Without this,
+            // create_plan_match's `context.has_table_oid(table_oid)`
+            // returns false for the resolved SELECT table and falls through
+            // to a bare operator_match without a scan child → SEGFAULT in
+            // operator_select::evaluate (chunk.cols=0 virtual_input
+            // fallback dereferences out-of-bounds chunk.data[0]). Mirrors
+            // dispatcher.cpp:1414-1431.
+            {
+                auto dependency_oids = logical_plan->table_oid_dependencies();
+                for (auto oid : dependency_oids) {
+                    context_storage.known_oids.insert(oid);
+                }
+                services::catalog_resolve::plan_resolve_index_t local_idx;
+                services::catalog_resolve::gather_plan_resolve_index(logical_plan.get(), local_idx);
+                for (const auto& [oid, md_ptr] : local_idx.tbl_md_by_oid) {
+                    context_storage.table_metadata[oid] = md_ptr;
+                }
+            }
+
             // === INSERT relkind='g' wrap + DDL OID-batch allocation ===
             // Lives inside the same enable_pass2_rewrites gate because
             // this stage mutates the logical_plan in ways that conflict

@@ -208,6 +208,7 @@ namespace components::sql::transform {
         std::vector<deferred_limit_t> deferred_limits_;
         size_t aggregate_counter_{0};
         std::pmr::vector<expressions::expression_ptr> pending_internal_aggs_{resource_};
+        std::pmr::unordered_map<std::string_view, SelectStmt*> cte_queries_{resource_};
         core::error_t error_;
     };
 } // namespace components::sql::transform

@@ -64,14 +64,24 @@ namespace components::sql::transform {
                 auto table_r = pg_ptr_cast<RangeVar>(join->rarg);
                 sub_query_names.right_name = rangevar_to_qualified_name(table_r);
                 sub_query_names.right_alias = construct_alias(table_r->alias);
-                auto agg_r = logical_plan::make_node_aggregate(resource,
-                                                               core::uid_t{sub_query_names.right_name.uuid},
-                                                               core::dbname_t{sub_query_names.right_name.dbname},
-                                                               core::relname_t{sub_query_names.right_name.relname});
-                if (!sub_query_names.right_alias.empty()) {
-                    agg_r->set_result_alias(sub_query_names.right_alias);
+                if (auto cte_it = cte_queries_.find(table_r->relname); cte_it != cte_queries_.end()) {
+                    auto agg_r = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+                    agg_r->append_child(transform_select(*cte_it->second, plan));
+                    const std::string& effective_alias = sub_query_names.right_alias.empty()
+                                                             ? sub_query_names.right_name.relname
+                                                             : sub_query_names.right_alias;
+                    agg_r->children().back()->set_result_alias(effective_alias);
+                    node_join->append_child(std::move(agg_r));
+                } else {
+                    auto agg_r = logical_plan::make_node_aggregate(resource,
+                                                                   core::uid_t{sub_query_names.right_name.uuid},
+                                                                   core::dbname_t{sub_query_names.right_name.dbname},
+                                                                   core::relname_t{sub_query_names.right_name.relname});
+                    if (!sub_query_names.right_alias.empty()) {
+                        agg_r->set_result_alias(sub_query_names.right_alias);
+                    }
+                    node_join->append_child(std::move(agg_r));
                 }
-                node_join->append_child(std::move(agg_r));
             } else if (nodeTag(join->rarg) == T_RangeFunction) {
                 auto func = pg_ptr_cast<RangeFunction>(join->rarg);
                 node_join->append_child(transform_function(*func, sub_query_names, plan->parameters.get()));
@@ -91,26 +101,44 @@ namespace components::sql::transform {
                 return;
             }
             node_join = logical_plan::make_node_join(resource, core::dbname_t{}, core::relname_t{}, j_type);
-            auto agg_l = logical_plan::make_node_aggregate(resource,
-                                                           core::uid_t{names.left_name.uuid},
-                                                           core::dbname_t{names.left_name.dbname},
-                                                           core::relname_t{names.left_name.relname});
-            if (!names.left_alias.empty()) {
-                agg_l->set_result_alias(names.left_alias);
+            if (auto cte_it = cte_queries_.find(table_l->relname); cte_it != cte_queries_.end()) {
+                auto agg_l = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+                agg_l->append_child(transform_select(*cte_it->second, plan));
+                const std::string& effective_alias =
+                    names.left_alias.empty() ? names.left_name.relname : names.left_alias;
+                agg_l->children().back()->set_result_alias(effective_alias);
+                node_join->append_child(std::move(agg_l));
+            } else {
+                auto agg_l = logical_plan::make_node_aggregate(resource,
+                                                               core::uid_t{names.left_name.uuid},
+                                                               core::dbname_t{names.left_name.dbname},
+                                                               core::relname_t{names.left_name.relname});
+                if (!names.left_alias.empty()) {
+                    agg_l->set_result_alias(names.left_alias);
+                }
+                node_join->append_child(std::move(agg_l));
             }
-            node_join->append_child(std::move(agg_l));
             if (nodeTag(join->rarg) == T_RangeVar) {
                 auto table_r = pg_ptr_cast<RangeVar>(join->rarg);
                 names.right_name = rangevar_to_qualified_name(table_r);
                 names.right_alias = construct_alias(table_r->alias);
-                auto agg_r = logical_plan::make_node_aggregate(resource,
-                                                               core::uid_t{names.right_name.uuid},
-                                                               core::dbname_t{names.right_name.dbname},
-                                                               core::relname_t{names.right_name.relname});
-                if (!names.right_alias.empty()) {
-                    agg_r->set_result_alias(names.right_alias);
+                if (auto cte_it = cte_queries_.find(table_r->relname); cte_it != cte_queries_.end()) {
+                    auto agg_r = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+                    agg_r->append_child(transform_select(*cte_it->second, plan));
+                    const std::string& effective_alias =
+                        names.right_alias.empty() ? names.right_name.relname : names.right_alias;
+                    agg_r->children().back()->set_result_alias(effective_alias);
+                    node_join->append_child(std::move(agg_r));
+                } else {
+                    auto agg_r = logical_plan::make_node_aggregate(resource,
+                                                                   core::uid_t{names.right_name.uuid},
+                                                                   core::dbname_t{names.right_name.dbname},
+                                                                   core::relname_t{names.right_name.relname});
+                    if (!names.right_alias.empty()) {
+                        agg_r->set_result_alias(names.right_alias);
+                    }
+                    node_join->append_child(std::move(agg_r));
                 }
-                node_join->append_child(std::move(agg_r));
             } else if (nodeTag(join->rarg) == T_RangeFunction) {
                 auto func = pg_ptr_cast<RangeFunction>(join->rarg);
                 node_join->append_child(transform_function(*func, names, plan->parameters.get()));
@@ -155,14 +183,23 @@ namespace components::sql::transform {
                 auto table_r = pg_ptr_cast<RangeVar>(join->rarg);
                 names.right_name = rangevar_to_qualified_name(table_r);
                 names.right_alias = construct_alias(table_r->alias);
-                auto agg_r = logical_plan::make_node_aggregate(resource,
-                                                               core::uid_t{names.right_name.uuid},
-                                                               core::dbname_t{names.right_name.dbname},
-                                                               core::relname_t{names.right_name.relname});
-                if (!names.right_alias.empty()) {
-                    agg_r->set_result_alias(names.right_alias);
+                if (auto cte_it = cte_queries_.find(table_r->relname); cte_it != cte_queries_.end()) {
+                    auto agg_r = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+                    agg_r->append_child(transform_select(*cte_it->second, plan));
+                    const std::string& effective_alias =
+                        names.right_alias.empty() ? names.right_name.relname : names.right_alias;
+                    agg_r->children().back()->set_result_alias(effective_alias);
+                    node_join->append_child(std::move(agg_r));
+                } else {
+                    auto agg_r = logical_plan::make_node_aggregate(resource,
+                                                                   core::uid_t{names.right_name.uuid},
+                                                                   core::dbname_t{names.right_name.dbname},
+                                                                   core::relname_t{names.right_name.relname});
+                    if (!names.right_alias.empty()) {
+                        agg_r->set_result_alias(names.right_alias);
+                    }
+                    node_join->append_child(std::move(agg_r));
                 }
-                node_join->append_child(std::move(agg_r));
             } else if (nodeTag(join->rarg) == T_RangeFunction) {
                 auto func = pg_ptr_cast<RangeFunction>(join->rarg);
                 node_join->append_child(transform_function(*func, names, plan->parameters.get()));
@@ -212,6 +249,17 @@ namespace components::sql::transform {
                     "SELECT set operations (UNION / INTERSECT / EXCEPT) are not yet supported by the SQL transformer",
                     resource_});
             return nullptr;
+        }
+        if (node.withClause) {
+            if (node.withClause->recursive) {
+                error_ = core::error_t(core::error_code_t::unimplemented_yet,
+                                       std::pmr::string{"WITH RECURSIVE is not yet supported", resource_});
+                return nullptr;
+            }
+            for (const auto& item : node.withClause->ctes->lst) {
+                auto* cte = pg_ptr_cast<CommonTableExpr>(item.data);
+                cte_queries_.emplace(cte->ctename, pg_ptr_cast<SelectStmt>(cte->ctequery));
+            }
         }
         logical_plan::node_aggregate_ptr agg = nullptr;
         logical_plan::node_join_ptr join = nullptr;
@@ -272,12 +320,20 @@ namespace components::sql::transform {
                 auto table = pg_ptr_cast<RangeVar>(from_first);
                 names.left_name = rangevar_to_qualified_name(table);
                 names.left_alias = construct_alias(table->alias);
-                agg = logical_plan::make_node_aggregate(resource_,
-                                                        core::uid_t{names.left_name.uuid},
-                                                        core::dbname_t{names.left_name.dbname},
-                                                        core::relname_t{names.left_name.relname});
-                if (!names.left_alias.empty()) {
-                    agg->set_result_alias(names.left_alias);
+                if (auto cte_it = cte_queries_.find(table->relname); cte_it != cte_queries_.end()) {
+                    agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+                    agg->append_child(transform_select(*cte_it->second, plan));
+                    const std::string& effective_alias =
+                        names.left_alias.empty() ? names.left_name.relname : names.left_alias;
+                    agg->children().back()->set_result_alias(effective_alias);
+                } else {
+                    agg = logical_plan::make_node_aggregate(resource_,
+                                                            core::uid_t{names.left_name.uuid},
+                                                            core::dbname_t{names.left_name.dbname},
+                                                            core::relname_t{names.left_name.relname});
+                    if (!names.left_alias.empty()) {
+                        agg->set_result_alias(names.left_alias);
+                    }
                 }
             } else if (nodeTag(from_first) == T_JoinExpr) {
                 // from table_1 join table_2 on cond

@@ -854,7 +854,6 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
 // Common Table Expressions (WITH clause)
 // ---------------------------------------------------------------------------
 
-/*
 TEST_CASE("integration::cpp::test_subqueries::cte") {
     auto config = test_create_config("/tmp/test_subqueries/cte");
     test_clear_directory(config);
@@ -870,12 +869,12 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
         // Above overall avg (65200): Alice, Bob, Grace, Iris, Jack → 5
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "WITH above_avg AS ("
-            "  SELECT name, salary, dept_id "
-            "  FROM TestDatabase.Employees "
-            "  WHERE salary > (SELECT AVG(salary) FROM TestDatabase.Employees)"
-            ") "
-            "SELECT name FROM above_avg ORDER BY salary DESC;");
+                                           "WITH above_avg AS ("
+                                           "  SELECT name, salary, dept_id "
+                                           "  FROM TestDatabase.Employees "
+                                           "  WHERE salary > (SELECT AVG(salary) FROM TestDatabase.Employees)"
+                                           ") "
+                                           "SELECT name FROM above_avg ORDER BY salary DESC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
         REQUIRE(cur->chunk_data().value(0, 0).value<std::string_view>() == "Alice");
@@ -886,15 +885,15 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
         // All 5 departments have stats → 5 rows
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "WITH dept_stats AS ("
-            "  SELECT dept_id, AVG(salary) AS avg_sal, MAX(salary) AS max_sal "
-            "  FROM TestDatabase.Employees "
-            "  GROUP BY dept_id"
-            ") "
-            "SELECT d.name, ds.avg_sal "
-            "FROM TestDatabase.Departments d "
-            "JOIN dept_stats ds ON d.id = ds.dept_id "
-            "ORDER BY ds.avg_sal DESC;");
+                                           "WITH dept_stats AS ("
+                                           "  SELECT dept_id, AVG(salary) AS avg_sal, MAX(salary) AS max_sal "
+                                           "  FROM TestDatabase.Employees "
+                                           "  GROUP BY dept_id"
+                                           ") "
+                                           "SELECT d.name, ds.avg_sal "
+                                           "FROM TestDatabase.Departments d "
+                                           "JOIN dept_stats ds ON d.id = ds.dept_id "
+                                           "ORDER BY ds.avg_sal DESC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
         // Highest avg: Engineering (85000)
@@ -908,18 +907,18 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
         //   Alice(dept1✓), Bob(dept1✓), Grace(dept4✓), Iris(dept5✓), Jack(dept5✓) → 5
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "WITH above_avg AS ("
-            "  SELECT name, dept_id, salary "
-            "  FROM TestDatabase.Employees "
-            "  WHERE salary > (SELECT AVG(salary) FROM TestDatabase.Employees)"
-            "), "
-            "high_budget_depts AS ("
-            "  SELECT id FROM TestDatabase.Departments WHERE budget > 60000"
-            ") "
-            "SELECT a.name "
-            "FROM above_avg a "
-            "WHERE a.dept_id IN (SELECT id FROM high_budget_depts) "
-            "ORDER BY a.salary DESC;");
+                                           "WITH above_avg AS ("
+                                           "  SELECT name, dept_id, salary "
+                                           "  FROM TestDatabase.Employees "
+                                           "  WHERE salary > (SELECT AVG(salary) FROM TestDatabase.Employees)"
+                                           "), "
+                                           "high_budget_depts AS ("
+                                           "  SELECT id FROM TestDatabase.Departments WHERE budget > 60000"
+                                           ") "
+                                           "SELECT a.name "
+                                           "FROM above_avg a "
+                                           "WHERE a.dept_id IN (SELECT id FROM high_budget_depts) "
+                                           "ORDER BY a.salary DESC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
     }
@@ -931,14 +930,14 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
         // max of those = 90000 → only Alice's department (Engineering)
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "WITH dept_tops AS ("
-            "  SELECT dept_id, MAX(salary) AS top_sal "
-            "  FROM TestDatabase.Employees GROUP BY dept_id"
-            ") "
-            "SELECT d.name "
-            "FROM TestDatabase.Departments d "
-            "JOIN dept_tops dt ON d.id = dt.dept_id "
-            "WHERE dt.top_sal = (SELECT MAX(top_sal) FROM dept_tops);");
+                                           "WITH dept_tops AS ("
+                                           "  SELECT dept_id, MAX(salary) AS top_sal "
+                                           "  FROM TestDatabase.Employees GROUP BY dept_id"
+                                           ") "
+                                           "SELECT d.name "
+                                           "FROM TestDatabase.Departments d "
+                                           "JOIN dept_tops dt ON d.id = dt.dept_id "
+                                           "WHERE dt.top_sal = (SELECT MAX(top_sal) FROM dept_tops);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         REQUIRE(cur->chunk_data().value(0, 0).value<std::string_view>() == "Engineering");
@@ -950,15 +949,15 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
         // Outer query counts per department
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            "WITH eligible AS ("
-            "  SELECT dept_id, salary "
-            "  FROM TestDatabase.Employees "
-            "  WHERE salary > (SELECT MIN(budget) FROM TestDatabase.Departments)"
-            ") "
-            "SELECT dept_id, COUNT(*) AS cnt "
-            "FROM eligible "
-            "GROUP BY dept_id "
-            "ORDER BY dept_id;");
+                                           "WITH eligible AS ("
+                                           "  SELECT dept_id, salary "
+                                           "  FROM TestDatabase.Employees "
+                                           "  WHERE salary > (SELECT MIN(budget) FROM TestDatabase.Departments)"
+                                           ") "
+                                           "SELECT dept_id, COUNT(*) AS cnt "
+                                           "FROM eligible "
+                                           "GROUP BY dept_id "
+                                           "ORDER BY dept_id;");
         REQUIRE(cur->is_success());
         // All 5 departments represented, each with 2 employees
         REQUIRE(cur->size() == 5);
@@ -967,4 +966,135 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
         }
     }
 }
-*/
+
+// ---------------------------------------------------------------------------
+// Recursive Common Table Expressions (WITH RECURSIVE)
+// ---------------------------------------------------------------------------
+//
+// OrgChart: (id, name,        manager_id)
+//           (1,  'CEO',       0)          -- root: manager_id=0 means no manager
+//           (2,  'VP Eng',    1)
+//           (3,  'VP Mkt',    1)
+//           (4,  'Engineer',  2)
+//           (5,  'Designer',  3)
+//
+// Hierarchy (depth):
+//   depth 0: CEO
+//   depth 1: VP Eng, VP Mkt
+//   depth 2: Engineer, Designer
+
+namespace {
+    void setup_recursive_db(otterbrix::wrapper_dispatcher_t* dispatcher) {
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "CREATE TABLE TestDatabase.OrgChart (id bigint, name string, manager_id bigint);");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.OrgChart (id, name, manager_id) VALUES "
+                                               "(1, 'CEO',      0), "
+                                               "(2, 'VP Eng',   1), "
+                                               "(3, 'VP Mkt',   1), "
+                                               "(4, 'Engineer', 2), "
+                                               "(5, 'Designer', 3);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 5);
+        }
+    }
+} // namespace
+
+TEST_CASE("integration::cpp::test_subqueries::recursive_cte") {
+    auto config = test_create_config("/tmp/test_subqueries/recursive_cte");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup") { setup_recursive_db(dispatcher); }
+
+    INFO("full hierarchy traversal") {
+        // Starting from root (manager_id=0), traverse all 5 nodes
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "WITH RECURSIVE hierarchy AS ("
+                                           "  SELECT id, name FROM TestDatabase.OrgChart WHERE manager_id = 0 "
+                                           "  UNION ALL "
+                                           "  SELECT e.id, e.name "
+                                           "  FROM TestDatabase.OrgChart e "
+                                           "  JOIN hierarchy h ON e.manager_id = h.id"
+                                           ") "
+                                           "SELECT name FROM hierarchy ORDER BY id;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 5);
+        REQUIRE(cur->chunk_data().value(0, 0).value<std::string_view>() == "CEO");
+        REQUIRE(cur->chunk_data().value(0, 1).value<std::string_view>() == "VP Eng");
+        REQUIRE(cur->chunk_data().value(0, 4).value<std::string_view>() == "Designer");
+    }
+
+    INFO("subtree rooted at VP Eng") {
+        // Starting from VP Eng (id=2), traverse only her subtree: VP Eng + Engineer
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "WITH RECURSIVE subtree AS ("
+                                           "  SELECT id, name FROM TestDatabase.OrgChart WHERE id = 2 "
+                                           "  UNION ALL "
+                                           "  SELECT e.id, e.name "
+                                           "  FROM TestDatabase.OrgChart e "
+                                           "  JOIN subtree s ON e.manager_id = s.id"
+                                           ") "
+                                           "SELECT name FROM subtree ORDER BY id;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        REQUIRE(cur->chunk_data().value(0, 0).value<std::string_view>() == "VP Eng");
+        REQUIRE(cur->chunk_data().value(0, 1).value<std::string_view>() == "Engineer");
+    }
+
+    INFO("hierarchy with depth") {
+        // Carry depth through recursion: depth 0 at root, +1 each level
+        // CEO=0, VP Eng=1, VP Mkt=1, Engineer=2, Designer=2
+        auto session = otterbrix::session_id_t();
+        auto cur =
+            dispatcher->execute_sql(session,
+                                    "WITH RECURSIVE hierarchy AS ("
+                                    "  SELECT id, name, 0 AS depth FROM TestDatabase.OrgChart WHERE manager_id = 0 "
+                                    "  UNION ALL "
+                                    "  SELECT e.id, e.name, h.depth + 1 "
+                                    "  FROM TestDatabase.OrgChart e "
+                                    "  JOIN hierarchy h ON e.manager_id = h.id"
+                                    ") "
+                                    "SELECT name, depth FROM hierarchy ORDER BY id;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 5);
+        REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 0); // CEO
+        REQUIRE(cur->chunk_data().value(1, 1).value<int64_t>() == 1); // VP Eng
+        REQUIRE(cur->chunk_data().value(1, 3).value<int64_t>() == 2); // Engineer
+    }
+
+    INFO("filter by depth in outer query") {
+        // Only depth-2 employees (Engineer, Designer) via outer WHERE on depth
+        auto session = otterbrix::session_id_t();
+        auto cur =
+            dispatcher->execute_sql(session,
+                                    "WITH RECURSIVE hierarchy AS ("
+                                    "  SELECT id, name, 0 AS depth FROM TestDatabase.OrgChart WHERE manager_id = 0 "
+                                    "  UNION ALL "
+                                    "  SELECT e.id, e.name, h.depth + 1 "
+                                    "  FROM TestDatabase.OrgChart e "
+                                    "  JOIN hierarchy h ON e.manager_id = h.id"
+                                    ") "
+                                    "SELECT name FROM hierarchy WHERE depth = 2 ORDER BY id;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        REQUIRE(cur->chunk_data().value(0, 0).value<std::string_view>() == "Engineer");
+        REQUIRE(cur->chunk_data().value(0, 1).value<std::string_view>() == "Designer");
+    }
+}

@@ -159,7 +159,7 @@ namespace components::table {
             auto scan_types = copy_types();
             vector::data_chunk_t chunk(resource_, scan_types, vector::DEFAULT_VECTOR_CAPACITY);
             while (true) {
-                state.table_state.scan_committed(chunk, table_scan_type::COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED);
+                state.table_state.scan(chunk);
                 if (chunk.size() == 0) {
                     break;
                 }
@@ -176,13 +176,6 @@ namespace components::table {
     }
 
     void data_table_t::scan(vector::data_chunk_t& result, table_scan_state& state) { state.table_state.scan(result); }
-
-    void data_table_t::scan_committed(vector::data_chunk_t& result, table_scan_state& state) {
-        // Route through committed_version_operator (COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED)
-        // so resolve_* paths drop tombstoned rows. COMMITTED_ROWS skips the visibility filter
-        // entirely and would still see deleted entries.
-        state.table_state.scan_committed(result, table_scan_type::COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED);
-    }
 
     void data_table_t::scan_batched(const std::pmr::vector<types::complex_logical_type>& types,
                                     const std::vector<size_t>* projected_cols,

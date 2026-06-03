@@ -124,7 +124,7 @@ namespace services::disk {
                                                            all_types,
                                                            projected,
                                                            components::vector::DEFAULT_VECTOR_CAPACITY);
-                    table.scan_committed(chunk, state);
+                    table.scan(chunk, state);
                     if (chunk.size() == 0)
                         break;
                     for (uint64_t i = 0; i < chunk.size(); ++i) {

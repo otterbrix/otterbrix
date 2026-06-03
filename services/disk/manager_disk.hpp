@@ -359,6 +359,20 @@ namespace services::disk {
         // with ready_since==0 (unfinished backfill).
         std::pmr::vector<pg_index_row_t> scan_alive_pg_index_sync() const;
 
+        // Sync full-storage scan for post-bootstrap index rebuild. CHECKPOINT
+        // compaction renumbers physical row_ids contiguously from 0 (see
+        // data_table_t::compact); pre-compact row_ids persisted in on-disk
+        // index btrees become stale. base_spaces calls this immediately after
+        // bootstrap_indexes_sync for every live indexed table and feeds the
+        // resulting chunk into manager_index_t::bootstrap_repopulate_sync to
+        // rebuild the in-memory index_engine_t against the current row_ids.
+        // Single-threaded bootstrap context — must not be called once the
+        // scheduler is running. Returns a default-constructed unique_ptr when
+        // the oid is unknown or its storage is empty.
+        std::unique_ptr<components::vector::data_chunk_t>
+        scan_storage_for_rebuild_sync(components::catalog::oid_t table_oid,
+                                      std::pmr::memory_resource* resource) const;
+
         // catalog scan: returns (oid, delete_id) for every pg_class row
         // whose row-version is tombstoned (deleted but not yet physically
         // GC'd). Called by base_spaces after WAL replay, before

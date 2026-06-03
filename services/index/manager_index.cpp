@@ -502,6 +502,48 @@ namespace services::index {
             engine->add_disk_agent(id_index, disk_agent_addr);
         }
 
+        // Rehydrate in-memory btree from on-disk b+tree (same block as the
+        // runtime create_index handler below). Without this, the engine is
+        // wired but its in-memory storage_ is empty, so post-restart equality
+        // predicates routed by the planner through index_scan return 0 rows
+        // even though the disk-side btree is intact.
+        if (!path_db_.empty() && type == components::logical_plan::index_type::single) {
+            auto btree_path = path_db_ / std::to_string(static_cast<unsigned>(table_oid)) / index_name;
+            if (std::filesystem::exists(btree_path / "metadata")) {
+                try {
+                    core::filesystem::local_file_system_t fs;
+                    auto db =
+                        std::make_unique<core::b_plus_tree::btree_t>(resource_, fs, btree_path, item_key_getter);
+                    db->load();
+                    if (db->size() > 0) {
+                        struct pv_entry {
+                            components::types::physical_value key;
+                            int64_t row_id;
+                        };
+                        std::pmr::vector<pv_entry> raw(resource_);
+                        db->full_scan<pv_entry>(&raw, [](void* data, size_t sz) -> pv_entry {
+                            auto item = core::b_plus_tree::btree_t::item_data{
+                                static_cast<core::b_plus_tree::data_ptr_t>(data),
+                                static_cast<uint32_t>(sz)};
+                            return {item_key_getter(item),
+                                    static_cast<int64_t>(
+                                        id_getter(item).value<components::types::physical_type::UINT64>())};
+                        });
+                        if (auto* idx = components::index::search_index(engine, keys); idx) {
+                            // Bootstrap has no session — default-construct tz (UTC).
+                            const core::date::timezone_offset_t bootstrap_tz{};
+                            for (auto& e : raw) {
+                                idx->insert(reverse_convert(resource_, e.key), e.row_id, bootstrap_tz);
+                            }
+                            trace(log_, "bootstrap_index_sync: loaded {} entries from btree", raw.size());
+                        }
+                    }
+                } catch (const std::exception& e) {
+                    trace(log_, "bootstrap_index_sync: btree load failed: {}", e.what());
+                }
+            }
+        }
+
         // Per-oid fan-out registration — commit_insert / commit_delete /
         // on_horizon_advanced GC use this map. Keep insertion order matching
         // create_index for runtime/bootstrap parity.
@@ -767,6 +809,39 @@ namespace services::index {
     }
 
     // --- Txn-aware DML ---
+
+    void manager_index_t::bootstrap_repopulate_sync(components::catalog::oid_t table_oid,
+                                                    std::unique_ptr<components::vector::data_chunk_t> chunk,
+                                                    uint64_t row_count) {
+        if (!chunk || row_count == 0) {
+            return;
+        }
+        auto it = engines_.find(table_oid);
+        if (it == engines_.end()) {
+            return;
+        }
+        auto& engine = it->second;
+        // Clear in-memory storage_ for every index on this oid. Any entries
+        // loaded earlier (e.g. via bootstrap_index_sync's disk-btree
+        // rehydration) carry pre-compact row_ids and must be discarded.
+        for (auto& idx_name : engine->indexes()) {
+            auto* idx = components::index::search_index(engine, idx_name);
+            if (idx) {
+                idx->clean_memory_to_new_elements(0);
+            }
+        }
+        // Re-insert each row with its CURRENT physical row_id (chunks
+        // produced by storage_scan_segment after a checkpoint hold
+        // post-compact, 0-based contiguous row_ids).
+        const core::date::timezone_offset_t bootstrap_tz{};
+        for (uint64_t i = 0; i < row_count; ++i) {
+            engine->insert_row(*chunk, i, static_cast<int64_t>(i), /*txn_id=*/0, bootstrap_tz);
+        }
+        trace(log_,
+              "manager_index_t::bootstrap_repopulate_sync: oid={} rows={}",
+              static_cast<unsigned>(table_oid),
+              row_count);
+    }
 
     manager_index_t::unique_future<void>
     manager_index_t::insert_rows(execution_context_t ctx,

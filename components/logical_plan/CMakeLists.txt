@@ -15,7 +15,6 @@ set(SOURCE_${PROJECT_NAME}
         node_primitive_write.cpp
         node_primitive_delete.cpp
         node_dynamic_cascade_delete.cpp
-        node_get_schema.cpp
         node_register_udf.cpp
         node_unregister_udf.cpp
         node_commit_transaction.cpp

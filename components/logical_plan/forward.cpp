@@ -94,8 +94,6 @@ namespace components::logical_plan {
                 return "alter_column_drop_t";
             case node_type::dynamic_cascade_delete_t:
                 return "dynamic_cascade_delete_t";
-            case node_type::get_schema_t:
-                return "get_schema_t";
             case node_type::register_udf_t:
                 return "register_udf_t";
             case node_type::unregister_udf_t:

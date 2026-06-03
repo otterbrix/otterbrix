@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <cstdlib>
+#include <limits>
 
 #include <components/vector/indexing_vector.hpp>
 #include <stdexcept>
@@ -47,12 +48,15 @@ namespace components::table {
         //   if (in_flight_snapshot contains id)         return false;  // in-flight at snapshot
         //   return true;
         //
-        // Tests / helpers that bypass transaction_manager and construct
-        // transaction_data with literal {id, time} must set snapshot_horizon to
-        // a value covering the row insert_ids they expect to read (e.g.
-        // UINT64_MAX for "see all committed rows", or a specific commit_id
-        // when exercising horizon semantics). There is no implicit fallback.
-        uint64_t snapshot_horizon{0};
+        // Default = UINT64_MAX so a default-constructed transaction_data means
+        // "see all committed rows" (an empty in_flight_snapshot below makes
+        // the in-flight rejection rule degenerate). The ProcArray populates
+        // this field for MVCC reads via set_snapshot() inside begin_transaction,
+        // overwriting the default; so MVCC isolation is preserved. Catalog
+        // scans, recovery, WAL-replay paths and any other helper that bypasses
+        // transaction_manager can use the default to get a "see all committed"
+        // view without explicit plumbing.
+        uint64_t snapshot_horizon{std::numeric_limits<uint64_t>::max()};
         // No get_default_resource: the default vector is anchored to
         // null_memory_resource — empty is fine; any allocation aborts. The
         // ProcArray populates this field via move-assignment from a vector
@@ -79,12 +83,6 @@ namespace components::table {
         virtual uint64_t indexing_vector(transaction_data transaction,
                                          vector::indexing_vector_t& indexing_vector,
                                          uint64_t max_count) = 0;
-        // committed-scan path takes a full transaction_data snapshot — same
-        // shape as indexing_vector — so DDL resolves respect ProcArray
-        // published_horizon + in_flight_snapshot.
-        virtual uint64_t committed_indexing_vector(const transaction_data& txn,
-                                                   vector::indexing_vector_t& indexing_vector,
-                                                   uint64_t max_count) = 0;
         virtual bool fetch(const transaction_data& transaction, int64_t row) = 0;
         virtual void commit_append(uint64_t commit_id, uint64_t start, uint64_t end) = 0;
         virtual uint64_t committed_deleted_count(uint64_t max_count) = 0;
@@ -115,9 +113,6 @@ namespace components::table {
         uint64_t indexing_vector(transaction_data transaction,
                                  vector::indexing_vector_t& indexing_vector,
                                  uint64_t max_count) override;
-        uint64_t committed_indexing_vector(const transaction_data& txn,
-                                           vector::indexing_vector_t& indexing_vector,
-                                           uint64_t max_count) override;
         bool fetch(const transaction_data& transaction, int64_t row) override;
         void commit_append(uint64_t commit_id, uint64_t start, uint64_t end) override;
         uint64_t committed_deleted_count(uint64_t max_count) override;
@@ -147,9 +142,6 @@ namespace components::table {
         uint64_t indexing_vector(transaction_data transaction,
                                  vector::indexing_vector_t& indexing_vector,
                                  uint64_t max_count) override;
-        uint64_t committed_indexing_vector(const transaction_data& txn,
-                                           vector::indexing_vector_t& indexing_vector,
-                                           uint64_t max_count) override;
         bool fetch(const transaction_data& transaction, int64_t row) override;
         void commit_append(uint64_t commit_id, uint64_t start, uint64_t end) override;
         bool cleanup(uint64_t lowest_transaction, std::unique_ptr<chunk_info>& result) const override;
@@ -210,10 +202,6 @@ namespace components::table {
                                  uint64_t vector_idx,
                                  vector::indexing_vector_t& indexing_vector,
                                  uint64_t max_count);
-        uint64_t committed_indexing_vector(const transaction_data& txn,
-                                           uint64_t vector_idx,
-                                           vector::indexing_vector_t& indexing_vector,
-                                           uint64_t max_count);
         bool fetch(const transaction_data& transaction, uint64_t row);
 
         void append_version_info(transaction_data transaction,

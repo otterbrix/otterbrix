@@ -103,10 +103,6 @@ namespace otterbrix {
         auto execute_sql(const session_id_t& session, const std::string& query) -> components::cursor::cursor_t_ptr;
         auto set_timezone(const session_id_t& session, std::string timezone_name) -> components::cursor::cursor_t_ptr;
 
-        auto get_schema(const session_id_t& session,
-                        const std::pmr::vector<std::pair<database_name_t, collection_name_t>>& ids)
-            -> components::cursor::cursor_t_ptr;
-
     private:
         std::pmr::memory_resource* resource_;
         services::dispatcher::manager_dispatcher_t* manager_dispatcher_;

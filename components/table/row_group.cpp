@@ -285,8 +285,7 @@ namespace components::table {
 
     template<table_scan_type TYPE>
     void row_group_t::templated_scan(collection_scan_state& state, vector::data_chunk_t& result) {
-        constexpr bool ALLOW_UPDATES = TYPE != table_scan_type::COMMITTED_ROWS_DISALLOW_UPDATES &&
-                                       TYPE != table_scan_type::COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED;
+        constexpr bool ALLOW_UPDATES = TYPE != table_scan_type::COMMITTED_ROWS_DISALLOW_UPDATES;
         const auto& column_ids = state.column_ids();
         auto* filter = state.filter();
         // Sync result_offset with current chunk cardinality (handles chunk reset between calls)
@@ -313,15 +312,6 @@ namespace components::table {
                                                          state.vector_index,
                                                          state.valid_indexing,
                                                          max_count);
-                if (count == 0) {
-                    next_vector(state);
-                    continue;
-                }
-            } else if (TYPE == table_scan_type::COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED) {
-                count = state.row_group->committed_indexing_vector(state.txn,
-                                                                   state.vector_index,
-                                                                   state.valid_indexing,
-                                                                   max_count);
                 if (count == 0) {
                     next_vector(state);
                     continue;
@@ -451,9 +441,8 @@ namespace components::table {
             case table_scan_type::COMMITTED_ROWS_DISALLOW_UPDATES:
                 templated_scan<table_scan_type::COMMITTED_ROWS_DISALLOW_UPDATES>(state, result);
                 break;
-            case table_scan_type::COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED:
             case table_scan_type::LATEST_COMMITTED_ROWS:
-                templated_scan<table_scan_type::COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED>(state, result);
+                templated_scan<table_scan_type::COMMITTED_ROWS>(state, result);
                 break;
             default:
                 // Invariant: planner must produce a known table_scan_type value.
@@ -704,17 +693,6 @@ namespace components::table {
             return max_count;
         }
         return vinfo->indexing_vector(txn, vector_idx, indexing_vector, max_count);
-    }
-
-    uint64_t row_group_t::committed_indexing_vector(const transaction_data& txn,
-                                                    uint64_t vector_idx,
-                                                    vector::indexing_vector_t& indexing_vector,
-                                                    uint64_t max_count) {
-        auto vinfo = version_info();
-        if (!vinfo) {
-            return max_count;
-        }
-        return vinfo->committed_indexing_vector(txn, vector_idx, indexing_vector, max_count);
     }
 
     std::shared_ptr<row_version_manager_t> row_group_t::get_or_create_version_info_internal() {

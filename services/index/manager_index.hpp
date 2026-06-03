@@ -133,6 +133,21 @@ namespace services::index {
         // so the bootstrap call site reads consistently.
         void bootstrap_dropped_sync(components::catalog::oid_t oid, uint64_t delete_id);
 
+        // Repopulate the in-memory index from a post-restart storage scan.
+        // CHECKPOINT compaction renumbers physical row_ids contiguously from 0,
+        // but the on-disk btree retains pre-compact row_ids. Without rebuilding
+        // from storage, post-restart equality lookups return stale row_ids
+        // that no longer map to live storage rows. Called by base_spaces after
+        // bootstrap_index_sync wires the engine, passing a freshly scanned
+        // chunk so the in-memory storage_ holds rows keyed by current physical
+        // row_ids. The on-disk btree is intentionally not touched here — its
+        // stale entries are harmless because collection_t::fetch silently
+        // skips out-of-bounds row_ids, and runtime DML will refresh the disk
+        // btree over time.
+        void bootstrap_repopulate_sync(components::catalog::oid_t table_oid,
+                                       std::unique_ptr<components::vector::data_chunk_t> chunk,
+                                       uint64_t row_count);
+
         // Collection lifecycle
         unique_future<void> register_collection(session_id_t session, components::catalog::oid_t table_oid);
         unique_future<void> unregister_collection(session_id_t session, components::catalog::oid_t table_oid);

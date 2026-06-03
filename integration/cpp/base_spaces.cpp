@@ -504,6 +504,29 @@ namespace otterbrix {
             manager_index_->bootstrap_dropped_sync(oid, delete_id);
         }
 
+        // Rebuild in-memory index against post-restart storage. CHECKPOINT
+        // compacts storage and renumbers physical row_ids contiguously; the
+        // on-disk index btree retains pre-compact row_ids, so the
+        // bootstrap_index_sync btree-load step seeds the in-memory engine
+        // with stale row_ids. Without this rebuild pass, post-restart
+        // equality lookups via index_scan return row_ids that no longer map
+        // to live storage rows and collection_t::fetch silently drops them
+        // (visible as `SELECT WHERE indexed_col = X` returning 0 instead of
+        // the expected row). We rescan storage for every indexed table and
+        // re-populate the engine using the current row_ids. Sync: must run
+        // before the scheduler starts (same window as the bootstrap_*_sync
+        // calls above). live_tables is the same oid set bootstrap_engine_sync
+        // walked, so we iterate it directly rather than re-scanning pg_class.
+        for (auto oid : live_tables) {
+            auto chunk = manager_disk_->scan_storage_for_rebuild_sync(oid, &resource);
+            if (!chunk)
+                continue;
+            const auto row_count = chunk->size();
+            if (row_count == 0)
+                continue;
+            manager_index_->bootstrap_repopulate_sync(oid, std::move(chunk), row_count);
+        }
+
         trace(log_,
               "spaces::PHASE 4 bootstrap_indexes_sync: {} engines, {} indexes wired "
               "({} skipped as unfinished), {} dropped tombstones restored",

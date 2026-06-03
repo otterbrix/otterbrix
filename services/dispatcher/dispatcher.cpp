@@ -40,7 +40,6 @@
 #include <components/logical_plan/node_drop_sequence.hpp>
 #include <components/logical_plan/node_drop_type.hpp>
 #include <components/logical_plan/node_drop_view.hpp>
-#include <components/logical_plan/node_get_schema.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_match.hpp>
@@ -53,7 +52,6 @@
 #include <components/logical_plan/node_update.hpp>
 #include <components/physical_plan/operators/operator_abort_transaction.hpp>
 #include <components/physical_plan/operators/operator_commit_transaction.hpp>
-#include <components/physical_plan/operators/operator_get_schema.hpp>
 #include <components/physical_plan/operators/operator_register_udf.hpp>
 #include <components/physical_plan/operators/operator_unregister_udf.hpp>
 #include <components/physical_plan_generator/impl/create_plan_register_udf.hpp>
@@ -336,10 +334,6 @@ namespace services::dispatcher {
         switch (msg->command()) {
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::execute_plan>: {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::execute_plan, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::get_schema>: {
-                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::get_schema, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::register_udf>: {
@@ -1303,94 +1297,6 @@ namespace services::dispatcher {
 
         auto* uu = static_cast<components::operators::operator_unregister_udf_t*>(op.get());
         co_return uu->success();
-    }
-
-    manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr>
-    manager_dispatcher_t::get_schema(components::session::session_id_t session,
-                                     std::pmr::vector<std::pair<database_name_t, collection_name_t>> ids) {
-        record_session(session);
-        trace(log_, "manager_dispatcher_t::get_schema session: {}, ids count: {}", session.data(), ids.size());
-
-        // No disk → no pg_catalog → every id is unresolved (purely IN_MEMORY
-        // deployments without a backing disk actor).
-        if (disk_address_ == actor_zeta::address_t::empty_address()) {
-            std::pmr::vector<complex_logical_type> schemas(resource());
-            schemas.reserve(ids.size());
-            for (std::size_t i = 0; i < ids.size(); ++i) {
-                schemas.push_back(complex_logical_type{logical_type::INVALID});
-            }
-            co_return make_cursor(resource(), std::move(schemas));
-        }
-
-        // Go through the operator pipeline. The logical leaf
-        // node_get_schema_t carries the requested ids; create_plan lowers
-        // it to operator_get_schema_t which
-        // self-resolves namespace / table / columns via async pg_catalog reads
-        // and accumulates one complex_logical_type per id in input order.
-        //
-        // We invoke the operator directly here (mirroring executor's
-        // execute_sub_plan_ loop) rather than routing through execute_plan_impl
-        // because the get_schema cursor format is the typed-vector cursor
-        // (make_cursor(resource, vector<complex_logical_type>)) — distinct from
-        // the chunk-cursor format the executor produces for general plans.
-        std::pmr::vector<std::pair<std::string, std::string>> id_pairs(resource());
-        id_pairs.reserve(ids.size());
-        for (const auto& [db, coll] : ids) {
-            id_pairs.emplace_back(std::string(db), std::string(coll));
-        }
-        auto plan =
-            boost::intrusive_ptr(new components::logical_plan::node_get_schema_t(resource(), std::move(id_pairs)));
-
-        services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
-        components::compute::function_registry_t fn_registry{resource()};
-        auto op = services::planner::create_plan(cstor,
-                                                 fn_registry,
-                                                 plan,
-                                                 components::logical_plan::limit_t::unlimit(),
-                                                 /*params=*/nullptr);
-        if (!op) {
-            // Should not happen — create_plan_get_schema is unconditional.
-            co_return make_cursor(resource(), std::pmr::vector<complex_logical_type>(resource()));
-        }
-        op->set_as_root();
-
-        // Build a minimal pipeline context. operator_get_schema_t only reads
-        // disk_address (read_rows_by_key on pg_namespace/pg_class/pg_attribute);
-        // a zero-txn matches the catalog reads the legacy path issued through
-        // execution_context_t{session, {0,0}, {}}.
-        components::logical_plan::storage_parameters params(resource());
-        components::pipeline::context_t pctx{session,
-                                             actor_zeta::address_t::empty_address(),
-                                             actor_zeta::address_t::empty_address(),
-                                             &fn_registry,
-                                             params};
-        pctx.disk_address = disk_address_;
-        pctx.txn = components::table::transaction_data{0, 0};
-
-        op->prepare();
-        op->on_execute(&pctx);
-        // Drive the async resume loop (the operator's only waiting state is
-        // its own await_async_and_resume — there are no child operators).
-        while (!op->is_executed()) {
-            auto waiting = op->find_waiting_operator();
-            if (!waiting) {
-                break;
-            }
-            co_await waiting->await_async_and_resume(&pctx);
-            op->on_execute(&pctx);
-        }
-
-        // Drain pending side-channel disk futures (none expected for read-only
-        // get_schema, but mirrors the executor pattern for consistency).
-        if (pctx.has_pending_disk_futures()) {
-            auto futures = pctx.take_pending_disk_futures();
-            for (auto& f : futures) {
-                co_await std::move(f);
-            }
-        }
-
-        auto* gs = static_cast<components::operators::operator_get_schema_t*>(op.get());
-        co_return make_cursor(resource(), gs->take_schemas());
     }
 
     manager_dispatcher_t::unique_future<collection::executor::execute_result_t>

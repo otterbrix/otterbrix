@@ -36,19 +36,6 @@ namespace components::table {
         }
     };
 
-    // The committed-scan operator (used by DDL resolves /
-    // committed-only scans) must also respect ProcArray. Rule semantics
-    // identical — both operators fold into the same filter.
-    struct committed_version_operator {
-        static bool use_inserted_version(const transaction_data& txn, uint64_t id) {
-            return transaction_version_operator::use_inserted_version(txn, id);
-        }
-
-        static bool use_deleted_version(const transaction_data& txn, uint64_t id) {
-            return transaction_version_operator::use_deleted_version(txn, id);
-        }
-    };
-
     static bool use_version(const transaction_data& transaction, uint64_t id) {
         return transaction_version_operator::use_inserted_version(transaction, id);
     }
@@ -76,12 +63,6 @@ namespace components::table {
                                                   vector::indexing_vector_t& indexing_vector,
                                                   uint64_t max_count) {
         return templated_indexing_vector<transaction_version_operator>(transaction, indexing_vector, max_count);
-    }
-
-    uint64_t chunk_constant_info::committed_indexing_vector(const transaction_data& txn,
-                                                            vector::indexing_vector_t& indexing_vector,
-                                                            uint64_t max_count) {
-        return templated_indexing_vector<committed_version_operator>(txn, indexing_vector, max_count);
     }
 
     bool chunk_constant_info::fetch(const transaction_data& transaction, int64_t) {
@@ -163,12 +144,6 @@ namespace components::table {
             }
         }
         return count;
-    }
-
-    uint64_t chunk_vector_info::committed_indexing_vector(const transaction_data& txn,
-                                                          vector::indexing_vector_t& indexing_vector,
-                                                          uint64_t max_count) {
-        return templated_indexing_vector<committed_version_operator>(txn, indexing_vector, max_count);
     }
 
     uint64_t chunk_vector_info::indexing_vector(transaction_data transaction,
@@ -358,18 +333,6 @@ namespace components::table {
             return max_count;
         }
         return chunk_info->indexing_vector(transaction, indexing_vector, max_count);
-    }
-
-    uint64_t row_version_manager_t::committed_indexing_vector(const transaction_data& txn,
-                                                              uint64_t vector_idx,
-                                                              vector::indexing_vector_t& indexing_vector,
-                                                              uint64_t max_count) {
-        std::lock_guard l(version_lock_);
-        auto info = get_chunk_info(vector_idx);
-        if (!info) {
-            return max_count;
-        }
-        return info->committed_indexing_vector(txn, indexing_vector, max_count);
     }
 
     bool row_version_manager_t::fetch(const transaction_data& transaction, uint64_t row) {

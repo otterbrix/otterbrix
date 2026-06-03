@@ -18,7 +18,6 @@
 #include "impl/create_plan_dynamic_cascade_delete.hpp"
 #include "impl/create_plan_fk_cascade.hpp"
 #include "impl/create_plan_fk_check.hpp"
-#include "impl/create_plan_get_schema.hpp"
 #include "impl/create_plan_group.hpp"
 #include "impl/create_plan_hash_join.hpp"
 #include "impl/create_plan_insert.hpp"
@@ -99,8 +98,6 @@ namespace services::planner {
                 return impl::create_plan_vacuum(context, node);
             case node_type::create_matview_t:
                 return impl::create_plan_create_matview(context, function_registry, node, params);
-            case node_type::get_schema_t:
-                return impl::create_plan_get_schema(context, node);
             case node_type::unregister_udf_t:
                 return impl::create_plan_unregister_udf(context, node);
             case node_type::commit_transaction_t:

@@ -110,9 +110,6 @@ namespace services::dispatcher {
         execute_plan(components::session::session_id_t session,
                      components::logical_plan::node_ptr plan,
                      components::logical_plan::parameter_node_ptr params);
-        unique_future<components::cursor::cursor_t_ptr>
-        get_schema(components::session::session_id_t session,
-                   std::pmr::vector<std::pair<database_name_t, collection_name_t>> ids);
         unique_future<bool> register_udf(components::session::session_id_t session,
                                          components::compute::function_ptr function);
         unique_future<bool> unregister_udf(components::session::session_id_t session,
@@ -174,7 +171,6 @@ namespace services::dispatcher {
         unique_future<void> on_subscriber_empty(uint8_t subscriber_kind);
 
         using dispatch_traits = actor_zeta::dispatch_traits<&manager_dispatcher_t::execute_plan,
-                                                            &manager_dispatcher_t::get_schema,
                                                             &manager_dispatcher_t::register_udf,
                                                             &manager_dispatcher_t::unregister_udf,
                                                             &manager_dispatcher_t::begin_transaction,

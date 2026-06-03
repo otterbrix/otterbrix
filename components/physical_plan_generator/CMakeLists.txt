@@ -26,7 +26,6 @@ set(${PROJECT_NAME}_SOURCES
         impl/create_plan_checkpoint.cpp
         impl/create_plan_vacuum.cpp
         impl/create_plan_create_matview.cpp
-        impl/create_plan_get_schema.cpp
         impl/create_plan_register_udf.cpp
         impl/create_plan_unregister_udf.cpp
         impl/create_plan_commit_transaction.cpp

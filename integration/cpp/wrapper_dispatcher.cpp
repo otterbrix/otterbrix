@@ -288,17 +288,6 @@ namespace otterbrix {
         }
     }
 
-    auto wrapper_dispatcher_t::get_schema(const components::session::session_id_t& session,
-                                          const std::pmr::vector<std::pair<database_name_t, collection_name_t>>& ids)
-        -> components::cursor::cursor_t_ptr {
-        trace(log_, "wrapper_dispatcher_t::get_schema session: {}", session.data());
-        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
-                                                       &services::dispatcher::manager_dispatcher_t::get_schema,
-                                                       session,
-                                                       ids);
-        return wait_future(future);
-    }
-
     auto wrapper_dispatcher_t::set_timezone(const session_id_t& session, std::string timezone_name) -> cursor_t_ptr {
         std::transform(timezone_name.begin(), timezone_name.end(), timezone_name.begin(), [](unsigned char character) {
             return static_cast<char>(std::tolower(character));

@@ -477,6 +477,32 @@ namespace services::disk {
         }
     }
 
+    std::unique_ptr<components::vector::data_chunk_t>
+    manager_disk_t::scan_storage_for_rebuild_sync(components::catalog::oid_t table_oid,
+                                                  std::pmr::memory_resource* resource) const {
+        if (agents_.empty())
+            return {};
+        const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
+        if (idx >= agents_.size() || agents_[idx] == nullptr)
+            return {};
+        const collection_storage_entry_t* entry = agents_[idx]->storage_entry_sync(table_oid);
+        if (entry == nullptr || entry->storage == nullptr)
+            return {};
+        const auto total = entry->storage->total_rows();
+        if (total == 0)
+            return {};
+        auto types = entry->storage->types();
+        // REGULAR scan with default transaction_data{0,0,UINT64_MAX,{}}: visibility
+        // filter sees all committed work and correctly drops committed-deleted
+        // tombstones (use_deleted_version hides them). Using scan_segment
+        // (COMMITTED_ROWS, no filter) would seed the index with entries for
+        // deleted rows whose column data is still physically present —
+        // index_scan + fetch + WHERE would then return them.
+        auto out = std::make_unique<components::vector::data_chunk_t>(resource, types, total);
+        entry->storage->scan(*out, /*filter=*/nullptr, /*limit=*/-1);
+        return out;
+    }
+
     std::pmr::vector<components::catalog::oid_t> manager_disk_t::scan_live_table_oids_sync() const {
         // Walks pg_class on agents_[0] (catalog agent) and returns every
         // user OID (oid >= FIRST_USER_OID) whose relkind is 'r' (regular)
@@ -494,23 +520,35 @@ namespace services::disk {
             return live;
         }
         std::pmr::synchronized_pool_resource scan_resource;
-        // pg_class columns: 0=oid, 3=relkind.
+        // pg_class columns: 0=oid, 3=relkind. row_group_t::templated_scan
+        // writes into result.data[column.primary_index()] — i.e. by storage
+        // column index, not by position in col_indices. So the chunk must
+        // have a slot at every storage column index the scan touches. Use
+        // the projected_cols ctor: allocate buffers only for cols [0, 3],
+        // placeholders elsewhere — same convention as inline_scan_range.
         std::vector<components::table::storage_index_t> col_indices;
         col_indices.emplace_back(static_cast<int64_t>(0));
         col_indices.emplace_back(static_cast<int64_t>(3));
         components::table::table_scan_state scan_state(&scan_resource);
         table.initialize_scan(scan_state, col_indices);
-        std::pmr::vector<components::types::complex_logical_type> types(&scan_resource);
-        types.push_back(table.columns()[0].type());
-        types.push_back(table.columns()[3].type());
+        const auto& all_cols = table.columns();
+        std::pmr::vector<components::types::complex_logical_type> all_types(&scan_resource);
+        all_types.reserve(all_cols.size());
+        for (const auto& c : all_cols) {
+            all_types.push_back(c.type());
+        }
+        const std::vector<std::size_t> projected{0, 3};
         while (true) {
-            components::vector::data_chunk_t chunk(&scan_resource, types, components::vector::DEFAULT_VECTOR_CAPACITY);
+            components::vector::data_chunk_t chunk(&scan_resource,
+                                                   all_types,
+                                                   projected,
+                                                   components::vector::DEFAULT_VECTOR_CAPACITY);
             table.scan(chunk, scan_state);
             if (chunk.size() == 0)
                 break;
             for (uint64_t i = 0; i < chunk.size(); ++i) {
                 auto oid_val = chunk.value(0, i);
-                auto kind_val = chunk.value(1, i);
+                auto kind_val = chunk.value(3, i);
                 if (oid_val.is_null() || kind_val.is_null())
                     continue;
                 const auto seen = static_cast<catalog::oid_t>(oid_val.value<std::uint32_t>());
@@ -650,24 +688,35 @@ namespace services::disk {
             auto& attr_table = const_cast<collection_storage_entry_t*>(attr_entry)->table_storage.table();
             if (attr_table.column_count() >= 3 && attr_table.calculate_size() > 0) {
                 std::pmr::synchronized_pool_resource scan_resource;
+                // pg_attribute sparse scan: cols [attoid, attname]. Same
+                // sparse-chunk convention as scan_live_table_oids_sync above —
+                // chunk must have a slot at each storage column index we
+                // touch, so use the projected_cols ctor with all_types.
                 std::vector<components::table::storage_index_t> col_indices;
                 col_indices.emplace_back(static_cast<int64_t>(catalog::pg_attribute_col::attoid));
                 col_indices.emplace_back(static_cast<int64_t>(catalog::pg_attribute_col::attname));
                 components::table::table_scan_state scan_state(&scan_resource);
                 attr_table.initialize_scan(scan_state, col_indices);
-                std::pmr::vector<components::types::complex_logical_type> types(&scan_resource);
-                types.push_back(attr_table.columns()[catalog::pg_attribute_col::attoid].type());
-                types.push_back(attr_table.columns()[catalog::pg_attribute_col::attname].type());
+                const auto& all_cols = attr_table.columns();
+                std::pmr::vector<components::types::complex_logical_type> all_types(&scan_resource);
+                all_types.reserve(all_cols.size());
+                for (const auto& c : all_cols) {
+                    all_types.push_back(c.type());
+                }
+                const std::vector<std::size_t> projected{
+                    static_cast<std::size_t>(catalog::pg_attribute_col::attoid),
+                    static_cast<std::size_t>(catalog::pg_attribute_col::attname)};
                 while (true) {
                     components::vector::data_chunk_t chunk(&scan_resource,
-                                                           types,
+                                                           all_types,
+                                                           projected,
                                                            components::vector::DEFAULT_VECTOR_CAPACITY);
                     attr_table.scan(chunk, scan_state);
                     if (chunk.size() == 0)
                         break;
                     for (uint64_t i = 0; i < chunk.size(); ++i) {
-                        auto oid_v = chunk.value(0, i);
-                        auto name_v = chunk.value(1, i);
+                        auto oid_v = chunk.value(catalog::pg_attribute_col::attoid, i);
+                        auto name_v = chunk.value(catalog::pg_attribute_col::attname, i);
                         if (oid_v.is_null() || name_v.is_null())
                             continue;
                         const auto att_oid = static_cast<catalog::oid_t>(oid_v.value<std::uint32_t>());

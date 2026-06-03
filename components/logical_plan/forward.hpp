@@ -68,10 +68,6 @@ namespace components::logical_plan {
         // at runtime starting from a (classid, oid) seed and deletes the
         // transitive closure. Subsumes the dispatcher BFS in execute_ddl.
         dynamic_cascade_delete_t,
-        // GET_SCHEMA: self-resolving leaf that returns one
-        // complex_logical_type per (database, collection) id by reading
-        // pg_namespace+pg_class+pg_attribute through the operator pipeline.
-        get_schema_t,
         // REGISTER_UDF / UNREGISTER_UDF: operator-pipeline
         // replacement for inline manager_dispatcher_t::{register,unregister}_udf.
         // Carries the UDF function payload (or name + arg-type signature for

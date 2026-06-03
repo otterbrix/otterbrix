@@ -145,17 +145,6 @@ namespace services::dispatcher {
         unique_future<void> txn_publish_msg(uint64_t commit_id);
         unique_future<uint64_t> txn_lowest_active_msg();
 
-        // SET TIME ZONE mailbox handler (constraint #11). The dispatcher owns
-        // default_tz_cat_ (session-shared mutable state); the executor cannot
-        // mutate it directly without violating the no-shared-state rule, so it
-        // routes SET TIME ZONE through this handler. The body mirrors the
-        // dispatcher's own set_timezone_t case in execute_plan_impl: mutates
-        // default_tz_cat_, then appends a ("TimeZone", <name>) row to
-        // pg_settings via disk_address_'s append_pg_catalog_row mailbox.
-        // Returns the success/error cursor.
-        unique_future<components::cursor::cursor_t_ptr>
-        set_default_timezone_msg(components::session::session_id_t session, std::pmr::string tz_name);
-
         // Selective broadcast — DROP TABLE / DROP INDEX path marks the owning
         // subscriber as "has dropped resources pending GC" via this mailbox
         // handler. Cleared by on_subscriber_empty once the subscriber's
@@ -181,7 +170,6 @@ namespace services::dispatcher {
                                                             &manager_dispatcher_t::txn_abort_msg,
                                                             &manager_dispatcher_t::txn_publish_msg,
                                                             &manager_dispatcher_t::txn_lowest_active_msg,
-                                                            &manager_dispatcher_t::set_default_timezone_msg,
                                                             &manager_dispatcher_t::on_drop_resource_marked,
                                                             &manager_dispatcher_t::on_subscriber_empty>;
 

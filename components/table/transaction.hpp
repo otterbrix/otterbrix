@@ -40,10 +40,12 @@ namespace components::table {
         // reads avoid re-locking the manager. The vector copy is O(active
         // in-flight commits) — typically <100, amortized by the txn's pmr arena.
         transaction_data data() const {
-            transaction_data td(transaction_id_, start_time_);
-            td.snapshot_horizon = snapshot_horizon_;
-            td.in_flight_snapshot = in_flight_snapshot_;
-            return td;
+            // Use the 4-arg ctor — it constructs in_flight_snapshot in-place
+            // against the source's allocator, bypassing the default
+            // null_memory_resource trap (pmr propagate-on-* traits are all
+            // false, so any post-init assignment-based mutation from a real
+            // arena throws bad_alloc).
+            return transaction_data(transaction_id_, start_time_, snapshot_horizon_, in_flight_snapshot_);
         }
         uint64_t transaction_id() const { return transaction_id_; }
         uint64_t start_time() const { return start_time_; }

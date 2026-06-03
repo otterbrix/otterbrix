@@ -1040,30 +1040,7 @@ namespace services::collection::executor {
                 }
                 break;
             }
-            case node_type::set_timezone_t: {
-                // dispatcher's default_tz_cat_ (single-owner, mailbox-only)
-                // and appends a ("TimeZone", <name>) row to pg_settings via
-                // disk_address_. Both happen inside set_default_timezone_msg
-                // on the dispatcher's actor context. The executor just
-                // forwards the timezone name string and awaits the result
-                // cursor; on error it's surfaced via the standard validate
-                // `error` channel.
-                const auto& tz_node =
-                    reinterpret_cast<components::logical_plan::node_set_timezone_ptr&>(logical_plan);
-                std::pmr::string tz_name{tz_node->timezone_name().c_str(),
-                                          tz_node->timezone_name().size(),
-                                          resource()};
-                auto [_stz, stzf] =
-                    actor_zeta::send(parent_address_,
-                                     &services::dispatcher::manager_dispatcher_t::set_default_timezone_msg,
-                                     session,
-                                     std::move(tz_name));
-                auto tz_cursor = co_await std::move(stzf);
-                if (tz_cursor && tz_cursor->is_error()) {
-                    error = std::move(tz_cursor);
-                }
-                break;
-            }
+            case node_type::set_timezone_t:
             case node_type::checkpoint_t:
             case node_type::vacuum_t:
             case node_type::create_sequence_t:

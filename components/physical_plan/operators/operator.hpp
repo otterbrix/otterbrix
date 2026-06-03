@@ -63,6 +63,10 @@ namespace components::operators {
         // CHECKPOINT — flush indexes, snapshot wal-id, checkpoint_all on disk,
         // truncate WAL segments older than the recovery boundary.
         checkpoint,
+        // SET TIMEZONE — validates name, sends pg_settings ('TimeZone',<name>)
+        // row to disk; leaf operator. session_catalog_t mutation stays in the
+        // dispatcher post-success — operator does not touch shared state.
+        set_timezone,
         // VACUUM — cleanup_versions + compact across user tables (relkind 'r'/'g'),
         // cleanup index versions, rebuild and re-populate indexes per table.
         // Iterates pg_class to discover user tables (no dispatcher state).

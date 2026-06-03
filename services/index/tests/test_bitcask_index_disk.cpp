@@ -5,6 +5,7 @@
 #include <limits>
 #include <mutex>
 #include <random>
+#include <core/result_wrapper.hpp>
 #include <services/index/bitcask_index_disk.hpp>
 #include <services/index/btree_index_disk.hpp>
 #include <thread>
@@ -577,7 +578,11 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_throws_on_crc_mismatch"
         REQUIRE(file.good());
     }
 
-    REQUIRE_THROWS_AS((make_test_index(path, &resource)), std::runtime_error);
+    {
+        auto res = bitcask_index_disk_t::create(path, &resource, test_flush_threshold, 2);
+        REQUIRE(res.has_error());
+        REQUIRE(res.error().type == core::error_code_t::index_create_fail);
+    }
 
     std::filesystem::copy_file(backup_path, file_path, std::filesystem::copy_options::overwrite_existing);
     std::filesystem::remove(backup_path);
@@ -636,7 +641,11 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_crc_mismatch_does_not_d
         REQUIRE(file.good());
     }
 
-    REQUIRE_THROWS_AS((make_test_index(path, &resource)), std::runtime_error);
+    {
+        auto res = bitcask_index_disk_t::create(path, &resource, test_flush_threshold, test_segment_record_limit);
+        REQUIRE(res.has_error());
+        REQUIRE(res.error().type == core::error_code_t::index_create_fail);
+    }
 
     const auto intact_after_failed_recovery = read_file_bytes(intact_segment);
     REQUIRE(intact_after_failed_recovery == intact_before);

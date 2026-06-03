@@ -9,6 +9,7 @@
 #include "impl/create_plan_alter_column_rename.hpp"
 #include "impl/create_plan_check_constraint.hpp"
 #include "impl/create_plan_checkpoint.hpp"
+#include "impl/create_plan_set_timezone.hpp"
 #include "impl/create_plan_commit_transaction.hpp"
 #include "impl/create_plan_computed_field_register.hpp"
 #include "impl/create_plan_computed_field_unregister.hpp"
@@ -94,6 +95,8 @@ namespace services::planner {
                 return impl::create_plan_dynamic_cascade_delete(context, node);
             case node_type::checkpoint_t:
                 return impl::create_plan_checkpoint(context, node);
+            case node_type::set_timezone_t:
+                return impl::create_plan_set_timezone(context, node);
             case node_type::vacuum_t:
                 return impl::create_plan_vacuum(context, node);
             case node_type::create_matview_t:

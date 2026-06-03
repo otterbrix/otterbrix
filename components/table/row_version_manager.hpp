@@ -25,6 +25,21 @@ namespace components::table {
         transaction_data(uint64_t id, uint64_t time)
             : transaction_id(id)
             , start_time(time) {}
+        // Full snapshot ctor — used by transaction_t::data() to construct a
+        // copy with in_flight_snapshot anchored to the source's pmr resource.
+        // The default-init below (null_memory_resource) makes assignment-based
+        // mutation from a non-empty vector throw bad_alloc: pmr's allocator
+        // propagation traits do NOT propagate on copy or move assignment, so
+        // both routes go through the null sink. The element-by-element
+        // construction below avoids that pitfall.
+        transaction_data(uint64_t id,
+                         uint64_t time,
+                         uint64_t horizon,
+                         const std::pmr::vector<uint64_t>& in_flight)
+            : transaction_id(id)
+            , start_time(time)
+            , snapshot_horizon(horizon)
+            , in_flight_snapshot(in_flight.begin(), in_flight.end(), in_flight.get_allocator()) {}
 
         uint64_t transaction_id{0};
         uint64_t start_time{0};

@@ -131,7 +131,10 @@ TEST_CASE("small_records_fill_page") {
     tmp_dir_t dir("test_wal_page_small_records");
     auto filepath = dir.file("wal_segment_0");
 
-    // Create writer and write 5 small COMMIT records (29 bytes each = 145 bytes total).
+    // Create writer and write 5 small COMMIT records. The on-disk record layout
+    // for COMMIT in ProcArray (post-cad41ea9 Block F) is 37 bytes: size 4 +
+    // last_crc 4 + wal_id 8 + txn_id 8 + record_type 1 + commit_id 8 + crc 4.
+    // 5 records × 37 bytes = 185 bytes total.
     {
         wal_page_writer_t writer(filepath, "testdb", 0);
 
@@ -156,10 +159,10 @@ TEST_CASE("small_records_fill_page") {
         auto header = reader.read_page_header(1);
 
         REQUIRE(header.num_records == 5);
-        // 5 COMMIT records at 29 bytes each = 145 bytes.
-        // data_size should be close to 145 (exact value depends on encoding).
-        REQUIRE(header.data_size >= 140);
-        REQUIRE(header.data_size <= 160);
+        // 5 COMMIT records at 37 bytes each = 185 bytes.
+        // data_size should be close to 185 (exact value depends on encoding).
+        REQUIRE(header.data_size >= 180);
+        REQUIRE(header.data_size <= 200);
         REQUIRE(header.page_lsn == 1);
         REQUIRE(header.page_end_lsn == 5);
     }

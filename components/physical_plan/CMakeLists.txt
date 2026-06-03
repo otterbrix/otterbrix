@@ -53,6 +53,7 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_alter_column_drop.cpp
         operators/operator_alter_column_rename.cpp
         operators/operator_checkpoint.cpp
+        operators/operator_set_timezone.cpp
         operators/operator_vacuum.cpp
         operators/operator_register_udf.cpp
         operators/operator_unregister_udf.cpp

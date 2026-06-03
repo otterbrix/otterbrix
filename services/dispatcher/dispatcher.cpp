@@ -377,10 +377,6 @@ namespace services::dispatcher {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::txn_lowest_active_msg, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::set_default_timezone_msg>: {
-                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::set_default_timezone_msg, msg);
-                break;
-            }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::on_drop_resource_marked>: {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::on_drop_resource_marked, msg);
                 break;
@@ -527,6 +523,16 @@ namespace services::dispatcher {
         } else if (original_type == node_type::drop_collection_t) {
             auto names = drop_target_names_from_resolves(plan.get());
             drop_target_collection = qualified_name_t{names.first, names.second};
+        }
+        // SET TIMEZONE: capture name before the planner consumes the node so
+        // the dispatcher can update default_tz_cat_ (single-owner per rule 10)
+        // after the operator pipeline confirms pg_settings was persisted.
+        std::pmr::string pending_set_tz_name{resource()};
+        if (original_type == node_type::set_timezone_t) {
+            auto* tz_node = static_cast<components::logical_plan::node_set_timezone_t*>(
+                effective_root_node(plan.get()));
+            pending_set_tz_name.assign(tz_node->timezone_name().c_str(),
+                                       tz_node->timezone_name().size());
         }
         auto logic_plan = std::move(plan);
         context_storage_t collections_context_storage(resource(), log_.clone(), session_tz(session));
@@ -951,6 +957,18 @@ namespace services::dispatcher {
             // Use original_type for dispatch: planner may have wrapped DML nodes,
             // changing logic_plan->type() to a constraint wrapper type.
             const auto t = original_type;
+            // SET TIMEZONE — operator pipeline persisted the ('TimeZone', <name>)
+            // row to pg_settings. Refresh the dispatcher's session_catalog_t
+            // cache so subsequent session_tz(session) reads see the new value.
+            // Single-owner per rule 10: only this dispatcher coroutine mutates
+            // default_tz_cat_; forward-compatible with option c (replace cache
+            // with ProcArray snapshot read from pg_settings).
+            if (t == node_type::set_timezone_t && !pending_set_tz_name.empty()) {
+                (void) default_tz_cat_.set_timezone(
+                    resource(),
+                    std::string_view{pending_set_tz_name.data(), pending_set_tz_name.size()});
+                co_return result;
+            }
             // ALTER TABLE flows through the executor pipeline as
             // sequence_t(alter_column_{add,rename,drop}_t × N).
             if (t == node_type::insert_t) {
@@ -1426,45 +1444,6 @@ namespace services::dispatcher {
     manager_dispatcher_t::unique_future<uint64_t>
     manager_dispatcher_t::txn_lowest_active_msg() {
         co_return txn_manager_.lowest_active_start_time();
-    }
-
-    // SET TIME ZONE mailbox handler. Body extracted
-    // from execute_plan_impl's set_timezone_t case (dispatcher.cpp ~941-967):
-    // mutates default_tz_cat_ in this actor's context, then appends a
-    // ("TimeZone", <name>) row to pg_settings via disk_address_. The executor
-    // routes here so default_tz_cat_ stays single-owner (rule 10 — no shared
-    // mutable state between actors).
-    manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr>
-    manager_dispatcher_t::set_default_timezone_msg(components::session::session_id_t session,
-                                                    std::pmr::string tz_name) {
-        record_session(session);
-        trace(log_,
-              "manager_dispatcher_t::set_default_timezone_msg, session: {}, tz: {}",
-              session.data(),
-              std::string_view{tz_name.data(), tz_name.size()});
-        const std::string tz_str{tz_name.data(), tz_name.size()};
-        auto tz_err = default_tz_cat_.set_timezone(resource(), tz_str);
-        if (!tz_err.contains_error() && disk_address_ != actor_zeta::address_t::empty_address()) {
-            const auto* settings_def = components::catalog::find_system_table("pg_settings");
-            if (settings_def) {
-                std::pmr::vector<components::types::complex_logical_type> types(resource());
-                for (const auto& col : settings_def->columns) {
-                    types.push_back(col.type());
-                }
-                components::vector::data_chunk_t row(resource(), types, 1);
-                row.set_cardinality(1);
-                row.set_value(0, 0, components::types::logical_value_t(resource(), std::string{"TimeZone"}));
-                row.set_value(1, 0, components::types::logical_value_t(resource(), tz_str));
-                components::execution_context_t exec_ctx{session, {0, 0}, session_tz(session)};
-                auto [_u, uf] = actor_zeta::send(disk_address_,
-                                                 &services::disk::manager_disk_t::append_pg_catalog_row,
-                                                 exec_ctx,
-                                                 components::catalog::well_known_oid::pg_settings_table,
-                                                 std::move(row));
-                co_await std::move(uf);
-            }
-        }
-        co_return make_cursor(resource(), std::move(tz_err));
     }
 
     manager_dispatcher_t::unique_future<uint64_t>

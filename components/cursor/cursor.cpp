@@ -28,6 +28,11 @@ namespace components::cursor {
         // storage indices stable for downstream operators). User-facing
         // iteration via chunk_data() should only see real data.
         table_data_.drop_unprojected_placeholders();
+        // Mirror final column shape into type_data_ so callers querying the
+        // result's typed-column descriptor (e.g. variant-e3 differential
+        // tests) see one entry per output column.
+        const auto& chunk_types = table_data_.types();
+        type_data_.assign(chunk_types.begin(), chunk_types.end());
     }
 
     cursor_t::cursor_t(std::pmr::memory_resource* resource, std::pmr::vector<vector::data_chunk_t>&& chunks)
@@ -45,6 +50,8 @@ namespace components::cursor {
         if (chunks.size() == 1) {
             table_data_ = std::move(chunks.front());
             table_data_.drop_unprojected_placeholders();
+            const auto& chunk_types = table_data_.types();
+            type_data_.assign(chunk_types.begin(), chunk_types.end());
             return;
         }
         // For multi-chunk combine, drop placeholders from each chunk first so the
@@ -68,6 +75,8 @@ namespace components::cursor {
         }
         combined.set_cardinality(total);
         table_data_ = std::move(combined);
+        const auto& combined_types = table_data_.types();
+        type_data_.assign(combined_types.begin(), combined_types.end());
     }
 
     cursor_t::cursor_t(std::pmr::memory_resource* resource,

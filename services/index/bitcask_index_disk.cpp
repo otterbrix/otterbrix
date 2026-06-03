@@ -198,8 +198,56 @@ namespace services::index {
                                                           false,
                                                           resource_);
         load_from_disk();
+        if (crc_failure_) {
+            // Direct-ctor callers don't expect recovery to fail. Preserve the
+            // legacy assertion+abort contract — only the factory tolerates
+            // CRC mismatch and converts it to a core::error_t.
+            assert(false && "bitcask I/O failure: direct ctor saw CRC mismatch");
+            std::abort();
+        }
         open_active_segment();
         recover_txn_log_unlocked();
+    }
+
+    core::result_wrapper_t<std::unique_ptr<bitcask_index_disk_t>>
+    bitcask_index_disk_t::create(const path_t& path,
+                                  std::pmr::memory_resource* resource,
+                                  uint64_t flush_threshold,
+                                  uint64_t segment_record_limit) {
+        // skip_load ctor performs no disk I/O — staging load_from_disk()
+        // separately lets the factory surface CRC failure as core::error_t
+        // before open_active_segment() runs.
+        auto instance = std::unique_ptr<bitcask_index_disk_t>(
+            new bitcask_index_disk_t(path, resource, flush_threshold, segment_record_limit, skip_load_tag{}));
+        instance->load_from_disk();
+        if (instance->crc_failure_) {
+            return core::error_t{core::error_code_t::index_create_fail,
+                                 std::pmr::string{"bitcask: CRC mismatch during recovery", resource}};
+        }
+        instance->open_active_segment();
+        instance->recover_txn_log_unlocked();
+        return instance;
+    }
+
+    bitcask_index_disk_t::bitcask_index_disk_t(const path_t& path,
+                                                std::pmr::memory_resource* resource,
+                                                uint64_t flush_threshold,
+                                                uint64_t segment_record_limit,
+                                                skip_load_tag)
+        : index_disk_t(flush_threshold)
+        , path_(path)
+        , hash_index_file_path_(path_ / hash_index_file)
+        , resource_(resource)
+        , fs_(core::filesystem::local_file_system_t())
+        , segment_record_limit_(segment_record_limit)
+        , task_executor_(std::make_unique<bitcask_task_executor_t>()) {
+        initialize_storage();
+        hash_index_ = std::make_unique<disk_hash_table_t>(hash_index_file_path_,
+                                                          disk_hash_table_t::default_bucket_count,
+                                                          false,
+                                                          resource_);
+        // Caller (factory) is responsible for load_from_disk +
+        // open_active_segment + recover_txn_log_unlocked.
     }
 
     bitcask_index_disk_t::~bitcask_index_disk_t() { force_flush(); }
@@ -274,9 +322,12 @@ namespace services::index {
                     calc = absl::ExtendCrc32c(calc, absl::string_view(payload.data(), payload.size()));
                 }
                 if (static_cast<uint32_t>(calc) != header.crc) {
-                    // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
-                    assert(false && "bitcask I/O failure");
-                    std::abort();
+                    // CRC mismatch — segment corruption. Set the recovery
+                    // failure flag instead of aborting so the factory caller
+                    // can surface a core::error_t. Trusted callers (direct
+                    // ctor) check this flag post-load and assert.
+                    crc_failure_ = true;
+                    return;
                 }
                 value_t key(resource_, nullptr);
                 row_ids_t rows(resource_);

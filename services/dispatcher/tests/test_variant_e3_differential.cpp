@@ -73,9 +73,18 @@ namespace {
         void step() { scheduler_->run(10000); }
 
         cursor_t_ptr take_result() {
-            step();
+            // SET TIMEZONE goes through a multi-await chain (executor →
+            // dispatcher.set_default_timezone_msg → disk.append_pg_catalog_row
+            // → resume → return cursor → executor resumes → completes).
+            // Each cross-actor co_await re-enters the scheduler; a single
+            // step() may not drain the chain. Pump until the future is ready
+            // or we hit a bounded attempt cap (≈1M iterations).
             REQUIRE(pending_future_);
+            for (int attempt = 0; attempt < 100 && !pending_future_->is_ready(); ++attempt) {
+                step();
+            }
             REQUIRE(pending_future_->valid());
+            REQUIRE(pending_future_->is_ready());
             auto result = std::move(*pending_future_).take_ready();
             pending_future_.reset();
             step();

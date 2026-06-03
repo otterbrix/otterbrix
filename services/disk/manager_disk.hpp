@@ -37,6 +37,7 @@
 #include <components/vector/data_chunk.hpp>
 #include <core/executor.hpp>
 #include <core/slot_guard.hpp>
+#include <condition_variable>
 #include <limits>
 #include <list>
 #include <mutex>
@@ -257,10 +258,8 @@ namespace services::disk {
             actor_zeta::scheduler_raw scheduler_disk,
             configuration::config_disk config,
             log_t& log,
-            run_fn_t run_fn = [] { std::this_thread::yield(); });
+            run_fn_t run_fn = {});
         ~manager_disk_t();
-
-        void set_run_fn(run_fn_t fn) { run_fn_ = std::move(fn); }
 
         // True if a storage entry is registered for `table_oid` (used by WAL replay to lazily
         // create in-memory storages on the first PHYSICAL_INSERT for tables without an .otbx).
@@ -734,11 +733,18 @@ namespace services::disk {
                                     components::catalog::oid_t database_oid,
                                     const std::filesystem::path& otbx_path);
 
+        // Default production yield strategy installed by the ctor when no
+        // run_fn is provided. Waits up to 100µs on pump_cv_ (woken early
+        // by enqueue branch). Test fixtures override via the ctor run_fn arg.
+        void production_idle_tick();
+
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
         actor_zeta::scheduler_raw scheduler_disk_;
         run_fn_t run_fn_;
         std::mutex mutex_;
+        // Wakes pump driver in idle wait. See manager_dispatcher_t::pump_cv_.
+        std::condition_variable pump_cv_;
 
         actor_zeta::address_t manager_wal_ = actor_zeta::address_t::empty_address();
         // selective broadcast — base_spaces wires this before scheduler.start

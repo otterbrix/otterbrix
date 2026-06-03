@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <set>
 #include <string>
@@ -73,10 +74,8 @@ namespace services::dispatcher {
             std::pmr::memory_resource*,
             actor_zeta::scheduler_raw,
             log_t& log,
-            run_fn_t run_fn = [] { std::this_thread::sleep_for(std::chrono::microseconds(10)); });
+            run_fn_t run_fn = {});
         ~manager_dispatcher_t();
-
-        void set_run_fn(run_fn_t fn) { run_fn_ = std::move(fn); }
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
         auto make_type() const noexcept -> const char*;
@@ -184,6 +183,14 @@ namespace services::dispatcher {
         // case (no drops outstanding → no message bursts on every commit).
         void try_trigger_cleanup_if_horizon_advanced() noexcept;
 
+        // Default production yield strategy installed by the ctor when no
+        // run_fn is provided. Re-enqueues executors_ (workaround for
+        // actor-zeta cooperative_actor.hpp lost-wake-up bug), then waits
+        // up to 100µs on pump_cv_ (woken early by enqueue branch).
+        // Test fixtures override the strategy via the ctor run_fn arg
+        // (typically scheduler->run(10000) for non_thread_scheduler).
+        void production_idle_tick();
+
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
         log_t log_;
@@ -222,6 +229,14 @@ namespace services::dispatcher {
         uint64_t last_broadcast_horizon_{0};
 
         std::mutex mutex_;
+        // Wakes the pump driver when a new message is appended to
+        // in_flight_behaviors_ — replaces the old busy-spin
+        // `run_fn_() = sleep_for(10us)` with a notify-based wait.
+        // The driver sleeps up to 100ms when there is no actionable
+        // slot; the 100ms acts as a defensive fallback against
+        // actor-zeta cooperative_actor lost-wake-up bugs (the bound
+        // also re-triggers the executor re-enqueue workaround).
+        std::condition_variable pump_cv_;
 
         components::table::transaction_manager_t txn_manager_;
         components::catalog::session_catalog_t default_tz_cat_;

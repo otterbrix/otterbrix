@@ -54,10 +54,10 @@ namespace {
                 c.path = mvcc_dir();
                 return c;
             }())
-            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log,
+                  [this] { scheduler->run(10000); })) {
             cleanup();
             std::filesystem::create_directories(mvcc_dir());
-            manager->set_run_fn([this] { scheduler->run(10000); });
             manager->bootstrap_system_tables_sync();
         }
         ~fixture() {

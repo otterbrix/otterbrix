@@ -60,11 +60,11 @@ namespace {
                 c.path = dir;
                 return c;
             }())
-            , wal(actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&resource, scheduler, wal_config, log))
-            , disk(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
+            , wal(actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&resource, scheduler, wal_config, log,
+                  [this] { scheduler->run(10000); }))
+            , disk(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log,
+                   [this] { scheduler->run(10000); })) {
             std::filesystem::create_directories(dir);
-            wal->set_run_fn([this] { scheduler->run(10000); });
-            disk->set_run_fn([this] { scheduler->run(10000); });
             wal->sync(std::make_tuple(actor_zeta::address_t(disk->address()), actor_zeta::address_t::empty_address()));
             disk->sync(std::make_tuple(wal->address()));
             if (bootstrap) {

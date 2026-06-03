@@ -31,9 +31,11 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         , disk_path_(disk_path)
         , log_(initialization_logger("python", "/tmp/docker_logs/"))
         , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
-        , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource, scheduler_, log_))
+        , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource, scheduler_, log_,
+              [this] { scheduler_->run(10000); }))
         , disk_config_(disk_path)
-        , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
+        , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_,
+              [this] { scheduler_->run(10000); }))
         , wal_config_([&]() {
             configuration::config_wal c;
             c.on = false;
@@ -46,9 +48,6 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
             std::make_tuple(actor_zeta::address_t(manager_disk_->address()), manager_dispatcher_->address()));
         // Pass WAL address — disk's append_pg_catalog_row sends physical_insert to it.
         manager_disk_->sync(std::make_tuple(manager_wal_->address()));
-
-        manager_dispatcher_->set_run_fn([this] { scheduler_->run(10000); });
-        manager_disk_->set_run_fn([this] { scheduler_->run(10000); });
 
         // Bootstrap pg_catalog system tables so the disk-side catalog has tables to scan.
         manager_disk_->bootstrap_system_tables_sync();

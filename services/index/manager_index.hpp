@@ -17,6 +17,7 @@
 #include <components/log/log.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <core/file/local_file_system.hpp>
+#include <condition_variable>
 #include <core/slot_guard.hpp>
 #include <list>
 #include <mutex>
@@ -44,7 +45,7 @@ namespace services::index {
             uint64_t bitcask_flush_threshold = 1000,
             uint64_t bitcask_segment_record_limit = 100,
             uint64_t btree_flush_threshold = 1000,
-            run_fn_t run_fn = [] { std::this_thread::yield(); });
+            run_fn_t run_fn = {});
         ~manager_index_t() = default;
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
@@ -332,6 +333,11 @@ namespace services::index {
         std::pmr::vector<unique_future<void>> pending_void_;
         void poll_pending();
 
+        // Default production yield strategy installed by the ctor when no
+        // run_fn is provided. Waits up to 100µs on pump_cv_ (woken early
+        // by enqueue branch).
+        void production_idle_tick();
+
         // Cooperative driver state (see enqueue_impl docstring above).
         // mutex_ guards in_flight_behaviors_ + pumping_ ONLY. It is never
         // held across cont.resume() / run_fn_() / behavior_t destruction.
@@ -339,6 +345,8 @@ namespace services::index {
         // is move-only and resume can re-suspend on a new await without us
         // touching the node.
         std::mutex mutex_;
+        // Wakes pump driver in idle wait. See manager_dispatcher_t::pump_cv_.
+        std::condition_variable pump_cv_;
         std::pmr::list<in_flight_entry_t> in_flight_behaviors_;
         bool pumping_{false};
 

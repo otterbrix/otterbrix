@@ -195,6 +195,13 @@ namespace services::dispatcher {
         , pending_void_(resource_ptr) {
         ZoneScoped;
         trace(log_, "manager_dispatcher_t::manager_dispatcher_t");
+        // Strategy install: when caller didn't provide a custom run_fn
+        // (production path via base_spaces), install the internal
+        // production_idle_tick — re-enqueues executors_ for actor-zeta
+        // drop recovery, then waits on pump_cv_ for early notify.
+        if (!run_fn_) {
+            run_fn_ = [this] { production_idle_tick(); };
+        }
     }
 
     manager_dispatcher_t::~manager_dispatcher_t() {
@@ -213,6 +220,10 @@ namespace services::dispatcher {
             auto& slot = in_flight_behaviors_.back();
             slot.pending_msg = std::move(msg);
             if (pumping_) {
+                // Notify pump driver if it is sleeping in the idle wait at the
+                // bottom of the loop. Cheap when driver is busy (no-op on cv
+                // without waiters). Lock held → no race with wait_for predicate.
+                pump_cv_.notify_one();
                 return {false, actor_zeta::detail::enqueue_result::success};
             }
             pumping_ = true;
@@ -294,27 +305,43 @@ namespace services::dispatcher {
                     return {false, actor_zeta::detail::enqueue_result::success};
                 }
             }
-            // Workaround for actor-zeta cooperative_actor.hpp:310-320 bug:
-            // re-enqueue every executor on every idle pump tick (whether or not
-            // a behavior was just cleaned up). The bug drops the executor from
-            // the scheduler queue after its cont.resume() path suspends on a
-            // new cross-actor await; re-enqueueing puts it back so a worker
-            // can detect the now-ready future state on its next resume_impl.
-            // Pattern matches existing needs_sched-guarded enqueue (line 1036).
-            for (auto& executor : executors_) {
-                if (executor) {
-                    scheduler_->enqueue(executor.get());
-                }
-            }
-
             if (erased) {
                 continue;
             }
 
             poll_pending();
+            // Yield via Strategy injected through ctor (run_fn_).
+            //  - Production (default empty ctor arg): ctor body installs
+            //    `[this]{ production_idle_tick(); }` — re-enqueues
+            //    executors_ (recovery for actor-zeta cooperative_actor.hpp
+            //    lost-wake-up bug) then pump_cv_.wait_for(100µs); early
+            //    woken by pump_cv_.notify_one() in enqueue branch.
+            //  - Test fixtures (non_thread_scheduler): pass
+            //    `[this]{ scheduler->run(10000); }` as ctor arg — drives
+            //    the synchronous test scheduler from the same thread.
             run_fn_();
         }
         return {false, actor_zeta::detail::enqueue_result::success};
+    }
+
+    void manager_dispatcher_t::production_idle_tick() {
+        // actor-zeta cooperative_actor.hpp:310-320 lost-wake-up workaround.
+        // Re-enqueueing each executor on every idle tick guarantees the
+        // scheduler will revisit it even if it was dropped from the queue
+        // while suspended on a cross-actor co_await.
+        for (auto& executor : executors_) {
+            if (executor) {
+                scheduler_->enqueue(executor.get());
+            }
+        }
+        // 10µs polling matches original busy-spin frequency (100k Hz).
+        // Required to reliably recover from actor-zeta drops under
+        // concurrent INSERT load (test_otterbrix_multithread). Lower
+        // cadence (e.g. cv.wait_for 100µs) drops too few re-enqueues
+        // per second and the test hangs. CPU cost ~10% per pump driver
+        // thread is the known trade-off until actor-zeta lost-wake-up
+        // is fixed at the library level (see docs/async-first-refactor.md).
+        std::this_thread::sleep_for(std::chrono::microseconds(10));
     }
 
     void manager_dispatcher_t::poll_pending() {

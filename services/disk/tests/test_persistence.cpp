@@ -57,8 +57,8 @@ namespace {
                 c.path = path;
                 return c;
             }())
-            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
-            manager->set_run_fn([this] { scheduler->run(10000); });
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log,
+                                                        [this] { scheduler->run(10000); })) {
         }
         ~fresh_disk() {
             scheduler->stop();

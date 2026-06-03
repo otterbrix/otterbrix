@@ -245,6 +245,10 @@ namespace services::disk {
         , config_(std::move(config))
         , in_flight_behaviors_(resource) {
         trace(log_, "manager_disk start");
+        // Install production yield strategy when caller didn't provide one.
+        if (!run_fn_) {
+            run_fn_ = [this] { production_idle_tick(); };
+        }
         if (!config_.path.empty()) {
             create_directories(config_.path);
             create_agent(config.agent);
@@ -281,6 +285,9 @@ namespace services::disk {
             auto& slot = in_flight_behaviors_.back();
             slot.pending_msg = std::move(msg);
             if (pumping_) {
+                // Wake pump driver if it is sleeping in the idle wait
+                // at the bottom of the loop. Cheap when driver is busy.
+                pump_cv_.notify_one();
                 return {false, actor_zeta::detail::enqueue_result::success};
             }
             pumping_ = true;
@@ -364,10 +371,17 @@ namespace services::disk {
             if (erased) {
                 continue; // to_destroy goes out of scope here, behavior_t dtor runs unlocked.
             }
-            // Everything is busy and not ready — yield to the scheduler.
+            // Yield via Strategy injected through ctor (run_fn_). See
+            // dispatcher.cpp for full rationale.
             run_fn_();
         }
         return {false, actor_zeta::detail::enqueue_result::success};
+    }
+
+    void manager_disk_t::production_idle_tick() {
+        // 10µs polling matches original busy-spin frequency. See
+        // manager_dispatcher_t::production_idle_tick for rationale.
+        std::this_thread::sleep_for(std::chrono::microseconds(10));
     }
 
     actor_zeta::behavior_t manager_disk_t::behavior(actor_zeta::mailbox::message* msg) {

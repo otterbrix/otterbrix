@@ -16,6 +16,7 @@
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>
 
+#include <condition_variable>
 #include <functional>
 #include <list>
 #include <mutex>
@@ -41,10 +42,13 @@ namespace services::wal {
             actor_zeta::behavior_t behavior{};
         };
 
+        using run_fn_t = std::function<void()>;
+
         manager_wal_replicate_t(std::pmr::memory_resource* resource,
                                 actor_zeta::scheduler_raw scheduler,
                                 configuration::config_wal config,
-                                log_t& log);
+                                log_t& log,
+                                run_fn_t run_fn = {});
         ~manager_wal_replicate_t();
 
         std::pmr::memory_resource* resource() const noexcept;
@@ -52,10 +56,7 @@ namespace services::wal {
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
         std::pair<bool, actor_zeta::detail::enqueue_result> enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
-        using run_fn_t = std::function<void()>;
-
         void sync(address_pack pack);
-        void set_run_fn(run_fn_t fn) { run_fn_ = std::move(fn); }
 
         // Contract handlers.
         unique_future<std::vector<record_t>> load(session_id_t session, wal::id_t wal_id);
@@ -176,14 +177,21 @@ namespace services::wal {
         // a truncated record. Empty when no builds are active — no clamp.
         std::pmr::set<wal::id_t> active_build_start_positions_{resource_};
 
-        run_fn_t run_fn_{[] { std::this_thread::yield(); }};
+        run_fn_t run_fn_;
 
         std::pmr::list<in_flight_entry_t> in_flight_behaviors_;
         bool pumping_{false};
         in_flight_entry_t* current_slot_{nullptr};
         std::mutex mutex_; // NEW for wal — protects in_flight_behaviors_ / pumping_ only.
+        // Wakes pump driver in idle wait. See manager_dispatcher_t::pump_cv_.
+        std::condition_variable pump_cv_;
 
         void record_session(components::session::session_id_t s) noexcept;
+
+        // Default production yield strategy installed by the ctor when no
+        // run_fn is provided. Waits up to 100µs on pump_cv_ (woken early
+        // by enqueue branch).
+        void production_idle_tick();
     };
 
 } // namespace services::wal

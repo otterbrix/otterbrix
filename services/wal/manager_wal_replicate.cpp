@@ -20,7 +20,8 @@ namespace services::wal {
     manager_wal_replicate_t::manager_wal_replicate_t(std::pmr::memory_resource* resource,
                                                      actor_zeta::scheduler_raw scheduler,
                                                      configuration::config_wal config,
-                                                     log_t& log)
+                                                     log_t& log,
+                                                     run_fn_t run_fn)
         : actor_zeta::actor::actor_mixin<manager_wal_replicate_t>()
         , resource_(resource)
         , scheduler_(scheduler)
@@ -29,10 +30,15 @@ namespace services::wal {
         , enabled_(config_.on)
         , manager_disk_(actor_zeta::address_t::empty_address())
         , manager_dispatcher_(actor_zeta::address_t::empty_address())
+        , run_fn_(std::move(run_fn))
         // in_flight_behaviors_ is declared after run_fn_ — listed last to match
         // member declaration order and avoid -Wreorder.
         , in_flight_behaviors_(resource_) {
         trace(log_, "manager_wal_replicate start, enabled={}", enabled_);
+        // Install production yield strategy when caller didn't provide one.
+        if (!run_fn_) {
+            run_fn_ = [this] { production_idle_tick(); };
+        }
         if (enabled_ && !config_.path.empty()) {
             std::filesystem::create_directories(config_.path);
             // Discover existing database directories (named after database_oid).
@@ -95,6 +101,7 @@ namespace services::wal {
             auto& slot = in_flight_behaviors_.back();
             slot.pending_msg = std::move(msg);
             if (pumping_) {
+                pump_cv_.notify_one();
                 return {false, actor_zeta::detail::enqueue_result::success};
             }
             pumping_ = true;
@@ -183,10 +190,17 @@ namespace services::wal {
                 continue; // to_destroy dtor runs here, outside the lock.
             }
 
-            // All behaviors busy and not ready — yield to scheduler.
+            // Yield via Strategy injected through ctor (run_fn_). See
+            // dispatcher.cpp for full rationale.
             run_fn_();
         }
         return {false, actor_zeta::detail::enqueue_result::success};
+    }
+
+    void manager_wal_replicate_t::production_idle_tick() {
+        // 10µs polling matches original busy-spin frequency. See
+        // manager_dispatcher_t::production_idle_tick for rationale.
+        std::this_thread::sleep_for(std::chrono::microseconds(10));
     }
 
     void manager_wal_replicate_t::record_session(components::session::session_id_t s) noexcept {

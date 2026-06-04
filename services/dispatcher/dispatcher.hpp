@@ -17,9 +17,11 @@
 #include <actor-zeta/detail/future.hpp>
 #include <actor-zeta/detail/queue/enqueue_result.hpp>
 
+#include <atomic>
+#include <boost/lockfree/queue.hpp>
+
 #include <core/date/date_types.hpp>
 #include <core/executor.hpp>
-#include <core/slot_guard.hpp>
 #include <list>
 #include <mutex>
 
@@ -54,27 +56,22 @@ namespace services::dispatcher {
 
         using sync_pack = std::tuple<actor_zeta::address_t, actor_zeta::address_t, actor_zeta::address_t>;
 
-        using run_fn_t = std::function<void()>;
-
-        // In-flight slot for the unified pump pattern. Each enqueue_impl
-        // entry pushes one of these; the pump-loop creates the behavior
-        // (corotine) lazily outside the mutex, resumes ready continuations,
-        // and erases done entries. session is sentinel-default until the
-        // handler calls record_session(); pending_msg holds the message
-        // until the pump-loop calls behavior(msg.get()).
-        // PUBLIC typedef so slot_guard<in_flight_entry_t*> CTAD works at the
-        // call-site inside enqueue_impl (rule: no friend declarations).
+        // In-flight slot for the event-loop model. The loop thread drains the
+        // lock-free inbox_ into a loop-private list of these, lazily creates
+        // the behavior (coroutine) for each, resumes ready continuations, and
+        // erases done entries. pending_msg holds the message until the loop
+        // calls behavior(msg.get()); stale_ticks counts consecutive loop
+        // passes a slot has been busy-but-not-ready (watchdog input).
         struct in_flight_entry_t {
-            components::session::session_id_t session{};
             actor_zeta::mailbox::message_ptr pending_msg{};
             actor_zeta::behavior_t behavior{};
+            uint32_t stale_ticks{0};
         };
 
         manager_dispatcher_t(
             std::pmr::memory_resource*,
             actor_zeta::scheduler_raw,
-            log_t& log,
-            run_fn_t run_fn = {});
+            log_t& log);
         ~manager_dispatcher_t();
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
@@ -183,18 +180,9 @@ namespace services::dispatcher {
         // case (no drops outstanding → no message bursts on every commit).
         void try_trigger_cleanup_if_horizon_advanced() noexcept;
 
-        // Default production yield strategy installed by the ctor when no
-        // run_fn is provided. Re-enqueues executors_ (workaround for
-        // actor-zeta cooperative_actor.hpp lost-wake-up bug), then waits
-        // up to 100µs on pump_cv_ (woken early by enqueue branch).
-        // Test fixtures override the strategy via the ctor run_fn arg
-        // (typically scheduler->run(10000) for non_thread_scheduler).
-        void production_idle_tick();
-
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
         log_t log_;
-        run_fn_t run_fn_; // Yield function for cooperative scheduling
 
         static constexpr std::size_t executor_pool_size_ = 4;
 
@@ -203,10 +191,9 @@ namespace services::dispatcher {
         // truth. See services/collection/executor.hpp for the migration
         // contract.
         //
-        // Fast-path membership cache for collections. Read by
-        // physical_plan_generator in 8 sites (join, match, aggregate, sort,
-        // group) to drive optimizer decisions. Removing would require touching
-        // all 8 + replacing with on-demand pg_class scans. Cache rebuild on
+        // Fast-path membership cache for collections. Loop-thread-private:
+        // only the event-loop thread (via execute_plan handlers) mutates or
+        // reads it — grep shows zero external readers. Cache rebuild on
         // init_from_state is cheap.
         collection_storage_t collections_;
         std::pmr::vector<services::collection::executor::executor_ptr> executors_;
@@ -228,14 +215,19 @@ namespace services::dispatcher {
         // pins it). Only re-broadcast when the value actually moves forward.
         uint64_t last_broadcast_horizon_{0};
 
+        // Event-loop model: enqueue_impl (any sender thread) only delivers a
+        // message into the lock-free inbox_ and notifies pump_cv_; ALL message
+        // processing — behavior creation, continuation resume, cleanup —
+        // happens on loop_thread_. mutex_/pump_cv_ now guard only the loop's
+        // idle sleep at the bottom of each pass (woken early by enqueue).
+        std::thread loop_thread_;
+        std::atomic<bool> loop_running_{true};
+        // lock-free inbox: senders only deliver; ALL processing happens on
+        // loop_thread_. Stores raw message* (boost::lockfree requires
+        // trivially-copyable): release() on push, re-wrapped into message_ptr
+        // by the loop. Node allocations are non-PMR (infra queue).
+        boost::lockfree::queue<actor_zeta::mailbox::message*> inbox_{128};
         std::mutex mutex_;
-        // Wakes the pump driver when a new message is appended to
-        // in_flight_behaviors_ — replaces the old busy-spin
-        // `run_fn_() = sleep_for(10us)` with a notify-based wait.
-        // The driver sleeps up to 100ms when there is no actionable
-        // slot; the 100ms acts as a defensive fallback against
-        // actor-zeta cooperative_actor lost-wake-up bugs (the bound
-        // also re-triggers the executor re-enqueue workaround).
         std::condition_variable pump_cv_;
 
         components::table::transaction_manager_t txn_manager_;
@@ -254,13 +246,13 @@ namespace services::dispatcher {
                           components::table::transaction_data txn,
                           context_storage_t* collections_context_storage);
 
-        std::pmr::list<in_flight_entry_t> in_flight_behaviors_;
+        // Fire-and-forget unique_future<void> GC list. Loop-thread-private —
+        // only the event loop appends (broadcast/register sends) and drains it
+        // via poll_pending(); the in_flight slot list is a local inside the
+        // loop lambda (see ctor) rather than a member.
         std::pmr::vector<actor_zeta::unique_future<void>> pending_void_;
-        bool pumping_{false};
-        in_flight_entry_t* current_slot_{nullptr};
 
         void poll_pending();
-        void record_session(components::session::session_id_t s) noexcept;
     };
 
 } // namespace services::dispatcher

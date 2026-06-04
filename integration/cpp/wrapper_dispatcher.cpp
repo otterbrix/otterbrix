@@ -47,7 +47,8 @@ namespace otterbrix {
         while (!future.is_ready()) {
             std::unique_lock<std::mutex> lock(event_loop_mutex_);
             if (!future.is_ready()) {
-                event_loop_cv_.wait_for(lock, std::chrono::milliseconds(10));
+                // 100µs (was 10ms) — see wait_future in the header for rationale.
+                event_loop_cv_.wait_for(lock, std::chrono::microseconds(100));
             }
         }
         std::move(future).take_ready();

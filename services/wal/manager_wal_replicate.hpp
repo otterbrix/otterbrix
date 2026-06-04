@@ -6,7 +6,6 @@
 #include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/detail/future.hpp>
 
-#include <core/slot_guard.hpp>
 #include <services/wal/wal.hpp>
 #include <services/wal/wal_contract.hpp>
 #include <services/wal/wal_sync_mode.hpp>
@@ -16,6 +15,9 @@
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>
 
+#include <boost/lockfree/queue.hpp>
+
+#include <atomic>
 #include <condition_variable>
 #include <functional>
 #include <list>
@@ -33,22 +35,17 @@ namespace services::wal {
         using address_pack = std::tuple<actor_zeta::address_t, actor_zeta::address_t>;
         using session_id_t = components::session::session_id_t;
 
-        // Public so observability/tests can inspect; needed for slot_guard CTAD
-        // inside enqueue_impl. The pump-loop manages the lifetime; handlers fill
-        // `session` via record_session().
+        // Public so observability/tests can inspect. The event loop owns the
+        // lifetime of each entry in its local in_flight list.
         struct in_flight_entry_t {
-            components::session::session_id_t session{};
             actor_zeta::mailbox::message_ptr pending_msg{};
             actor_zeta::behavior_t behavior{};
         };
 
-        using run_fn_t = std::function<void()>;
-
         manager_wal_replicate_t(std::pmr::memory_resource* resource,
                                 actor_zeta::scheduler_raw scheduler,
                                 configuration::config_wal config,
-                                log_t& log,
-                                run_fn_t run_fn = {});
+                                log_t& log);
         ~manager_wal_replicate_t();
 
         std::pmr::memory_resource* resource() const noexcept;
@@ -177,21 +174,18 @@ namespace services::wal {
         // a truncated record. Empty when no builds are active — no clamp.
         std::pmr::set<wal::id_t> active_build_start_positions_{resource_};
 
-        run_fn_t run_fn_;
-
-        std::pmr::list<in_flight_entry_t> in_flight_behaviors_;
-        bool pumping_{false};
-        in_flight_entry_t* current_slot_{nullptr};
-        std::mutex mutex_; // NEW for wal — protects in_flight_behaviors_ / pumping_ only.
-        // Wakes pump driver in idle wait. See manager_dispatcher_t::pump_cv_.
+        // Event loop runs on its own thread. Senders only deliver into inbox_;
+        // ALL message processing (behavior creation, coroutine resume, cleanup)
+        // happens on loop_thread_. See manager_dispatcher_t for the same model.
+        std::thread loop_thread_;
+        std::atomic<bool> loop_running_{true};
+        // lock-free inbox: senders only deliver; ALL processing happens on loop_thread_.
+        // Stores raw message* (boost::lockfree requires trivially-copyable): release() on push,
+        // re-wrapped into message_ptr by the loop. Node allocations are non-PMR (infra queue).
+        boost::lockfree::queue<actor_zeta::mailbox::message*> inbox_{128};
+        std::mutex mutex_; // guards the idle wait condition only.
+        // Wakes the loop's idle wait on every enqueue notify (bounded staleness).
         std::condition_variable pump_cv_;
-
-        void record_session(components::session::session_id_t s) noexcept;
-
-        // Default production yield strategy installed by the ctor when no
-        // run_fn is provided. Waits up to 100µs on pump_cv_ (woken early
-        // by enqueue branch).
-        void production_idle_tick();
     };
 
 } // namespace services::wal

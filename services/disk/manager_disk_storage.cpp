@@ -132,7 +132,6 @@ namespace services::disk {
 
     manager_disk_t::unique_future<void>
     manager_disk_t::create_storage(session_id_t session, catalog::oid_t table_oid, catalog::oid_t /*database_oid*/) {
-        record_session(session);
         trace(log_,
               "manager_disk_t::create_storage , session : {} , oid : {}",
               session.data(),
@@ -162,7 +161,6 @@ namespace services::disk {
                                                 catalog::oid_t table_oid,
                                                 catalog::oid_t /*database_oid*/,
                                                 std::vector<components::table::column_definition_t> columns) {
-        record_session(session);
         trace(log_,
               "manager_disk_t::create_storage_with_columns , session : {} , oid : {}",
               session.data(),
@@ -189,7 +187,6 @@ namespace services::disk {
                                         catalog::oid_t table_oid,
                                         catalog::oid_t database_oid,
                                         std::vector<components::table::column_definition_t> columns) {
-        record_session(session);
         trace(log_,
               "manager_disk_t::create_storage_disk , session : {} , oid : {}",
               session.data(),
@@ -232,7 +229,6 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<void> manager_disk_t::drop_storage(session_id_t session, catalog::oid_t table_oid) {
-        record_session(session);
         trace(log_,
               "manager_disk_t::drop_storage , session : {} , oid : {}",
               session.data(),
@@ -261,7 +257,6 @@ namespace services::disk {
 
     manager_disk_t::unique_future<std::pmr::vector<components::types::complex_logical_type>>
     manager_disk_t::storage_types(session_id_t session, catalog::oid_t table_oid) {
-        record_session(session);
         // Pure router. Agent returns an empty pmr-vector for not-owned /
         // schema-less twins — propagate as-is.
         if (!agents_.empty()) {
@@ -280,7 +275,6 @@ namespace services::disk {
 
     manager_disk_t::unique_future<uint64_t> manager_disk_t::storage_total_rows(session_id_t session,
                                                                                catalog::oid_t table_oid) {
-        record_session(session);
         // Pure router. 0 from the agent means "not owned" OR "empty twin"
         // — both equivalent for this caller.
         if (!agents_.empty()) {
@@ -305,7 +299,6 @@ namespace services::disk {
                                  std::unique_ptr<components::table::table_filter_t> filter,
                                  int limit,
                                  components::table::transaction_data txn) {
-        record_session(session);
         // Pure router. Agent returns nullptr for not-owned OIDs.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
@@ -332,7 +325,6 @@ namespace services::disk {
                                          int64_t limit,
                                          std::vector<size_t> projected_cols,
                                          components::table::transaction_data txn) {
-        record_session(session);
         // Pure router. Agent returns an empty pmr-vector for not-owned /
         // empty twins.
         if (!agents_.empty()) {
@@ -358,7 +350,6 @@ namespace services::disk {
                                   catalog::oid_t table_oid,
                                   components::vector::vector_t row_ids,
                                   uint64_t count) {
-        record_session(session);
         // Pure router. Agent returns nullptr for not-owned OIDs.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
@@ -381,7 +372,6 @@ namespace services::disk {
                                          catalog::oid_t table_oid,
                                          int64_t start,
                                          uint64_t count) {
-        record_session(session);
         // Pure router. Agent returns nullptr for not-owned OIDs.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
@@ -403,7 +393,6 @@ namespace services::disk {
     manager_disk_t::storage_append(execution_context_t ctx,
                                    catalog::oid_t table_oid,
                                    std::unique_ptr<components::vector::data_chunk_t> data) {
-        record_session(ctx.session);
         auto& txn = ctx.txn;
         // Probe the routed agent's slice via storage_entry_sync to get the
         // canonical storage_t (carve-out: agent mailbox idle vs. this sync
@@ -645,7 +634,6 @@ namespace services::disk {
                                    catalog::oid_t table_oid,
                                    components::vector::vector_t row_ids,
                                    std::unique_ptr<components::vector::data_chunk_t> data) {
-        record_session(ctx.session);
         // Apply via the agent's storage_entry_sync borrow — the write
         // through the borrowed storage_t IS the canonical write.
         components::storage::storage_t* s = nullptr;
@@ -668,7 +656,6 @@ namespace services::disk {
                                                                                 catalog::oid_t table_oid,
                                                                                 components::vector::vector_t row_ids,
                                                                                 uint64_t count) {
-        record_session(ctx.session);
         // Apply via the agent's storage_entry_sync borrow — the write
         // through the borrowed storage_t IS the canonical write.
         components::storage::storage_t* s = nullptr;
@@ -700,7 +687,6 @@ namespace services::disk {
                                                                               uint64_t commit_id,
                                                                               int64_t row_start,
                                                                               uint64_t count) {
-        record_session(ctx.session);
         // Probe the agent slice for the canonical storage_t and apply
         // commit_append directly.
         if (agents_.empty())
@@ -720,7 +706,6 @@ namespace services::disk {
                                                                               catalog::oid_t table_oid,
                                                                               int64_t row_start,
                                                                               uint64_t count) {
-        record_session(ctx.session);
         // Pure forward to the routed agent slice.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
@@ -740,7 +725,6 @@ namespace services::disk {
 
     manager_disk_t::unique_future<void>
     manager_disk_t::storage_publish_delete(execution_context_t ctx, catalog::oid_t table_oid, uint64_t commit_id) {
-        record_session(ctx.session);
         // Probe the agent slice for the canonical storage_t and apply
         // commit_all_deletes directly.
         if (agents_.empty())
@@ -760,7 +744,6 @@ namespace services::disk {
     manager_disk_t::storage_publish_commits(execution_context_t ctx,
                                            uint64_t commit_id,
                                            std::vector<components::pg_catalog_append_range_t> ranges) {
-        record_session(ctx.session);
         // Pure router fanout. Per-agent payload is a PMR vector. ranges may
         // carry both catalog and user OIDs; agent inner handler is
         // idempotent for not-owned OIDs (over-routing is safe).
@@ -806,7 +789,6 @@ namespace services::disk {
     manager_disk_t::unique_future<void> manager_disk_t::storage_publish_deletes(execution_context_t ctx,
                                                                                uint64_t commit_id,
                                                                                std::set<catalog::oid_t> tables) {
-        record_session(ctx.session);
         const auto txn_id = ctx.txn.transaction_id;
         if (txn_id == 0)
             co_return;
@@ -849,7 +831,6 @@ namespace services::disk {
     manager_disk_t::unique_future<void>
     manager_disk_t::storage_revert_appends(execution_context_t ctx,
                                            std::vector<components::pg_catalog_append_range_t> ranges) {
-        record_session(ctx.session);
         // Pure router fanout for batched abort. Same partition-by-agent
         // pattern as storage_publish_commits; each agent's inner handler
         // reverse-iterates its slice to preserve append-order opposite.

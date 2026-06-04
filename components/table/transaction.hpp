@@ -155,6 +155,17 @@ namespace components::table {
         // Snapshotted by operator_commit_transaction_t / operator_abort_transaction_t
         // before txn_manager_.commit()/abort() to drive storage_publish_commits /
         // storage_revert_appends after the swap point.
+        //
+        // THREADING INVARIANT: the transaction_t BODY (these plain containers)
+        // is single-owner-thread per session. transaction_manager_t::lock_
+        // guards only the session map — find_transaction() returns this object
+        // raw. The executor worker (accumulate_*, executor.cpp) and the
+        // dispatcher loop thread (merge/drain, dispatcher.cpp) both mutate it,
+        // but never concurrently: the dispatcher co_awaits the executor result
+        // future before touching the txn (release/acquire edge), and
+        // wait_future serializes statements per session. Concurrent mutation
+        // is FORBIDDEN — route new cross-thread writes through a txn_*_msg
+        // mailbox handler instead.
         std::vector<components::pg_catalog_append_range_t> pg_catalog_appends;
         std::set<components::catalog::oid_t> pg_catalog_delete_tables;
         // Drained by operator_commit_transaction_t at COMMIT.

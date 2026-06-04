@@ -1,6 +1,7 @@
 // clang-format off
 // <actor-zeta/spawn.hpp> requires std::unique_ptr, but does not include it itself
 #include <memory>
+#include <memory_resource>
 #include <actor-zeta/spawn.hpp>
 // clang-format on
 
@@ -34,6 +35,22 @@ constexpr catalog_ns::oid_t kTestTableOid = 16500;
 static const std::filesystem::path base_wal_worker_path = "/tmp/otterbrix_test_wal_worker";
 
 // ---------------------------------------------------------------------------
+// The manager self-drives on an internal loop thread and runs its workers on
+// the (already started) real shared_work scheduler, so futures returned from a
+// send() to the manager become ready ASYNCHRONOUSLY. Bounded-yield-poll until
+// the future is ready, then take it. take_ready() asserts readiness, so the
+// guard must precede every take.
+// ---------------------------------------------------------------------------
+template<typename F>
+static decltype(auto) await_ready(F& fut) {
+    for (int i = 0; i < 1000000 && !fut.is_ready(); ++i) {
+        std::this_thread::yield();
+    }
+    REQUIRE(fut.is_ready());
+    return std::move(fut).take_ready();
+}
+
+// ---------------------------------------------------------------------------
 // Fixture: sets up a scheduler, a manager, and a single wal_worker_t for
 // the main_database.  The manager spawns workers on demand.
 // Workers are keyed by database_oid (single worker for main_database).
@@ -57,7 +74,9 @@ struct test_wal_worker {
     }
 
     ~test_wal_worker() {
+        // stop the scheduler FIRST (joins workers; children stop executing), then destroy the manager (joins its loop; post-stop enqueues are benign pushes into the stopped scheduler).
         scheduler_->stop();
+        manager_.reset();
         std::filesystem::remove_all(path_);
     }
 
@@ -65,8 +84,8 @@ struct test_wal_worker {
                                                                size_t row_count,
                                                                uint64_t row_start = 0,
                                                                catalog_ns::oid_t table_oid = kTestTableOid) {
-        std::pmr::monotonic_buffer_resource arena(1024 * 64);
-        auto chunk = gen_data_chunk(row_count, &arena);
+        auto* arena = std::pmr::new_delete_resource(); // chunk memory must outlive async processing
+        auto chunk = gen_data_chunk(row_count, arena);
         auto chunk_ptr = std::make_unique<data_chunk_t>(std::move(chunk));
 
         auto [needs_sched, future] = actor_zeta::otterbrix::send(manager_->address(),
@@ -100,8 +119,8 @@ struct test_wal_worker {
                                                                const std::pmr::vector<int64_t>& row_ids,
                                                                size_t row_count,
                                                                catalog_ns::oid_t table_oid = kTestTableOid) {
-        std::pmr::monotonic_buffer_resource arena(1024 * 64);
-        auto chunk = gen_data_chunk(row_count, &arena);
+        auto* arena = std::pmr::new_delete_resource(); // chunk memory must outlive async processing
+        auto chunk = gen_data_chunk(row_count, arena);
         auto chunk_ptr = std::make_unique<data_chunk_t>(std::move(chunk));
         auto ids_copy = row_ids;
 
@@ -164,8 +183,7 @@ TEST_CASE("wal_worker::insert_write_read") {
 
     auto fut_id = env.send_insert(/*txn_id=*/100, /*row_count=*/10, /*row_start=*/0);
     REQUIRE(fut_id.valid());
-    REQUIRE(fut_id.is_ready());
-    auto wal_id = std::move(fut_id).take_ready();
+    auto wal_id = await_ready(fut_id);
     REQUIRE(wal_id > 0);
 
     // Commit so the record is visible on load.
@@ -174,8 +192,7 @@ TEST_CASE("wal_worker::insert_write_read") {
 
     auto fut_records = env.send_load(0);
     REQUIRE(fut_records.valid());
-    REQUIRE(fut_records.is_ready());
-    auto records = std::move(fut_records).take_ready();
+    auto records = await_ready(fut_records);
 
     // Should have at least the INSERT + COMMIT.
     REQUIRE(records.size() >= 2);
@@ -203,12 +220,13 @@ TEST_CASE("wal_worker::delete_write_read") {
     std::pmr::vector<int64_t> ids{1, 3, 5, 7, 9};
     auto fut_id = env.send_delete(/*txn_id=*/200, ids);
     REQUIRE(fut_id.valid());
-    auto wal_id = std::move(fut_id).take_ready();
+    auto wal_id = await_ready(fut_id);
     REQUIRE(wal_id > 0);
 
     env.send_commit(200);
 
-    auto records = std::move(env.send_load(0)).take_ready();
+    auto fut_records = env.send_load(0);
+    auto records = await_ready(fut_records);
     bool found_delete = false;
     for (const auto& r : records) {
         if (r.record_type == wal_record_type::PHYSICAL_DELETE) {
@@ -232,12 +250,13 @@ TEST_CASE("wal_worker::update_write_read") {
     std::pmr::vector<int64_t> ids{0, 2, 4};
     auto fut_id = env.send_update(/*txn_id=*/300, ids, /*row_count=*/3);
     REQUIRE(fut_id.valid());
-    auto wal_id = std::move(fut_id).take_ready();
+    auto wal_id = await_ready(fut_id);
     REQUIRE(wal_id > 0);
 
     env.send_commit(300);
 
-    auto records = std::move(env.send_load(0)).take_ready();
+    auto fut_records = env.send_load(0);
+    auto records = await_ready(fut_records);
     bool found_update = false;
     for (const auto& r : records) {
         if (r.record_type == wal_record_type::PHYSICAL_UPDATE) {
@@ -263,7 +282,8 @@ TEST_CASE("wal_worker::commit_marker") {
     env.send_insert(/*txn_id=*/400, /*row_count=*/5);
     env.send_commit(400);
 
-    auto records = std::move(env.send_load(0)).take_ready();
+    auto fut_records = env.send_load(0);
+    auto records = await_ready(fut_records);
 
     bool found_commit = false;
     for (const auto& r : records) {
@@ -300,8 +320,8 @@ TEST_CASE("wal_worker::corruption_stop") {
 
         // Write several records in one transaction.
         for (int i = 0; i < 5; ++i) {
-            std::pmr::monotonic_buffer_resource arena(1024 * 64);
-            auto chunk = gen_data_chunk(4, &arena);
+            auto* arena = std::pmr::new_delete_resource(); // chunk memory must outlive async processing
+            auto chunk = gen_data_chunk(4, arena);
             auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
                                                          &manager_wal_replicate_t::write_physical_insert,
                                                          session_id_t::generate_uid(),
@@ -320,9 +340,14 @@ TEST_CASE("wal_worker::corruption_stop") {
                                                          wal_sync_mode::NORMAL,
                                                          kMainDb,
                                                          uint64_t{0});
+            // Await the commit (ordered after the inserts on the same worker) so
+            // all records are flushed to disk before the scheduler is stopped.
+            await_ready(fut);
         }
 
+        // stop the scheduler FIRST (joins workers; children stop executing), then destroy the manager (joins its loop; post-stop enqueues are benign pushes into the stopped scheduler).
         scheduler->stop();
+        manager.reset();
     }
     // Setup done -- files on disk remain.
 
@@ -366,7 +391,7 @@ TEST_CASE("wal_worker::corruption_stop") {
                                                                   services::wal::id_t{0});
 
     REQUIRE(fut_records.valid());
-    auto records = std::move(fut_records).take_ready();
+    auto records = await_ready(fut_records);
 
     // We should get fewer than the 5 inserts + 1 commit we wrote because the
     // corruption truncates the read.  At minimum we get zero (if corruption is
@@ -378,7 +403,9 @@ TEST_CASE("wal_worker::corruption_stop") {
         REQUIRE_FALSE(r.is_corrupt);
     }
 
+    // stop the scheduler FIRST (joins workers; children stop executing), then destroy the manager (joins its loop; post-stop enqueues are benign pushes into the stopped scheduler).
     scheduler->stop();
+    manager.reset();
     std::filesystem::remove_all(test_path);
 }
 
@@ -407,8 +434,8 @@ TEST_CASE("wal_worker::crc_chain_startup") {
         scheduler->start();
 
         {
-            std::pmr::monotonic_buffer_resource arena(1024 * 64);
-            auto chunk = gen_data_chunk(8, &arena);
+            auto* arena = std::pmr::new_delete_resource(); // chunk memory must outlive async processing
+            auto chunk = gen_data_chunk(8, arena);
             auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
                                                          &manager_wal_replicate_t::write_physical_insert,
                                                          session_id_t::generate_uid(),
@@ -433,11 +460,13 @@ TEST_CASE("wal_worker::crc_chain_startup") {
                                                          &manager_wal_replicate_t::current_wal_id,
                                                          session_id_t::generate_uid());
             REQUIRE(fut.valid());
-            last_wal_id = std::move(fut).take_ready();
+            last_wal_id = await_ready(fut);
             REQUIRE(last_wal_id > 0);
         }
 
+        // stop the scheduler FIRST (joins workers; children stop executing), then destroy the manager (joins its loop; post-stop enqueues are benign pushes into the stopped scheduler).
         scheduler->stop();
+        manager.reset();
     }
 
     // Re-open on the same directory (no cleanup).
@@ -457,7 +486,7 @@ TEST_CASE("wal_worker::crc_chain_startup") {
                                                               &manager_wal_replicate_t::load,
                                                               session_id_t::generate_uid(),
                                                               services::wal::id_t{0});
-        auto records = std::move(fut_records).take_ready();
+        auto records = await_ready(fut_records);
         REQUIRE(records.size() >= 2); // at least INSERT + COMMIT
 
         // Write a new record -- should continue the CRC chain.
@@ -471,10 +500,12 @@ TEST_CASE("wal_worker::crc_chain_startup") {
             uint64_t{3},
             uint64_t{601},
             kMainDb);
-        auto new_wal_id = std::move(fut_id).take_ready();
+        auto new_wal_id = await_ready(fut_id);
         REQUIRE(new_wal_id > last_wal_id);
 
+        // stop the scheduler FIRST (joins workers; children stop executing), then destroy the manager (joins its loop; post-stop enqueues are benign pushes into the stopped scheduler).
         scheduler->stop();
+        manager.reset();
     }
 
     std::filesystem::remove_all(test_path);
@@ -502,9 +533,10 @@ TEST_CASE("wal_worker::segment_rotation") {
     scheduler->start();
 
     // Write many records with enough data to exceed the small segment size.
+    actor_zeta::unique_future<services::wal::id_t> last_fut;
     for (uint64_t i = 0; i < 50; ++i) {
-        std::pmr::monotonic_buffer_resource arena(1024 * 64);
-        auto chunk = gen_data_chunk(20, &arena);
+        auto* arena = std::pmr::new_delete_resource(); // chunk memory must outlive async processing
+        auto chunk = gen_data_chunk(20, arena);
         auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
                                                      &manager_wal_replicate_t::write_physical_insert,
                                                      session_id_t::generate_uid(),
@@ -514,7 +546,11 @@ TEST_CASE("wal_worker::segment_rotation") {
                                                      uint64_t{20},
                                                      uint64_t{700 + i},
                                                      kMainDb);
+        last_fut = std::move(fut);
     }
+    // Await the final write (ordered after all earlier ones on the same worker)
+    // so every record is flushed before we inspect the segment files on disk.
+    await_ready(last_fut);
 
     // Count WAL-related files under the test path.
     size_t segment_count = 0;
@@ -527,7 +563,9 @@ TEST_CASE("wal_worker::segment_rotation") {
     // segments (likely many more).
     REQUIRE(segment_count >= 2);
 
+    // stop the scheduler FIRST (joins workers; children stop executing), then destroy the manager (joins its loop; post-stop enqueues are benign pushes into the stopped scheduler).
     scheduler->stop();
+    manager.reset();
     std::filesystem::remove_all(test_path);
 }
 
@@ -541,13 +579,13 @@ TEST_CASE("wal_worker::spanning_record") {
 
     // Write a single large insert.
     {
-        std::pmr::monotonic_buffer_resource arena(1024 * 256);
-        std::pmr::vector<components::types::complex_logical_type> types(&arena);
+        auto* arena = std::pmr::new_delete_resource(); // chunk memory must outlive async processing
+        std::pmr::vector<components::types::complex_logical_type> types(arena);
         types.emplace_back(components::types::logical_type::BIGINT, "id");
         types.emplace_back(components::types::logical_type::STRING_LITERAL, "name");
         types.emplace_back(components::types::logical_type::DOUBLE, "score");
         types.emplace_back(components::types::logical_type::BOOLEAN, "active");
-        auto chunk = gen_data_chunk(500, 0, types, &arena);
+        auto chunk = gen_data_chunk(500, 0, types, arena);
         auto chunk_ptr = std::make_unique<data_chunk_t>(std::move(chunk));
 
         auto [ns, fut] = actor_zeta::otterbrix::send(env.manager_->address(),
@@ -559,13 +597,14 @@ TEST_CASE("wal_worker::spanning_record") {
                                                      uint64_t{500},
                                                      uint64_t{800},
                                                      kMainDb);
-        auto wal_id = std::move(fut).take_ready();
+        auto wal_id = await_ready(fut);
         REQUIRE(wal_id > 0);
     }
 
     env.send_commit(800);
 
-    auto records = std::move(env.send_load(0)).take_ready();
+    auto fut_records = env.send_load(0);
+    auto records = await_ready(fut_records);
     bool found = false;
     for (const auto& r : records) {
         if (r.record_type == wal_record_type::PHYSICAL_INSERT && r.transaction_id == 800) {
@@ -601,8 +640,8 @@ TEST_CASE("wal_worker::fsync_full_mode") {
 
     // Write + commit.
     {
-        std::pmr::monotonic_buffer_resource arena(1024 * 64);
-        auto chunk = gen_data_chunk(10, &arena);
+        auto* arena = std::pmr::new_delete_resource(); // chunk memory must outlive async processing
+        auto chunk = gen_data_chunk(10, arena);
         auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
                                                      &manager_wal_replicate_t::write_physical_insert,
                                                      session_id_t::generate_uid(),
@@ -612,7 +651,7 @@ TEST_CASE("wal_worker::fsync_full_mode") {
                                                      uint64_t{10},
                                                      uint64_t{900},
                                                      kMainDb);
-        REQUIRE(std::move(fut).take_ready() > 0);
+        REQUIRE(await_ready(fut) > 0);
     }
 
     {
@@ -633,11 +672,13 @@ TEST_CASE("wal_worker::fsync_full_mode") {
                                                      &manager_wal_replicate_t::load,
                                                      session_id_t::generate_uid(),
                                                      services::wal::id_t{0});
-        auto records = std::move(fut).take_ready();
+        auto records = await_ready(fut);
         REQUIRE(records.size() >= 2);
     }
 
+    // stop the scheduler FIRST (joins workers; children stop executing), then destroy the manager (joins its loop; post-stop enqueues are benign pushes into the stopped scheduler).
     scheduler->stop();
+    manager.reset();
     std::filesystem::remove_all(test_path);
 }
 
@@ -663,8 +704,8 @@ TEST_CASE("wal_worker::fsync_off_mode") {
     scheduler->start();
 
     {
-        std::pmr::monotonic_buffer_resource arena(1024 * 64);
-        auto chunk = gen_data_chunk(10, &arena);
+        auto* arena = std::pmr::new_delete_resource(); // chunk memory must outlive async processing
+        auto chunk = gen_data_chunk(10, arena);
         auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
                                                      &manager_wal_replicate_t::write_physical_insert,
                                                      session_id_t::generate_uid(),
@@ -675,7 +716,7 @@ TEST_CASE("wal_worker::fsync_off_mode") {
                                                      uint64_t{1000},
                                                      kMainDb);
         // Write should still return a valid WAL id.
-        REQUIRE(std::move(fut).take_ready() > 0);
+        REQUIRE(await_ready(fut) > 0);
     }
 
     {
@@ -696,7 +737,7 @@ TEST_CASE("wal_worker::fsync_off_mode") {
                                                      &manager_wal_replicate_t::load,
                                                      session_id_t::generate_uid(),
                                                      services::wal::id_t{0});
-        auto records = std::move(fut).take_ready();
+        auto records = await_ready(fut);
         // Records might be empty if the in-memory-only path discards them,
         // or present if they are buffered. Either outcome is acceptable.
         // The key assertion is that we did not crash.
@@ -705,7 +746,9 @@ TEST_CASE("wal_worker::fsync_off_mode") {
         }
     }
 
+    // stop the scheduler FIRST (joins workers; children stop executing), then destroy the manager (joins its loop; post-stop enqueues are benign pushes into the stopped scheduler).
     scheduler->stop();
+    manager.reset();
     std::filesystem::remove_all(test_path);
 }
 

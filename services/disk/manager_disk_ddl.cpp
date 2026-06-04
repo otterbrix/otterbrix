@@ -12,7 +12,6 @@ namespace services::disk {
     manager_disk_t::append_pg_catalog_row(execution_context_t ctx,
                                           components::catalog::oid_t table_oid,
                                           components::vector::data_chunk_t row) {
-        record_session(ctx.session);
         const bool wal_available = (manager_wal_ != actor_zeta::address_t::empty_address());
         if (wal_available) {
             auto wal_chunk = std::make_unique<components::vector::data_chunk_t>(resource(), row.types(), row.size());
@@ -52,7 +51,6 @@ namespace services::disk {
                                                                                components::catalog::oid_t table_oid,
                                                                                std::int64_t oid_col_idx,
                                                                                components::catalog::oid_t target_oid) {
-        record_session(ctx.session);
         // Catalog OIDs only. Every caller passes a pg_catalog table_oid
         // (pg_class, pg_attribute, pg_depend, pg_type, pg_namespace,
         // pg_index) — all catalog OIDs route to agents_[0] via
@@ -128,7 +126,6 @@ namespace services::disk {
         components::catalog::oid_t attoid,
         components::pg_attribute_commit_id_backfill_t::kind_t kind,
         std::uint64_t commit_id) {
-        record_session(ctx.session);
         constexpr auto pg_attr_oid = components::catalog::well_known_oid::pg_attribute_table;
         // pg_attribute is a catalog OID — routes to agents_[0] (CATALOG
         // agent). Null storage_entry_sync is a terminal "no entry".
@@ -265,7 +262,6 @@ namespace services::disk {
     manager_disk_t::compact_relkind_g_storage(execution_context_t ctx,
                                               components::catalog::oid_t table_oid,
                                               std::set<std::string> live_attnames) {
-        record_session(ctx.session);
         // The routed agent slice owns the canonical IN_MEMORY twin for
         // relkind 'g' computed-column carriers. Read the column list via
         // storage_entry_sync (borrow safe while agent mailbox is idle), then

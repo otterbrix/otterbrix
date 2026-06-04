@@ -13,7 +13,6 @@
 #include <core/b_plus_tree/b_plus_tree.hpp>
 #include <core/b_plus_tree/msgpack_reader/msgpack_reader.hpp>
 #include <core/executor.hpp>
-#include <core/slot_guard.hpp>
 #include <msgpack.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <services/wal/record.hpp>
@@ -85,12 +84,10 @@ namespace services::index {
                                      std::filesystem::path path_db,
                                      uint64_t bitcask_flush_threshold,
                                      uint64_t bitcask_segment_record_limit,
-                                     uint64_t btree_flush_threshold,
-                                     run_fn_t run_fn)
+                                     uint64_t btree_flush_threshold)
         : actor_zeta::actor::actor_mixin<manager_index_t>()
         , resource_(resource)
         , scheduler_(scheduler)
-        , run_fn_(std::move(run_fn))
         , log_(log)
         , path_db_(std::move(path_db))
         , bitcask_flush_threshold_(bitcask_flush_threshold)
@@ -99,14 +96,111 @@ namespace services::index {
         , engines_(resource)
         , dropped_table_agents_(resource)
         , disk_agents_per_oid_(resource)
-        , pending_void_(resource)
-        , in_flight_behaviors_(resource) {
-        // Install production yield strategy when caller didn't provide one.
-        if (!run_fn_) {
-            run_fn_ = [this] { production_idle_tick(); };
-        }
+        , pending_void_(resource) {
         if (!path_db_.empty()) {
             std::filesystem::create_directories(path_db_);
+        }
+
+        // Event-loop-in-thread. Senders deliver into inbox_ and wake pump_cv_;
+        // this thread is the sole processor of behaviors. The in-flight list is
+        // a thread-local pmr::list owned by the loop — node allocations and the
+        // behavior_t coroutine frames live and die on this thread.
+        loop_thread_ = std::thread([this] {
+            // Local in-flight list (loop-thread-owned). Stable iterators
+            // (std::pmr::list) are required because behavior_t is move-only and
+            // resume can re-suspend on a new await without us touching the node.
+            // this->resource(): the ctor parameter `resource` shadows the member fn.
+            std::pmr::list<in_flight_entry_t> in_flight(this->resource());
+
+            while (loop_running_.load(std::memory_order_acquire)) {
+                // Drain inbox_: each raw message* released by a sender is
+                // re-wrapped into a message_ptr and parked in a fresh slot.
+                // pending_msg STAYS in the slot — the coroutine holds a raw
+                // pointer to the message across suspension points, so msg must
+                // outlive its behavior.
+                {
+                    actor_zeta::mailbox::message* raw = nullptr;
+                    while (inbox_.pop(raw)) {
+                        in_flight.emplace_back();
+                        in_flight.back().pending_msg = actor_zeta::mailbox::message_ptr{raw};
+                    }
+                }
+
+                bool made_progress = false;
+
+                // (a) Materialize a behavior for the first entry that has a
+                //     pending_msg but no behavior yet.
+                for (auto& e : in_flight) {
+                    if (e.pending_msg && !e.behavior) {
+                        e.behavior = behavior(e.pending_msg.get());
+                        poll_pending();
+                        made_progress = true;
+                        break;
+                    }
+                }
+
+                // (b) Resume one whose awaited unique_future is ready.
+                //     take_awaited_continuation atomically claims the cont; a
+                //     null result means another resume already took it.
+                if (!made_progress) {
+                    actor_zeta::detail::coroutine_handle<> cont{};
+                    for (auto& e : in_flight) {
+                        if (e.behavior.is_awaited_ready()) {
+                            cont = e.behavior.take_awaited_continuation();
+                            if (cont) {
+                                break;
+                            }
+                        }
+                    }
+                    if (cont) {
+                        cont.resume();
+                        poll_pending();
+                        made_progress = true;
+                    }
+                }
+
+                // (c) Cleanup phase — erase one done entry. The moved-out
+                //     behavior (and its message) destruct here, on the loop
+                //     thread (safe: ~behavior_t + Last-One-Out keeps the
+                //     promise alive). pending_msg is released alongside.
+                if (!made_progress) {
+                    for (auto it = in_flight.begin(); it != in_flight.end(); ++it) {
+                        if (it->behavior && it->behavior.done()) {
+                            it = in_flight.erase(it);
+                            made_progress = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (made_progress) {
+                    continue;
+                }
+
+                // Bounded-staleness idle wait: completion only sets an atomic
+                // flag on the awaited future (no notify), so wake at least every
+                // 100µs to re-poll readiness; enqueue notifies pump_cv_ early.
+                std::unique_lock<std::mutex> lk(mutex_);
+                if (inbox_.empty()) {
+                    pump_cv_.wait_for(lk, std::chrono::microseconds(100));
+                }
+            }
+            // Local in_flight destructs on the loop thread here — safe:
+            // ~behavior_t + Last-One-Out keeps each promise alive.
+        });
+    }
+
+    manager_index_t::~manager_index_t() {
+        loop_running_.store(false, std::memory_order_release);
+        pump_cv_.notify_all();
+        if (loop_thread_.joinable()) {
+            loop_thread_.join();
+        }
+        // Drain any messages a sender delivered after the loop exited — wrap
+        // each leftover raw back into a message_ptr so its deleter runs.
+        actor_zeta::mailbox::message* raw = nullptr;
+        while (inbox_.pop(raw)) {
+            actor_zeta::mailbox::message_ptr reclaim{raw};
         }
     }
 
@@ -114,135 +208,12 @@ namespace services::index {
 
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_index_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
-        // Stage 1: push the placeholder under mutex_ and claim pump-owner
-        // ownership if no pump is in flight. Concurrent enqueues land here
-        // too — they push their entry and return immediately while the
-        // single pump-owner thread drains the list.
-        bool drive = false;
-        {
-            std::lock_guard<std::mutex> guard(mutex_);
-            in_flight_behaviors_.emplace_back();
-            auto& slot = in_flight_behaviors_.back();
-            slot.pending_msg = std::move(msg);
-            if (pumping_) {
-                pump_cv_.notify_one();
-                return {false, actor_zeta::detail::enqueue_result::success};
-            }
-            pumping_ = true;
-            drive = true;
-        }
-
-        // Stage 2: top-level pump loop. Three direct phases per iteration:
-        //   (a) materialize a behavior for any entry with pending_msg
-        //   (b) resume one whose awaited future is ready
-        //   (c) erase a done entry, or release pump-ownership if quiescent
-        // No nested pump frames — re-entrant enqueue (from cont.resume or
-        // run_fn_) hits the pumping_ guard above and returns immediately.
-        while (drive) {
-            // (a) Create behavior for the first entry with pending_msg.
-            //     The behavior call runs OUTSIDE the mutex so re-entrant
-            //     enqueues from inside the handler's first suspension
-            //     point don't deadlock. slot_guard sets current_slot_ for
-            //     record_session(s) and auto-restores on scope exit.
-            //     pending_msg STAYS in slot — coroutine holds raw pointer to
-            //     message across suspension points; msg must outlive behavior.
-            //     Marker = behavior handle null (not yet created).
-            {
-                in_flight_entry_t* slot = nullptr;
-                {
-                    std::lock_guard<std::mutex> guard(mutex_);
-                    for (auto& e : in_flight_behaviors_) {
-                        if (e.pending_msg && !e.behavior) {
-                            slot = &e;
-                            break;
-                        }
-                    }
-                }
-                if (slot) {
-                    core::slot_guard g(&current_slot_, slot);
-                    slot->behavior = behavior(slot->pending_msg.get());
-                    continue;
-                }
-            }
-
-            // (b) Resume one whose awaited unique_future is ready.
-            //     take_awaited_continuation atomically claims the cont; if
-            //     it returns null another resume already took it, in which
-            //     case fall through to next phase.
-            {
-                actor_zeta::detail::coroutine_handle<> cont{};
-                in_flight_entry_t* slot = nullptr;
-                {
-                    std::lock_guard<std::mutex> guard(mutex_);
-                    for (auto& e : in_flight_behaviors_) {
-                        if (e.behavior.is_awaited_ready()) {
-                            cont = e.behavior.take_awaited_continuation();
-                            if (cont) {
-                                slot = &e;
-                                break;
-                            }
-                        }
-                    }
-                }
-                if (cont) {
-                    {
-                        core::slot_guard g(&current_slot_, slot);
-                        cont.resume();
-                    }
-                    poll_pending();
-                    continue;
-                }
-            }
-
-            // (c) Cleanup phase. Find one done entry, move its behavior out
-            //     under the mutex, erase the node, drop the lock, destroy
-            //     the moved-out behavior outside the mutex (PMR dealloc may
-            //     be non-trivial). If nothing is done AND nothing is busy,
-            //     release pump-ownership and return. Otherwise yield to
-            //     the scheduler via run_fn_() so producers can deliver
-            //     readiness signals to the awaited futures.
-            //     "Done" = behavior created (handle non-null) AND completed.
-            //     pending_msg released here together with behavior.
-            actor_zeta::behavior_t to_destroy;
-            actor_zeta::mailbox::message_ptr msg_to_destroy;
-            bool erased = false;
-            bool any_busy = false;
-            {
-                std::lock_guard<std::mutex> guard(mutex_);
-                for (auto it = in_flight_behaviors_.begin(); it != in_flight_behaviors_.end();) {
-                    if (it->behavior && it->behavior.done()) {
-                        to_destroy = std::move(it->behavior);
-                        msg_to_destroy = std::move(it->pending_msg);
-                        it = in_flight_behaviors_.erase(it);
-                        erased = true;
-                        break;
-                    } else {
-                        any_busy = true;
-                        ++it;
-                    }
-                }
-                if (!erased && !any_busy) {
-                    pumping_ = false;
-                    return {false, actor_zeta::detail::enqueue_result::success};
-                }
-            }
-            if (erased) {
-                // to_destroy dies here, OUTSIDE the mutex.
-                continue;
-            }
-
-            // Yield via Strategy injected through ctor (run_fn_). See
-            // dispatcher.cpp for full rationale.
-            poll_pending();
-            run_fn_();
-        }
+        // Producer side: deliver only. Release the message into the lock-free
+        // inbox_ (re-wrapped into a message_ptr by the loop thread) and wake the
+        // loop. ALL processing happens on loop_thread_.
+        inbox_.push(msg.release());
+        pump_cv_.notify_one();
         return {false, actor_zeta::detail::enqueue_result::success};
-    }
-
-    void manager_index_t::production_idle_tick() {
-        // 10µs polling matches original busy-spin frequency. See
-        // manager_dispatcher_t::production_idle_tick for rationale.
-        std::this_thread::sleep_for(std::chrono::microseconds(10));
     }
 
     actor_zeta::behavior_t manager_index_t::behavior(actor_zeta::mailbox::message* msg) {
@@ -340,23 +311,12 @@ namespace services::index {
 
     void manager_index_t::poll_pending() {
         // O(N) erase-remove. Single-threaded — pending_void_ is touched ONLY
-        // by the pump-owner thread (here, and from handlers running under the
-        // pump-loop's slot_guard frame). No mutex needed.
+        // by the loop thread (here, and from handlers running on the loop). No
+        // mutex needed.
         pending_void_.erase(std::remove_if(pending_void_.begin(),
                                            pending_void_.end(),
                                            [](auto& f) { return f.is_ready(); }),
                             pending_void_.end());
-    }
-
-    void manager_index_t::record_session(components::session::session_id_t s) noexcept {
-        // Lazily fill the in-flight slot's session field from the handler's
-        // first line. Sentinel-default (nullptr) means we're outside the pump
-        // (bootstrap path or test harness) — no-op. The current_slot_ pointer
-        // is established by core::slot_guard in enqueue_impl before behavior()
-        // and before each cont.resume().
-        if (auto* slot = current_slot_) {
-            slot->session = s;
-        }
     }
 
     void manager_index_t::sync(address_pack pack) {
@@ -375,7 +335,6 @@ namespace services::index {
     manager_index_t::mark_table_dropped(session_id_t session,
                                         components::catalog::oid_t table_oid,
                                         uint64_t dropped_at_commit_id) {
-        record_session(session);
         // Runtime DROP TABLE path — operator_dynamic_cascade_delete sends this
         // from inside the executor actor. Thin coroutine wrapper around
         // mark_table_dropped_sync so the operator can co_await a real future
@@ -595,7 +554,6 @@ namespace services::index {
 
     manager_index_t::unique_future<void> manager_index_t::register_collection(session_id_t session,
                                                                               components::catalog::oid_t table_oid) {
-        record_session(session);
         trace(log_, "manager_index_t::register_collection: oid={}", static_cast<unsigned>(table_oid));
 
         auto it = engines_.find(table_oid);
@@ -607,7 +565,6 @@ namespace services::index {
 
     manager_index_t::unique_future<void> manager_index_t::unregister_collection(session_id_t session,
                                                                                 components::catalog::oid_t table_oid) {
-        record_session(session);
         trace(log_, "manager_index_t::unregister_collection: oid={}", static_cast<unsigned>(table_oid));
 
         engines_.erase(table_oid);
@@ -623,7 +580,6 @@ namespace services::index {
                                                                            components::index::keys_base_storage_t keys,
                                                                            components::logical_plan::index_type type,
                                                                            core::date::timezone_offset_t session_tz) {
-        record_session(session);
         trace(log_, "manager_index_t::create_index: {} on oid={}", index_name, static_cast<unsigned>(table_oid));
 
         auto it = engines_.find(table_oid);
@@ -759,7 +715,6 @@ namespace services::index {
 
     manager_index_t::unique_future<void>
     manager_index_t::drop_index(session_id_t session, components::catalog::oid_t table_oid, index_name_t index_name) {
-        record_session(session);
         trace(log_, "manager_index_t::drop_index: {} on oid={}", index_name, static_cast<unsigned>(table_oid));
 
         auto it = engines_.find(table_oid);
@@ -810,7 +765,6 @@ namespace services::index {
     manager_index_t::unique_future<bool> manager_index_t::has_index(session_id_t session,
                                                                     components::catalog::oid_t table_oid,
                                                                     index_name_t index_name) {
-        record_session(session);
         auto it = engines_.find(table_oid);
         if (it == engines_.end())
             co_return false;
@@ -859,7 +813,6 @@ namespace services::index {
                                  std::unique_ptr<components::vector::data_chunk_t> data,
                                  uint64_t start_row_id,
                                  uint64_t count) {
-        record_session(ctx.session);
         if (!data || count == 0)
             co_return;
 
@@ -882,7 +835,6 @@ namespace services::index {
                                  components::catalog::oid_t table_oid,
                                  std::unique_ptr<components::vector::data_chunk_t> data,
                                  std::pmr::vector<int64_t> row_ids) {
-        record_session(ctx.session);
         if (!data || row_ids.empty())
             co_return;
 
@@ -907,7 +859,6 @@ namespace services::index {
                                  std::unique_ptr<components::vector::data_chunk_t> new_data,
                                  std::pmr::vector<int64_t> row_ids,
                                  int64_t new_start_row_id) {
-        record_session(ctx.session);
         if (!old_data || !new_data || row_ids.empty())
             co_return;
 
@@ -936,7 +887,6 @@ namespace services::index {
     manager_index_t::unique_future<core::error_t>
     manager_index_t::commit_insert(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id) {
         auto session = ctx.session;
-        record_session(session);
         auto txn_id = ctx.txn.transaction_id;
         auto it = engines_.find(table_oid);
         if (it == engines_.end())
@@ -1000,7 +950,6 @@ namespace services::index {
     manager_index_t::unique_future<core::error_t>
     manager_index_t::commit_delete(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id) {
         auto session = ctx.session;
-        record_session(session);
         auto txn_id = ctx.txn.transaction_id;
         auto it = engines_.find(table_oid);
         if (it == engines_.end())
@@ -1058,7 +1007,6 @@ namespace services::index {
 
     manager_index_t::unique_future<void> manager_index_t::revert_insert(execution_context_t ctx,
                                                                         components::catalog::oid_t table_oid) {
-        record_session(ctx.session);
         auto txn_id = ctx.txn.transaction_id;
         auto it = engines_.find(table_oid);
         if (it == engines_.end())
@@ -1072,7 +1020,6 @@ namespace services::index {
 
     manager_index_t::unique_future<void> manager_index_t::cleanup_all_versions(session_id_t session,
                                                                                uint64_t lowest_active) {
-        record_session(session);
         for (auto& [oid, engine] : engines_) {
             engine->cleanup_versions(lowest_active);
         }
@@ -1082,7 +1029,6 @@ namespace services::index {
 
     manager_index_t::unique_future<void> manager_index_t::rebuild_indexes(session_id_t session,
                                                                           components::catalog::oid_t table_oid) {
-        record_session(session);
         auto it = engines_.find(table_oid);
         if (it == engines_.end())
             co_return;
@@ -1116,7 +1062,6 @@ namespace services::index {
                                                 uint64_t start_time,
                                                 uint64_t txn_id,
                                                 core::date::timezone_offset_t session_tz) {
-        record_session(session);
         std::pmr::vector<int64_t> result(resource_);
         auto it = engines_.find(table_oid);
         if (it == engines_.end()) {
@@ -1142,7 +1087,6 @@ namespace services::index {
                             uint64_t start_time,
                             uint64_t txn_id,
                             core::date::timezone_offset_t session_tz) {
-        record_session(session);
         std::pmr::vector<int64_t> result(resource_);
 
         auto it = engines_.find(table_oid);
@@ -1158,7 +1102,6 @@ namespace services::index {
 
     manager_index_t::unique_future<std::pmr::vector<components::index::keys_base_storage_t>>
     manager_index_t::get_indexed_keys(session_id_t session, components::catalog::oid_t table_oid) {
-        record_session(session);
         auto it = engines_.find(table_oid);
         if (it == engines_.end()) {
             co_return std::pmr::vector<components::index::keys_base_storage_t>(resource_);
@@ -1168,7 +1111,6 @@ namespace services::index {
 
     manager_index_t::unique_future<std::pmr::vector<components::index::index_description_t>>
     manager_index_t::get_indexed_descriptions(session_id_t session, components::catalog::oid_t table_oid) {
-        record_session(session);
         auto it = engines_.find(table_oid);
         if (it == engines_.end()) {
             co_return std::pmr::vector<components::index::index_description_t>(resource_);
@@ -1177,7 +1119,6 @@ namespace services::index {
     }
 
     manager_index_t::unique_future<void> manager_index_t::flush_all_indexes(session_id_t session) {
-        record_session(session);
         trace(log_, "manager_index_t::flush_all_indexes, session: {}", session.data());
 
         // Await all pending agent operations to ensure no in-flight writes
@@ -1233,11 +1174,14 @@ namespace services::index {
         if (dropped_table_agents_.empty() && manager_dispatcher_ != actor_zeta::address_t::empty_address()) {
             // ack flag flip — dispatcher clears index_has_dropped_ on
             // receipt so no further on_horizon_advanced broadcasts arrive
-            // until a new DROP TABLE re-marks the subscriber. Track the
-            // resulting future in pending_void_ so its promise stays alive
-            // for the producer (Stage 1C leak fix — previously the future
-            // was dropped immediately and the producer wrote into a dead
-            // promise).
+            // until a new DROP TABLE re-marks the subscriber. Park the
+            // resulting future in pending_void_ as a CROSS-HANDLER ORDERING
+            // BARRIER: flush_all_indexes co_awaits every pending_void_ future
+            // (including the index_agent_disk_t::drop futures emitted above)
+            // BEFORE it calls force_flush_sync(), so a force_flush can never
+            // race an in-flight agent drop (which would be a use-after-free on
+            // the btree path). Dropping the future itself is safe (Last-One-Out
+            // keeps the promise alive); the barrier is the reason for parking.
             constexpr uint8_t INDEX_KIND = 2;
             pending_void_.emplace_back(std::move(
                 actor_zeta::send(manager_dispatcher_,
@@ -1279,7 +1223,6 @@ namespace services::index {
                                                 uint64_t physical_row_start,
                                                 uint64_t txn_id,
                                                 core::date::timezone_offset_t session_tz) {
-        record_session(session);
         auto it = engines_.find(table_oid);
         if (it == engines_.end()) {
             // The build's engine should already have been created by the

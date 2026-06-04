@@ -12,6 +12,7 @@
 #include <actor-zeta/mailbox/make_message.hpp>
 #include <actor-zeta/mailbox/message.hpp>
 #include <atomic>
+#include <boost/lockfree/queue.hpp>
 #include <chrono>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/dependency_walker.hpp>
@@ -36,7 +37,6 @@
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <core/executor.hpp>
-#include <core/slot_guard.hpp>
 #include <condition_variable>
 #include <limits>
 #include <list>
@@ -244,10 +244,7 @@ namespace services::disk {
 
         using address_pack = std::tuple<actor_zeta::address_t>;
 
-        using run_fn_t = std::function<void()>;
-
         struct in_flight_entry_t {
-            components::session::session_id_t session{};
             actor_zeta::mailbox::message_ptr pending_msg{};
             actor_zeta::behavior_t behavior{};
         };
@@ -257,8 +254,7 @@ namespace services::disk {
             actor_zeta::scheduler_raw scheduler,
             actor_zeta::scheduler_raw scheduler_disk,
             configuration::config_disk config,
-            log_t& log,
-            run_fn_t run_fn = {});
+            log_t& log);
         ~manager_disk_t();
 
         // True if a storage entry is registered for `table_oid` (used by WAL replay to lazily
@@ -733,17 +729,20 @@ namespace services::disk {
                                     components::catalog::oid_t database_oid,
                                     const std::filesystem::path& otbx_path);
 
-        // Default production yield strategy installed by the ctor when no
-        // run_fn is provided. Waits up to 100µs on pump_cv_ (woken early
-        // by enqueue branch). Test fixtures override via the ctor run_fn arg.
-        void production_idle_tick();
-
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
         actor_zeta::scheduler_raw scheduler_disk_;
-        run_fn_t run_fn_;
+        // Event-loop-in-thread model: senders only deliver into inbox_ (lock-free);
+        // ALL message processing happens on loop_thread_. mutex_/pump_cv_ are used
+        // ONLY for the loop's idle sleep + early wake from enqueue_impl.
+        std::thread loop_thread_;
+        std::atomic<bool> loop_running_{true};
+        // lock-free inbox: senders only deliver; ALL processing happens on loop_thread_.
+        // Stores raw message* (boost::lockfree requires trivially-copyable): release() on push,
+        // re-wrapped into message_ptr by the loop. Node allocations are non-PMR (infra queue).
+        boost::lockfree::queue<actor_zeta::mailbox::message*> inbox_{128};
         std::mutex mutex_;
-        // Wakes pump driver in idle wait. See manager_dispatcher_t::pump_cv_.
+        // Wakes the loop thread out of its idle sleep when a new message arrives.
         std::condition_variable pump_cv_;
 
         actor_zeta::address_t manager_wal_ = actor_zeta::address_t::empty_address();
@@ -793,12 +792,6 @@ namespace services::disk {
             if (pool_size == 1) return 0;
             return 1 + (static_cast<std::size_t>(oid) % (pool_size - 1));
         }
-
-        std::pmr::list<in_flight_entry_t> in_flight_behaviors_;
-        bool pumping_{false};
-        in_flight_entry_t* current_slot_{nullptr};
-
-        void record_session(components::session::session_id_t s) noexcept;
     };
 
     template<typename ReturnType, typename... Args>

@@ -340,6 +340,10 @@ namespace services::collection::executor {
             // park their ranges on the transaction_t and skip the per-statement
             // commit / publish / WAL barrier here. operator_commit_transaction
             // drains the parked ranges via batched storage_publish_* at COMMIT.
+            // THREADING: transaction_t body is single-owner-thread per session
+            // (see transaction.hpp) — these accumulate_* run on the executor
+            // worker strictly BEFORE the dispatcher loop's merge (it co_awaits
+            // our result future first). Never mutate the txn body concurrently.
             auto* current_txn = txn_manager_->find_transaction(session);
             const bool is_explicit_txn = (current_txn != nullptr && current_txn->is_explicit());
             if (is_explicit_txn) {

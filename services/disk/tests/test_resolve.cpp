@@ -13,6 +13,7 @@
 #include <services/disk/manager_disk.hpp>
 
 #include <filesystem>
+#include <thread>
 #include <unistd.h>
 
 using namespace services::disk;
@@ -42,13 +43,16 @@ namespace {
                 c.path = resolve_dir();
                 return c;
             }())
-            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log,
-                      [this] { scheduler->run(10000); })) {
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
             cleanup();
             std::filesystem::create_directories(resolve_dir());
             manager->bootstrap_system_tables_sync();
         }
         ~fixture() {
+            // Destroy the manager first: its dtor joins the internal loop thread,
+            // which may still enqueue children onto the scheduler. Only then is it
+            // safe to stop/delete the scheduler.
+            manager.reset();
             scheduler->stop();
             delete scheduler;
             cleanup();
@@ -57,7 +61,11 @@ namespace {
         template<typename Fn, typename... Args>
         auto invoke_async(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::send(manager->address(), fn, std::forward<Args>(args)...);
-            scheduler->run(10000);
+            for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
+                scheduler->run(1000);
+                std::this_thread::yield();
+            }
+            REQUIRE(future.is_ready());
             return std::move(future).take_ready();
         }
 

@@ -23,6 +23,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <thread>
 #include <unistd.h>
 
 using namespace services::disk;
@@ -34,6 +35,18 @@ namespace {
     std::string clean_break_dir() {
         static std::string p = "/tmp/test_otterbrix_clean_break_" + std::to_string(::getpid());
         return p;
+    }
+
+    // The manager actors self-drive on internal threads; futures become ready
+    // asynchronously. Pump the (thread-safe) child scheduler with a bounded poll
+    // until the future is ready before extracting its value with take_ready().
+    template<typename Fut>
+    void poll_ready(core::non_thread_scheduler::scheduler_test_t* scheduler, Fut& fut) {
+        for (int i = 0; i < 100000 && !fut.is_ready(); ++i) {
+            scheduler->run(1000);
+            std::this_thread::yield();
+        }
+        REQUIRE(fut.is_ready());
     }
 
     struct fresh_disk {
@@ -51,10 +64,12 @@ namespace {
                 c.path = path;
                 return c;
             }())
-            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log,
-                      [this] { scheduler->run(10000); })) {
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
         }
         ~fresh_disk() {
+            // manager_disk_t self-drives on an internal thread; destroy it before
+            // tearing down the scheduler to avoid use-after-free.
+            manager.reset();
             scheduler->stop();
             delete scheduler;
         }
@@ -62,7 +77,7 @@ namespace {
         template<typename Fn, typename... Args>
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::forward<Args>(args)...);
-            scheduler->run(10000);
+            poll_ready(scheduler, future);
             return std::move(future).take_ready();
         }
     };
@@ -129,7 +144,7 @@ TEST_CASE("integration::clean_break_startup::oid_generator_seeded_max_plus_1") {
                                                    &manager_disk_t::checkpoint_all,
                                                    session_id_t{},
                                                    services::wal::id_t{0});
-        fd.scheduler->run(10000);
+        poll_ready(fd.scheduler, cf);
         (void) std::move(cf).take_ready();
     }
     {
@@ -156,7 +171,7 @@ TEST_CASE("integration::clean_break_startup::namespace_round_trip") {
                                                    &manager_disk_t::checkpoint_all,
                                                    session_id_t{},
                                                    services::wal::id_t{0});
-        fd.scheduler->run(10000);
+        poll_ready(fd.scheduler, cf);
         (void) std::move(cf).take_ready();
     }
     {
@@ -171,7 +186,7 @@ TEST_CASE("integration::clean_break_startup::namespace_round_trip") {
                                                     ctx,
                                                     std::string("durable_ns"),
                                                     std::uint64_t{0});
-        fd2.scheduler->run(10000);
+        poll_ready(fd2.scheduler, fut);
         auto rr = std::move(fut).take_ready();
         REQUIRE(rr.found);
         REQUIRE(rr.oid == ns_oid);
@@ -197,7 +212,7 @@ TEST_CASE("integration::clean_break_startup::table_round_trip_with_columns") {
                                                    &manager_disk_t::checkpoint_all,
                                                    session_id_t{},
                                                    services::wal::id_t{0});
-        fd.scheduler->run(10000);
+        poll_ready(fd.scheduler, cf);
         (void) std::move(cf).take_ready();
     }
     {
@@ -212,7 +227,7 @@ TEST_CASE("integration::clean_break_startup::table_round_trip_with_columns") {
                                                      ctx,
                                                      std::string("ns"),
                                                      std::uint64_t{0});
-        fd2.scheduler->run(10000);
+        poll_ready(fd2.scheduler, nfut);
         auto rns = std::move(nfut).take_ready();
         REQUIRE(rns.found);
 
@@ -222,7 +237,7 @@ TEST_CASE("integration::clean_break_startup::table_round_trip_with_columns") {
                                                       rns.oid,
                                                       std::string("tbl"),
                                                       std::uint64_t{0});
-        fd2.scheduler->run(10000);
+        poll_ready(fd2.scheduler, tfut);
         auto rt = std::move(tfut).take_ready();
         REQUIRE(rt.found);
         REQUIRE(rt.oid == tbl_oid);
@@ -253,7 +268,7 @@ TEST_CASE("integration::clean_break_startup::index_round_trip") {
                                                     &manager_disk_t::checkpoint_all,
                                                     session_id_t{},
                                                     services::wal::id_t{0});
-        fd.scheduler->run(10000);
+        poll_ready(fd.scheduler, cf);
         (void) std::move(cf).take_ready();
     }
     {
@@ -270,7 +285,7 @@ TEST_CASE("integration::clean_break_startup::index_round_trip") {
                                                      ns_oid,
                                                      std::string("tbl_idx"),
                                                      std::uint64_t{0});
-        fd2.scheduler->run(10000);
+        poll_ready(fd2.scheduler, ifut);
         auto ri = std::move(ifut).take_ready();
         REQUIRE(ri.found);
         REQUIRE(ri.oid == idx_oid);
@@ -295,7 +310,7 @@ TEST_CASE("integration::clean_break_startup::resolve_after_restart") {
                                                    &manager_disk_t::checkpoint_all,
                                                    session_id_t{},
                                                    services::wal::id_t{0});
-        fd.scheduler->run(10000);
+        poll_ready(fd.scheduler, cf);
         (void) std::move(cf).take_ready();
     }
     {
@@ -310,7 +325,7 @@ TEST_CASE("integration::clean_break_startup::resolve_after_restart") {
                                                     ctx,
                                                     std::string("post_restart"),
                                                     std::uint64_t{0});
-        fd2.scheduler->run(10000);
+        poll_ready(fd2.scheduler, fut);
         auto rns = std::move(fut).take_ready();
         REQUIRE(rns.found);
     }
@@ -337,7 +352,7 @@ TEST_CASE("integration::clean_break_startup::sequence_view_macro_via_pg_class") 
                                                    &manager_disk_t::checkpoint_all,
                                                    session_id_t{},
                                                    services::wal::id_t{0});
-        fd.scheduler->run(10000);
+        poll_ready(fd.scheduler, cf);
         (void) std::move(cf).take_ready();
     }
     {

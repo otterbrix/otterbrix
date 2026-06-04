@@ -2,13 +2,14 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <mutex>
+#include <thread>
 
 #include <actor-zeta/spawn.hpp>
 #include <core/executor.hpp>
-#include <core/slot_guard.hpp>
 #include <services/wal/wal_page_reader.hpp>
 
 namespace services::wal {
@@ -20,8 +21,7 @@ namespace services::wal {
     manager_wal_replicate_t::manager_wal_replicate_t(std::pmr::memory_resource* resource,
                                                      actor_zeta::scheduler_raw scheduler,
                                                      configuration::config_wal config,
-                                                     log_t& log,
-                                                     run_fn_t run_fn)
+                                                     log_t& log)
         : actor_zeta::actor::actor_mixin<manager_wal_replicate_t>()
         , resource_(resource)
         , scheduler_(scheduler)
@@ -29,16 +29,8 @@ namespace services::wal {
         , log_(log.clone())
         , enabled_(config_.on)
         , manager_disk_(actor_zeta::address_t::empty_address())
-        , manager_dispatcher_(actor_zeta::address_t::empty_address())
-        , run_fn_(std::move(run_fn))
-        // in_flight_behaviors_ is declared after run_fn_ — listed last to match
-        // member declaration order and avoid -Wreorder.
-        , in_flight_behaviors_(resource_) {
+        , manager_dispatcher_(actor_zeta::address_t::empty_address()) {
         trace(log_, "manager_wal_replicate start, enabled={}", enabled_);
-        // Install production yield strategy when caller didn't provide one.
-        if (!run_fn_) {
-            run_fn_ = [this] { production_idle_tick(); };
-        }
         if (enabled_ && !config_.path.empty()) {
             std::filesystem::create_directories(config_.path);
             // Discover existing database directories (named after database_oid).
@@ -79,9 +71,107 @@ namespace services::wal {
             global_id_.store(max_recovered_id, std::memory_order_relaxed);
         }
         trace(log_, "manager_wal_replicate finish");
+
+        // Start the event loop only after all WAL recovery above has completed,
+        // so the loop never races with the (single-threaded) recovery scan.
+        loop_thread_ = std::thread([this] {
+            // in_flight lives on the loop thread for the whole loop lifetime;
+            // it owns every in-flight message_ptr and behavior_t. PMR-backed.
+            // this->resource(): the ctor parameter `resource` shadows the member fn.
+            std::pmr::list<in_flight_entry_t> in_flight(this->resource());
+
+            while (loop_running_.load(std::memory_order_acquire)) {
+                // Drain the lock-free inbox into local in_flight slots. Each raw
+                // message* is re-wrapped into a message_ptr (stateless deleter).
+                actor_zeta::mailbox::message* raw = nullptr;
+                while (inbox_.pop(raw)) {
+                    in_flight.emplace_back();
+                    in_flight.back().pending_msg = actor_zeta::mailbox::message_ptr(raw);
+                }
+
+                bool made_progress = false;
+
+                // wal manager has no fire-and-forget call-sites (all sends are
+                // co_await'ed inline) — therefore no pending_<T>_ containers and
+                // no poll_pending(). See plan main-misty-castle.md.
+
+                // (a) Create a behavior for the next entry that still needs one.
+                //     pending_msg STAYS in slot — coroutine holds raw pointer to
+                //     message across suspension points; msg must outlive behavior.
+                //     Marker = behavior handle null (not yet created).
+                for (auto& e : in_flight) {
+                    if (e.pending_msg && !e.behavior) {
+                        e.behavior = behavior(e.pending_msg.get());
+                        made_progress = true;
+                        break;
+                    }
+                }
+                if (made_progress) {
+                    continue;
+                }
+
+                // (b) Resume any behavior whose awaited result is ready.
+                {
+                    actor_zeta::detail::coroutine_handle<> cont{};
+                    for (auto& e : in_flight) {
+                        if (e.behavior.is_awaited_ready()) {
+                            cont = e.behavior.take_awaited_continuation();
+                            if (cont) {
+                                break;
+                            }
+                        }
+                    }
+                    if (cont) {
+                        cont.resume();
+                        continue; // wal: no poll_pending — no pending_<T>_ containers.
+                    }
+                }
+
+                // (c) Cleanup: erase one done entry per pass, destroying its
+                //     behavior_t and message_ptr inline on the loop thread.
+                //     "Done" = behavior created (handle non-null) AND completed.
+                for (auto it = in_flight.begin(); it != in_flight.end();) {
+                    if (it->behavior && it->behavior.done()) {
+                        it = in_flight.erase(it);
+                        made_progress = true;
+                        break;
+                    } else {
+                        ++it;
+                    }
+                }
+                if (made_progress) {
+                    continue;
+                }
+
+                // Idle: nothing to do this pass. Wait until an enqueue notifies
+                // us, or a bounded staleness window elapses (re-check inbox /
+                // any behaviors that may have become ready off-thread).
+                std::unique_lock<std::mutex> lock(mutex_);
+                pump_cv_.wait_for(lock, std::chrono::microseconds(100));
+            }
+            // in_flight (and every message_ptr / behavior_t it owns) is destroyed
+            // here, on the loop thread — never on a sender thread.
+        });
     }
 
-    manager_wal_replicate_t::~manager_wal_replicate_t() { trace(log_, "delete manager_wal_replicate_t"); }
+    manager_wal_replicate_t::~manager_wal_replicate_t() {
+        trace(log_, "delete manager_wal_replicate_t");
+        // Stop the loop and join before tearing down members.
+        loop_running_.store(false, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> guard(mutex_);
+            pump_cv_.notify_one();
+        }
+        if (loop_thread_.joinable()) {
+            loop_thread_.join();
+        }
+        // Drain any messages that arrived after the final loop pass so their
+        // promise sides release cleanly (re-wrap raws into message_ptr temporaries).
+        actor_zeta::mailbox::message* raw = nullptr;
+        while (inbox_.pop(raw)) {
+            actor_zeta::mailbox::message_ptr drained(raw);
+        }
+    }
 
     // -----------------------------------------------------------------------
     // Actor infrastructure
@@ -93,120 +183,12 @@ namespace services::wal {
 
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_wal_replicate_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
-        // Step 0: push placeholder entry and try to acquire pumping ownership.
-        bool drive = false;
-        {
-            std::lock_guard<std::mutex> guard(mutex_);
-            in_flight_behaviors_.emplace_back();
-            auto& slot = in_flight_behaviors_.back();
-            slot.pending_msg = std::move(msg);
-            if (pumping_) {
-                pump_cv_.notify_one();
-                return {false, actor_zeta::detail::enqueue_result::success};
-            }
-            pumping_ = true;
-            drive = true;
-        }
-
-        // wal manager has no fire-and-forget call-sites (all sends are
-        // co_await'ed inline) — therefore no pending_<T>_ containers and no
-        // poll_pending(). See plan main-misty-castle.md.
-        while (drive) {
-            // (a) Create a behavior for the next entry that still needs one.
-            //     pending_msg STAYS in slot — coroutine holds raw pointer to
-            //     message across suspension points; msg must outlive behavior.
-            //     Marker = behavior handle null (not yet created).
-            {
-                in_flight_entry_t* slot = nullptr;
-                {
-                    std::lock_guard<std::mutex> guard(mutex_);
-                    for (auto& e : in_flight_behaviors_) {
-                        if (e.pending_msg && !e.behavior) {
-                            slot = &e;
-                            break;
-                        }
-                    }
-                }
-                if (slot) {
-                    core::slot_guard g(&current_slot_, slot);
-                    slot->behavior = behavior(slot->pending_msg.get());
-                    continue;
-                }
-            }
-
-            // (b) Resume any behavior whose awaited result is ready.
-            {
-                actor_zeta::detail::coroutine_handle<> cont{};
-                in_flight_entry_t* slot = nullptr;
-                {
-                    std::lock_guard<std::mutex> guard(mutex_);
-                    for (auto& e : in_flight_behaviors_) {
-                        if (e.behavior.is_awaited_ready()) {
-                            cont = e.behavior.take_awaited_continuation();
-                            if (cont) {
-                                slot = &e;
-                                break;
-                            }
-                        }
-                    }
-                }
-                if (cont) {
-                    {
-                        core::slot_guard g(&current_slot_, slot);
-                        cont.resume();
-                    }
-                    continue; // wal: no poll_pending — no pending_<T>_ containers.
-                }
-            }
-
-            // (c) Cleanup: erase one done entry per pass, destroying its
-            //     behavior_t outside the mutex (PMR dealloc may be nontrivial).
-            //     "Done" = behavior created (handle non-null) AND completed.
-            //     pending_msg released here together with behavior.
-            actor_zeta::behavior_t to_destroy;
-            actor_zeta::mailbox::message_ptr msg_to_destroy;
-            bool erased = false;
-            bool any_busy = false;
-            {
-                std::lock_guard<std::mutex> guard(mutex_);
-                for (auto it = in_flight_behaviors_.begin(); it != in_flight_behaviors_.end();) {
-                    if (it->behavior && it->behavior.done()) {
-                        to_destroy = std::move(it->behavior);
-                        msg_to_destroy = std::move(it->pending_msg);
-                        it = in_flight_behaviors_.erase(it);
-                        erased = true;
-                        break;
-                    } else {
-                        any_busy = true;
-                        ++it;
-                    }
-                }
-                if (!erased && !any_busy) {
-                    pumping_ = false;
-                    return {false, actor_zeta::detail::enqueue_result::success};
-                }
-            }
-            if (erased) {
-                continue; // to_destroy dtor runs here, outside the lock.
-            }
-
-            // Yield via Strategy injected through ctor (run_fn_). See
-            // dispatcher.cpp for full rationale.
-            run_fn_();
-        }
+        // Senders only deliver: hand the raw message off to the loop thread's
+        // lock-free inbox and wake the loop. ALL processing (behavior creation,
+        // coroutine resume, cleanup) runs on loop_thread_ — never here.
+        inbox_.push(msg.release());
+        pump_cv_.notify_one();
         return {false, actor_zeta::detail::enqueue_result::success};
-    }
-
-    void manager_wal_replicate_t::production_idle_tick() {
-        // 10µs polling matches original busy-spin frequency. See
-        // manager_dispatcher_t::production_idle_tick for rationale.
-        std::this_thread::sleep_for(std::chrono::microseconds(10));
-    }
-
-    void manager_wal_replicate_t::record_session(components::session::session_id_t s) noexcept {
-        if (auto* slot = current_slot_) {
-            slot->session = s;
-        }
     }
 
     actor_zeta::behavior_t manager_wal_replicate_t::behavior(actor_zeta::mailbox::message* msg) {
@@ -309,14 +291,12 @@ namespace services::wal {
 
     manager_wal_replicate_t::unique_future<void>
     manager_wal_replicate_t::register_active_build(session_id_t session, wal::id_t build_start_wal_position) {
-        record_session(session);
         register_active_build_sync(build_start_wal_position);
         co_return;
     }
 
     manager_wal_replicate_t::unique_future<void>
     manager_wal_replicate_t::unregister_active_build(session_id_t session, wal::id_t build_start_wal_position) {
-        record_session(session);
         unregister_active_build_sync(build_start_wal_position);
         co_return;
     }
@@ -350,7 +330,6 @@ namespace services::wal {
 
     manager_wal_replicate_t::unique_future<std::vector<record_t>> manager_wal_replicate_t::load(session_id_t session,
                                                                                                 wal::id_t wal_id) {
-        record_session(session);
         if (!enabled_) {
             co_return std::vector<record_t>{};
         }
@@ -384,7 +363,6 @@ namespace services::wal {
                                         wal_sync_mode sync_mode,
                                         components::catalog::oid_t database_oid,
                                         uint64_t commit_id) {
-        record_session(session);
         if (!enabled_) {
             co_return wal::id_t{0};
         }
@@ -441,7 +419,6 @@ namespace services::wal {
 
     manager_wal_replicate_t::unique_future<void> manager_wal_replicate_t::truncate_before(session_id_t session,
                                                                                           wal::id_t checkpoint_wal_id) {
-        record_session(session);
         if (!enabled_) {
             co_return;
         }
@@ -480,7 +457,6 @@ namespace services::wal {
     // -----------------------------------------------------------------------
 
     manager_wal_replicate_t::unique_future<wal::id_t> manager_wal_replicate_t::current_wal_id(session_id_t session) {
-        record_session(session);
         if (!enabled_) {
             co_return wal::id_t{0};
         }
@@ -507,7 +483,6 @@ namespace services::wal {
 
     manager_wal_replicate_t::unique_future<wal::id_t>
     manager_wal_replicate_t::auto_checkpoint_wal_id(session_id_t session) {
-        record_session(session);
         if (!needs_auto_checkpoint()) {
             co_return wal::id_t{0};
         }
@@ -531,7 +506,6 @@ namespace services::wal {
                                                    uint64_t row_count,
                                                    uint64_t txn_id,
                                                    components::catalog::oid_t database_oid) {
-        record_session(session);
         if (!enabled_) {
             co_return wal::id_t{0};
         }
@@ -565,7 +539,6 @@ namespace services::wal {
                                                    uint64_t count,
                                                    uint64_t txn_id,
                                                    components::catalog::oid_t database_oid) {
-        record_session(session);
         if (!enabled_) {
             co_return wal::id_t{0};
         }
@@ -599,7 +572,6 @@ namespace services::wal {
                                                    uint64_t count,
                                                    uint64_t txn_id,
                                                    components::catalog::oid_t database_oid) {
-        record_session(session);
         if (!enabled_) {
             co_return wal::id_t{0};
         }

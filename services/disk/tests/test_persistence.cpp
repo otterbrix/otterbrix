@@ -16,6 +16,7 @@
 
 #include <filesystem>
 #include <limits>
+#include <thread>
 #include <unistd.h>
 
 // Phase-5 persistence tests (catalog-migration-to-postgresql-style.md §9, §14 lines
@@ -57,10 +58,13 @@ namespace {
                 c.path = path;
                 return c;
             }())
-            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log,
-                                                        [this] { scheduler->run(10000); })) {
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
         }
         ~fresh_disk() {
+            // Destroy the manager first: its dtor joins the internal loop thread,
+            // which may still enqueue children onto the scheduler. Only then is it
+            // safe to stop/delete the scheduler.
+            manager.reset();
             scheduler->stop();
             delete scheduler;
         }
@@ -72,7 +76,11 @@ namespace {
         template<typename Fn, typename... Args>
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::forward<Args>(args)...);
-            scheduler->run(10000);
+            for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
+                scheduler->run(1000);
+                std::this_thread::yield();
+            }
+            REQUIRE(future.is_ready());
             return std::move(future).take_ready();
         }
 
@@ -81,7 +89,11 @@ namespace {
                                                        &manager_disk_t::checkpoint_all,
                                                        session_id_t{},
                                                        services::wal::id_t{0});
-            scheduler->run(10000);
+            for (int i = 0; i < 100000 && !cf.is_ready(); ++i) {
+                scheduler->run(1000);
+                std::this_thread::yield();
+            }
+            REQUIRE(cf.is_ready());
             (void) std::move(cf).take_ready();
         }
     };

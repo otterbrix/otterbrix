@@ -1,5 +1,8 @@
 #include <catch2/catch.hpp>
 
+#include <chrono>
+#include <thread>
+
 #include <services/dispatcher/dispatcher.hpp>
 
 #include <actor-zeta/spawn.hpp>
@@ -39,12 +42,10 @@ namespace {
             , disk_path_(disk_path)
             , log_(initialization_logger("python", "/tmp/docker_logs/"))
             , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
-            , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource, scheduler_, log_,
-                  [this] { scheduler_->run(10000); }))
+            , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource, scheduler_, log_))
             , disk_config_(disk_path)
             , manager_disk_(
-                  actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_,
-                      [this] { scheduler_->run(10000); }))
+                  actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
             , wal_config_([&]() {
                 configuration::config_wal c;
                 c.on = false;
@@ -62,6 +63,12 @@ namespace {
         }
 
         ~differential_fixture() {
+            // Destroy managers (self-driving on internal threads) before tearing
+            // down the scheduler to avoid use-after-free. Reverse dependency
+            // order: dispatcher, then wal, then disk.
+            manager_dispatcher_.reset();
+            manager_wal_.reset();
+            manager_disk_.reset();
             scheduler_->stop();
             std::filesystem::remove_all(disk_path_);
             delete scheduler_;
@@ -77,10 +84,12 @@ namespace {
             // → resume → return cursor → executor resumes → completes).
             // Each cross-actor co_await re-enters the scheduler; a single
             // step() may not drain the chain. Pump until the future is ready
-            // or we hit a bounded attempt cap (≈1M iterations).
+            // or we hit a 5s wall-clock deadline.
             REQUIRE(pending_future_);
-            for (int attempt = 0; attempt < 100 && !pending_future_->is_ready(); ++attempt) {
-                step();
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (!pending_future_->is_ready() && std::chrono::steady_clock::now() < deadline) {
+                scheduler_->run(1000);
+                std::this_thread::yield();
             }
             REQUIRE(pending_future_->valid());
             REQUIRE(pending_future_->is_ready());
@@ -99,7 +108,12 @@ namespace {
                                                        ctx,
                                                        name,
                                                        std::uint64_t{0});
-            scheduler_->run(10000);
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
+                scheduler_->run(1000);
+                std::this_thread::yield();
+            }
+            REQUIRE(fut.is_ready());
             return std::move(fut).take_ready();
         }
 
@@ -113,7 +127,12 @@ namespace {
                                                        ns_oid,
                                                        tname,
                                                        std::uint64_t{0});
-            scheduler_->run(10000);
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
+                scheduler_->run(1000);
+                std::this_thread::yield();
+            }
+            REQUIRE(fut.is_ready());
             return std::move(fut).take_ready();
         }
 

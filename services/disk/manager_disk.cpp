@@ -5,7 +5,6 @@
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/dependency_walker.hpp>
 #include <components/catalog/system_table_schemas.hpp>
-#include <core/slot_guard.hpp>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -234,154 +233,113 @@ namespace services::disk {
                                    actor_zeta::scheduler_raw scheduler,
                                    actor_zeta::scheduler_raw scheduler_disk,
                                    configuration::config_disk config,
-                                   log_t& log,
-                                   run_fn_t run_fn)
+                                   log_t& log)
         : actor_zeta::actor::actor_mixin<manager_disk_t>()
         , resource_(resource)
         , scheduler_(scheduler)
         , scheduler_disk_(scheduler_disk)
-        , run_fn_(std::move(run_fn))
         , log_(log.clone())
-        , config_(std::move(config))
-        , in_flight_behaviors_(resource) {
+        , config_(std::move(config)) {
         trace(log_, "manager_disk start");
-        // Install production yield strategy when caller didn't provide one.
-        if (!run_fn_) {
-            run_fn_ = [this] { production_idle_tick(); };
-        }
         if (!config_.path.empty()) {
             create_directories(config_.path);
             create_agent(config.agent);
         }
-        trace(log_, "manager_disk finish");
-    }
-
-    manager_disk_t::~manager_disk_t() { trace(log_, "delete manager_disk_t"); }
-
-    void manager_disk_t::record_session(components::session::session_id_t s) noexcept {
-        if (auto* slot = current_slot_) {
-            slot->session = s;
-        }
-    }
-
-    // Unified pump (see plan main-misty-castle.md). Three-phase loop:
-    //   (a) create — find an entry with a pending_msg, take it out under mutex_,
-    //       build behavior() outside the lock with current_slot_ set via slot_guard.
-    //   (b) resume — find an entry whose behavior has a ready awaited continuation;
-    //       take_awaited_continuation() atomically extracts the handle, then
-    //       cont.resume() runs outside the lock (also with current_slot_ set).
-    //   (c) cleanup — erase done entries (behavior_t destruction outside the lock).
-    //       When nothing is busy AND nothing was erased this iteration, release
-    //       pumping_ ownership and exit.
-    // Re-entrant safety: only the outer pump-owner thread drains the list. Other
-    // threads (including recursive enqueue_impl from cont.resume()/run_fn_()) just
-    // push their slot under mutex_ and return immediately when pumping_=true.
-    std::pair<bool, actor_zeta::detail::enqueue_result>
-    manager_disk_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
-        bool drive = false;
-        {
-            std::lock_guard<std::mutex> guard(mutex_);
-            in_flight_behaviors_.emplace_back();
-            auto& slot = in_flight_behaviors_.back();
-            slot.pending_msg = std::move(msg);
-            if (pumping_) {
-                // Wake pump driver if it is sleeping in the idle wait
-                // at the bottom of the loop. Cheap when driver is busy.
-                pump_cv_.notify_one();
-                return {false, actor_zeta::detail::enqueue_result::success};
-            }
-            pumping_ = true;
-            drive = true;
-        }
-
-        while (drive) {
-            // (a) Create a behavior for the next entry that still needs one.
-            //     pending_msg stays OWNED BY THE SLOT — the behavior coroutine
-            //     holds a raw pointer to the message across suspension points,
-            //     so the message must outlive the behavior. Marker = behavior
-            //     not yet created (handle null).
-            {
-                in_flight_entry_t* slot_ptr = nullptr;
-                {
-                    std::lock_guard<std::mutex> guard(mutex_);
-                    for (auto& e : in_flight_behaviors_) {
+        // Event-loop-in-thread: this thread OWNS all message processing. Senders
+        // only deliver into inbox_ (lock-free) and notify pump_cv_; this loop
+        // drains the inbox into a loop-local in_flight list and runs the three
+        // phases (create behavior / resume continuation / erase done) with no
+        // locking — the list is private to this thread. cv only for idle sleep.
+        loop_thread_ = std::thread([this] {
+            // this->resource(): the ctor parameter `resource` shadows the member fn.
+            std::pmr::list<in_flight_entry_t> in_flight(this->resource());
+            while (loop_running_.load(std::memory_order_acquire)) {
+                actor_zeta::mailbox::message* raw = nullptr;
+                while (inbox_.pop(raw)) {
+                    in_flight.emplace_back();
+                    in_flight.back().pending_msg = actor_zeta::mailbox::message_ptr{raw};
+                }
+                bool progress = true;
+                while (progress) {
+                    progress = false;
+                    // (a) Create a behavior for the first slot that still needs one.
+                    //     pending_msg STAYS in the slot — the coroutine holds a raw
+                    //     pointer to the message across suspension points, so the
+                    //     message must outlive the behavior. Marker = handle null.
+                    for (auto& e : in_flight) {
                         if (e.pending_msg && !e.behavior) {
-                            slot_ptr = &e;
+                            e.behavior = behavior(e.pending_msg.get());
+                            progress = true;
+                            break;
+                        }
+                    }
+                    if (progress) {
+                        continue;
+                    }
+                    // (b) Resume one ready awaited continuation, if any.
+                    {
+                        actor_zeta::detail::coroutine_handle<> cont{};
+                        for (auto& e : in_flight) {
+                            if (e.behavior.is_awaited_ready()) {
+                                cont = e.behavior.take_awaited_continuation();
+                                if (cont) {
+                                    break;
+                                }
+                            }
+                        }
+                        if (cont) {
+                            cont.resume(); // disk: no poll_pending — no pending_<T>_ containers.
+                            progress = true;
+                            continue;
+                        }
+                    }
+                    // (c) Erase one done slot. "Done" = behavior created (handle
+                    //     non-null) AND completed. behavior_t + message_ptr destruct
+                    //     here, on this thread.
+                    for (auto it = in_flight.begin(); it != in_flight.end(); ++it) {
+                        if (it->behavior && it->behavior.done()) {
+                            in_flight.erase(it);
+                            progress = true;
                             break;
                         }
                     }
                 }
-                if (slot_ptr != nullptr) {
-                    core::slot_guard<in_flight_entry_t*> g(&current_slot_, slot_ptr);
-                    slot_ptr->behavior = behavior(slot_ptr->pending_msg.get());
-                    continue;
-                }
+                std::unique_lock<std::mutex> lk(mutex_);
+                if (inbox_.empty())
+                    pump_cv_.wait_for(lk, std::chrono::microseconds(100));
+                // lock-free inbox trade: a push+notify may slip between empty() and
+                // wait_for — bounded by the 100µs timeout (staleness, not loss).
             }
-
-            // (b) Resume a ready awaited continuation, if any.
-            {
-                actor_zeta::detail::coroutine_handle<> cont{};
-                in_flight_entry_t* slot_ptr = nullptr;
-                {
-                    std::lock_guard<std::mutex> guard(mutex_);
-                    for (auto& e : in_flight_behaviors_) {
-                        if (e.behavior.is_awaited_ready()) {
-                            cont = e.behavior.take_awaited_continuation();
-                            if (cont) {
-                                slot_ptr = &e;
-                                break;
-                            }
-                        }
-                    }
-                }
-                if (cont) {
-                    {
-                        core::slot_guard<in_flight_entry_t*> g(&current_slot_, slot_ptr);
-                        cont.resume();
-                    }
-                    continue; // disk: no poll_pending — no pending_<T>_ containers.
-                }
-            }
-
-            // (c) Cleanup done behaviors (one per iteration; destruction outside the lock).
-            //     "Done" means: behavior was created (handle non-null) AND completed.
-            //     pending_msg is freed together with the slot — its lifetime ends here.
-            actor_zeta::behavior_t to_destroy;
-            actor_zeta::mailbox::message_ptr msg_to_destroy;
-            bool erased = false;
-            bool any_busy = false;
-            {
-                std::lock_guard<std::mutex> guard(mutex_);
-                for (auto it = in_flight_behaviors_.begin(); it != in_flight_behaviors_.end();) {
-                    if (it->behavior && it->behavior.done()) {
-                        to_destroy = std::move(it->behavior);
-                        msg_to_destroy = std::move(it->pending_msg);
-                        it = in_flight_behaviors_.erase(it);
-                        erased = true;
-                        break;
-                    }
-                    any_busy = true;
-                    ++it;
-                }
-                if (!erased && !any_busy) {
-                    pumping_ = false;
-                    return {false, actor_zeta::detail::enqueue_result::success};
-                }
-            }
-            if (erased) {
-                continue; // to_destroy goes out of scope here, behavior_t dtor runs unlocked.
-            }
-            // Yield via Strategy injected through ctor (run_fn_). See
-            // dispatcher.cpp for full rationale.
-            run_fn_();
-        }
-        return {false, actor_zeta::detail::enqueue_result::success};
+            // local in_flight destructs here on the loop thread (safe: ~behavior_t +
+            // Last-One-Out — no other thread touches the in-flight state).
+        });
+        trace(log_, "manager_disk finish");
     }
 
-    void manager_disk_t::production_idle_tick() {
-        // 10µs polling matches original busy-spin frequency. See
-        // manager_dispatcher_t::production_idle_tick for rationale.
-        std::this_thread::sleep_for(std::chrono::microseconds(10));
+    manager_disk_t::~manager_disk_t() {
+        loop_running_.store(false, std::memory_order_release);
+        pump_cv_.notify_one();
+        if (loop_thread_.joinable()) {
+            loop_thread_.join();
+        }
+        // Drain any messages delivered after the loop stopped: re-wrap each raw
+        // pointer into a message_ptr temporary so it is destroyed (not leaked).
+        actor_zeta::mailbox::message* raw = nullptr;
+        while (inbox_.pop(raw)) {
+            actor_zeta::mailbox::message_ptr drained{raw};
+        }
+        trace(log_, "delete manager_disk_t");
+    }
+
+    // Event-loop-in-thread model: senders only deliver a message into the
+    // lock-free inbox_ and wake the loop. The ctor's loop_thread_ owns ALL
+    // processing (drain inbox → create behavior → resume continuation → erase
+    // done); pump_cv_ is used only for the loop's idle sleep / early wake.
+    std::pair<bool, actor_zeta::detail::enqueue_result>
+    manager_disk_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
+        inbox_.push(msg.release());
+        pump_cv_.notify_one();
+        return {false, actor_zeta::detail::enqueue_result::success};
     }
 
     actor_zeta::behavior_t manager_disk_t::behavior(actor_zeta::mailbox::message* msg) {
@@ -615,7 +573,6 @@ namespace services::disk {
     manager_disk_t::mark_storage_dropped(session_id_t session,
                                          components::catalog::oid_t table_oid,
                                          uint64_t dropped_at_commit_id) {
-        record_session(session);
         // Runtime DROP TABLE path. operator_dynamic_cascade_delete sends this
         // BEFORE the drop_storage send so we can still read the live storage
         // entry to derive the on-disk path + sidecars. Does NOT touch storage

@@ -26,14 +26,12 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<void> manager_disk_t::flush(session_id_t session, wal::id_t wal_id) {
-        record_session(session);
         trace(log_, "manager_disk_t::flush , session : {} , wal_id : {}", session.data(), wal_id);
         co_return;
     }
 
     manager_disk_t::unique_future<wal::id_t> manager_disk_t::checkpoint_all(session_id_t session,
                                                                             wal::id_t current_wal_id) {
-        record_session(session);
         trace(log_, "manager_disk_t::checkpoint_all , session : {} , wal_id : {}", session.data(), current_wal_id);
 
         // Router fanout: send checkpoint_inner to every agent in parallel;
@@ -104,7 +102,6 @@ namespace services::disk {
 
     manager_disk_t::unique_future<void> manager_disk_t::vacuum_all(session_id_t session,
                                                                    uint64_t lowest_active_start_time) {
-        record_session(session);
         trace(log_, "manager_disk_t::vacuum_all , session : {}", session.data());
 
         // Per-agent vacuum_inner is the canonical cleanup_versions + compact
@@ -132,7 +129,6 @@ namespace services::disk {
 
     manager_disk_t::unique_future<void> manager_disk_t::maybe_cleanup(execution_context_t ctx,
                                                                       uint64_t lowest_active_start_time) {
-        record_session(ctx.session);
         // ctx.table_oid identifies the table whose GC threshold the executor
         // wants to check (typically the just-deleted DML target). INVALID_OID
         // -> no-op (executor guards against this but be defensive).

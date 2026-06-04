@@ -56,7 +56,6 @@
 #include <components/physical_plan/operators/operator_unregister_udf.hpp>
 #include <components/physical_plan_generator/impl/create_plan_register_udf.hpp>
 #include <core/executor.hpp>
-#include <core/slot_guard.hpp>
 #include <core/tracy/tracy.hpp>
 
 #include <algorithm>
@@ -178,33 +177,173 @@ namespace services::dispatcher {
         constexpr bool use_executor_full_pipeline = true;
     } // namespace
 
+    // 0xFFFFFFFF is unreachable: oid allocation aborts at OID_HARD_LIMIT=0xFFFF0000 (catalog_oids.hpp)
+    static constexpr components::catalog::oid_t kSentinelOid = 0xFFFFFFFF;
+
     manager_dispatcher_t::manager_dispatcher_t(std::pmr::memory_resource* resource_ptr,
                                                actor_zeta::scheduler_raw scheduler,
-                                               log_t& log,
-                                               run_fn_t run_fn)
+                                               log_t& log)
         : actor_zeta::actor::actor_mixin<manager_dispatcher_t>()
         , resource_(resource_ptr)
         , scheduler_(scheduler)
         , log_(log.clone())
-        , run_fn_(std::move(run_fn))
         , collections_(resource_ptr)
         , executors_(resource_ptr)
         , executor_addresses_(resource_ptr)
         , txn_manager_(resource_ptr)
-        , in_flight_behaviors_(resource_ptr)
         , pending_void_(resource_ptr) {
         ZoneScoped;
         trace(log_, "manager_dispatcher_t::manager_dispatcher_t");
-        // Strategy install: when caller didn't provide a custom run_fn
-        // (production path via base_spaces), install the internal
-        // production_idle_tick — re-enqueues executors_ for actor-zeta
-        // drop recovery, then waits on pump_cv_ for early notify.
-        if (!run_fn_) {
-            run_fn_ = [this] { production_idle_tick(); };
-        }
+
+        // Event-loop-in-thread model. enqueue_impl (any sender thread) only
+        // pushes the message into the lock-free inbox_ and notifies pump_cv_;
+        // this thread owns ALL processing. The in-flight slot list is LOCAL to
+        // the loop (allocated here; resource() is a synchronized_pool_resource,
+        // thread-safe) so no mutex is needed across the phase logic.
+        loop_thread_ = std::thread([this] {
+            std::pmr::list<in_flight_entry_t> in_flight(resource());
+            uint32_t loop_ticks = 0;
+            while (loop_running_.load(std::memory_order_acquire)) {
+                // Drain the lock-free inbox into local slots. release()/re-wrap
+                // round-trips ownership of the message back into a message_ptr;
+                // the coroutine created below holds a raw pointer into it, so
+                // pending_msg must outlive the behavior.
+                actor_zeta::mailbox::message* raw = nullptr;
+                while (inbox_.pop(raw)) {
+                    in_flight.emplace_back();
+                    in_flight.back().pending_msg = actor_zeta::mailbox::message_ptr{raw};
+                }
+
+                bool progress = true;
+                while (progress) {
+                    progress = false;
+
+                    // (a) Create behavior for the first slot that still needs
+                    //     one. pending_msg STAYS in the slot — the coroutine
+                    //     holds a raw pointer to the message across suspension
+                    //     points. The behavior coroutine runs HERE, on the loop
+                    //     thread, until its first co_await. Marker = behavior
+                    //     handle null (not yet created).
+                    {
+                        in_flight_entry_t* slot = nullptr;
+                        for (auto& e : in_flight) {
+                            if (e.pending_msg && !e.behavior) {
+                                slot = &e;
+                                break;
+                            }
+                        }
+                        if (slot) {
+                            slot->behavior = behavior(slot->pending_msg.get());
+                            progress = true;
+                            continue;
+                        }
+                    }
+
+                    // (b) Resume the first ready behavior; reset its staleness.
+                    {
+                        in_flight_entry_t* ready_slot = nullptr;
+                        actor_zeta::detail::coroutine_handle<> cont{};
+                        for (auto& e : in_flight) {
+                            if (e.behavior.is_awaited_ready()) {
+                                cont = e.behavior.take_awaited_continuation();
+                                if (cont) {
+                                    ready_slot = &e;
+                                    break;
+                                }
+                            } else if (e.behavior && !e.behavior.done() && e.behavior.is_busy()) {
+                                ++e.stale_ticks;
+                            }
+                        }
+                        if (cont) {
+                            ready_slot->stale_ticks = 0;
+                            cont.resume();
+                            poll_pending();
+                            progress = true;
+                            continue;
+                        }
+                    }
+
+                    // (c) Erase ONE done slot per pass. "Done" = behavior
+                    //     created (handle non-null) AND completed. behavior +
+                    //     pending_msg destruct naturally on this thread.
+                    for (auto it = in_flight.begin(); it != in_flight.end(); ++it) {
+                        if (it->behavior && it->behavior.done()) {
+                            in_flight.erase(it);
+                            progress = true;
+                            break;
+                        }
+                    }
+
+                    poll_pending();
+                }
+
+                // WATCHDOG (replaces the deleted idle-tick executor re-enqueue
+                // band-aid): a slot stuck busy && !ready for ~10ms
+                // (>100 ticks at the 100µs idle cadence) signals the proven
+                // actor-zeta parking race on an executor
+                // (docs/actor-zeta-lost-wakeup.md): the executor's mailbox is
+                // reader_blocked while its awaited future is READY, and
+                // resume_impl's blocked-check precedes the busy/ready check. A
+                // mailbox PUSH unblocks it (proven via live lldb experiment).
+                // We poke with an EXISTING no-op message:
+                // unregister_collection_local(session{}, kSentinelOid) just does
+                // local_collections_.erase(absent key) (executor.cpp:1815-1821).
+                // Threshold 20 ticks (≈2ms at the 100µs idle cadence): healing must
+                // outrun bounded test polls (~80ms) with margin; the poke is a no-op
+                // message, so firing early on a legitimately long executor operation
+                // is harmless (one warn line + erase of an absent key).
+                bool any_stale = false;
+                for (auto& e : in_flight)
+                    if (e.behavior && !e.behavior.done() && e.behavior.is_busy()
+                        && !e.behavior.is_awaited_ready() && e.stale_ticks > 20) {
+                        any_stale = true;
+                        break;
+                    }
+                if (any_stale) {
+                    warn(log_,
+                         "dispatcher loop: stale await detected — poking executors (see docs/actor-zeta-lost-wakeup.md)");
+                    for (auto& ex : executors_) {
+                        if (ex) {
+                            auto [ns, f] = actor_zeta::send(ex.get(),
+                                                            &collection::executor::executor_t::unregister_collection_local,
+                                                            components::session::session_id_t{},
+                                                            kSentinelOid);
+                            if (ns)
+                                scheduler_->enqueue(ex.get());
+                            (void) f; // dropped future is memory-safe (Last-One-Out)
+                        }
+                    }
+                    for (auto& e : in_flight) e.stale_ticks = 0; // backoff: re-arm threshold
+                }
+
+                ++loop_ticks;
+                (void) loop_ticks;
+                std::unique_lock<std::mutex> lk(mutex_);
+                if (inbox_.empty()) {
+                    pump_cv_.wait_for(lk, std::chrono::microseconds(100));
+                }
+                // NOTE: lock-free inbox trade — a push+notify may slip between
+                // empty() and wait_for; bounded by the 100µs timeout
+                // (staleness, not loss).
+            }
+            // Local in_flight destructs HERE on the loop thread: any still-
+            // suspended behaviors are destroyed safely (~behavior_t destroys
+            // suspended frames; Last-One-Out frees state).
+        });
     }
 
     manager_dispatcher_t::~manager_dispatcher_t() {
+        loop_running_.store(false, std::memory_order_release);
+        pump_cv_.notify_one();
+        if (loop_thread_.joinable()) {
+            loop_thread_.join();
+        }
+        // Drain any leftover inbox_ raw pointers: re-wrap each into a
+        // message_ptr temporary so its PMR memory is freed (the loop is gone).
+        actor_zeta::mailbox::message* raw = nullptr;
+        while (inbox_.pop(raw)) {
+            actor_zeta::mailbox::message_ptr drop{raw};
+        }
         ZoneScoped;
         trace(log_, "delete manager_dispatcher_t");
     }
@@ -213,135 +352,13 @@ namespace services::dispatcher {
 
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_dispatcher_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
-        bool drive = false;
-        {
-            std::lock_guard<std::mutex> guard(mutex_);
-            in_flight_behaviors_.emplace_back();
-            auto& slot = in_flight_behaviors_.back();
-            slot.pending_msg = std::move(msg);
-            if (pumping_) {
-                // Notify pump driver if it is sleeping in the idle wait at the
-                // bottom of the loop. Cheap when driver is busy (no-op on cv
-                // without waiters). Lock held → no race with wait_for predicate.
-                pump_cv_.notify_one();
-                return {false, actor_zeta::detail::enqueue_result::success};
-            }
-            pumping_ = true;
-            drive = true;
-        }
-
-        while (drive) {
-            // (a) Create behavior for next entry that still needs one.
-            //     pending_msg STAYS in slot — coroutine holds raw pointer to
-            //     message across suspension points; msg must outlive behavior.
-            //     Marker = behavior handle null (not yet created).
-            {
-                in_flight_entry_t* slot = nullptr;
-                {
-                    std::lock_guard<std::mutex> guard(mutex_);
-                    for (auto& e : in_flight_behaviors_) {
-                        if (e.pending_msg && !e.behavior) {
-                            slot = &e;
-                            break;
-                        }
-                    }
-                }
-                if (slot) {
-                    core::slot_guard g(&current_slot_, slot);
-                    slot->behavior = behavior(slot->pending_msg.get());
-                    continue;
-                }
-            }
-
-            // (b) Resume ready behavior.
-            {
-                actor_zeta::detail::coroutine_handle<> cont{};
-                in_flight_entry_t* slot = nullptr;
-                {
-                    std::lock_guard<std::mutex> guard(mutex_);
-                    for (auto& e : in_flight_behaviors_) {
-                        if (e.behavior.is_awaited_ready()) {
-                            cont = e.behavior.take_awaited_continuation();
-                            if (cont) {
-                                slot = &e;
-                                break;
-                            }
-                        }
-                    }
-                }
-                if (cont) {
-                    {
-                        core::slot_guard g(&current_slot_, slot);
-                        cont.resume();
-                    }
-                    poll_pending();
-                    continue;
-                }
-            }
-
-            // (c) Cleanup done behaviors.
-            //     "Done" = behavior created (handle non-null) AND completed.
-            //     pending_msg released here together with behavior.
-            actor_zeta::behavior_t to_destroy;
-            actor_zeta::mailbox::message_ptr msg_to_destroy;
-            bool erased = false;
-            bool any_busy = false;
-            {
-                std::lock_guard<std::mutex> guard(mutex_);
-                for (auto it = in_flight_behaviors_.begin(); it != in_flight_behaviors_.end();) {
-                    if (it->behavior && it->behavior.done()) {
-                        to_destroy = std::move(it->behavior);
-                        msg_to_destroy = std::move(it->pending_msg);
-                        it = in_flight_behaviors_.erase(it);
-                        erased = true;
-                        break;
-                    } else {
-                        any_busy = true;
-                        ++it;
-                    }
-                }
-                if (!erased && !any_busy) {
-                    pumping_ = false;
-                    return {false, actor_zeta::detail::enqueue_result::success};
-                }
-            }
-            if (erased) {
-                continue;
-            }
-
-            poll_pending();
-            // Yield via Strategy injected through ctor (run_fn_).
-            //  - Production (default empty ctor arg): ctor body installs
-            //    `[this]{ production_idle_tick(); }` — re-enqueues
-            //    executors_ (recovery for actor-zeta cooperative_actor.hpp
-            //    lost-wake-up bug) then pump_cv_.wait_for(100µs); early
-            //    woken by pump_cv_.notify_one() in enqueue branch.
-            //  - Test fixtures (non_thread_scheduler): pass
-            //    `[this]{ scheduler->run(10000); }` as ctor arg — drives
-            //    the synchronous test scheduler from the same thread.
-            run_fn_();
-        }
+        // Delivery only — ALL processing happens on loop_thread_. The lock-free
+        // inbox takes ownership of the raw message* (release()); the loop
+        // re-wraps it into a message_ptr. notify without holding mutex_ is fine
+        // (the loop re-checks inbox_.empty() under the lock before sleeping).
+        inbox_.push(msg.release());
+        pump_cv_.notify_one();
         return {false, actor_zeta::detail::enqueue_result::success};
-    }
-
-    void manager_dispatcher_t::production_idle_tick() {
-        // actor-zeta cooperative_actor.hpp:310-320 lost-wake-up workaround.
-        // Re-enqueueing each executor on every idle tick guarantees the
-        // scheduler will revisit it even if it was dropped from the queue
-        // while suspended on a cross-actor co_await.
-        for (auto& executor : executors_) {
-            if (executor) {
-                scheduler_->enqueue(executor.get());
-            }
-        }
-        // 10µs polling matches original busy-spin frequency (100k Hz).
-        // Required to reliably recover from actor-zeta drops under
-        // concurrent INSERT load (test_otterbrix_multithread). Lower
-        // cadence (e.g. cv.wait_for 100µs) drops too few re-enqueues
-        // per second and the test hangs. CPU cost ~10% per pump driver
-        // thread is the known trade-off until actor-zeta lost-wake-up
-        // is fixed at the library level (see docs/async-first-refactor.md).
-        std::this_thread::sleep_for(std::chrono::microseconds(10));
     }
 
     void manager_dispatcher_t::poll_pending() {
@@ -349,12 +366,6 @@ namespace services::dispatcher {
             std::remove_if(pending_void_.begin(), pending_void_.end(),
                            [](auto& f) { return f.is_ready(); }),
             pending_void_.end());
-    }
-
-    void manager_dispatcher_t::record_session(components::session::session_id_t s) noexcept {
-        if (auto* slot = current_slot_) {
-            slot->session = s;
-        }
     }
 
     actor_zeta::behavior_t manager_dispatcher_t::behavior(actor_zeta::mailbox::message* msg) {
@@ -454,11 +465,15 @@ namespace services::dispatcher {
             last_broadcast_horizon_ = new_lowest;
             if (disk_has_dropped_ && disk_address_ != actor_zeta::address_t::empty_address()) {
                 // Fire-and-forget: subscriber acks asynchronously via
-                // on_subscriber_empty mailbox message. The unique_future<void>
-                // must outlive the statement that issued the send (otherwise
-                // the producer's promise dangles); we park it on
-                // pending_void_ and let poll_pending() drain it once the
-                // mailbox-side handler completes.
+                // on_subscriber_empty mailbox message. pending_void_ is pure GC
+                // bookkeeping for these broadcast futures — poll_pending()
+                // (dispatcher.cpp:347-351) drains them non-blockingly via
+                // is_ready(). Parking here merely batches their release;
+                // dropping the future immediately would also be memory-safe
+                // (the library's Last-One-Out protocol — future.hpp
+                // release_future only flags, the dealloc happens on the later
+                // of future/promise release), so this is not a lifetime
+                // requirement, just bookkeeping.
                 auto disk_send_result =
                     actor_zeta::send(disk_address_,
                                      &services::disk::manager_disk_t::on_horizon_advanced,
@@ -515,7 +530,6 @@ namespace services::dispatcher {
     manager_dispatcher_t::execute_plan(components::session::session_id_t session,
                                        node_ptr plan,
                                        parameter_node_ptr params) {
-        record_session(session);
         trace(log_, "manager_dispatcher_t::execute_plan session: {}, {}", session.data(), plan->to_string());
 
         auto params_for_wal = make_parameter_node(resource());
@@ -962,6 +976,10 @@ namespace services::dispatcher {
         // were moved out into storage_publish_commits/_deletes (or
         // storage_revert_appends), so the loops below iterate empty ranges —
         // no double-merge onto txn_t.
+        // THREADING: transaction_t body is single-owner-thread per session
+        // (see transaction.hpp) — this merge runs on the dispatcher loop thread
+        // strictly AFTER the executor's accumulate_* (we co_awaited its result
+        // future above; release/acquire edge). Never mutate the body concurrently.
         if (txn_data.transaction_id != 0) {
             if (auto* txn_t = txn_manager_.find_transaction(session)) {
                 for (auto& a : exec_result.pg_catalog_appends) {
@@ -1125,10 +1143,13 @@ namespace services::dispatcher {
                             if (reg.first && executors_[pool_idx]) {
                                 scheduler_->enqueue(executors_[pool_idx].get());
                             }
-                            // Park the unique_future<void> on pending_void_ so
-                            // the producer-side promise outlives this statement;
-                            // poll_pending() drains it once register_collection_local
-                            // completes on the executor side.
+                            // Park the unique_future<void> on pending_void_ as
+                            // GC bookkeeping; poll_pending() drains it via
+                            // is_ready() once register_collection_local completes
+                            // on the executor side. Not a lifetime requirement —
+                            // dropping the future immediately would also be
+                            // memory-safe (library Last-One-Out protocol);
+                            // parking merely batches the release.
                             pending_void_.emplace_back(std::move(reg.second));
                         }
                     }
@@ -1208,7 +1229,6 @@ namespace services::dispatcher {
     manager_dispatcher_t::unique_future<bool>
     manager_dispatcher_t::register_udf(components::session::session_id_t session,
                                        components::compute::function_ptr function) {
-        record_session(session);
         trace(log_, "dispatcher_t::register_udf session: {}, function name: {}", session.data(), function->name());
 
         // Go through the operator pipeline. The logical leaf
@@ -1291,7 +1311,6 @@ namespace services::dispatcher {
     manager_dispatcher_t::unregister_udf(components::session::session_id_t session,
                                          std::string function_name,
                                          std::pmr::vector<complex_logical_type> inputs) {
-        record_session(session);
         trace(log_, "dispatcher_t::unregister_udf: session {}, {}", session.data(), function_name);
 
         // Operator-pipeline replacement. The logical leaf
@@ -1429,7 +1448,6 @@ namespace services::dispatcher {
 
     manager_dispatcher_t::unique_future<components::table::transaction_data>
     manager_dispatcher_t::begin_transaction(components::session::session_id_t session) {
-        record_session(session);
         trace(log_, "manager_dispatcher_t::begin_transaction, session: {}", session.data());
         auto& txn = txn_manager_.begin_transaction(session);
         co_return txn.data();
@@ -1440,7 +1458,6 @@ namespace services::dispatcher {
     // happens on a single owner — the executor only ever talks via mailbox.
     manager_dispatcher_t::unique_future<components::table::transaction_data>
     manager_dispatcher_t::txn_begin_msg(components::session::session_id_t session) {
-        record_session(session);
         trace(log_, "manager_dispatcher_t::txn_begin_msg, session: {}", session.data());
         auto& txn = txn_manager_.begin_transaction(session);
         co_return txn.data();
@@ -1448,14 +1465,12 @@ namespace services::dispatcher {
 
     manager_dispatcher_t::unique_future<uint64_t>
     manager_dispatcher_t::txn_commit_msg(components::session::session_id_t session) {
-        record_session(session);
         trace(log_, "manager_dispatcher_t::txn_commit_msg, session: {}", session.data());
         co_return txn_manager_.commit(session);
     }
 
     manager_dispatcher_t::unique_future<void>
     manager_dispatcher_t::txn_abort_msg(components::session::session_id_t session) {
-        record_session(session);
         trace(log_, "manager_dispatcher_t::txn_abort_msg, session: {}", session.data());
         txn_manager_.abort(session);
         co_return;
@@ -1475,7 +1490,6 @@ namespace services::dispatcher {
 
     manager_dispatcher_t::unique_future<uint64_t>
     manager_dispatcher_t::commit_transaction(components::session::session_id_t session) {
-        record_session(session);
         trace(log_, "manager_dispatcher_t::commit_transaction, session: {}", session.data());
 
         // Go through the operator pipeline instead of inline
@@ -1532,7 +1546,6 @@ namespace services::dispatcher {
 
     manager_dispatcher_t::unique_future<void>
     manager_dispatcher_t::abort_transaction(components::session::session_id_t session) {
-        record_session(session);
         trace(log_, "manager_dispatcher_t::abort_transaction, session: {}", session.data());
 
         // Operator-pipeline replacement (mirrors commit above).

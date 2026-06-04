@@ -21,7 +21,6 @@ namespace services::disk {
 
     manager_disk_t::unique_future<resolve_namespace_result_t>
     manager_disk_t::resolve_namespace(execution_context_t ctx, std::string name, std::uint64_t /*since_version*/) {
-        record_session(ctx.session);
         resolve_namespace_result_t out(resource());
 
         const collection_storage_entry_t* ns_entry = nullptr;
@@ -54,7 +53,6 @@ namespace services::disk {
                                   components::catalog::oid_t namespace_oid,
                                   std::string name,
                                   std::uint64_t /*since_version*/) {
-        record_session(ctx.session);
         resolve_table_result_t out(resource());
         out.namespace_oid = namespace_oid;
 
@@ -408,7 +406,6 @@ namespace services::disk {
                                  components::catalog::oid_t namespace_oid,
                                  std::string name,
                                  std::uint64_t /*since_version*/) {
-        record_session(ctx.session);
         co_return resolve_type_sync(namespace_oid, name);
     }
 
@@ -417,7 +414,6 @@ namespace services::disk {
                                      components::catalog::oid_t namespace_oid,
                                      std::string name,
                                      std::uint64_t /*since_version*/) {
-        record_session(ctx.session);
         resolve_function_result_t out(resource());
         out.namespace_oid = namespace_oid;
 
@@ -463,7 +459,6 @@ namespace services::disk {
     manager_disk_t::resolve_function_by_name(execution_context_t ctx,
                                              std::string name,
                                              std::uint64_t /*since_version*/) {
-        record_session(ctx.session);
         std::pmr::vector<resolve_function_result_t> out(resource());
         const collection_storage_entry_t* proc_entry = nullptr;
         if (!agents_.empty() && agents_[0] != nullptr) {
@@ -506,7 +501,6 @@ namespace services::disk {
 
     manager_disk_t::unique_future<std::pmr::vector<std::string>>
     manager_disk_t::list_namespaces(execution_context_t ctx) {
-        record_session(ctx.session);
         std::pmr::vector<std::string> out(resource());
         const collection_storage_entry_t* ns_entry = nullptr;
         if (!agents_.empty() && agents_[0] != nullptr) {
@@ -550,7 +544,6 @@ namespace services::disk {
                                 components::catalog::oid_t table_oid,
                                 std::pmr::vector<std::string> key_col_names,
                                 std::pmr::vector<components::types::logical_value_t> key_values) {
-        record_session(ctx.session);
         std::pmr::vector<std::int64_t> out(resource());
         if (key_col_names.size() != key_values.size() || key_col_names.empty()) {
             co_return out;
@@ -602,7 +595,6 @@ namespace services::disk {
                                      components::catalog::oid_t table_oid,
                                      std::pmr::vector<std::string> key_col_names,
                                      std::pmr::vector<components::types::logical_value_t> key_values) {
-        record_session(ctx.session);
         using row_t = std::pmr::vector<components::types::logical_value_t>;
         std::pmr::vector<row_t> out(resource());
         if (key_col_names.size() != key_values.size() || key_col_names.empty())

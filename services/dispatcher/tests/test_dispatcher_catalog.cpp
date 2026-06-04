@@ -1,5 +1,8 @@
 #include <catch2/catch.hpp>
 
+#include <chrono>
+#include <thread>
+
 #include <services/dispatcher/dispatcher.hpp>
 
 #include <actor-zeta/spawn.hpp>
@@ -31,11 +34,9 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         , disk_path_(disk_path)
         , log_(initialization_logger("python", "/tmp/docker_logs/"))
         , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
-        , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource, scheduler_, log_,
-              [this] { scheduler_->run(10000); }))
+        , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource, scheduler_, log_))
         , disk_config_(disk_path)
-        , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_,
-              [this] { scheduler_->run(10000); }))
+        , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
         , wal_config_([&]() {
             configuration::config_wal c;
             c.on = false;
@@ -54,6 +55,12 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
     }
 
     ~test_dispatcher() {
+        // Destroy managers (self-driving on internal threads) before tearing
+        // down the scheduler to avoid use-after-free. Reverse dependency order:
+        // dispatcher, then wal, then disk.
+        manager_dispatcher_.reset();
+        manager_wal_.reset();
+        manager_disk_.reset();
         scheduler_->stop();
         std::filesystem::remove_all(disk_path_);
         delete scheduler_;
@@ -65,11 +72,18 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
 
     cursor_t_ptr take_result() {
         // execute_plan does extra co_awaits (collections_ rebuild via list_namespaces +
-        // pre-load namespace + DDL existence check). Run scheduler with enough iterations
-        // to drain the message queue before extracting the future.
-        step();
+        // pre-load namespace + DDL existence check). The manager actors self-drive on
+        // internal threads, so the future becomes ready asynchronously — pump the child
+        // scheduler with a poll until the future is ready, bounded by a 5s
+        // wall-clock deadline.
         REQUIRE(pending_future_);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!pending_future_->is_ready() && std::chrono::steady_clock::now() < deadline) {
+            scheduler_->run(1000);
+            std::this_thread::yield();
+        }
         REQUIRE(pending_future_->valid());
+        REQUIRE(pending_future_->is_ready());
         auto result = std::move(*pending_future_).take_ready();
         pending_future_.reset();
         // Drain again to ensure executor's post-result DDL inline pipeline
@@ -89,7 +103,12 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
                                                     ctx,
                                                     name,
                                                     std::uint64_t{0});
-        scheduler_->run(10000);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
+            scheduler_->run(1000);
+            std::this_thread::yield();
+        }
+        REQUIRE(fut.is_ready());
         return std::move(fut).take_ready();
     }
 
@@ -104,7 +123,12 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
                                                     ns_oid,
                                                     tname,
                                                     std::uint64_t{0});
-        scheduler_->run(10000);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
+            scheduler_->run(1000);
+            std::this_thread::yield();
+        }
+        REQUIRE(fut.is_ready());
         return std::move(fut).take_ready();
     }
 

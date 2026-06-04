@@ -968,6 +968,199 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
 }
 
 // ---------------------------------------------------------------------------
+// UNION / UNION ALL
+// ---------------------------------------------------------------------------
+
+TEST_CASE("integration::cpp::test_subqueries::union") {
+    auto config = test_create_config("/tmp/test_subqueries/union");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup") { setup_subquery_db(dispatcher); }
+
+    INFO("UNION ALL preserves duplicates") {
+        // Both sides select dept_id=1; UNION ALL keeps all 4 rows
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT dept_id FROM TestDatabase.Employees WHERE dept_id = 1 "
+                                           "UNION ALL "
+                                           "SELECT dept_id FROM TestDatabase.Employees WHERE dept_id = 1;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4);
+        for (size_t row = 0; row < 4; ++row) {
+            REQUIRE(cur->chunk_data().value(0, row).value<int64_t>() == 1);
+        }
+    }
+
+    INFO("UNION ALL disjoint sets") {
+        // dept_id=1: Alice,Bob. dept_id=2: Charlie,Diana. No overlap → 4 rows
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT name FROM TestDatabase.Employees WHERE dept_id = 1 "
+                                           "UNION ALL "
+                                           "SELECT name FROM TestDatabase.Employees WHERE dept_id = 2;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4);
+    }
+
+    INFO("UNION distinct removes duplicates") {
+        // Both sides return dept_ids of high-salary employees:
+        // salary >= 80000: Alice(90k,dept1), Bob(80k,dept1) → {1,1}
+        // salary >= 70000: Alice, Bob, Grace(70k,dept4), Iris(75k,dept5), Jack(72k,dept5) → {1,1,4,5,5}
+        // UNION distinct: {1,4,5} → 3 rows
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT dept_id FROM TestDatabase.Employees WHERE salary >= 80000 "
+                                           "UNION "
+                                           "SELECT dept_id FROM TestDatabase.Employees WHERE salary >= 70000;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+
+    INFO("UNION distinct same values on both sides") {
+        // dept_id=1 on left, dept_id=1 on right → only one unique value
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT dept_id FROM TestDatabase.Employees WHERE dept_id = 1 "
+                                           "UNION "
+                                           "SELECT dept_id FROM TestDatabase.Employees WHERE dept_id = 1;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 1);
+    }
+
+    INFO("UNION ALL three operands") {
+        // A UNION ALL B UNION ALL C: dept 1 (2 rows) + dept 2 (2 rows) + dept 3 (2 rows) = 6
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT name FROM TestDatabase.Employees WHERE dept_id = 1 "
+                                           "UNION ALL "
+                                           "SELECT name FROM TestDatabase.Employees WHERE dept_id = 2 "
+                                           "UNION ALL "
+                                           "SELECT name FROM TestDatabase.Employees WHERE dept_id = 3;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 6);
+    }
+
+    INFO("UNION schema mismatch rejected") {
+        // Different column counts: error expected
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT dept_id FROM TestDatabase.Employees WHERE dept_id = 1 "
+                                           "UNION ALL "
+                                           "SELECT dept_id, salary FROM TestDatabase.Employees WHERE dept_id = 1;");
+        REQUIRE_FALSE(cur->is_success());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// UNION with structured / array columns
+// ---------------------------------------------------------------------------
+
+TEST_CASE("integration::cpp::test_subqueries::union_complex_types") {
+    auto config = test_create_config("/tmp/test_subqueries/union_complex_types");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup") {
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TYPE point_t AS (x int, y int);")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher
+                        ->execute_sql(session,
+                                      "CREATE TABLE TestDatabase.ShapeA "
+                                      "(id bigint, pt point_t, tags bigint[3]);")
+                        ->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher
+                        ->execute_sql(session,
+                                      "CREATE TABLE TestDatabase.ShapeB "
+                                      "(id bigint, pt point_t, tags bigint[3]);")
+                        ->is_success());
+        }
+        // ShapeA: 3 rows
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.ShapeA (id, pt, tags) VALUES "
+                                               "(1, ROW(0, 0), ARRAY[1,2,3]), "
+                                               "(2, ROW(1, 1), ARRAY[4,5,6]), "
+                                               "(3, ROW(2, 2), ARRAY[7,8,9]);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+        }
+        // ShapeB: 2 rows — row id=1 duplicates ShapeA's first row exactly
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.ShapeB (id, pt, tags) VALUES "
+                                               "(1, ROW(0, 0), ARRAY[1,2,3]), "
+                                               "(4, ROW(3, 3), ARRAY[10,11,12]);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2);
+        }
+    }
+
+    INFO("UNION ALL id column") {
+        // ids from A: {1,2,3}; ids from B: {1,4}; UNION ALL = 5 rows
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT id FROM TestDatabase.ShapeA "
+                                           "UNION ALL "
+                                           "SELECT id FROM TestDatabase.ShapeB;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 5);
+    }
+
+    INFO("UNION ALL with UDT and array columns") {
+        // All 5 rows: 3 from A + 2 from B
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT id, pt, tags FROM TestDatabase.ShapeA "
+                                           "UNION ALL "
+                                           "SELECT id, pt, tags FROM TestDatabase.ShapeB;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 5);
+    }
+
+    INFO("UNION distinct id column removes duplicates") {
+        // ids from A: {1,2,3}; ids from B: {1,4}; distinct = {1,2,3,4} = 4
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT id FROM TestDatabase.ShapeA "
+                                           "UNION "
+                                           "SELECT id FROM TestDatabase.ShapeB;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4);
+    }
+
+    INFO("UNION schema mismatch rejected") {
+        // Different column counts — error expected
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT id FROM TestDatabase.ShapeA "
+                                           "UNION ALL "
+                                           "SELECT id, pt FROM TestDatabase.ShapeB;");
+        REQUIRE_FALSE(cur->is_success());
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Recursive Common Table Expressions (WITH RECURSIVE)
 // ---------------------------------------------------------------------------
 //

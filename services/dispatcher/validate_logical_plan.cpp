@@ -2407,6 +2407,35 @@ namespace services::dispatcher {
                 // plan is validated via its own catalog_resolve_table sibling
                 // which Pass 1 has stamped before this validate runs).
                 break;
+            case node_type::union_t: {
+                if (node->children().size() < 2 || !node->children()[0] || !node->children()[1]) {
+                    return core::error_t(core::error_code_t::sql_parse_error,
+                                         std::pmr::string{"UNION requires both operands to be present", resource});
+                }
+                auto left_res = validate_schema(resource, idx, node->children()[0].get(), parameters);
+                if (left_res.has_error()) {
+                    return left_res;
+                }
+                auto right_res = validate_schema(resource, idx, node->children()[1].get(), parameters);
+                if (right_res.has_error()) {
+                    return right_res;
+                }
+                const auto& left_schema = left_res.value();
+                const auto& right_schema = right_res.value();
+                if (left_schema.size() != right_schema.size()) {
+                    return core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"UNION operands must have the same number of columns", resource});
+                }
+                for (size_t i = 0; i < left_schema.size(); ++i) {
+                    if (left_schema[i].type.type() != right_schema[i].type.type()) {
+                        return core::error_t(
+                            core::error_code_t::sql_parse_error,
+                            std::pmr::string{"UNION column type mismatch at position " + std::to_string(i), resource});
+                    }
+                }
+                return left_res;
+            }
             case node_type::sequence_t: {
                 // The SQL transformer wraps DML/DDL in
                 //   sequence_t(catalog_resolve_*…, consumer)

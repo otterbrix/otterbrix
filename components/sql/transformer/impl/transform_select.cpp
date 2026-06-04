@@ -11,6 +11,7 @@
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_select.hpp>
 #include <components/logical_plan/node_sort.hpp>
+#include <components/logical_plan/node_union.hpp>
 #include <components/sql/parser/pg_functions.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
@@ -242,11 +243,19 @@ namespace components::sql::transform {
         // out cleanly until proper set-operation lowering lands.
         // dynamic_schema_union sits on this path; lldb pinned the crash to
         // node.targetList->lst at line 137 here.
+        if (node.op == SETOP_UNION) {
+            auto left = transform_select(*node.larg, plan);
+            auto right = transform_select(*node.rarg, plan);
+            if (has_error()) {
+                return nullptr;
+            }
+            return logical_plan::make_node_union(resource_, std::move(left), std::move(right), node.all);
+        }
         if (node.op != SETOP_NONE || node.targetList == nullptr) {
             error_ = core::error_t(
                 core::error_code_t::unimplemented_yet,
                 std::pmr::string{
-                    "SELECT set operations (UNION / INTERSECT / EXCEPT) are not yet supported by the SQL transformer",
+                    "SELECT set operations (INTERSECT / EXCEPT) are not yet supported by the SQL transformer",
                     resource_});
             return nullptr;
         }

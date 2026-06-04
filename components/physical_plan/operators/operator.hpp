@@ -40,6 +40,7 @@ namespace components::operators {
         hash_join,
         aggregate,
         raw_data,
+        union_op,
         // Constraint operators
         check_constraint,
         fk_check,

@@ -33,6 +33,7 @@
 #include "impl/create_plan_select.hpp"
 #include "impl/create_plan_sequence.hpp"
 #include "impl/create_plan_sort.hpp"
+#include "impl/create_plan_union.hpp"
 #include "impl/create_plan_unregister_udf.hpp"
 #include "impl/create_plan_update.hpp"
 #include "impl/create_plan_vacuum.hpp"
@@ -51,6 +52,8 @@ namespace services::planner {
                 return impl::create_plan_aggregate(context, function_registry, node, std::move(limit), params);
             case node_type::data_t:
                 return impl::create_plan_data(node);
+            case node_type::union_t:
+                return impl::create_plan_union(context, function_registry, node, std::move(limit), params);
             case node_type::delete_t:
                 return impl::create_plan_delete(context, node);
             case node_type::insert_t:

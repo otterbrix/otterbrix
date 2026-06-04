@@ -27,11 +27,8 @@
 #include <string_view>
 #include <unordered_map>
 
-// The helpers live under `services::catalog_resolve` so both the dispatcher
-// and the executor can use the same gather + lookup primitives. The trailing
-// `services::dispatcher::impl { using ... }` block re-exports them for
-// existing dispatcher/validate/resolve_type call sites that still spell the
-// type as `impl::plan_resolve_index_t`.
+// Under `services::catalog_resolve` so both dispatcher and executor share the
+// same gather + lookup primitives; re-exported into `dispatcher::impl` below.
 namespace services::catalog_resolve {
 
     struct plan_resolve_index_t {
@@ -238,11 +235,7 @@ namespace services::catalog_resolve {
 
 } // namespace services::catalog_resolve
 
-// Back-compat re-export. Existing dispatcher / validate / resolve_type call
-// sites use `impl::plan_resolve_index_t`, `impl::gather_plan_resolve_index`,
-// `impl::tbl_md_for`, etc. The using-declarations below let those continue
-// to resolve without touching every call site. Executor-side code spells
-// `catalog_resolve::` directly.
+// Lets dispatcher/validate/resolve_type keep spelling these as `impl::...`.
 namespace services::dispatcher::impl {
     using catalog_resolve::gather_plan_resolve_index;
     using catalog_resolve::ns_oid_for;

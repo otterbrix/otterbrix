@@ -10,21 +10,11 @@ namespace components::logical_plan {
 
 namespace components::operators {
 
-    // Leaf operator that scans pg_database (OID=19) by datname and emits the
-    // resolved database_oid as a single-row data_chunk. Mirrors
-    // operator_resolve_namespace_t's shape, but targets pg_database instead of
-    // pg_namespace — these are distinct catalog tables and their OIDs are
-    // routing keys for different subsystems (manager_wal_replicate
-    // per-database workers).
-    //
-    // Output chunk schema:
-    //   col 0: UINTEGER  — database_oid (oid_t / uint32_t). One row when
-    //                       the database exists; zero rows when it doesn't.
-    //
-    // The resolved oid is stamped onto the back-pointer node so the
-    // dispatcher's enrich pass can populate execution_context_t.database_oid
-    // without re-issuing an async actor message — same lifecycle pattern as
-    // operator_resolve_namespace_t.
+    // Leaf operator that scans pg_database (OID=19, distinct from pg_namespace)
+    // by datname and emits the resolved database_oid as a single UINTEGER column:
+    // one row when the database exists, zero rows otherwise. The oid is also
+    // stamped onto the back-pointer node so the dispatcher's enrich pass can
+    // populate execution_context_t.database_oid without a second async message.
     class operator_resolve_database_t final : public read_write_operator_t {
     public:
         operator_resolve_database_t(std::pmr::memory_resource* resource, log_t log, std::string name);

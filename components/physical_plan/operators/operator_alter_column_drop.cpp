@@ -46,10 +46,9 @@ namespace components::operators {
         constexpr catalog::oid_t pg_class_oid = catalog::well_known_oid::pg_class_table;
         constexpr catalog::oid_t pg_con_oid = catalog::well_known_oid::pg_constraint_table;
 
-        // read the live pg_attribute row by attoid (keyed single-row
-        // lookup). attoid_ was pre-stamped by enrich_logical_plan from the
-        // resolved column metadata; if INVALID we simply no-op (matches the
-        // legacy "column not found" behavior of the prior attname scan).
+        // Keyed single-row read of the live pg_attribute row. attoid_ was
+        // pre-stamped by enrich_logical_plan; INVALID means "column not found",
+        // so no-op.
         if (attoid_ == catalog::INVALID_OID) {
             mark_executed();
             co_return;
@@ -91,8 +90,7 @@ namespace components::operators {
             break;
         }
         if (attoid == catalog::INVALID_OID) {
-            // Row not found (or already dropped). No-op, no error — matches the
-            // legacy dispatcher behavior (silently skipped).
+            // Row not found or already dropped: no-op, no error.
             mark_executed();
             co_return;
         }
@@ -114,10 +112,8 @@ namespace components::operators {
                                            std::move(pd_vals));
         auto dep_rows = co_await std::move(pdf);
 
-        // build the dependents vector from the pg_depend rows
-        // we just read, then funnel it through the pure validator. This is the
-        // ABORT-on-error gate — any failure here must surface BEFORE the first
-        // mutating delete/append below (atomic-rollback semantics).
+        // ABORT-on-error gate: validate dependents BEFORE the first mutating
+        // delete/append below, so a rejected DROP leaves the catalog untouched.
         std::pmr::vector<std::pair<int, catalog::oid_t>> dependents{resource_};
         dependents.reserve(dep_rows.size());
         for (const auto& dep_row : dep_rows) {
@@ -237,18 +233,10 @@ namespace components::operators {
         if (ctx->txn.transaction_id != 0)
             ctx->pg_catalog_delete_tables.insert(pg_attr_oid);
 
-        // dropped_at_commit_id is stamped as 0 here (placeholder) because the
-        // commit_id is not allocated until operator_commit_transaction_t calls
-        // txn_manager.commit() later in the pipeline. We record a backfill
-        // marker on the pipeline context; operator_commit_transaction drains
-        // the marker after commit() and patches the tombstone row in place.
-        // The tombstone's MVCC insert_id is still stamped with the executing
-        // transaction_id at write and flipped to commit_id by
-        // storage_publish_commits at COMMIT.
-        //
-        // cascade dependency validation already ran above, BEFORE mutations —
-        // ABORT-on-error.
-
+        // dropped_at_commit_id is placeholder-0; a backfill marker (below) patches
+        // it post-commit, since the commit_id isn't allocated until COMMIT
+        // (see pg_catalog_swap.hpp). The tombstone's MVCC insert_id is still the
+        // executing txn_id.
         auto tombstone = catalog::build_pg_attribute_row(resource_,
                                                          attoid,
                                                          table_oid_,
@@ -268,10 +256,9 @@ namespace components::operators {
                                          pg_attr_oid,
                                          std::move(tombstone));
         auto rng = co_await std::move(wf);
-        // The original pg_attribute row is already deleted above (delete_pg_catalog_rows).
-        // If the tombstone append silently produced 0 rows, the column is left in a
-        // half-applied state — invisible to resolve_table but with no MVCC marker for
-        // recovery. Surface this as a hard error rather than letting mark_executed() lie.
+        // The live row is already deleted above. A 0-row tombstone append leaves
+        // the column half-applied (invisible to resolve_table, no MVCC marker for
+        // recovery), so surface a hard error instead of letting mark_executed() lie.
         if (rng.count == 0) {
             std::string msg = "operator_alter_column_drop: tombstone append produced no rows for attoid ";
             msg += std::to_string(attoid);
@@ -280,9 +267,8 @@ namespace components::operators {
             co_return;
         }
         ctx->pg_catalog_appends.push_back(std::move(rng));
-        // Schedule dropped_at_commit_id backfill on the tombstone. attoid is
-        // the same as the live row's attoid (identity-preserving tombstone —
-        // see build_pg_attribute_row contract).
+        // Backfill dropped_at_commit_id on the tombstone, keyed by attoid (same
+        // attoid as the live row — identity-preserving tombstone).
         ctx->pg_attribute_commit_id_backfills.push_back(
             components::pg_attribute_commit_id_backfill_t{
                 attoid,

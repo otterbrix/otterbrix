@@ -92,11 +92,9 @@ namespace components::operators {
         // (txn_manager_) lives outside the per-collection executor.
         commit_transaction,
         abort_transaction,
-        // BEGIN / START TRANSACTION: ensures an active transaction exists for
-        // the session and marks it as
-        // explicit. The executor's commit phase then accumulates DML ranges on
-        // the transaction instead of publishing per statement; operator_commit
-        // drains them in a batched publish at COMMIT.
+        // BEGIN / START TRANSACTION: ensures an active transaction exists and
+        // marks it explicit, so DML accumulates for a batched COMMIT-time publish
+        // (see node_begin_transaction.hpp).
         begin_transaction,
         // COMPUTED_FIELD_REGISTER / COMPUTED_FIELD_UNREGISTER —
         // maintain pg_computed_column rows for relkind='g' dynamic-schema
@@ -147,11 +145,9 @@ namespace components::operators {
         // onto the back-pointed logical node so enrich reads them via the
         // plan_resolve_index.
         resolve_constraint,
-        // ALLOCATE_OIDS — pipeline replacement for inline
-        // manager_disk_t::allocate_oids_batch from the dispatcher. At resolve
-        // time, sends one allocate batch request to the disk actor's
-        // oid_generator and stamps the resulting vector on the back-pointed
-        // node so the DDL planner can read it via oids().
+        // ALLOCATE_OIDS — sends one allocate-batch request to the disk actor's
+        // oid_generator and stamps the resulting vector on the back-pointed node
+        // so the DDL planner can read it via oids().
         allocate_oids,
         batch
     };

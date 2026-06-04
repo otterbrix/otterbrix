@@ -21,11 +21,8 @@ namespace disk_test_helpers {
     namespace catalog = components::catalog;
     using session_id_t = components::session::session_id_t;
 
-    // Visibility filter requires snapshot_horizon to cover the commit_ids
-    // the test reads (typically 1000 from storage_publish_* calls in
-    // disk_test_helpers). Set horizon to UINT64_MAX so every committed row
-    // is visible — these helpers bypass transaction_manager entirely so
-    // there is no real horizon to consult.
+    // These helpers bypass transaction_manager, so there is no real horizon.
+    // Set it to UINT64_MAX so the visibility filter shows every committed row.
     inline components::table::transaction_data with_open_snapshot(uint64_t txn_id, uint64_t start_time) {
         components::table::transaction_data td(txn_id, start_time);
         td.snapshot_horizon = std::numeric_limits<uint64_t>::max();

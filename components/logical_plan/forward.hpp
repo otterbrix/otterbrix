@@ -82,12 +82,8 @@ namespace components::logical_plan {
         // disk via storage_publish_commits / storage_revert_appends.
         commit_transaction_t,
         abort_transaction_t,
-        // BEGIN / START TRANSACTION: leaf node lowered to
-        // operator_begin_transaction_t which marks the session's
-        // transaction_t as explicit. The executor commit phase then
-        // accumulates DML ranges into the txn instead of publishing
-        // per-statement; operator_commit_transaction drains and publishes
-        // them in a single atomic batch at COMMIT.
+        // BEGIN / START TRANSACTION: leaf lowered to operator_begin_transaction_t,
+        // which marks the session's transaction_t explicit (see node_begin_transaction.hpp).
         begin_transaction_t,
         // COMPUTED_FIELD_REGISTER / COMPUTED_FIELD_UNREGISTER: pipeline
         // operators that maintain pg_computed_column rows for relkind='g'
@@ -103,18 +99,14 @@ namespace components::logical_plan {
         // planner → optimizer → physical_plan_generator → executor → disk).
         catalog_resolve_table_t,
         catalog_resolve_namespace_t,
-        // pg_database (OID=19) is a separate catalog table from pg_namespace —
-        // resolving a database name to its OID needs its own node. Populates
-        // execution_context_t.database_oid for downstream WAL routing under
-        // multi-database.
+        // Resolves a database name to its pg_database OID (distinct from
+        // pg_namespace); populates execution_context_t.database_oid for WAL routing.
         catalog_resolve_database_t,
         catalog_resolve_type_t,
         catalog_resolve_function_t,
         catalog_resolve_constraint_t,
-        // Leaf that allocates a batch of OIDs from the disk-side oid_generator.
-        // Replaces inline dispatcher calls to
-        // manager_disk_t::allocate_oids_batch — DDL planner reads the
-        // resulting batch via node_allocate_oids_t::oids().
+        // Leaf that allocates a batch of OIDs from the disk-side oid_generator;
+        // the DDL planner reads the batch via node_allocate_oids_t::oids().
         allocate_oids_t,
         set_timezone_t,
         unused

@@ -15,16 +15,12 @@ namespace components {
         uint64_t count{0};
     };
 
-    // Backfill marker for pg_attribute MVCC commit_id fields.
-    // operator_alter_column_{add,drop,rename} cannot stamp
-    // added_at_commit_id / dropped_at_commit_id at execute time because the
-    // commit_id is allocated by transaction_manager_t::commit() later in the
-    // pipeline (see operator_commit_transaction.cpp). The operators write the
-    // pg_attribute row with placeholder 0 and emit one of these markers; the
-    // commit operator drains them after commit() and patches the row's
-    // commit_id column in place. `kind` selects which of the two columns to
-    // patch (index 10 = added_at_commit_id for ADD/RENAME identity row,
-    // index 11 = dropped_at_commit_id for DROP tombstone).
+    // Backfill marker for pg_attribute MVCC commit_id fields. ALTER operators
+    // cannot stamp added_at/dropped_at_commit_id at execute time: the commit_id
+    // is allocated later by transaction_manager_t::commit(). They write the row
+    // with placeholder 0 and emit this marker; the commit operator drains them
+    // post-commit and patches the column in place. `kind` selects the column
+    // (added_at = index 10 for ADD/RENAME, dropped_at = index 11 for DROP tombstone).
     struct pg_attribute_commit_id_backfill_t {
         enum class kind_t : std::uint8_t { added_at, dropped_at };
         catalog::oid_t attoid{catalog::INVALID_OID};

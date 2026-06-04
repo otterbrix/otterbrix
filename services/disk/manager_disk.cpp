@@ -245,11 +245,9 @@ namespace services::disk {
             create_directories(config_.path);
             create_agent(config.agent);
         }
-        // Event-loop-in-thread: this thread OWNS all message processing. Senders
-        // only deliver into inbox_ (lock-free) and notify pump_cv_; this loop
-        // drains the inbox into a loop-local in_flight list and runs the three
-        // phases (create behavior / resume continuation / erase done) with no
-        // locking — the list is private to this thread. cv only for idle sleep.
+        // This thread OWNS all message processing. Senders only push into inbox_
+        // (lock-free) + notify pump_cv_; the loop-local in_flight list is private
+        // to this thread, so the three phases below run lock-free.
         loop_thread_ = std::thread([this] {
             // this->resource(): the ctor parameter `resource` shadows the member fn.
             std::pmr::list<in_flight_entry_t> in_flight(this->resource());
@@ -263,9 +261,9 @@ namespace services::disk {
                 while (progress) {
                     progress = false;
                     // (a) Create a behavior for the first slot that still needs one.
-                    //     pending_msg STAYS in the slot — the coroutine holds a raw
-                    //     pointer to the message across suspension points, so the
-                    //     message must outlive the behavior. Marker = handle null.
+                    //     pending_msg STAYS in the slot: the coroutine holds a raw
+                    //     pointer to the message across suspensions, so the message
+                    //     must outlive the behavior. "needs one" marker = handle null.
                     for (auto& e : in_flight) {
                         if (e.pending_msg && !e.behavior) {
                             e.behavior = behavior(e.pending_msg.get());
@@ -293,9 +291,8 @@ namespace services::disk {
                             continue;
                         }
                     }
-                    // (c) Erase one done slot. "Done" = behavior created (handle
-                    //     non-null) AND completed. behavior_t + message_ptr destruct
-                    //     here, on this thread.
+                    // (c) Erase one done slot ("done" = handle non-null AND completed).
+                    //     behavior_t + message_ptr destruct on this thread.
                     for (auto it = in_flight.begin(); it != in_flight.end(); ++it) {
                         if (it->behavior && it->behavior.done()) {
                             in_flight.erase(it);
@@ -310,8 +307,8 @@ namespace services::disk {
                 // lock-free inbox trade: a push+notify may slip between empty() and
                 // wait_for — bounded by the 100µs timeout (staleness, not loss).
             }
-            // local in_flight destructs here on the loop thread (safe: ~behavior_t +
-            // Last-One-Out — no other thread touches the in-flight state).
+            // in_flight destructs on the loop thread — safe, no other thread ever
+            // touches the in-flight state.
         });
         trace(log_, "manager_disk finish");
     }
@@ -331,10 +328,8 @@ namespace services::disk {
         trace(log_, "delete manager_disk_t");
     }
 
-    // Event-loop-in-thread model: senders only deliver a message into the
-    // lock-free inbox_ and wake the loop. The ctor's loop_thread_ owns ALL
-    // processing (drain inbox → create behavior → resume continuation → erase
-    // done); pump_cv_ is used only for the loop's idle sleep / early wake.
+    // Senders only deliver into inbox_ and wake the loop; loop_thread_ does all
+    // processing (see ctor).
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_disk_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
         inbox_.push(msg.release());
@@ -506,14 +501,9 @@ namespace services::disk {
         }
     }
 
-    // Event-driven GC subscriber. Pure router fanout — every agent's
-    // on_horizon_advanced_inner owns the canonical sweep over its
-    // dropped_storages_ slice and emits its own on_subscriber_empty(DISK_KIND)
-    // ack to the dispatcher.
     manager_disk_t::unique_future<void> manager_disk_t::on_horizon_advanced(uint64_t new_horizon) {
         trace(log_, "manager_disk::on_horizon_advanced , horizon : {}", new_horizon);
 
-        // Fanout to every agent; await all in sequence.
         std::pmr::vector<unique_future<void>> agent_futures{resource()};
         agent_futures.reserve(agents_.size());
         for (auto& agent_ptr : agents_) {
@@ -533,14 +523,11 @@ namespace services::disk {
     }
 
     void manager_disk_t::set_manager_dispatcher_sync(actor_zeta::address_t address) {
-        // Bootstrap-only path: base_spaces wires this before scheduler.start.
-        // Single-threaded by construction — no locking required.
+        // Bootstrap-only (pre-scheduler-start), single-threaded — no locking.
         manager_dispatcher_ = address;
 
-        // Fan dispatcher address to every agent so on_horizon_advanced_inner
-        // can fire on_subscriber_empty(DISK_KIND) directly on slice drain.
-        // address_t is a mailbox handle (not mutable state) — safe to copy.
-        // Sync calls across manager→agent are pre-scheduler-start only.
+        // Fan the address (a mailbox handle, safe to copy) to every agent so each
+        // on_horizon_advanced_inner can ack on_subscriber_empty(DISK_KIND) itself.
         for (auto& agent_ptr : agents_) {
             agent_ptr->set_manager_dispatcher_sync(address);
         }
@@ -550,11 +537,9 @@ namespace services::disk {
                                                        uint64_t dropped_at_commit_id,
                                                        std::filesystem::path path,
                                                        std::pmr::vector<std::filesystem::path> sidecar_paths) {
-        // Pre-scheduler-start bootstrap path only — base_spaces catalog
-        // scan rebuild. Runtime DROP goes through the mark_storage_dropped
-        // mailbox handler below (mailbox-send to avoid sync calls across
-        // actor boundary). Pure router: forwards an independent deep-copy
-        // of path + sidecars into the owning agent's slice.
+        // Bootstrap-only (base_spaces catalog scan rebuild); runtime DROP uses the
+        // mark_storage_dropped mailbox handler below. Forwards an independent
+        // deep-copy of path + sidecars into the owning agent's slice.
         if (!agents_.empty()) {
             const auto idx = pool_idx_for_oid(oid, agents_.size());
             std::pmr::vector<std::filesystem::path> agent_sidecars{resource()};
@@ -573,18 +558,11 @@ namespace services::disk {
     manager_disk_t::mark_storage_dropped(session_id_t /*session*/,
                                          components::catalog::oid_t table_oid,
                                          uint64_t dropped_at_commit_id) {
-        // Runtime DROP TABLE path. operator_dynamic_cascade_delete sends this
-        // BEFORE the drop_storage send so we can still read the live storage
-        // entry to derive the on-disk path + sidecars. Does NOT touch storage
-        // or files here: drop_storage performs the immediate physical removal.
-        // The GC entry exists so on_horizon_advanced reconciles any leftover
-        // state and dispatcher's disk_has_dropped_ flag gets flipped via
-        // on_drop_resource_marked.
-        //
-        // Pure mailbox-router: reads otbx_path via storage_entry_sync against
-        // the routed agent's slice (the agent mailbox serializes writes
-        // against this read; pointer is borrowed for this handler only),
-        // then fans the GC entry into the agent's slice via mailbox send.
+        // Must run BEFORE the drop_storage send: it reads the still-live storage
+        // entry to derive the .otbx path + sidecars. The borrowed storage_entry_sync
+        // pointer is valid for this handler only (the agent mailbox serializes
+        // writes against this read); the GC entry is then fanned into the agent's
+        // slice via mailbox send.
         trace(log_,
               "manager_disk_t::mark_storage_dropped , oid : {} , commit_id : {}",
               static_cast<unsigned>(table_oid),
@@ -608,15 +586,12 @@ namespace services::disk {
                 }
             }
         }
-        // IN_MEMORY storages have no on-disk artefact; otbx_path/sidecars
-        // are empty. Still record a GC entry so dispatcher's
-        // disk_has_dropped_ bookkeeping treats this drop uniformly — the
-        // agent sweep silently no-ops on the empty path.
+        // IN_MEMORY storages leave otbx_path/sidecars empty, but we still record a
+        // GC entry so disk_has_dropped_ bookkeeping is uniform (agent sweep no-ops
+        // on the empty path).
 
-        // Fanout to the routed agent via mailbox. Deep-copy path + sidecars
-        // so the agent gets its own independent storage; co_await keeps
-        // mark_storage_dropped's mailbox-handler ordering intact w.r.t.
-        // subsequent operator_dynamic_cascade_delete sends.
+        // Deep-copy path + sidecars so the agent owns them independently; co_await
+        // keeps this handler ordered w.r.t. subsequent cascade-delete sends.
         if (!agents_.empty()) {
             const auto idx = pool_idx_for_oid(table_oid, agents_.size());
             std::pmr::vector<std::filesystem::path> agent_sidecars{resource()};

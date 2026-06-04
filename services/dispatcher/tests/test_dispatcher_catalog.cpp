@@ -55,8 +55,8 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
     }
 
     ~test_dispatcher() {
-        // Destroy managers (self-driving on internal threads) before tearing
-        // down the scheduler to avoid use-after-free. Reverse dependency order:
+        // Destroy managers (self-driving on internal threads) before the
+        // scheduler to avoid use-after-free, in reverse dependency order:
         // dispatcher, then wal, then disk.
         manager_dispatcher_.reset();
         manager_wal_.reset();
@@ -71,11 +71,9 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
     void step() { scheduler_->run(10000); }
 
     cursor_t_ptr take_result() {
-        // execute_plan does extra co_awaits (collections_ rebuild via list_namespaces +
-        // pre-load namespace + DDL existence check). The manager actors self-drive on
-        // internal threads, so the future becomes ready asynchronously — pump the child
-        // scheduler with a poll until the future is ready, bounded by a 5s
-        // wall-clock deadline.
+        // execute_plan's future becomes ready asynchronously (the manager actors
+        // self-drive on internal threads). Pump the child scheduler until ready,
+        // bounded by a 5s wall-clock deadline.
         REQUIRE(pending_future_);
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
         while (!pending_future_->is_ready() && std::chrono::steady_clock::now() < deadline) {
@@ -86,9 +84,8 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         REQUIRE(pending_future_->is_ready());
         auto result = std::move(*pending_future_).take_ready();
         pending_future_.reset();
-        // Drain again to ensure executor's post-result DDL inline pipeline
-        // (catalog writes + flush + commit_txn + storage_publish_commits) completes
-        // before returning.
+        // Drain again so the executor's post-result DDL pipeline (catalog writes,
+        // flush, commit_txn, storage_publish_commits) finishes before returning.
         step();
         return result;
     }

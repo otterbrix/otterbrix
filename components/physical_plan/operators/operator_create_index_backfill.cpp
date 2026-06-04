@@ -60,18 +60,12 @@ namespace components::operators {
             co_return;
         }
 
-        // WAL retention guard. Capture build_start_wal_position
-        // (current wal_id) and register it with manager_wal_replicate so a
-        // concurrent checkpoint+truncate cannot drop records the catchup loop
-        // still needs. We route through the mailbox (the operator runs inside
-        // the executor actor, sync inter-actor calls are forbidden). The
-        // matching unregister fires at every exit point below (success after
-        // catchup, fail when catchup doesn't converge).
-        // build_start_registered_ tracks whether we still owe an unregister;
-        // it's only set after a successful register so accidental double-unreg
-        // is impossible. No RAII helper is used: a coroutine-local guard would
-        // need to capture `co_await`-able state, which the destructor cannot
-        // run — explicit unregister at each exit is the cleanest pattern.
+        // WAL retention guard: register build_start_wal_position so a concurrent
+        // checkpoint+truncate cannot drop records the catchup loop still needs.
+        // Routed via mailbox (sync inter-actor calls are forbidden inside the
+        // executor actor). The matching unregister fires at every exit below;
+        // build_start_registered gates it so a never-registered guard is never
+        // double-unregistered. No RAII: a destructor can't co_await the unregister.
         services::wal::id_t build_start_wal_position{0};
         bool build_start_registered = false;
         if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
@@ -113,20 +107,14 @@ namespace components::operators {
                         uint64_t{0},
                         count);
                     co_await std::move(irf);
-                    // insert_rows tags index entries with the current txn_id
-                    // but leaves them PENDING. They become visible only after
-                    // commit_insert is called with the commit_id. The
-                    // executor's post-pipeline commit block fires commit_insert
-                    // when dml_append_row_count > 0 && dml_table_oid set —
-                    // record those here so backfilled index entries get
-                    // committed alongside the CREATE INDEX txn. Reusing
-                    // dml_append_row_count also drives storage_publish_commit:
-                    // that re-commits the already-committed data rows to the
-                    // CREATE INDEX commit_id, which is harmless when no
-                    // concurrent reader sits between the INSERT and the
-                    // CREATE INDEX commits (typical case). Concurrent rows
-                    // committed during the snapshot scan are picked up by the
-                    // bounded-retry catchup loop below.
+                    // insert_rows leaves entries PENDING (tagged with this txn_id);
+                    // they become visible only when the executor's post-pipeline
+                    // commit_insert runs, which it does when dml_append_row_count > 0
+                    // && dml_table_oid is set — so record those here to commit the
+                    // backfilled entries alongside the CREATE INDEX txn. The reuse
+                    // also re-commits the data rows to this commit_id, harmless
+                    // absent a concurrent reader between the two commits. Rows
+                    // committed during the scan are caught by the catchup loop below.
                     ctx->dml_append_row_start = 0;
                     ctx->dml_append_row_count = count;
                     ctx->dml_table_oid = table_oid_;
@@ -134,30 +122,13 @@ namespace components::operators {
             }
         }
 
-        // CREATE INDEX bounded-retry WAL catchup.
-        // The snapshot scan above may have missed rows committed concurrently
-        // with the build. We scan WAL records produced after
-        // build_start_wal_position (captured before the snapshot scan,
-        // retention-guarded by WAL) and re-apply every
-        // PHYSICAL_{INSERT,DELETE,UPDATE} targeting this build's table_oid to
-        // the in-memory index. Bounded retry guards against pathological
-        // high-write workloads that never quiesce; each iteration advances
-        // catchup_start_wal to the max wal_id seen, so the loop terminates as
-        // soon as load() reports no new records past the watermark.
-        //
-        // Engine apply (full): INSERT, DELETE, and UPDATE are all wired.
-        //   - PHYSICAL_INSERT — forwarded with rec.physical_data directly.
-        //   - PHYSICAL_DELETE — WAL records carry only row_ids, so we
-        //     recover the key chunk via storage_fetch(row_ids) on the
-        //     operator side, then forward the recovered chunk as
-        //     physical_data to apply_wal_record_for_index. Best-effort:
-        //     if storage_fetch returns null/empty (rows physically gone)
-        //     we forward nullptr; manager_index logs+skips and the
-        //     bounded-retry convergence guard catches persistent divergence.
-        //   - PHYSICAL_UPDATE — split into TWO messages: the original
-        //     PHYSICAL_UPDATE message (NEW-insert half) followed by a
-        //     synthesized PHYSICAL_DELETE message carrying the recovered
-        //     OLD chunk (OLD-delete half). Same fetch+forward pattern.
+        // CREATE INDEX bounded-retry WAL catchup. The snapshot scan above may
+        // have missed rows committed concurrently with the build, so re-apply
+        // every PHYSICAL_{INSERT,DELETE,UPDATE} for table_oid written after
+        // build_start_wal_position (retention-guarded above) to the in-memory
+        // index. Bounded retry guards against write-heavy workloads that never
+        // quiesce; each iteration advances catchup_start_wal to the max wal_id
+        // seen, so it terminates once load() finds nothing past the watermark.
         constexpr int MAX_CATCHUP_ITERATIONS = 10;
         services::wal::id_t catchup_start_wal = build_start_wal_position;
         bool converged = false;
@@ -180,24 +151,14 @@ namespace components::operators {
             }
 
             services::wal::id_t max_wal_id_seen = catchup_start_wal;
-            // Non-const iteration so we can move rec.physical_data
-            // (unique_ptr<data_chunk_t>) into the apply_wal_record_for_index
-            // message. The chunk and physical_row_start are required by the
-            // engine's insert_row API (see services/index/manager_index.cpp).
-            // Replayed entries are tagged with the CREATE INDEX txn_id so they
-            // stay PENDING until the post-pipeline commit_insert publishes
-            // them alongside the snapshot-scan rows.
-            //
-            // PHYSICAL_DELETE / PHYSICAL_UPDATE handling: the WAL record
-            // ships only row_ids for the deleted rows, but the engine's
-            // mark_delete_row API needs the original key columns to locate
-            // the bucket. We close that gap with a storage_fetch(row_ids)
-            // round-trip on the operator side (read-only, MVCC-aware) and
-            // forward the recovered chunk as physical_data. The cost is
-            // O(deleted_rows) physical reads per catchup iteration —
-            // acceptable for the bounded-retry loop. For PHYSICAL_UPDATE
-            // we issue TWO messages: the original (NEW-insert half) plus a
-            // synthesized PHYSICAL_DELETE (OLD-delete half).
+            // Non-const iteration so rec.physical_data can be moved into the
+            // apply_wal_record_for_index message. Replayed entries are tagged
+            // with the CREATE INDEX txn_id and stay PENDING until the
+            // post-pipeline commit_insert publishes them with the scan rows.
+            // DELETE/UPDATE: the WAL record ships only row_ids, but mark_delete_row
+            // needs the original key columns, so we storage_fetch(row_ids) to
+            // recover the OLD chunk (O(deleted_rows) reads per iteration). UPDATE
+            // is replayed as two messages (NEW-insert + synthesized OLD-delete).
             for (auto& rec : wal_records) {
                 if (rec.id > max_wal_id_seen) {
                     max_wal_id_seen = rec.id;
@@ -214,12 +175,10 @@ namespace components::operators {
                     continue;
                 }
 
-                // For DELETE / UPDATE: recover the OLD key chunk by fetching
-                // row_ids from storage. If the fetch can't run (no disk
-                // address in test harness) or returns null/empty (rows
-                // physically gone), we forward nullptr — the manager_index
-                // handler logs+skips and the bounded-retry convergence guard
-                // catches persistent divergence on the next iteration.
+                // Recover the OLD key chunk for DELETE/UPDATE. If the fetch can't
+                // run or returns empty (rows physically gone), forward nullptr:
+                // manager_index logs+skips and the convergence guard catches any
+                // persistent divergence next iteration.
                 std::unique_ptr<components::vector::data_chunk_t> old_chunk;
                 const bool needs_old_chunk =
                     (rec.record_type == services::wal::wal_record_type::PHYSICAL_DELETE ||
@@ -244,9 +203,7 @@ namespace components::operators {
 
                 if (rec.record_type == services::wal::wal_record_type::PHYSICAL_INSERT ||
                     rec.record_type == services::wal::wal_record_type::PHYSICAL_UPDATE) {
-                    // INSERT or NEW-insert half of UPDATE: forward the
-                    // WAL-resident NEW chunk and the OLD row_ids (UPDATE
-                    // ignores row_ids on the insert path).
+                    // INSERT, or NEW-insert half of UPDATE: forward the WAL NEW chunk.
                     std::pmr::vector<int64_t> row_ids(rec.physical_row_ids.begin(),
                                                      rec.physical_row_ids.end(),
                                                      resource_);
@@ -268,11 +225,9 @@ namespace components::operators {
 
                 if (rec.record_type == services::wal::wal_record_type::PHYSICAL_DELETE ||
                     rec.record_type == services::wal::wal_record_type::PHYSICAL_UPDATE) {
-                    // DELETE or OLD-delete half of UPDATE: send a
-                    // PHYSICAL_DELETE message carrying the recovered OLD
-                    // chunk + row_ids. For PHYSICAL_UPDATE we synthesize
-                    // the record_type as PHYSICAL_DELETE so the handler
-                    // routes through its mark_delete_row branch.
+                    // DELETE, or OLD-delete half of UPDATE: send the recovered OLD
+                    // chunk forced to record_type PHYSICAL_DELETE so the handler
+                    // routes through mark_delete_row.
                     std::pmr::vector<int64_t> row_ids(rec.physical_row_ids.begin(),
                                                      rec.physical_row_ids.end(),
                                                      resource_);
@@ -293,10 +248,8 @@ namespace components::operators {
                 }
             }
 
-            // Forward progress check: if no record in this batch carried a
-            // wal_id strictly greater than the watermark, we have caught up.
-            // This also guards against load() returning records at-or-below
-            // the watermark (defensive — current contract is strictly-after).
+            // Converged if no record advanced past the watermark. Also guards
+            // against load() returning records at-or-below it (defensive).
             if (max_wal_id_seen == catchup_start_wal) {
                 converged = true;
                 break;
@@ -304,11 +257,9 @@ namespace components::operators {
             catchup_start_wal = max_wal_id_seen;
         }
         if (!converged) {
-            // Graceful-fail path: emit a typed error cursor and co_return.
-            // Expedited cleanup is safe (ready_since=0) — the index was never
-            // published and no snapshot ever referenced it, so it is GC-able.
-            // Release the WAL retention guard before exiting so the next
-            // checkpoint can truncate freely.
+            // Graceful fail: the index was never published and no snapshot saw
+            // it, so it is immediately GC-able. Release the WAL retention guard
+            // before exiting so the next checkpoint can truncate freely.
             if (build_start_registered) {
                 auto [_u, uf] = actor_zeta::send(ctx->wal_address,
                                                  &services::wal::manager_wal_replicate_t::unregister_active_build,
@@ -327,10 +278,8 @@ namespace components::operators {
             co_return;
         }
 
-        // catchup converged — release retention guard. We do
-        // this BEFORE the pg_index flip / mark_executed so a later truncate
-        // after this operator returns is unblocked. The flip step below only
-        // touches the catalog, not the WAL records we were protecting.
+        // Converged: release the retention guard BEFORE the pg_index flip below
+        // (which only touches the catalog) so a later truncate isn't blocked.
         if (build_start_registered) {
             auto [_u, uf] = actor_zeta::send(ctx->wal_address,
                                              &services::wal::manager_wal_replicate_t::unregister_active_build,
@@ -340,9 +289,8 @@ namespace components::operators {
             build_start_registered = false;
         }
 
-        // flip pg_index.indisvalid → true. The metadata operator wrote
-        // an indisvalid=false row earlier; replace it now that the engine is
-        // populated. Skipping is safe if we have no disk actor (test harness).
+        // Flip pg_index.indisvalid -> true by replacing the indisvalid=false row
+        // the metadata operator wrote, now that the engine is populated.
         if (ctx->disk_address != actor_zeta::address_t::empty_address() &&
             index_oid_ != components::catalog::INVALID_OID) {
             constexpr components::catalog::oid_t pg_idx_oid = components::catalog::well_known_oid::pg_index_table;

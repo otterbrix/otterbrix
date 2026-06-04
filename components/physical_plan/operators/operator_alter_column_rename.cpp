@@ -33,10 +33,7 @@ namespace components::operators {
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
         constexpr catalog::oid_t pg_attr = catalog::well_known_oid::pg_attribute_table;
 
-        // new_name_ must not collide with existing visible
-        // columns of the table — visible_column_names populated by async
-        // pg_attribute scan filtered by MVCC visibility (see
-        // alter_validators.cpp).
+        // Reject new_name_ if it collides with a column visible to this snapshot.
         auto vc_fut = alter_validators::visible_column_names(resource_, ctx->disk_address, exec_ctx, table_oid_);
         auto visible_column_names = co_await std::move(vc_fut);
         auto ec_dup =
@@ -48,9 +45,8 @@ namespace components::operators {
             co_return;
         }
 
-        // Routing by attoid (pre-stamped by enrich_logical_plan).
-        // INVALID_OID means the resolver couldn't find the column — treat as
-        // no-op (matches the prior attname-scan miss behavior).
+        // attoid_ is pre-stamped by enrich_logical_plan; INVALID means the
+        // resolver couldn't find the column, so no-op.
         if (attoid_ == catalog::INVALID_OID) {
             mark_executed();
             co_return;
@@ -75,8 +71,8 @@ namespace components::operators {
         catalog::oid_t atttypid = catalog::INVALID_OID;
         bool att_not_null = false, att_has_default = false;
         std::string att_typspec, att_defspec;
-        // so the re-appended row preserves the column's lifetime endpoint
-        // (RENAME is identity-preserving — added_at MUST NOT change).
+        // Captured so the re-appended row keeps the same added_at_commit_id:
+        // RENAME is identity-preserving, so added_at MUST NOT change.
         std::int64_t att_added_at_commit_id = 0;
         for (const auto& row : attr_rows) {
             if (row.size() < 10 || row[0].is_null())
@@ -93,9 +89,9 @@ namespace components::operators {
                 att_typspec = std::string(row[8].value<std::string_view>());
             if (!row[9].is_null())
                 att_defspec = std::string(row[9].value<std::string_view>());
-            // Column index 10 = added_at_commit_id (see system_table_schemas.cpp).
-            // pg_attribute schema only guarantees 10 trailing columns when the
-            // row was written before MVCC commit_id columns landed; tolerate missing slot as 0.
+            // Column 10 = added_at_commit_id. Rows written before the MVCC
+            // commit_id columns landed have only 10 columns; tolerate a missing
+            // slot as 0.
             if (row.size() > 10 && !row[10].is_null())
                 att_added_at_commit_id = row[10].value<std::int64_t>();
             break;
@@ -112,16 +108,11 @@ namespace components::operators {
             if (ctx->txn.transaction_id != 0)
                 ctx->pg_catalog_delete_tables.insert(pg_attr);
 
-            // append a fresh row reusing attoid/attnum/atttypid with the new name.
-            //
-            // RENAME is identity-preserving (same attoid, same attnum, same
-            // atttypid), so the re-appended row MUST preserve the original
-            // column's added_at_commit_id captured above. dropped_at remains
-            // 0 (column is still live). If att_added_at_commit_id was 0 at
-            // capture time (column originally CREATEd, or ALTERed but not yet
-            // backfilled), preserving 0 is still correct — RENAME never widens
-            // visibility, and the next ALTER ADD against this column would push
-            // its own backfill marker.
+            // Re-append a fresh row reusing attoid/attnum/atttypid with the new
+            // name. Identity-preserving: keep the captured added_at_commit_id,
+            // dropped_at stays 0 (still live). A captured 0 (CREATEd column, or
+            // ALTERed-but-not-yet-backfilled) is also correct — RENAME never
+            // widens visibility, and no commit_id backfill marker is emitted.
             auto new_row = catalog::build_pg_attribute_row(resource_,
                                                            attoid,
                                                            table_oid_,

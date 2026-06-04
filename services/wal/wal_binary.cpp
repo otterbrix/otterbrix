@@ -243,10 +243,9 @@ namespace services::wal {
                           id_t wal_id,
                           uint64_t txn_id,
                           uint64_t commit_id) {
-        // commit_id is appended AFTER the type byte so the type byte keeps its
-        // original offset — DML decode (which reads only up to the type byte
-        // before branching) is unaffected. snapshot-aware replay reads commit_id
-        // back to restore published_horizon_.
+        // commit_id is appended AFTER the type byte to preserve the type byte's
+        // offset, so DML decode (which reads only up to the type byte before
+        // branching) stays unaffected.
         static constexpr uint32_t COMMIT_BODY_SIZE = 4 + 8 + 8 + 1 + 8;  // = 29
         static constexpr size_t COMMIT_TOTAL = 4 + COMMIT_BODY_SIZE + 4; // = 37
 
@@ -332,10 +331,9 @@ namespace services::wal {
         rec.record_type = static_cast<wal_record_type>(*reinterpret_cast<const uint8_t*>(ptr));
         ptr += 1;
 
-        // commit_id is encoded ONLY for COMMIT records, immediately after the
-        // type byte. DML records leave the field as 0; snapshot-aware replay
-        // back-fills it once the matching COMMIT marker is parsed (records
-        // are linked via transaction_id).
+        // commit_id is present only on COMMIT records. DML records leave it 0;
+        // replay back-fills them once the matching COMMIT (same transaction_id)
+        // is parsed.
         if (rec.record_type == wal_record_type::COMMIT) {
             rec.commit_id = read_le64(ptr);
             ptr += 8;

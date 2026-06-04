@@ -151,9 +151,8 @@ namespace services::disk {
             detail_impl_::inline_scan_range(table, col_indices, resource, std::forward<Fn>(fn));
         }
 
-        // const overloads: scan is logically read-only. data_table_t::scan
-        // does not modify chunk content, but its method signature is not const.
-        // const_cast is safe because we only read.
+        // const overload: data_table_t::scan is read-only but not declared const,
+        // so the const_cast is safe.
         template<typename Fn>
         void inline_scan(const components::table::data_table_t& table,
                          std::initializer_list<std::int64_t> col_indices,

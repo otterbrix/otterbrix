@@ -32,9 +32,8 @@ namespace services::wal {
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
 
-        // Worker is fully self-contained — manager interactions go through
-        // mailbox via worker->address(); no parent pointer, so there are no
-        // parent-pointer sync calls between actors.
+        // No manager pointer: all manager interaction is mailbox-only
+        // (worker->address()), keeping actors free of shared mutable state.
         wal_worker_t(std::pmr::memory_resource* resource,
                      log_t& log,
                      configuration::config_wal config,

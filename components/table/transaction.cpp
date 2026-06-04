@@ -2,8 +2,6 @@
 
 namespace components::table {
 
-    // resource is required (not defaulted): it backs every per-txn pmr
-    // container, so it must not fall back to a global/null default resource.
     transaction_t::transaction_t(uint64_t transaction_id,
                                  uint64_t start_time,
                                  session::session_id_t session,

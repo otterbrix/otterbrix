@@ -27,15 +27,14 @@ TEST_CASE("Block E committed_version_operator respects in_flight_snapshot",
     auto& txn1 = mgr.begin_transaction(session1);
     auto data = txn1.data();
 
-    // The captured snapshot's in_flight_snapshot MUST contain commit_id_t2
-    // — T2 is in_flight from T1's perspective.
+    // T1's snapshot MUST list commit_id_t2 as in_flight.
     bool contains_t2 = std::find(data.in_flight_snapshot.begin(),
                                   data.in_flight_snapshot.end(),
                                   commit_id_t2) != data.in_flight_snapshot.end();
     REQUIRE(contains_t2);
 
-    // After T2's publish, the in_flight_commits_ set drops commit_id_t2 — but
-    // T1's captured snapshot is still frozen (immutable copy at begin).
+    // publish() drops commit_id_t2 from in_flight_commits_, but T1's snapshot is
+    // an immutable copy taken at begin and must not reflect the change.
     mgr.publish(commit_id_t2);
 
     auto data_again = txn1.data();
@@ -88,27 +87,20 @@ TEST_CASE("Block E transaction_t::data() snapshot caching",
 
 TEST_CASE("Block E cross-agent atomic visibility (Version B*)",
           "[block_e][procarray]") {
-    // Cross-agent atomic visibility under manager_disk routing
-    // (catalog→agent_0, user→hash-routed). A reader observing the
-    // partial-publish window must NOT see one half of the transaction without
-    // the other.
-    //
-    // We drive transaction_manager_t's publish() + take_snapshot() directly.
-    // The canonical visibility filter
-    // (transaction_version_operator::use_inserted_version) is internal to
-    // row_version_manager.cpp, so we inline its rules here per the contract
-    // documented on transaction_data in row_version_manager.hpp. This locks
-    // down the manager-level contract that routing relies upon — full
-    // pipeline integration is exercised by higher-level E2E tests.
+    // A transaction's writes may land on two agents (catalog→agent_0,
+    // user→hash-routed). A reader hitting the partial-publish window must not
+    // see one half without the other. The canonical visibility filter
+    // (transaction_version_operator::use_inserted_version) lives in
+    // row_version_manager.cpp; we inline its rules per the contract documented
+    // on transaction_data in row_version_manager.hpp and drive publish() /
+    // take_snapshot() directly.
     using namespace components::table;
     using namespace components::session;
 
     std::pmr::synchronized_pool_resource resource;
     transaction_manager_t mgr(&resource);
 
-    // Canonical visibility filter (mirrors transaction_version_operator in
-    // row_version_manager.cpp). Tested-against contract documented on
-    // transaction_data in row_version_manager.hpp.
+    // Inlined copy of the row_version_manager.cpp visibility filter.
     auto visible = [](const transaction_manager_t::snapshot_t& snap,
                       uint64_t id) -> bool {
         if (id >= TRANSACTION_ID_START) return false;       // other-txn pending
@@ -131,7 +123,7 @@ TEST_CASE("Block E cross-agent atomic visibility (Version B*)",
     REQUIRE(commit_id_t2 > 0);
     REQUIRE(commit_id_t1 != commit_id_t2);
 
-    // (3) Before any publish, a concurrent reader sees BOTH commits in_flight.
+    // Before any publish, a reader sees both commits in_flight.
     auto snap_S1 = mgr.take_snapshot(&resource);
     REQUIRE(snap_S1.in_flight_snapshot.size() == 2);
     bool s1_has_t1 = std::find(snap_S1.in_flight_snapshot.begin(),
@@ -145,23 +137,19 @@ TEST_CASE("Block E cross-agent atomic visibility (Version B*)",
     REQUIRE(!visible(snap_S1, commit_id_t1));
     REQUIRE(!visible(snap_S1, commit_id_t2));
 
-    // (4) Partial-publish window: T2 publishes (e.g. agent_X side finished)
-    //     but T1 has not yet (agent_0 side still pending).
+    // Partial-publish window: T2's agent finished and published, T1's has not.
     mgr.publish(commit_id_t2);
 
     auto snap_S2 = mgr.take_snapshot(&resource);
-    // T2 has been published — horizon advanced to T2's commit_id.
     REQUIRE(snap_S2.snapshot_horizon == commit_id_t2);
     REQUIRE(snap_S2.in_flight_snapshot.size() == 1);
     REQUIRE(snap_S2.in_flight_snapshot[0] == commit_id_t1);
-    // (5) T2's row IS visible (published).
     REQUIRE(visible(snap_S2, commit_id_t2));
-    // (6) T1's row is NOT visible — still in_flight. This is the atomicity
-    //     guarantee: reader never sees half of a partially-published state
-    //     where one agent has its writes but the other does not.
+    // Atomicity guarantee: T1 is still in_flight and thus invisible — a reader
+    // never sees one agent's half of a partially-published transaction.
     REQUIRE(!visible(snap_S2, commit_id_t1));
 
-    // (7) T1 publishes (agent_0 side finishes). Fresh snapshot sees both.
+    // T1 publishes; a fresh snapshot now sees both.
     mgr.publish(commit_id_t1);
     auto snap_S3 = mgr.take_snapshot(&resource);
     REQUIRE(snap_S3.in_flight_snapshot.empty());
@@ -169,36 +157,31 @@ TEST_CASE("Block E cross-agent atomic visibility (Version B*)",
     REQUIRE(visible(snap_S3, commit_id_t1));
     REQUIRE(visible(snap_S3, commit_id_t2));
 
-    // (8) Consistent-view invariant: the OLD snap_S2 (captured pre-T1-publish)
-    //     still does NOT see T1. Snapshots are frozen at capture — no
-    //     after-the-fact visibility leak.
+    // Consistent-view invariant: the old snap_S2 (captured pre-T1-publish) still
+    // does not see T1 — snapshots are frozen at capture, no retroactive leak.
     REQUIRE(!visible(snap_S2, commit_id_t1));
     REQUIRE(visible(snap_S2, commit_id_t2));
 }
 
 TEST_CASE("Block E db_oid resolve via catalog_resolve_database",
           "[block_e][b14c]") {
-    // Exercise node_catalog_resolve_database_t's set/get mechanism in isolation.
-    // operator_resolve_database stamps the resolved oid via set_database_oid;
-    // the full pg_database-scan integration path is exercised by higher-level
-    // E2E tests.
+    // Exercise node_catalog_resolve_database_t's set/get in isolation;
+    // operator_resolve_database stamps the resolved oid via set_database_oid.
     using namespace components::logical_plan;
     using namespace components::catalog;
 
     std::pmr::synchronized_pool_resource resource;
 
-    // 1. Create the node — initial database_oid is INVALID_OID per ctor default.
+    // Fresh node defaults to INVALID_OID.
     auto node = make_node_catalog_resolve_database(&resource, core::dbname_t{"main"});
     REQUIRE(node->dbname() == "main");
     REQUIRE(node->database_oid() == INVALID_OID);
 
-    // 2. operator_resolve_database stamps the resolved oid via set_database_oid.
-    //    Verify the stamping mechanism works directly.
     node->set_database_oid(well_known_oid::main_database);
     REQUIRE(node->database_oid() == well_known_oid::main_database);
 
-    // 3. Multiple sets are allowed (last-write-wins) — useful when planner
-    //    re-runs resolve after invalidation.
+    // Re-stamping is allowed (last-write-wins) — the planner re-runs resolve
+    // after invalidation.
     node->set_database_oid(oid_t{42});
     REQUIRE(node->database_oid() == 42);
 }

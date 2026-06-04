@@ -28,12 +28,8 @@ namespace components::operators {
     actor_zeta::unique_future<void> operator_alter_column_add_t::await_async_and_resume(pipeline::context_t* ctx) {
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
-        // validation: pure pre-execute checks. Any failure → error
-        // cursor + co_return BEFORE any catalog mutation (atomic-rollback semantics).
-
-        // Validate column name not duplicate against currently-visible column list.
-        // visible_column_names populated by async pg_attribute
-        // scan (filtered by MVCC visibility — see alter_validators.cpp).
+        // Pre-execute validation: any failure co_returns an error cursor BEFORE
+        // the first catalog mutation below, so a rejected ALTER leaves no trace.
         auto vc_fut = alter_validators::visible_column_names(resource_, ctx->disk_address, exec_ctx, table_oid_);
         auto visible_column_names = co_await std::move(vc_fut);
         auto ec_dup =
@@ -45,7 +41,6 @@ namespace components::operators {
             co_return;
         }
 
-        // Validate default value type / evaluability if present.
         auto ec_type =
             components::catalog::alter_column_validators::validate_default_value_type(resource_,
                                                                                       column_.type(),
@@ -98,15 +93,10 @@ namespace components::operators {
         const catalog::oid_t atttypid = (column_.atttypid() != catalog::INVALID_OID)
                                             ? column_.atttypid()
                                             : catalog::builtin_type_to_oid(column_.type().type());
-        // added_at_commit_id / dropped_at_commit_id are stamped as 0 here
-        // (placeholder) because the commit_id is not allocated until
-        // operator_commit_transaction_t calls txn_manager.commit() later in
-        // the pipeline. We record a backfill marker on the pipeline context;
-        // operator_commit_transaction drains the marker after commit() and
-        // patches the row in place. The row's own MVCC insert_id is still
-        // stamped with the executing transaction_id at write and flipped to
-        // commit_id by storage_publish_commits at COMMIT, so even pre-backfill
-        // the row participates in normal MVCC version filtering.
+        // commit_id columns are placeholder-0; a backfill marker (below) patches
+        // them post-commit, since the commit_id isn't allocated until COMMIT
+        // (see pg_catalog_swap.hpp). The row's own MVCC insert_id is still the
+        // executing txn_id, so even pre-backfill it filters correctly.
         auto att_row = catalog::build_pg_attribute_row(resource_,
                                                        attoid,
                                                        table_oid_,
@@ -128,8 +118,7 @@ namespace components::operators {
         auto rng = co_await std::move(wf);
         if (rng.count > 0) {
             ctx->pg_catalog_appends.push_back(std::move(rng));
-            // Schedule added_at_commit_id backfill on the freshly-inserted
-            // pg_attribute row. attoid is the keyed identity.
+            // Backfill added_at_commit_id on this row, keyed by attoid.
             ctx->pg_attribute_commit_id_backfills.push_back(
                 components::pg_attribute_commit_id_backfill_t{
                     attoid,

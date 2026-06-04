@@ -211,17 +211,10 @@ namespace services::disk {
 
         if (freshly_created.empty() ||
             freshly_created == std::unordered_set<catalog::oid_t>{catalog::well_known_oid::pg_settings_table}) {
-            // Only pg_settings was freshly created — still need to checkpoint it if disk-backed.
-            //
-            // Agent-first entry probe. pg_settings DISK storage may be a
-            // record-only marker on agent 0 (SFBM still on manager.storages_);
-            // storage_entry_sync returns nullptr for record-only markers, so on
-            // the DISK catalog path we fall through to the manager map and
-            // checkpoint the manager SFBM. When the agent owns the SFBM the
-            // entry is non-null and the checkpoint runs against the agent-owned
-            // table_storage_t — table_storage_t::checkpoint is a no-op for
-            // IN_MEMORY (mode_ != DISK) so the agent branch is harmless when
-            // invoked against an IN_MEMORY twin.
+            // Only pg_settings was freshly created — checkpoint it if disk-backed.
+            // storage_entry_sync returns nullptr for record-only markers, so we
+            // checkpoint against whichever holds the SFBM; table_storage_t::checkpoint
+            // is a no-op for IN_MEMORY, so the agent branch is harmless on a twin.
             if (disk_backed && freshly_created.count(catalog::well_known_oid::pg_settings_table)) {
                 constexpr auto settings_oid = catalog::well_known_oid::pg_settings_table;
                 const collection_storage_entry_t* entry = nullptr;
@@ -229,13 +222,9 @@ namespace services::disk {
                     entry = agents_[0]->storage_entry_sync(settings_oid);
                 }
                 if (entry != nullptr) {
-                    // const_cast — table_storage_t::checkpoint mutates
-                    // the SFBM/free-list. storage_entry_sync returns a
-                    // const pointer (the slice's unique_ptr ownership is
-                    // immutable across the actor boundary), but the
-                    // checkpoint operation is a routine maintenance
-                    // mutation on the entry's interior state. Safe because
-                    // the agent thread is idle at this bootstrap-time call.
+                    // const_cast: checkpoint mutates the SFBM/free-list but
+                    // storage_entry_sync hands back a const pointer. Safe because the
+                    // agent thread is idle at this bootstrap-time call.
                     const_cast<collection_storage_entry_t*>(entry)->table_storage.checkpoint();
                 }
             }
@@ -301,13 +290,8 @@ namespace services::disk {
 
         if (disk_backed) {
             for (auto tbl_oid : freshly_created) {
-                // Agent-first checkpoint target probe (same rationale as the
-                // pg_settings early-checkpoint branch above). Catalog OIDs all
-                // live on agent 0; DISK record-only markers make
-                // storage_entry_sync return nullptr, so we fall back to the
-                // manager SFBM. table_storage_t::checkpoint is a no-op when
-                // mode_ != DISK, which makes the IN_MEMORY-twin branch safe
-                // even for catalog OIDs whose agent twin is IN_MEMORY.
+                // Checkpoint each fresh catalog table (same probe as the pg_settings
+                // branch above; checkpoint no-ops on IN_MEMORY twins).
                 const collection_storage_entry_t* entry = nullptr;
                 if (!agents_.empty() && agents_[0] != nullptr) {
                     entry = agents_[0]->storage_entry_sync(tbl_oid);
@@ -419,10 +403,8 @@ namespace services::disk {
         if (!std::filesystem::exists(config_.path)) {
             return;
         }
-        // Layout: ${config_.path}/${database_oid}/${table_oid}/table.otbx.
-        // System tables live under db_oid = main_database (4); user tables under
-        // their own db_oid (>= FIRST_USER_OID). bootstrap_system_tables_sync
-        // already loaded the system ones — here we walk the rest.
+        // Layout: ${config_.path}/${database_oid}/${table_oid}/table.otbx. System
+        // tables (db_oid = main_database) are already loaded; here we walk the rest.
         for (const auto& db_entry : std::filesystem::directory_iterator(config_.path)) {
             if (!db_entry.is_directory())
                 continue;
@@ -484,21 +466,17 @@ namespace services::disk {
         if (total == 0)
             return {};
         auto types = entry->storage->types();
-        // REGULAR scan with default transaction_data{0,0,UINT64_MAX,{}}: visibility
-        // filter sees all committed work and correctly drops committed-deleted
-        // tombstones (use_deleted_version hides them). Using scan_segment
-        // (COMMITTED_ROWS, no filter) would seed the index with entries for
-        // deleted rows whose column data is still physically present —
-        // index_scan + fetch + WHERE would then return them.
+        // REGULAR scan (default transaction_data) so the visibility filter drops
+        // committed-deleted tombstones. scan_segment (COMMITTED_ROWS, no filter)
+        // would seed the index with deleted rows whose column data is still present,
+        // and index_scan + fetch + WHERE would then return them.
         auto out = std::make_unique<components::vector::data_chunk_t>(resource, types, total);
         entry->storage->scan(*out, /*filter=*/nullptr, /*limit=*/-1);
         return out;
     }
 
     std::pmr::vector<components::catalog::oid_t> manager_disk_t::scan_live_table_oids_sync() const {
-        // Walks pg_class on agents_[0] (catalog agent) and returns every
-        // user OID (oid >= FIRST_USER_OID) whose relkind is 'r' (regular)
-        // or 'm' (materialized view). Pre-scheduler-start, single-threaded.
+        // See header. Pre-scheduler-start, single-threaded scan of pg_class on agents_[0].
         std::pmr::vector<components::catalog::oid_t> live{resource_};
         if (agents_.empty() || agents_[0] == nullptr) {
             return live;
@@ -512,12 +490,10 @@ namespace services::disk {
             return live;
         }
         std::pmr::synchronized_pool_resource scan_resource;
-        // pg_class columns: 0=oid, 3=relkind. row_group_t::templated_scan
-        // writes into result.data[column.primary_index()] — i.e. by storage
-        // column index, not by position in col_indices. So the chunk must
-        // have a slot at every storage column index the scan touches. Use
-        // the projected_cols ctor: allocate buffers only for cols [0, 3],
-        // placeholders elsewhere — same convention as inline_scan_range.
+        // pg_class: 0=oid, 3=relkind. templated_scan writes into
+        // result.data[column.primary_index()] (by storage column index, not position
+        // in col_indices), so the chunk must have a slot at every storage index the
+        // scan touches. projected_cols ctor allocates buffers only for [0, 3].
         std::vector<components::table::storage_index_t> col_indices;
         col_indices.emplace_back(static_cast<int64_t>(0));
         col_indices.emplace_back(static_cast<int64_t>(3));
@@ -559,12 +535,9 @@ namespace services::disk {
     }
 
     std::pmr::vector<pg_index_row_t> manager_disk_t::scan_alive_pg_index_sync() const {
-        // Scans pg_index for every live row, then resolves the per-row index
-        // name (pg_class.relname keyed by indexrelid) and indkey (CSV of
-        // attoid → attname via pg_attribute) in two follow-up sweeps over the
-        // catalog tables on agents_[0]. Three single-pass sweeps total: O(C)
-        // catalog scans, not O(N_indexes × C).
-        // Pre-scheduler-start, single-threaded.
+        // Three single-pass catalog sweeps on agents_[0] (pg_index, then pg_class for
+        // names, then pg_attribute for indkey) instead of O(N_indexes × C) per-index
+        // rescans. Pre-scheduler-start, single-threaded.
         std::pmr::vector<pg_index_row_t> result{resource_};
         if (agents_.empty() || agents_[0] == nullptr) {
             return result;
@@ -578,8 +551,8 @@ namespace services::disk {
             return result;
         }
 
-        // Pass 1: scan pg_index — collect (indexrelid, indrelid, indkey_csv, indisvalid).
-        // The raw attoid CSV is stashed per-row; key resolution happens in pass 3.
+        // Pass 1: scan pg_index. The raw indkey attoid CSV is stashed per-row and
+        // resolved against pg_attribute in pass 3.
         std::pmr::vector<std::pmr::string> raw_indkeys{resource_};
         {
             std::pmr::synchronized_pool_resource scan_resource;
@@ -611,12 +584,9 @@ namespace services::disk {
                     pg_index_row_t row{resource_};
                     row.oid = static_cast<catalog::oid_t>(idxrelid_v.value<std::uint32_t>());
                     row.table_oid = static_cast<catalog::oid_t>(indrelid_v.value<std::uint32_t>());
-                    // indisvalid → ready_since sentinel (mirrors scan_dropped_oids_sync's
-                    // sentinel pattern: 1 means "alive on the first horizon advance past 1",
-                    // 0 means "skip during bootstrap, backfill never committed").
+                    // indisvalid → ready_since sentinel (1 = alive, 0 = skip; see pg_index_row_t).
                     const bool valid = !indisvalid_v.is_null() && indisvalid_v.value<bool>();
                     row.ready_since = valid ? std::uint64_t{1} : std::uint64_t{0};
-                    // Stash raw indkey CSV (resolved in pass 3 against pg_attribute).
                     std::pmr::string raw_indkey{resource_};
                     if (!indkey_v.is_null()) {
                         auto sv = indkey_v.value<std::string_view>();
@@ -631,8 +601,7 @@ namespace services::disk {
             return result;
         }
 
-        // Pass 2: resolve index names from pg_class.relname (keyed by indexrelid).
-        // Build an oid → name map by scanning pg_class once.
+        // Pass 2: index names from pg_class.relname, keyed by indexrelid.
         std::pmr::unordered_map<catalog::oid_t, std::pmr::string> class_names{resource_};
         if (const collection_storage_entry_t* cls_entry = agents_[0]->storage_entry_sync(pg_class_oid)) {
             auto& cls_table = const_cast<collection_storage_entry_t*>(cls_entry)->table_storage.table();
@@ -672,18 +641,15 @@ namespace services::disk {
             }
         }
 
-        // Pass 3: resolve indkey attoid CSVs to attnames via a single pg_attribute scan.
-        // Build attoid → attname map first, then walk each row's raw indkey CSV
-        // and assemble keys_base_storage_t.
+        // Pass 3: resolve the stashed indkey CSVs to attnames via one pg_attribute
+        // scan (build attoid → attname, then walk each row's CSV).
         std::pmr::unordered_map<catalog::oid_t, std::pmr::string> attoid_to_name{resource_};
         if (const collection_storage_entry_t* attr_entry = agents_[0]->storage_entry_sync(pg_attribute_oid)) {
             auto& attr_table = const_cast<collection_storage_entry_t*>(attr_entry)->table_storage.table();
             if (attr_table.column_count() >= 3 && attr_table.calculate_size() > 0) {
                 std::pmr::synchronized_pool_resource scan_resource;
-                // pg_attribute sparse scan: cols [attoid, attname]. Same
-                // sparse-chunk convention as scan_live_table_oids_sync above —
-                // chunk must have a slot at each storage column index we
-                // touch, so use the projected_cols ctor with all_types.
+                // Sparse scan [attoid, attname] via the projected_cols ctor — same
+                // chunk-slot convention as scan_live_table_oids_sync above.
                 std::vector<components::table::storage_index_t> col_indices;
                 col_indices.emplace_back(static_cast<int64_t>(catalog::pg_attribute_col::attoid));
                 col_indices.emplace_back(static_cast<int64_t>(catalog::pg_attribute_col::attname));
@@ -788,15 +754,10 @@ namespace services::disk {
 
     std::pmr::vector<std::pair<components::catalog::oid_t, std::uint64_t>>
     manager_disk_t::scan_dropped_oids_sync() {
-        // Catalog scan rebuild. Walk pg_class twice — once with COMMITTED_ROWS
-        // (sees every committed row, including tombstoned ones) to collect
-        // every user OID ever recorded, then compute the set-difference
-        // against alive_user_oids_sync (which uses
-        // COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED) to isolate the tombstoned
-        // rows. The difference is the set of "DROP TABLE committed, GC
-        // pending" user OIDs that need to be re-registered into
-        // dropped_storages_ so a post-restart horizon advance can finish
-        // removing their .otbx files.
+        // See header. Strategy: scan pg_class with COMMITTED_ROWS (includes
+        // tombstones) for every user OID ever recorded, then set-difference against
+        // alive_user_oids_sync (which omits permanently-deleted) to isolate the
+        // "DROP committed, GC pending" OIDs.
         std::pmr::vector<std::pair<components::catalog::oid_t, std::uint64_t>> result{resource_};
         if (agents_.empty() || agents_[0] == nullptr) {
             return result;
@@ -813,11 +774,9 @@ namespace services::disk {
         std::vector<components::table::storage_index_t> col_indices;
         col_indices.emplace_back(static_cast<int64_t>(0)); // pg_class.oid
 
-        // COMMITTED_ROWS scan — includes tombstoned rows. Use create_index_scan
-        // which exposes the table_scan_type parameter (the plain
-        // scan_committed/scan APIs are hard-wired to
-        // COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED). Returns false when the scan
-        // is fully drained.
+        // create_index_scan exposes table_scan_type, so it can request COMMITTED_ROWS
+        // (incl. tombstones); the plain scan_committed/scan APIs are hard-wired to
+        // COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED.
         std::unordered_set<components::catalog::oid_t> all_user_oids;
         {
             components::table::table_scan_state scan_state(&scan_resource);

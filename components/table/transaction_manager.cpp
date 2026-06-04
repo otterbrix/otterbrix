@@ -15,11 +15,10 @@ namespace components::table {
         }
         auto txn_id = next_transaction_id_.fetch_add(1);
         auto start_time = current_timestamp_.fetch_add(1);
-        // The manager's resource backs the per-txn pmr containers
-        // (in_flight_snapshot + pending_base_*).
+        // resource_ backs the per-txn pmr containers.
         auto txn = std::make_unique<transaction_t>(txn_id, start_time, session, resource_);
-        // MVCC snapshot captured atomically under lock_ and cached on the txn,
-        // so later data() reads need not re-lock the manager.
+        // Capture + cache the MVCC snapshot under lock_ so later data() reads
+        // need not re-lock the manager.
         auto horizon = published_horizon_.load(std::memory_order_relaxed);
         std::pmr::vector<uint64_t> in_flight(in_flight_commits_.begin(),
                                              in_flight_commits_.end(),

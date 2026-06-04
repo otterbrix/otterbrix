@@ -49,13 +49,8 @@ namespace components::table {
         // yet publish()-published when the snapshot was taken. Rows whose
         // insert_id is in this set stay invisible even below the horizon; they
         // become visible only to snapshots taken after publish().
-        //
-        // Canonical visibility filter (see use_inserted_version):
-        //   if (id == transaction_id)                   return true;   // self-write
-        //   if (id >= TRANSACTION_ID_START)             return false;  // other-txn pending
-        //   if (id > snapshot_horizon)                  return false;  // post-snapshot
-        //   if (in_flight_snapshot contains id)         return false;  // in-flight at snapshot
-        //   return true;
+        // (The filter that consumes both fields is use_inserted_version in
+        // row_version_manager.cpp.)
         //
         // Default = UINT64_MAX with an empty in_flight_snapshot makes a
         // default-constructed transaction_data mean "see all committed rows".
@@ -64,11 +59,9 @@ namespace components::table {
         // transaction_manager rely on the default for a see-all view.
         uint64_t snapshot_horizon{std::numeric_limits<uint64_t>::max()};
         // Plain std::vector, not pmr: transaction_data is a value type copied
-        // across actor boundaries and copy/move-assigned into arbitrary targets.
-        // A pmr vector here would either bind to a hidden/global resource or
-        // bad_alloc on assignment, since pmr allocators do not propagate on
-        // copy/move assignment. The snapshot is tiny (<100 ids) and captured
-        // once per txn, so global-heap value semantics is the right tradeoff.
+        // and copy/move-assigned across actor boundaries. pmr allocators don't
+        // propagate on copy/move assignment, so a pmr vector here would bad_alloc.
+        // The snapshot is tiny (<100 ids), so global-heap value semantics is fine.
         std::vector<uint64_t> in_flight_snapshot;
     };
     enum class chunk_info_type : uint8_t
@@ -179,7 +172,6 @@ namespace components::table {
         bool is_consecutive;
 
         uint16_t* get_rows() {
-            // Invariant: consecutive form has no row array; callers must check is_consecutive first.
             assert(!is_consecutive && "delete_info is consecutive - rows are not accessible");
             if (is_consecutive) {
                 std::abort();

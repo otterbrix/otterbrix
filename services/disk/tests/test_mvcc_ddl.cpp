@@ -348,13 +348,11 @@ TEST_CASE("services::disk::mvcc::drop_cascade_uncommitted_invisible_to_other_rea
     REQUIRE(idx_after.found);
 }
 
-// 12. pg_computed_column registers obey MVCC visibility.
-//     resolve_table for relkind='g' tables scans pg_computed_column via the same
-//     inline_scan path that pg_attribute uses, so an uncommitted register is invisible
-//     to readers in other transactions until storage_publish_commits flips the MVCC tag
-//     (insert_id transitions from txn_id >= TRANSACTION_ID_START to commit_id < TRANSACTION_ID_START).
-//     This mirrors test #2 (uncommitted_insert_invisible_to_other_sessions) for the
-//     pg_computed_column path that operator_computed_field_register_t writes through.
+// pg_computed_column registers obey MVCC visibility. resolve_table for
+// relkind='g' tables scans pg_computed_column via the same inline_scan path as
+// pg_attribute, so an uncommitted register is invisible to other transactions
+// until storage_publish_commits flips insert_id from txn_id (>= TRANSACTION_ID_START)
+// to commit_id (< TRANSACTION_ID_START).
 TEST_CASE("services::disk::mvcc::dynamic_schema_register_invisible_until_commit") {
     fixture fx;
     auto ns_oid = disk_test_helpers::test_create_namespace(fx, std::string("dyn_ns"));

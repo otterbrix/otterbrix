@@ -60,13 +60,11 @@ namespace components::pipeline {
         // and patches the rows. Empty in implicit-txn / non-ALTER paths.
         std::vector<pg_attribute_commit_id_backfill_t> pg_attribute_commit_id_backfills;
 
-        // DML operators (operator_insert / operator_delete /
-        // operator_update) record their MVCC swap-info here from inside
-        // await_async_and_resume. The executor's commit-side block then drives
-        // storage_publish_commit / storage_publish_delete after
-        // txn_manager_->commit using these fields. WAL physical writes happen
-        // inside the operators themselves; only the commit-side swap requires
-        // back-channel.
+        // DML operators (insert/delete/update) record MVCC swap-info here from
+        // inside await_async_and_resume; the executor's commit-side block drives
+        // storage_publish_commit / storage_publish_delete after txn_manager_->commit.
+        // WAL physical writes happen in the operators; only the commit-side swap
+        // needs this back-channel.
         int64_t dml_append_row_start{0};
         uint64_t dml_append_row_count{0};
         uint64_t dml_delete_txn_id{0};

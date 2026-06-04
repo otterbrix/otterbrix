@@ -5,9 +5,8 @@
 
 #include <vector>
 
-// resolve_type's public API still spells the type as `impl::plan_resolve_index_t`;
-// the back-compat re-export in plan_resolve_index.hpp aliases it to the
-// services::catalog_resolve definition.
+// Real type lives in services::catalog_resolve; impl::plan_resolve_index_t
+// below is an alias (see plan_resolve_index.hpp).
 namespace services::catalog_resolve {
     struct plan_resolve_index_t;
 } // namespace services::catalog_resolve

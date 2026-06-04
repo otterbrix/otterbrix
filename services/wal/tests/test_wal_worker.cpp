@@ -31,11 +31,10 @@ using namespace components::vector;
 using namespace components::types;
 
 #if defined(OTTERBRIX_TSAN_ENABLED)
-// TSAN cannot see through synchronized_pool_resource's internal mutex,
-// causing false-positive data-race reports on cross-thread memory reuse
-// (manager loop thread vs scheduler workers) — same class of FP as the
-// base_spaces.hpp tsan_resource_t workaround. Delegate to
-// new_delete_resource, whose malloc/free edges TSAN models natively.
+// TSAN can't see through synchronized_pool_resource's internal mutex and
+// false-positives on cross-thread memory reuse (manager loop vs scheduler
+// workers). Delegate to new_delete_resource, whose edges TSAN models natively
+// (same workaround as base_spaces.hpp tsan_resource_t).
 struct test_pool_resource_t final : std::pmr::memory_resource {
 protected:
     void* do_allocate(size_t bytes, size_t align) override {
@@ -56,18 +55,14 @@ constexpr catalog_ns::oid_t kTestTableOid = 16500;
 
 static const std::filesystem::path base_wal_worker_path = "/tmp/otterbrix_test_wal_worker";
 
-// ---------------------------------------------------------------------------
 // The manager self-drives on an internal loop thread and runs its workers on
-// the (already started) real shared_work scheduler, so futures returned from a
-// send() to the manager become ready ASYNCHRONOUSLY. Bounded-yield-poll until
-// the future is ready, then take it. take_ready() asserts readiness, so the
-// guard must precede every take.
-// ---------------------------------------------------------------------------
+// the real shared_work scheduler, so futures from a send() to it become ready
+// asynchronously. Poll until ready before take_ready (which asserts readiness).
 template<typename F>
 static decltype(auto) await_ready(F& fut) {
-    // Wall-clock deadline (not iteration-bounded): under TSAN or parallel-
-    // ctest CPU oversubscription the manager-loop -> scheduler-worker
-    // round-trip can outlast any fixed yield budget.
+    // Wall-clock deadline, not iteration-bounded: under TSAN or parallel-ctest
+    // CPU oversubscription the manager-loop -> worker round-trip can outlast any
+    // fixed yield budget.
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::yield();
@@ -100,7 +95,8 @@ struct test_wal_worker {
     }
 
     ~test_wal_worker() {
-        // stop the scheduler FIRST (joins workers; children stop executing), then destroy the manager (joins its loop; post-stop enqueues are benign pushes into the stopped scheduler).
+        // Stop the scheduler first (joins workers, children stop), then destroy
+        // the manager; any post-stop enqueues land harmlessly in the dead scheduler.
         scheduler_->stop();
         manager_.reset();
         std::filesystem::remove_all(path_);
@@ -165,9 +161,8 @@ struct test_wal_worker {
     actor_zeta::unique_future<services::wal::id_t> send_commit(uint64_t txn_id,
                                                                wal_sync_mode sync_mode = wal_sync_mode::NORMAL,
                                                                uint64_t commit_id = 0) {
-        // commit_id is the MVCC version timestamp written into the COMMIT
-        // record. Tests use 0 unless they explicitly exercise snapshot-aware
-        // replay.
+        // commit_id is the MVCC version timestamp in the COMMIT record; tests
+        // pass 0 unless they exercise snapshot-aware replay.
         auto [needs_sched, future] = actor_zeta::otterbrix::send(manager_->address(),
                                                                  &manager_wal_replicate_t::commit_txn,
                                                                  session_id_t::generate_uid(),
@@ -366,12 +361,13 @@ TEST_CASE("wal_worker::corruption_stop") {
                                                          wal_sync_mode::NORMAL,
                                                          kMainDb,
                                                          uint64_t{0});
-            // Await the commit (ordered after the inserts on the same worker) so
-            // all records are flushed to disk before the scheduler is stopped.
+            // The commit is ordered after the inserts on the same worker; await
+            // it so all records are flushed before the scheduler stops.
             await_ready(fut);
         }
 
-        // stop the scheduler FIRST (joins workers; children stop executing), then destroy the manager (joins its loop; post-stop enqueues are benign pushes into the stopped scheduler).
+        // Stop the scheduler first (joins workers, children stop), then destroy
+        // the manager; any post-stop enqueues land harmlessly in the dead scheduler.
         scheduler->stop();
         manager.reset();
     }
@@ -429,7 +425,8 @@ TEST_CASE("wal_worker::corruption_stop") {
         REQUIRE_FALSE(r.is_corrupt);
     }
 
-    // stop the scheduler FIRST (joins workers; children stop executing), then destroy the manager (joins its loop; post-stop enqueues are benign pushes into the stopped scheduler).
+    // Stop the scheduler first (joins workers, children stop), then destroy
+    // the manager; any post-stop enqueues land harmlessly in the dead scheduler.
     scheduler->stop();
     manager.reset();
     std::filesystem::remove_all(test_path);
@@ -490,7 +487,8 @@ TEST_CASE("wal_worker::crc_chain_startup") {
             REQUIRE(last_wal_id > 0);
         }
 
-        // stop the scheduler FIRST (joins workers; children stop executing), then destroy the manager (joins its loop; post-stop enqueues are benign pushes into the stopped scheduler).
+        // Stop the scheduler first (joins workers, children stop), then destroy
+        // the manager; any post-stop enqueues land harmlessly in the dead scheduler.
         scheduler->stop();
         manager.reset();
     }
@@ -529,7 +527,8 @@ TEST_CASE("wal_worker::crc_chain_startup") {
         auto new_wal_id = await_ready(fut_id);
         REQUIRE(new_wal_id > last_wal_id);
 
-        // stop the scheduler FIRST (joins workers; children stop executing), then destroy the manager (joins its loop; post-stop enqueues are benign pushes into the stopped scheduler).
+        // Stop the scheduler first (joins workers, children stop), then destroy
+        // the manager; any post-stop enqueues land harmlessly in the dead scheduler.
         scheduler->stop();
         manager.reset();
     }
@@ -574,8 +573,8 @@ TEST_CASE("wal_worker::segment_rotation") {
                                                      kMainDb);
         last_fut = std::move(fut);
     }
-    // Await the final write (ordered after all earlier ones on the same worker)
-    // so every record is flushed before we inspect the segment files on disk.
+    // The final write is ordered after all earlier ones on the same worker;
+    // await it so every record is flushed before inspecting the segment files.
     await_ready(last_fut);
 
     // Count WAL-related files under the test path.
@@ -589,7 +588,8 @@ TEST_CASE("wal_worker::segment_rotation") {
     // segments (likely many more).
     REQUIRE(segment_count >= 2);
 
-    // stop the scheduler FIRST (joins workers; children stop executing), then destroy the manager (joins its loop; post-stop enqueues are benign pushes into the stopped scheduler).
+    // Stop the scheduler first (joins workers, children stop), then destroy
+    // the manager; any post-stop enqueues land harmlessly in the dead scheduler.
     scheduler->stop();
     manager.reset();
     std::filesystem::remove_all(test_path);
@@ -702,7 +702,8 @@ TEST_CASE("wal_worker::fsync_full_mode") {
         REQUIRE(records.size() >= 2);
     }
 
-    // stop the scheduler FIRST (joins workers; children stop executing), then destroy the manager (joins its loop; post-stop enqueues are benign pushes into the stopped scheduler).
+    // Stop the scheduler first (joins workers, children stop), then destroy
+    // the manager; any post-stop enqueues land harmlessly in the dead scheduler.
     scheduler->stop();
     manager.reset();
     std::filesystem::remove_all(test_path);
@@ -772,7 +773,8 @@ TEST_CASE("wal_worker::fsync_off_mode") {
         }
     }
 
-    // stop the scheduler FIRST (joins workers; children stop executing), then destroy the manager (joins its loop; post-stop enqueues are benign pushes into the stopped scheduler).
+    // Stop the scheduler first (joins workers, children stop), then destroy
+    // the manager; any post-stop enqueues land harmlessly in the dead scheduler.
     scheduler->stop();
     manager.reset();
     std::filesystem::remove_all(test_path);

@@ -1,6 +1,3 @@
-// ALTER atomic validation helpers — async data-gathering layer.
-// See alter_validators.hpp for the design contract.
-
 #include "alter_validators.hpp"
 
 #include <components/catalog/system_table_schemas.hpp>
@@ -35,17 +32,12 @@ namespace components::operators::alter_validators {
                                           std::move(vals));
         auto rows = co_await std::move(fut);
 
-        // pg_attribute layout (system_table_schemas.cpp::pg_attribute_columns):
+        // pg_attribute column layout (system_table_schemas.cpp::pg_attribute_columns):
         //   [0]=attoid, [1]=attrelid, [2]=attname, [3]=atttypid, [4]=attnum,
         //   [5]=attnotnull, [6]=atthasdefault, [7]=attisdropped, [8]=atttypspec,
         //   [9]=attdefspec, [10]=added_at_commit_id, [11]=dropped_at_commit_id.
-        //
-        //   added_at_commit_id <= snapshot_horizon AND
-        //   (dropped_at_commit_id == 0 OR dropped_at_commit_id > snapshot_horizon).
-        //
-        // attisdropped is the legacy boolean tombstone kept in lockstep with
-        // dropped_at_commit_id > 0 (see pg_attribute_columns comment) — we skip
-        // any row where either signal indicates "dropped relative to me".
+        // Keep a row only if visible to this snapshot: not tombstoned, and
+        //   added_at_commit_id <= horizon AND (dropped_at == 0 OR dropped_at > horizon).
         const std::uint64_t horizon = exec_ctx.txn.snapshot_horizon;
 
         std::pmr::vector<std::string> out(resource);
@@ -64,7 +56,6 @@ namespace components::operators::alter_validators {
                 if (added_at > horizon)
                     continue;
             }
-            // dropped_at_commit_id == 0 OR > snapshot_horizon
             if (!row[11].is_null()) {
                 const auto dropped_at = static_cast<std::uint64_t>(row[11].value<std::int64_t>());
                 if (dropped_at != 0 && dropped_at <= horizon)
@@ -84,19 +75,11 @@ namespace components::operators::alter_validators {
                             std::int32_t /*ref_objsubid*/) {
         constexpr catalog::oid_t pg_dep_oid = catalog::well_known_oid::pg_depend_table;
 
-        // pg_depend layout (system_table_schemas.cpp::pg_depend_columns):
+        // pg_depend column layout (system_table_schemas.cpp::pg_depend_columns):
         //   [0]=classid, [1]=objid, [2]=refclassid, [3]=refobjid, [4]=deptype.
-        //
-        // TBD-impl: pg_depend currently does not carry refobjsubid (the
-        // column-level subobject id). The ref_objsubid parameter is accepted
-        // so callers can be written against the final signature, but until the
-        // schema is extended we return ALL dependents of the refobj (table)
-        // rather than just those tied to a specific column attnum. This is
-        // conservative — RESTRICT will over-reject, CASCADE will over-drop —
-        // matching the legacy operator_alter_column_drop scan that keys on
-        // (refclassid=pg_attribute_table, refobjid=attoid) for column-grain
-        // entries written by ADD COLUMN; whole-table dependencies still flow
-        // through this helper.
+        // TBD-impl: pg_depend has no refobjsubid (column-grain subobject id) yet,
+        // so ref_objsubid is ignored and we return ALL dependents of refobj. This
+        // is conservative: RESTRICT over-rejects, CASCADE over-drops.
         components::types::logical_value_t refcls_lv(resource, ref_classid);
         components::types::logical_value_t refobj_lv(resource, ref_objid);
         std::pmr::vector<std::string> keys(resource);

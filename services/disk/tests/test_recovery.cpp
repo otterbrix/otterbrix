@@ -15,14 +15,12 @@
 #include <thread>
 #include <unistd.h>
 
-// Recovery (3 tests):
-//   - test_recovery_system_wal_before_user — system DDL replayed first on restart, before
-//     anyone touches user storages.
-//   - test_recovery_ring_buffer_empty — fresh process: no events have been pushed, the
-//     ring buffer reports zero latest_version and an empty since(0); dispatchers see this
-//     as "first contact, do a full resolve".
-//   - test_recovery_ddl_then_dml — a DDL row written through append_pg_catalog_row goes
-//     through WAL + storage; after a fixture restart the row is visible via load.
+// Recovery tests:
+//   - system DDL replays first on restart, before any user storage is touched;
+//   - on a fresh process the event ring buffer reports zero latest_version and
+//     empty since(0), which dispatchers read as "first contact, full resolve";
+//   - a DDL row written via append_pg_catalog_row survives a restart and is
+//     visible via load.
 
 using namespace services::disk;
 using namespace components::catalog;
@@ -181,10 +179,10 @@ TEST_CASE("test_recovery_ddl_then_dml") {
     cleanup_dir(dir);
 }
 
-// 4. test_recovery_orphaned_uncommitted_ddl — DDL rows written under a non-zero txn_id
-//    but never committed (storage_publish_commits not called, simulating a crash) must
-//    be invisible after manager restart, because rebuild_lookup_indexes uses inline_scan →
-//    scan_committed which filters any row whose txn_id has not been flipped to a commit_id.
+// DDL rows written under a non-zero txn_id but never committed (no
+// storage_publish_commits — a simulated crash) must be invisible after restart:
+// rebuild_lookup_indexes scans via scan_committed, which filters any row whose
+// txn_id was never flipped to a commit_id.
 TEST_CASE("test_recovery_orphaned_uncommitted_ddl") {
     auto dir = recovery_test_dir() + "/orphaned_ddl";
     cleanup_dir(dir);

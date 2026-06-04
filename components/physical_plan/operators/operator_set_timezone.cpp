@@ -18,9 +18,8 @@ namespace components::operators {
         , timezone_name_(std::move(timezone_name)) {}
 
     void operator_set_timezone_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
-        // Validate the timezone name first so an invalid value never causes a
-        // disk write. session_catalog_t::set_timezone returns core::error_t on
-        // unknown / unparseable timezone identifiers.
+        // Validate the timezone name first (set_timezone returns error_t on an
+        // unknown/unparseable identifier) so an invalid value never reaches disk.
         components::catalog::session_catalog_t local_cat;
         auto err = local_cat.set_timezone(this->resource(),
                                           std::string_view{timezone_name_.data(), timezone_name_.size()});
@@ -33,8 +32,8 @@ namespace components::operators {
     }
 
     actor_zeta::unique_future<void> operator_set_timezone_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // IN_MEMORY-only deployment (no disk actor): no pg_settings
-        // persistence available, so skip the catalog write.
+        // IN_MEMORY-only deployment (no disk actor): no pg_settings persistence,
+        // so skip the catalog write.
         if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
             mark_executed();
             co_return;

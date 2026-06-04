@@ -1,12 +1,9 @@
 #pragma once
 
-// Error propagation: write-path methods (insert / insert_many / remove /
-// remove_many / drop / force_flush) return unique_future<void> because the
-// underlying bitcask_index_disk_t / btree_index_disk_t methods are
-// assert+abort terminal — no recoverable failure path to surface. When the
-// underlying types gain a non-terminal error mode (returning core::error_t),
-// these signatures will switch to unique_future<core::error_t> — matching
-// the manager_index_t commit_insert / commit_delete pattern.
+// Write-path methods return unique_future<void> because the underlying
+// bitcask_index_disk_t / btree_index_disk_t methods are assert+abort terminal:
+// there is no recoverable failure to surface. (Contrast manager_index_t
+// commit_insert/commit_delete, which return core::error_t.)
 
 #include "index_disk.hpp"
 
@@ -32,13 +29,12 @@ namespace services::index {
 
     using index_name_t = std::string;
 
-    // index_agent_disk_t owns its own bitcask + btree state exclusively;
-    // callers reach it through mailbox sends to its address (no shared
-    // mutable state across actor boundary).
+    // Owns its bitcask + btree state exclusively; callers reach it only via
+    // mailbox sends to its address (no shared mutable state across the actor
+    // boundary).
     //
-    // Deferred DROP TABLE GC: persisted on-disk index files are unlinked by
-    // manager_disk_t's on_horizon_advanced sweep (storage layout puts index
-    // files alongside table files), so no separate GC handler is needed here.
+    // No DROP TABLE GC handler here: on-disk index files sit alongside table
+    // files and are unlinked by manager_disk_t's on_horizon_advanced sweep.
     class index_agent_disk_t final : public actor_zeta::basic_actor<index_agent_disk_t> {
         using path_t = std::filesystem::path;
         using session_id_t = ::components::session::session_id_t;

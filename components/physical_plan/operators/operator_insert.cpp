@@ -85,9 +85,8 @@ namespace components::operators {
 
         // 3. WAL physical_insert (synchronous; flush is fire-and-forget).
         if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
-            // database_oid identifies the target WAL worker. Until
-            // catalog_resolve_database_t populates ctx->database_oid,
-            // route everything to main_database.
+            // database_oid selects the WAL worker. Hardcoded to main_database
+            // until catalog_resolve_database_t populates ctx->database_oid.
             constexpr auto db_oid = components::catalog::well_known_oid::main_database;
             auto [_w, wf] = actor_zeta::send(ctx->wal_address,
                                              &services::wal::manager_wal_replicate_t::write_physical_insert,

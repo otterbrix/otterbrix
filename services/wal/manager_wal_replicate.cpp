@@ -75,14 +75,13 @@ namespace services::wal {
         // Start the event loop only after all WAL recovery above has completed,
         // so the loop never races with the (single-threaded) recovery scan.
         loop_thread_ = std::thread([this] {
-            // in_flight lives on the loop thread for the whole loop lifetime;
-            // it owns every in-flight message_ptr and behavior_t. PMR-backed.
-            // this->resource(): the ctor parameter `resource` shadows the member fn.
+            // in_flight lives on the loop thread for the whole loop lifetime and
+            // owns every in-flight message_ptr and behavior_t.
+            // this->resource() is qualified because the ctor param `resource` shadows the member fn.
             std::pmr::list<in_flight_entry_t> in_flight(this->resource());
 
             while (loop_running_.load(std::memory_order_acquire)) {
-                // Drain the lock-free inbox into local in_flight slots. Each raw
-                // message* is re-wrapped into a message_ptr (stateless deleter).
+                // Drain the lock-free inbox, re-wrapping each raw message* into a message_ptr.
                 actor_zeta::mailbox::message* raw = nullptr;
                 while (inbox_.pop(raw)) {
                     in_flight.emplace_back();
@@ -91,14 +90,12 @@ namespace services::wal {
 
                 bool made_progress = false;
 
-                // wal manager has no fire-and-forget call-sites (all sends are
-                // co_await'ed inline) — therefore no pending_<T>_ containers and
-                // no poll_pending().
+                // Unlike manager_dispatcher_t, all sends here are co_await'ed
+                // inline, so there are no pending_<T>_ containers / poll_pending step.
 
-                // (a) Create a behavior for the next entry that still needs one.
-                //     pending_msg STAYS in slot — coroutine holds raw pointer to
-                //     message across suspension points; msg must outlive behavior.
-                //     Marker = behavior handle null (not yet created).
+                // (a) Create a behavior for the next entry that needs one. pending_msg
+                //     STAYS in its slot: the coroutine holds a raw pointer to the
+                //     message across suspension points, so it must outlive the behavior.
                 for (auto& e : in_flight) {
                     if (e.pending_msg && !e.behavior) {
                         e.behavior = behavior(e.pending_msg.get());
@@ -123,13 +120,12 @@ namespace services::wal {
                     }
                     if (cont) {
                         cont.resume();
-                        continue; // wal: no poll_pending — no pending_<T>_ containers.
+                        continue;
                     }
                 }
 
-                // (c) Cleanup: erase one done entry per pass, destroying its
-                //     behavior_t and message_ptr inline on the loop thread.
-                //     "Done" = behavior created (handle non-null) AND completed.
+                // (c) Erase one done entry per pass (destroying its behavior_t and
+                //     message_ptr on the loop thread). Done = behavior created AND completed.
                 for (auto it = in_flight.begin(); it != in_flight.end();) {
                     if (it->behavior && it->behavior.done()) {
                         it = in_flight.erase(it);
@@ -143,9 +139,8 @@ namespace services::wal {
                     continue;
                 }
 
-                // Idle: nothing to do this pass. Wait until an enqueue notifies
-                // us, or a bounded staleness window elapses (re-check inbox /
-                // any behaviors that may have become ready off-thread).
+                // Idle: wait for an enqueue notify, or a bounded staleness window
+                // to re-check the inbox / behaviors that became ready off-thread.
                 std::unique_lock<std::mutex> lock(mutex_);
                 pump_cv_.wait_for(lock, std::chrono::microseconds(100));
             }
@@ -165,8 +160,8 @@ namespace services::wal {
         if (loop_thread_.joinable()) {
             loop_thread_.join();
         }
-        // Drain any messages that arrived after the final loop pass so their
-        // promise sides release cleanly (re-wrap raws into message_ptr temporaries).
+        // Drain messages that arrived after the final loop pass so their promise
+        // sides release cleanly.
         actor_zeta::mailbox::message* raw = nullptr;
         while (inbox_.pop(raw)) {
             actor_zeta::mailbox::message_ptr drained(raw);
@@ -183,9 +178,8 @@ namespace services::wal {
 
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_wal_replicate_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
-        // Senders only deliver: hand the raw message off to the loop thread's
-        // lock-free inbox and wake the loop. ALL processing (behavior creation,
-        // coroutine resume, cleanup) runs on loop_thread_ — never here.
+        // Senders only deliver: hand the raw message to the lock-free inbox and
+        // wake the loop. ALL processing runs on loop_thread_, never here.
         inbox_.push(msg.release());
         pump_cv_.notify_one();
         return {false, actor_zeta::detail::enqueue_result::success};
@@ -249,13 +243,8 @@ namespace services::wal {
         trace(log_, "manager_wal_replicate::sync done");
     }
 
-    // -----------------------------------------------------------------------
-    // Retention guard: active CREATE INDEX build registration.
-    //
-    // No locking: assumed called from the operator-pipeline thread BEFORE the
-    // wal_worker has finished the previous batch — single-threaded relative to
-    // the dispatcher / wal contracts. TODO: re-evaluate under multi-DB.
-    // -----------------------------------------------------------------------
+    // Retention guard: active CREATE INDEX build registration. Unlocked — see
+    // the single-threaded assumption documented on the declarations.
 
     void manager_wal_replicate_t::register_active_build_sync(wal::id_t build_start_wal_position) {
         active_build_start_positions_.emplace(build_start_wal_position);
@@ -267,8 +256,8 @@ namespace services::wal {
 
     void manager_wal_replicate_t::unregister_active_build_sync(wal::id_t build_start_wal_position) {
         auto erased = active_build_start_positions_.erase(build_start_wal_position);
-        // Invariant: unregister must match a prior register; otherwise we have a
-        // lifecycle bug in operator_create_index that would silently leak retention.
+        // Invariant: every unregister matches a prior register; a mismatch is an
+        // operator_create_index lifecycle bug that would silently leak retention.
         assert(erased == 1 && "unregister_active_build_sync called without matching register");
         if (erased != 1) {
             std::abort();
@@ -279,14 +268,8 @@ namespace services::wal {
               active_build_start_positions_.size());
     }
 
-    // -----------------------------------------------------------------------
-    // Mailbox-handler twins of the _sync helpers above. Called by
-    // operator_create_index_backfill, which runs inside the executor actor and
-    // therefore cannot make sync inter-actor calls — so the same set mutation is
-    // routed through the manager's mailbox. The body runs on the manager's
-    // thread (actor-zeta single-consumer mailbox), so it can call the sync helper
-    // directly.
-    // -----------------------------------------------------------------------
+    // Mailbox twins of the _sync helpers (see declarations). The body runs on
+    // the manager's thread, so it may call the sync helper directly.
 
     manager_wal_replicate_t::unique_future<void>
     manager_wal_replicate_t::register_active_build(session_id_t /*session*/, wal::id_t build_start_wal_position) {
@@ -422,10 +405,8 @@ namespace services::wal {
             co_return;
         }
 
-        // Clamp to min(active_build_start_positions_) so any in-flight CREATE
-        // INDEX Phase 2.5 catchup still has its records. Empty set means no
-        // active builds, so no clamp is necessary. std::set is ordered
-        // ascending — .begin() is the minimum.
+        // Clamp to min(active_build_start_positions_) so an in-flight CREATE
+        // INDEX backfill catchup still finds its records. Empty => no clamp.
         if (!active_build_start_positions_.empty()) {
             auto earliest = *active_build_start_positions_.begin();
             if (earliest < checkpoint_wal_id) {

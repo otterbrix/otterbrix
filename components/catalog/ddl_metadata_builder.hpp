@@ -128,12 +128,9 @@ namespace components::catalog {
     // Row-builder helpers for update-operations (rename_column, drop_column tombstone,
     // index_set_valid). Return a single data_chunk_t, not a catalog_write_t vector.
 
-    // added_at_commit_id and dropped_at_commit_id are populated by the
-    // operator_alter_column_* and CREATE TABLE attribute-building paths.
-    // For initial schema columns (CREATE TABLE), pass added_at_commit_id = 0
-    // (always visible). For ALTER TABLE ADD COLUMN, pass the commit_id of the
-    // ALTER. For ALTER TABLE DROP COLUMN write a tombstone row with the same
-    // attoid + is_dropped=true + dropped_at_commit_id = commit_id of the DROP.
+    // commit_id contract: CREATE TABLE passes added_at_commit_id=0 (always visible);
+    // ALTER ADD COLUMN passes the ALTER's commit_id; ALTER DROP COLUMN writes a
+    // tombstone row (same attoid, is_dropped=true, dropped_at_commit_id = DROP's commit_id).
     vector::data_chunk_t build_pg_attribute_row(std::pmr::memory_resource* resource,
                                                 oid_t attoid,
                                                 oid_t table_oid,

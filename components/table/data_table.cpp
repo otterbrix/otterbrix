@@ -208,10 +208,9 @@ namespace components::table {
 
     void data_table_t::append_lock(table_append_state& state) {
         state.append_lock = std::unique_lock(append_lock_);
-        // Concurrent DDL altered the table out from under this append. abort()
-        // rather than throw: under -fno-exceptions a throw inside an actor-zeta
-        // coroutine is silently swallowed (UB). TODO: return core::error_t so
-        // the txn can abort gracefully instead of crashing.
+        // Concurrent DDL altered the table. abort() rather than throw: under
+        // -fno-exceptions a throw inside an actor-zeta coroutine is silently
+        // swallowed (UB). TODO: return core::error_t for a graceful txn abort.
         assert(is_root_ && "Transaction conflict: adding entries to a table that has been altered!");
         if (!is_root_) {
             std::abort();
@@ -221,7 +220,6 @@ namespace components::table {
     }
 
     void data_table_t::initialize_append(table_append_state& state) {
-        // Invariant violation: programmer-error precondition (append_lock not called).
         assert(state.append_lock &&
                "data_table_t::append_lock should be called before data_table_t::initialize_append");
         if (!state.append_lock) {

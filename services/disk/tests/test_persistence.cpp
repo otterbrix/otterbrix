@@ -19,16 +19,9 @@
 #include <thread>
 #include <unistd.h>
 
-// Persistence cases not already covered by
-// integration/cpp/test/test_clean_break_startup.cpp:
-//   test_type_persistence_across_restart
-//   test_function_persistence
-//   test_constraint_persistence
-//   test_pg_class_lists_all_objects
-//   test_oid_persistence              (Phase-0 §14, OID survives checkpoint→load)
-//   test_oid_no_reuse_after_drop      (Phase-0 §14, dropped OIDs leave gaps)
-// The remaining doc-named tests (sequence/view/macro/index/load_sequence/catalog_otbx_not_needed)
-// are already covered there with different names; aliasing is task #7.
+// Disk-level persistence cases not covered by
+// integration/cpp/test/test_clean_break_startup.cpp (types, functions,
+// constraints, pg_class listing, OID survival, OID no-reuse-after-drop).
 
 using namespace services::disk;
 namespace catalog = components::catalog;
@@ -216,9 +209,9 @@ TEST_CASE("services::disk::persistence::test_constraint_persistence") {
     std::filesystem::remove_all(dir);
 }
 
-// 5. test_oid_persistence: OIDs allocated to a table (and its columns) before
-// checkpoint resolve to the same OIDs after restart. Validates the design rule
-// "OIDs are immutable after assignment" across the full disk round-trip.
+// OIDs allocated to a table (and its columns) before checkpoint resolve to the
+// same OIDs after restart — the "OIDs are immutable after assignment" rule,
+// validated across a full disk round-trip.
 TEST_CASE("services::disk::persistence::test_oid_persistence") {
     auto dir = persist_dir() + "/oid_persist";
     std::filesystem::remove_all(dir);
@@ -263,12 +256,11 @@ TEST_CASE("services::disk::persistence::test_oid_persistence") {
     std::filesystem::remove_all(dir);
 }
 
-// 6. test_oid_no_reuse_after_drop: a dropped OID is never handed out again. After
-// restart, restore_oid_generator_sync seeds the counter to max(persisted OIDs)+1
-// — but persisted OIDs include the dropped table's siblings, so even though the
-// row is gone, the counter has already advanced past it (the OID generator never
-// recycles). Validates "OIDs are never reused after DROP (gaps are acceptable)"
-// (design rule: gaps are acceptable, reuse is not).
+// A dropped OID is never handed out again. After restart,
+// restore_oid_generator_sync seeds the counter to max(persisted OIDs)+1; the
+// dropped table's siblings are still persisted, so the counter has already
+// advanced past the dropped OID and never recycles it. Gaps are acceptable,
+// reuse is not.
 TEST_CASE("services::disk::persistence::test_oid_no_reuse_after_drop") {
     auto dir = persist_dir() + "/oid_no_reuse";
     std::filesystem::remove_all(dir);

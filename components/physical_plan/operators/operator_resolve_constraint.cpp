@@ -57,9 +57,8 @@ namespace components::operators {
             co_return;
         }
 
-        // Read target table_oid from the sibling resolve_table node. The
-        // pipeline guarantees that the resolve_table operator ran first and
-        // stamped resolved_metadata() on the node.
+        // table_oid comes from the sibling resolve_table node; the pipeline
+        // guarantees resolve_table ran first and stamped resolved_metadata().
         const auto& md_opt = target_node_->target()->resolved_metadata();
         if (!md_opt.has_value() || md_opt->table_oid == catalog::INVALID_OID) {
             mark_executed();

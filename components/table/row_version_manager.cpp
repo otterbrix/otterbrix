@@ -70,7 +70,6 @@ namespace components::table {
     }
 
     void chunk_constant_info::commit_append(uint64_t commit_id, uint64_t start, uint64_t end) {
-        // Invariant: chunk_constant_info commits the whole vector range atomically.
         assert((start == 0 && end == vector::DEFAULT_VECTOR_CAPACITY) &&
                "chunk_constant_info::commit_append does not cover whole range");
         if (start != 0 || end != vector::DEFAULT_VECTOR_CAPACITY) {
@@ -162,11 +161,9 @@ namespace components::table {
         uint64_t deleted_tuples = 0;
         for (uint64_t i = 0; i < count; i++) {
             if (deleted[rows[i]] != NOT_DELETED_ID) {
-                // Already marked deleted — either by this txn (idempotent) or
-                // by a prior committed txn (cascade-drop scenario where the
-                // scan is unaware of MVCC visibility). Skip rather than abort:
-                // idempotent semantics for cascade DDL, no observable state
-                // change for already-gone rows.
+                // Already deleted (by this txn, or a prior committed txn in a
+                // cascade-drop where the scan ignores MVCC visibility). Skip
+                // rather than abort: cascade DDL must be idempotent.
                 continue;
             }
             deleted[rows[i]] = transaction_id;
@@ -388,7 +385,6 @@ namespace components::table {
                 } else if (vector_info_[vector_idx]->type == chunk_info_type::VECTOR_INFO) {
                     new_info = &vector_info_[vector_idx]->cast<chunk_vector_info>();
                 } else {
-                    // Invariant: append-path only reachable for VECTOR_INFO or no version info.
                     assert(false && "Error in row_version_manager_t::append_version_info - "
                                     "expected either a chunk_vector_info or no version info");
                     std::abort();

@@ -101,23 +101,20 @@ namespace services::index {
             std::filesystem::create_directories(path_db_);
         }
 
-        // Event-loop-in-thread. Senders deliver into inbox_ and wake pump_cv_;
-        // this thread is the sole processor of behaviors. The in-flight list is
-        // a thread-local pmr::list owned by the loop — node allocations and the
-        // behavior_t coroutine frames live and die on this thread.
+        // Event-loop thread: the sole processor of behaviors. Senders only
+        // deliver into inbox_ and wake pump_cv_.
         loop_thread_ = std::thread([this] {
-            // Local in-flight list (loop-thread-owned). Stable iterators
-            // (std::pmr::list) are required because behavior_t is move-only and
-            // resume can re-suspend on a new await without us touching the node.
-            // this->resource(): the ctor parameter `resource` shadows the member fn.
+            // Loop-thread-owned list. std::pmr::list for iterator stability:
+            // behavior_t is move-only and a resume can re-suspend on a new await
+            // without us touching the node.
+            // this->resource() is qualified because the ctor param `resource` shadows the member fn.
             std::pmr::list<in_flight_entry_t> in_flight(this->resource());
 
             while (loop_running_.load(std::memory_order_acquire)) {
-                // Drain inbox_: each raw message* released by a sender is
-                // re-wrapped into a message_ptr and parked in a fresh slot.
-                // pending_msg STAYS in the slot — the coroutine holds a raw
-                // pointer to the message across suspension points, so msg must
-                // outlive its behavior.
+                // Drain inbox_, re-wrapping each raw message* into a message_ptr
+                // parked in a fresh slot. pending_msg STAYS in its slot: the
+                // coroutine holds a raw pointer to the message across suspension
+                // points, so msg must outlive its behavior.
                 {
                     actor_zeta::mailbox::message* raw = nullptr;
                     while (inbox_.pop(raw)) {
@@ -159,10 +156,9 @@ namespace services::index {
                     }
                 }
 
-                // (c) Cleanup phase — erase one done entry. The moved-out
-                //     behavior (and its message) destruct here, on the loop
-                //     thread (safe: ~behavior_t + Last-One-Out keeps the
-                //     promise alive). pending_msg is released alongside.
+                // (c) Erase one done entry. Its behavior_t and message destruct
+                //     here on the loop thread, which is safe: ~behavior_t releases
+                //     the promise only after the awaiter is gone.
                 if (!made_progress) {
                     for (auto it = in_flight.begin(); it != in_flight.end(); ++it) {
                         if (it->behavior && it->behavior.done()) {
@@ -177,16 +173,15 @@ namespace services::index {
                     continue;
                 }
 
-                // Bounded-staleness idle wait: completion only sets an atomic
-                // flag on the awaited future (no notify), so wake at least every
-                // 100µs to re-poll readiness; enqueue notifies pump_cv_ early.
+                // Bounded-staleness idle wait: future completion only sets an
+                // atomic flag (no notify), so wake every 100µs to re-poll
+                // readiness; enqueue notifies pump_cv_ early.
                 std::unique_lock<std::mutex> lk(mutex_);
                 if (inbox_.empty()) {
                     pump_cv_.wait_for(lk, std::chrono::microseconds(100));
                 }
             }
-            // Local in_flight destructs on the loop thread here — safe:
-            // ~behavior_t + Last-One-Out keeps each promise alive.
+            // in_flight destructs here, on the loop thread — never on a sender.
         });
     }
 
@@ -196,8 +191,7 @@ namespace services::index {
         if (loop_thread_.joinable()) {
             loop_thread_.join();
         }
-        // Drain any messages a sender delivered after the loop exited — wrap
-        // each leftover raw back into a message_ptr so its deleter runs.
+        // Drain messages delivered after the loop exited so each deleter runs.
         actor_zeta::mailbox::message* raw = nullptr;
         while (inbox_.pop(raw)) {
             actor_zeta::mailbox::message_ptr reclaim{raw};
@@ -208,9 +202,8 @@ namespace services::index {
 
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_index_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
-        // Producer side: deliver only. Release the message into the lock-free
-        // inbox_ (re-wrapped into a message_ptr by the loop thread) and wake the
-        // loop. ALL processing happens on loop_thread_.
+        // Deliver only: release into inbox_ and wake the loop. ALL processing
+        // happens on loop_thread_.
         inbox_.push(msg.release());
         pump_cv_.notify_one();
         return {false, actor_zeta::detail::enqueue_result::success};
@@ -310,9 +303,8 @@ namespace services::index {
     }
 
     void manager_index_t::poll_pending() {
-        // O(N) erase-remove. Single-threaded — pending_void_ is touched ONLY
-        // by the loop thread (here, and from handlers running on the loop). No
-        // mutex needed.
+        // No mutex: pending_void_ is touched only by the loop thread (here and
+        // from handlers running on it).
         pending_void_.erase(std::remove_if(pending_void_.begin(),
                                            pending_void_.end(),
                                            [](auto& f) { return f.is_ready(); }),
@@ -325,9 +317,6 @@ namespace services::index {
     }
 
     void manager_index_t::mark_table_dropped_sync(components::catalog::oid_t oid, uint64_t dropped_at_commit_id) {
-        // Bootstrap helper — catalog scan rebuild populates this. Also called
-        // internally by the mark_table_dropped mailbox handler. NOT a mailbox
-        // handler — single-threaded callers only (bootstrap path).
         dropped_table_agents_[oid] = dropped_at_commit_id;
     }
 
@@ -335,11 +324,8 @@ namespace services::index {
     manager_index_t::mark_table_dropped(session_id_t /*session*/,
                                         components::catalog::oid_t table_oid,
                                         uint64_t dropped_at_commit_id) {
-        // Runtime DROP TABLE path — operator_dynamic_cascade_delete sends this
-        // from inside the executor actor. Thin coroutine wrapper around
-        // mark_table_dropped_sync so the operator can co_await a real future
-        // and the dropped_table_agents_ mutation stays on the manager_index_t
-        // actor's mailbox (no synchronous cross-actor mutation).
+        // Wrapper so the operator co_awaits a future and the dropped_table_agents_
+        // mutation runs on this actor's thread, not synchronously cross-actor.
         trace(log_,
               "manager_index_t::mark_table_dropped , oid : {} , commit_id : {}",
               static_cast<unsigned>(table_oid),
@@ -349,16 +335,13 @@ namespace services::index {
     }
 
     void manager_index_t::set_manager_dispatcher_sync(actor_zeta::address_t address) {
-        // Bootstrap-only path: base_spaces wires this before scheduler.start.
-        // Single-threaded by construction — no locking required.
         manager_dispatcher_ = std::move(address);
     }
 
     // ---------------- Bootstrap helpers (called pre-scheduler-start) ----------------
 
     void manager_index_t::bootstrap_engine_sync(components::catalog::oid_t oid) {
-        // Pre-scheduler-start; single-threaded by construction. Mirrors the
-        // lazy-init shape of register_collection without the co_return wrapper.
+        // Mirrors register_collection's lazy init without the co_return wrapper.
         auto it = engines_.find(oid);
         if (it == engines_.end()) {
             engines_.emplace(oid, components::index::make_index_engine(resource_));
@@ -371,21 +354,10 @@ namespace services::index {
                                                components::index::keys_base_storage_t keys,
                                                actor_zeta::address_t disk_agent_addr,
                                                index_agent_disk_ptr disk_agent_owned) {
-        // Bootstrap path — base_spaces::bootstrap_indexes_sync invokes this
-        // once per alive pg_index row recovered from the catalog scan, BEFORE
-        // scheduler.start (single-threaded by construction, so direct mutation
-        // is safe here). Mirrors the runtime create_index handler below
-        // (in-memory index_t construction + engine wiring + per-oid fan-out
-        // registration) without the mailbox-send overhead, plus takes
-        // ownership of the disk-persistence actor whose spawn responsibility
-        // stays in base_spaces (it owns the path layout knowledge).
-        //
-        // No emergency engine create here: bootstrap_engine_sync is expected
-        // to have run for every live oid before any bootstrap_index_sync call
-        // (base_spaces sequences engines first, then per-index rows). A
-        // missing entry is a bootstrap-order bug — log and return, do not
-        // silently paper over it with an emplace.
-
+        // Steady-state equivalent of create_index below, minus the mailbox send
+        // (see the declaration). base_spaces runs bootstrap_engine_sync for every
+        // live oid first, so a missing engine here is a bootstrap-order bug:
+        // log and return rather than papering over it with an emplace.
         auto it = engines_.find(table_oid);
         if (it == engines_.end()) {
             trace(log_,
@@ -464,18 +436,16 @@ namespace services::index {
         }
 
         // Wire the in-memory index_t to its disk-persistence actor address
-        // (mirrors the runtime create_index handler below). search_index by
-        // keys is the same lookup the runtime path uses.
+        // (mirrors create_index below).
         if (auto* idx = components::index::search_index(engine, keys); idx) {
             idx->set_disk_agent(disk_agent_addr, address());
             engine->add_disk_agent(id_index, disk_agent_addr);
         }
 
-        // Rehydrate in-memory btree from on-disk b+tree (same block as the
-        // runtime create_index handler below). Without this, the engine is
-        // wired but its in-memory storage_ is empty, so post-restart equality
-        // predicates routed by the planner through index_scan return 0 rows
-        // even though the disk-side btree is intact.
+        // Rehydrate the in-memory btree from the on-disk b+tree. Without this the
+        // engine is wired but its in-memory storage_ is empty, so post-restart
+        // equality predicates (routed through index_scan) return 0 rows even
+        // though the on-disk btree is intact.
         if (!path_db_.empty() && type == components::logical_plan::index_type::single) {
             auto btree_path = path_db_ / std::to_string(static_cast<unsigned>(table_oid)) / index_name;
             if (std::filesystem::exists(btree_path / "metadata")) {
@@ -513,16 +483,14 @@ namespace services::index {
             }
         }
 
-        // Per-oid fan-out registration — commit_insert / commit_delete /
-        // on_horizon_advanced GC use this map. Keep insertion order matching
-        // create_index for runtime/bootstrap parity.
+        // Per-oid fan-out registration (used by commit_* and on_horizon_advanced
+        // GC). Insertion order matches create_index for runtime/bootstrap parity.
         auto oid_it = disk_agents_per_oid_.try_emplace(
             table_oid, std::pmr::vector<actor_zeta::address_t>(resource_)).first;
         oid_it->second.emplace_back(disk_agent_addr);
 
-        // Ownership transfer — the unique_ptr keeps the spawned agent alive
-        // for the lifetime of the manager. Addresses recorded above stay
-        // valid until reaped by on_horizon_advanced.
+        // Keep the agent alive for the manager's lifetime so the addresses
+        // recorded above stay valid (reaped by on_horizon_advanced).
         disk_agents_owned_.emplace_back(std::move(disk_agent_owned));
 
         trace(log_,
@@ -534,8 +502,6 @@ namespace services::index {
     }
 
     void manager_index_t::bootstrap_dropped_sync(components::catalog::oid_t oid, uint64_t delete_id) {
-        // Pre-scheduler-start alias of mark_table_dropped_sync to keep the
-        // bootstrap_* naming consistent at the call site.
         mark_table_dropped_sync(oid, delete_id);
     }
 
@@ -735,7 +701,6 @@ namespace services::index {
                 // Wait for drop to complete before destroying the agent
                 co_await std::move(future);
 
-                // Remove agent from disk_agents_owned_
                 disk_agents_owned_.erase(
                     std::remove_if(disk_agents_owned_.begin(),
                                    disk_agents_owned_.end(),
@@ -785,18 +750,16 @@ namespace services::index {
             return;
         }
         auto& engine = it->second;
-        // Clear in-memory storage_ for every index on this oid. Any entries
-        // loaded earlier (e.g. via bootstrap_index_sync's disk-btree
-        // rehydration) carry pre-compact row_ids and must be discarded.
+        // Clear in-memory storage_ for every index on this oid: entries loaded
+        // by bootstrap_index_sync's rehydration carry pre-compact row_ids.
         for (auto& idx_name : engine->indexes()) {
             auto* idx = components::index::search_index(engine, idx_name);
             if (idx) {
                 idx->clean_memory_to_new_elements(0);
             }
         }
-        // Re-insert each row with its CURRENT physical row_id (chunks
-        // produced by storage_scan_segment after a checkpoint hold
-        // post-compact, 0-based contiguous row_ids).
+        // Re-insert each row with its current physical row_id (post-checkpoint
+        // scan chunks are 0-based contiguous).
         const core::date::timezone_offset_t bootstrap_tz{};
         for (uint64_t i = 0; i < row_count; ++i) {
             engine->insert_row(*chunk, i, static_cast<int64_t>(i), /*txn_id=*/0, bootstrap_tz);
@@ -894,12 +857,10 @@ namespace services::index {
 
         auto& engine = it->second;
 
-        // Two-phase fan-out. Phase 1 — gather pending disk inserts from BOTH
-        // the txn-local pending map and the global pending map (txn_id == 0
-        // path), batch per disk-agent, then send all insert_many messages
-        // without intervening co_await. Phase 2 — collect every future in one
-        // pass. Decoupling send from await means N disk agents progress in
-        // parallel instead of strictly serially.
+        // Two-phase fan-out: batch pending disk inserts (from both the txn-local
+        // and the global txn_id==0 maps) per agent and send all insert_many
+        // messages with no intervening co_await, then await the collected
+        // futures. Sending before awaiting lets the N disk agents run in parallel.
         agent_batch_map_t insert_batches;
         agent_addr_map_t insert_addrs;
         engine->for_each_pending_disk_insert(
@@ -919,7 +880,6 @@ namespace services::index {
                 });
         }
 
-        // Phase 1: send all insert_many messages, collect futures.
         std::pmr::vector<unique_future<void>> futures(resource_);
         futures.reserve(insert_batches.size());
         for (auto& [id, batch] : insert_batches) {
@@ -929,16 +889,12 @@ namespace services::index {
             schedule_agent(addr, ns);
             futures.emplace_back(std::move(f));
         }
-
-        // Phase 2: collect every future. Underlying disk methods are
-        // assert+abort terminal today, so reaching the end of this loop
-        // implies success for all agents.
         for (auto& f : futures) {
             co_await std::move(f);
         }
 
-        // In-memory flip is unconditional: if any disk agent had failed, the
-        // process would already have been aborted by the assert in bitcask.
+        // In-memory flip is unconditional: a disk-agent failure would already
+        // have aborted the process via the assert in bitcask.
         engine->commit_insert(txn_id, commit_id);
         if (txn_id != 0) {
             engine->commit_insert(0, commit_id);
@@ -957,10 +913,8 @@ namespace services::index {
 
         auto& engine = it->second;
 
-        // Two-phase fan-out (mirror of commit_insert). Phase 1 batches
-        // pending disk deletes from both the txn-local pending map and the
-        // global (txn_id == 0) map, then sends every remove_many message
-        // before any co_await. Phase 2 awaits the collected futures.
+        // Two-phase fan-out, mirror of commit_insert (send all remove_many
+        // before awaiting, for agent parallelism).
         agent_batch_map_t remove_batches;
         agent_addr_map_t remove_addrs;
         engine->for_each_pending_disk_delete(
@@ -980,7 +934,6 @@ namespace services::index {
                 });
         }
 
-        // Phase 1: send all remove_many messages, collect futures.
         std::pmr::vector<unique_future<void>> futures(resource_);
         futures.reserve(remove_batches.size());
         for (auto& [id, batch] : remove_batches) {
@@ -990,9 +943,6 @@ namespace services::index {
             schedule_agent(addr, ns);
             futures.emplace_back(std::move(f));
         }
-
-        // Phase 2: collect every future. Same assert+abort terminal contract
-        // as commit_insert applies — reaching this point means all succeeded.
         for (auto& f : futures) {
             co_await std::move(f);
         }
@@ -1135,26 +1085,18 @@ namespace services::index {
         co_return;
     }
 
-    // event-driven GC subscriber. Walks dropped_table_agents_ and erases
-    // the per-oid routing entries (engines_ + disk_agents_per_oid_) whose
-    // dropped_at_commit_id is now strictly below the snapshot floor
-    // (new_horizon). On drain (queue empty) sends on_subscriber_empty(INDEX_KIND)
-    // ack to dispatcher so the selective-broadcast flag clears and no further
-    // on_horizon_advanced broadcasts arrive until a new DROP TABLE re-marks
-    // the subscriber.
+    // GC subscriber (see declaration): erases per-oid state for tables whose
+    // dropped_at_commit_id is below the new snapshot floor, then acks on drain.
     manager_index_t::unique_future<void> manager_index_t::on_horizon_advanced(uint64_t new_horizon) {
         trace(log_, "manager_index_t::on_horizon_advanced , horizon : {}", new_horizon);
-        // symmetric GC pass: erase per-oid state for tables whose
-        // dropped_at_commit_id is now below the snapshot floor.
         for (auto it = dropped_table_agents_.begin(); it != dropped_table_agents_.end();) {
             if (it->second < new_horizon) {
                 auto oid = it->first;
                 // Drop the engine first — manager_index_t is its sole owner.
                 engines_.erase(oid);
-                // Send terminal drop to each disk_agent_disk_t bound to this oid
-                // (best-effort fire-and-forget — the agents are owned by
-                // disk_agents_owned_; they will be reaped on next force_flush
-                // pass or at base_spaces shutdown).
+                // Best-effort terminal drop to each disk agent bound to this oid;
+                // the owning pointers in disk_agents_owned_ are reaped later
+                // (next force_flush pass or base_spaces shutdown).
                 auto disk_it = disk_agents_per_oid_.find(oid);
                 if (disk_it != disk_agents_per_oid_.end()) {
                     for (auto& addr : disk_it->second) {
@@ -1172,16 +1114,13 @@ namespace services::index {
             }
         }
         if (dropped_table_agents_.empty() && manager_dispatcher_ != actor_zeta::address_t::empty_address()) {
-            // ack flag flip — dispatcher clears index_has_dropped_ on
-            // receipt so no further on_horizon_advanced broadcasts arrive
-            // until a new DROP TABLE re-marks the subscriber. Park the
-            // resulting future in pending_void_ as a CROSS-HANDLER ORDERING
-            // BARRIER: flush_all_indexes co_awaits every pending_void_ future
-            // (including the index_agent_disk_t::drop futures emitted above)
-            // BEFORE it calls force_flush_sync(), so a force_flush can never
-            // race an in-flight agent drop (which would be a use-after-free on
-            // the btree path). Dropping the future itself is safe (Last-One-Out
-            // keeps the promise alive); the barrier is the reason for parking.
+            // Ack so the dispatcher stops broadcasting on_horizon_advanced until
+            // a new DROP TABLE re-marks the subscriber. The ack future is parked
+            // in pending_void_ as a cross-handler ordering barrier: flush_all_indexes
+            // co_awaits every pending_void_ future (including the agent-drop
+            // futures emitted above) BEFORE calling force_flush_sync(), so a
+            // force_flush can never race an in-flight agent drop (a btree-path
+            // use-after-free).
             constexpr uint8_t INDEX_KIND = 2;
             pending_void_.emplace_back(std::move(
                 actor_zeta::send(manager_dispatcher_,
@@ -1191,27 +1130,16 @@ namespace services::index {
         co_return;
     }
 
-    // Apply a single WAL record's effect to the build's in-memory
-    // index_engine_t during the CREATE INDEX catchup loop.
+    // Apply one WAL record's effect to the build's engine during CREATE INDEX
+    // catchup (single record per call; see index_contract for param semantics).
     //
-    // The handler mirrors the steady-state DML path (insert_rows / delete_rows
-    // / update_rows above) but drives a single record instead of a chunk batch.
-    // INSERT (and the NEW-row half of UPDATE) are wired against engine->insert_row
-    // using the WAL chunk + physical_row_start; the storage_row assigned to
-    // each chunk row is reconstructed as physical_row_start + i so the index
-    // keys land on the same row_ids the table-side writer used.
-    //
-    // DELETE (and the OLD-row half of UPDATE) are wired via a sibling
-    // recovery path: the WAL PHYSICAL_DELETE / UPDATE records ship only
-    // row_ids, so the operator side performs a storage_fetch(row_ids)
-    // BEFORE sending this message and forwards the recovered chunk via
-    // physical_data. The handler then runs the same engine->mark_delete_row
-    // loop the steady-state DML path uses (no engine API change, no row_id
-    // → key reverse map). PHYSICAL_UPDATE replay is split into two messages
-    // by the operator: a PHYSICAL_UPDATE one carrying the NEW chunk for the
-    // insert half, then a PHYSICAL_DELETE one carrying the recovered OLD
-    // chunk for the delete half. See operator_create_index_backfill.cpp for
-    // the catchup loop that drives this sequence.
+    // PHYSICAL_DELETE/UPDATE records ship only row_ids, so the operator does a
+    // storage_fetch(row_ids) and forwards the recovered chunk in physical_data;
+    // the same engine->mark_delete_row loop the DML path uses then applies it
+    // (no engine API change, no row_id->key reverse map). UPDATE is split by the
+    // operator into a PHYSICAL_UPDATE message (NEW chunk, insert half) followed
+    // by a PHYSICAL_DELETE message (recovered OLD chunk, delete half). See
+    // operator_create_index_backfill.cpp.
     manager_index_t::unique_future<void>
     manager_index_t::apply_wal_record_for_index(session_id_t /*session*/,
                                                 components::catalog::oid_t table_oid,
@@ -1225,10 +1153,9 @@ namespace services::index {
                                                 core::date::timezone_offset_t session_tz) {
         auto it = engines_.find(table_oid);
         if (it == engines_.end()) {
-            // The build's engine should already have been created by the
-            // register_collection / create_index calls earlier in the operator.
-            // Missing engine here means a bookkeeping mismatch; log and skip
-            // (no exceptions thrown across the actor boundary).
+            // Engine should exist from the operator's earlier register_collection
+            // / create_index; a miss is a bookkeeping bug. Log and skip (no
+            // exceptions across the actor boundary).
             trace(log_,
                   "manager_index_t::apply_wal_record_for_index: no engine for "
                   "table_oid={} (index_oid={} wal_id={} type={}), skipping",
@@ -1242,11 +1169,9 @@ namespace services::index {
         auto& engine = it->second;
 
         if (record_type == static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_INSERT)) {
-            // Replay the INSERT chunk into the build's engine. Entries are
-            // tagged with the CREATE INDEX txn_id so they stay PENDING until
-            // the post-pipeline commit_insert publishes them alongside the
-            // rest of the build (operator_create_index_backfill wires
-            // dml_append_row_count for the executor to fire that commit).
+            // Replay the INSERT chunk, tagged with the CREATE INDEX txn_id so
+            // entries stay PENDING until the post-pipeline commit_insert
+            // publishes them with the rest of the build.
             if (!physical_data || physical_data->size() == 0) {
                 trace(log_,
                       "manager_index_t::apply_wal_record_for_index INSERT: empty chunk "
@@ -1272,25 +1197,10 @@ namespace services::index {
                   wal_record_id,
                   rows);
         } else if (record_type == static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_DELETE)) {
-            // The PHYSICAL_DELETE WAL record itself ships only storage row_ids
-            // — no key columns. The operator side (operator_create_index_backfill
-            // catchup loop) closes that gap by performing a
-            // storage_fetch(row_ids) before sending us the message and
-            // forwards the recovered chunk via physical_data. This keeps the
-            // engine API unchanged (no row_id → keys reverse map needed) at
-            // the cost of one extra read-only fetch per PHYSICAL_DELETE
-            // record during catchup — acceptable for the bounded-retry
-            // CREATE INDEX loop.
-            //
-            // Defensive fall-throughs:
-            //   - physical_data == nullptr or empty: the operator could not
-            //     recover the chunk (rows physically gone, fetch failed).
-            //     Best-effort skip + log; the operator-side convergence
-            //     guard still fires if the index keeps diverging.
-            //   - row_ids.size() != physical_data->size(): partial recovery
-            //     (some rows missing from storage). Apply only the prefix
-            //     where both sides agree and log the mismatch — same
-            //     best-effort posture as the all-missing case.
+            // physical_data is the operator-recovered key chunk (see header).
+            // Best-effort: if it's missing the rows are gone, skip and let the
+            // operator's convergence guard catch persistent divergence; on
+            // partial recovery apply only the row_ids/chunk prefix that agrees.
             if (!physical_data || physical_data->size() == 0) {
                 trace(log_,
                       "manager_index_t::apply_wal_record_for_index DELETE: no recovered chunk "
@@ -1319,25 +1229,14 @@ namespace services::index {
                       physical_data->size());
             }
         } else if (record_type == static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_UPDATE)) {
-            // PHYSICAL_UPDATE records carry the NEW chunk (in physical_data)
-            // and the OLD storage row_ids (in row_ids). The new-row insert
-            // half is replayed here. The OLD-row delete half is replayed by a
-            // separate apply_wal_record_for_index call with
-            // record_type=PHYSICAL_DELETE that the operator issues right
-            // after this one — the operator owns the storage_fetch on the
-            // OLD row_ids that recovers the key chunk for the delete branch
-            // above (same recovery pattern as standalone PHYSICAL_DELETE).
-            //
-            // Splitting OLD-delete and NEW-insert into two messages keeps the
-            // signature stable (one chunk per call) and lets the operator
-            // schedule the fetch with its existing disk_address handle (the
-            // index manager intentionally does not own a disk_address handle
-            // for the catchup path — mailbox-only inter-actor communication).
+            // Insert half only (NEW chunk in physical_data); the OLD-row delete
+            // half arrives as a separate PHYSICAL_DELETE message (see header).
+            // The two-message split lets the operator run the storage_fetch with
+            // its own disk_address; this manager has none for the catchup path,
+            // keeping inter-actor communication mailbox-only.
             if (physical_data && physical_data->size() > 0) {
-                // For UPDATE the new storage row-ids are appended starting at
-                // physical_row_start (the table writer's append cursor at the
-                // time the UPDATE landed); chunk row i maps to that base + i,
-                // matching the row_id contract the rest of the engine assumes.
+                // New rows were appended from physical_row_start, so chunk row i
+                // maps to physical_row_start + i (the engine's row_id contract).
                 const auto rows = physical_data->size();
                 for (uint64_t i = 0; i < rows; ++i) {
                     engine->insert_row(*physical_data,

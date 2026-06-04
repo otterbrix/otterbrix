@@ -58,9 +58,8 @@ namespace services::wal {
         // Contract handlers.
         unique_future<std::vector<record_t>> load(session_id_t session, wal::id_t wal_id);
 
-        // commit_id is the MVCC version timestamp from
-        // transaction_manager_t::commit() — written into the COMMIT WAL record
-        // so snapshot-aware replay can rebuild published_horizon_.
+        // commit_id (MVCC version from transaction_manager_t::commit()) is
+        // written into the COMMIT record so replay can rebuild published_horizon_.
         unique_future<wal::id_t> commit_txn(session_id_t session,
                                             uint64_t txn_id,
                                             wal_sync_mode sync_mode,
@@ -96,10 +95,9 @@ namespace services::wal {
                                                        uint64_t txn_id,
                                                        components::catalog::oid_t database_oid);
 
-        // Mailbox-handler twins of the _sync helpers, used by
-        // operator_create_index_backfill which runs inside the executor actor
-        // and so cannot make sync inter-actor calls. Forwards to the same
-        // underlying active_build_start_positions_ set.
+        // Mailbox twins of the _sync helpers for callers that run inside an
+        // actor (e.g. operator_create_index_backfill in the executor) and so
+        // cannot make sync inter-actor calls. Same active_build_start_positions_ set.
         unique_future<void> register_active_build(session_id_t session, wal::id_t build_start_wal_position);
         unique_future<void> unregister_active_build(session_id_t session, wal::id_t build_start_wal_position);
 
@@ -121,8 +119,6 @@ namespace services::wal {
         // Returns true (and resets the flag) if WAL bytes since last checkpoint exceeded the
         // configured threshold. The caller (dispatcher execute_ddl_inline) then triggers
         // checkpoint_all on disk and calls reset_auto_checkpoint_bytes() after the checkpoint.
-        // wal_bytes_since_checkpoint_ is atomic — writer in commit_txn coroutine and reader
-        // needs_auto_checkpoint() on the dispatcher thread used to race on a plain std::uintmax_t.
         bool needs_auto_checkpoint() const noexcept {
             return config_.on && config_.auto_checkpoint_threshold_bytes > 0 &&
                    wal_bytes_since_checkpoint_.load(std::memory_order_relaxed) >=
@@ -136,21 +132,17 @@ namespace services::wal {
         std::uintmax_t total_wal_bytes() const noexcept;
 
         // Retention guard helpers. operator_create_index registers its
-        // build_start_wal_position at Phase 2 start; unregisters at Phase 3
-        // publish OR cleanup_and_fail. Sync because base_spaces / operator
-        // pipeline calls them outside the mailbox — NOT mailbox handlers.
-        //
-        // TODO: the sync-from-operator-pipeline assumption holds today because
-        // the operator pipeline runs single-threaded relative to the wal
-        // dispatcher; under multi-DB this may need to become a proper mailbox
-        // handler.
+        // build_start_wal_position before backfill and unregisters on publish or
+        // failure. Sync (not mailbox handlers) because the operator pipeline
+        // calls them directly, outside the mailbox. This is safe only while that
+        // pipeline runs single-threaded relative to the wal dispatcher; multi-DB
+        // would force these onto the mailbox.
         void register_active_build_sync(wal::id_t build_start_wal_position);
         void unregister_active_build_sync(wal::id_t build_start_wal_position);
 
     private:
-        // Workers keyed by database_oid. Currently uses main_database for all WAL
-        // records (single-worker model); multi-database support will come when
-        // CREATE DATABASE allocates per-namespace workers.
+        // Workers keyed by database_oid; today every record routes to the
+        // main_database worker (single-worker model).
         wal_worker_t* get_or_create_worker(components::catalog::oid_t database_oid);
 
         std::pmr::memory_resource* resource_;
@@ -168,10 +160,9 @@ namespace services::wal {
 
         std::unordered_map<components::catalog::oid_t, wal_worker_ptr> wal_actors_;
 
-        // Retention guard: build_start_wal_position of every CREATE INDEX
-        // currently in Phase 2.5 catchup. truncate_before clamps to
-        // min(active_build_start_positions_) so concurrent catchup never misses
-        // a truncated record. Empty when no builds are active — no clamp.
+        // Retention guard: build_start_wal_position of every in-flight CREATE
+        // INDEX backfill. truncate_before clamps to min(this set) so concurrent
+        // catchup never misses a truncated record. Empty => no clamp.
         std::pmr::set<wal::id_t> active_build_start_positions_{resource_};
 
         // Event loop runs on its own thread. Senders only deliver into inbox_;
@@ -179,12 +170,11 @@ namespace services::wal {
         // happens on loop_thread_. See manager_dispatcher_t for the same model.
         std::thread loop_thread_;
         std::atomic<bool> loop_running_{true};
-        // lock-free inbox: senders only deliver; ALL processing happens on loop_thread_.
-        // Stores raw message* (boost::lockfree requires trivially-copyable): release() on push,
-        // re-wrapped into message_ptr by the loop. Node allocations are non-PMR (infra queue).
+        // Stores raw message* (boost::lockfree requires trivially-copyable):
+        // release() on push, re-wrapped into message_ptr by the loop. Node
+        // allocations are non-PMR (infra queue).
         boost::lockfree::queue<actor_zeta::mailbox::message*> inbox_{128};
         std::mutex mutex_; // guards the idle wait condition only.
-        // Wakes the loop's idle wait on every enqueue notify (bounded staleness).
         std::condition_variable pump_cv_;
     };
 

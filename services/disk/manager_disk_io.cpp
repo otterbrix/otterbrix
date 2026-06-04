@@ -34,10 +34,9 @@ namespace services::disk {
                                                                             wal::id_t current_wal_id) {
         trace(log_, "manager_disk_t::checkpoint_all , session : {} , wal_id : {}", session.data(), current_wal_id);
 
-        // Router fanout: send checkpoint_inner to every agent in parallel;
-        // each runs the full compact + checkpoint + sidecar sequence per DISK
-        // entry and returns min(prev_checkpoint_wal_id_) across its slice
-        // (max() sentinel when the agent owns no DISK entry).
+        // Fan checkpoint_inner to every agent; each returns
+        // min(prev_checkpoint_wal_id_) over its DISK entries, or max() sentinel when
+        // it owns no DISK entry.
         std::pmr::vector<unique_future<wal::id_t>> agent_futures{resource()};
         agent_futures.reserve(agents_.size());
         for (auto& agent_ptr : agents_) {
@@ -58,15 +57,12 @@ namespace services::disk {
         }
 
         if (!agents_.empty()) {
-            // IN_MEMORY-twin WAL-seal suppression. The std::min tally over
-            // per-agent max() sentinels cannot distinguish "no DISK entry +
-            // no IN_MEMORY twin" (safe to seal) from "no DISK entry +
-            // IN_MEMORY twin present" (must NOT seal — IN_MEMORY tables
-            // still need WAL replay records). The has_in_memory_inner_sync
-            // probe restores that signal: a mailbox-free sync read across
-            // every agent's slice (legal here because the manager body has
-            // just awaited agent mailbox completion — agents are idle, and
-            // the manager is the only writer to the agent slices).
+            // IN_MEMORY-twin WAL-seal suppression. The min() tally can't tell "no
+            // DISK entry + no IN_MEMORY twin" (safe to seal) from "no DISK entry +
+            // IN_MEMORY twin" (must NOT seal — those tables still need replay
+            // records). has_in_memory_inner_sync supplies the missing signal. The
+            // mailbox-free sync read is legal here: we just awaited every agent's
+            // mailbox, so agents are idle and the manager is their only writer.
             bool any_in_memory = false;
             for (const auto& agent_ptr : agents_) {
                 if (agent_ptr != nullptr && agent_ptr->has_in_memory_inner_sync()) {
@@ -75,9 +71,8 @@ namespace services::disk {
                 }
             }
 
-            // Persist WAL ID only when (a) at least one agent had a real
-            // DISK checkpoint to advance (sentinel max() => "no DISK entry"
-            // across the pool) AND (b) no IN_MEMORY twin exists anywhere.
+            // Seal only when some agent actually checkpointed a DISK entry (min_prev_id
+            // still max() => none did) AND no IN_MEMORY twin exists anywhere.
             const bool all_disk_checkpointed = (min_prev_id != std::numeric_limits<wal::id_t>::max());
             const bool safe_to_seal = all_disk_checkpointed && !any_in_memory;
             if (current_wal_id > 0 && safe_to_seal) {
@@ -104,8 +99,7 @@ namespace services::disk {
                                                                    uint64_t lowest_active_start_time) {
         trace(log_, "manager_disk_t::vacuum_all , session : {}", session.data());
 
-        // Per-agent vacuum_inner is the canonical cleanup_versions + compact
-        // path.
+        // Per-agent vacuum_inner runs the canonical cleanup_versions + compact.
         std::pmr::vector<unique_future<void>> agent_futures{resource()};
         agent_futures.reserve(agents_.size());
         for (auto& agent_ptr : agents_) {
@@ -136,12 +130,10 @@ namespace services::disk {
             co_return;
         }
 
-        // Pure router. The threshold check + compact run in the agent twin
-        // (maybe_cleanup_inner) so the row_group rebuild is serialized by the
-        // agent's mailbox with every other same-oid access. Running the compact
-        // manager-side via a storage_entry_sync borrow would duplicate the
-        // compact and race against agent-side scans. INVALID_OID is filtered
-        // above; agent logs a no-op on not-owned / null entry.
+        // The threshold check + compact run in maybe_cleanup_inner so the
+        // row_group rebuild is mailbox-serialized with every same-oid access.
+        // Running it manager-side via a storage_entry_sync borrow would duplicate
+        // the compact and race agent-side scans.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(ctx.table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
@@ -164,9 +156,8 @@ namespace services::disk {
                                                           components::catalog::oid_t /*database_oid*/,
                                                           std::vector<components::table::column_definition_t> columns) {
         trace(log_, "manager_disk_t::create_storage_with_columns_sync , oid : {}", static_cast<unsigned>(table_oid));
-        // The routed agent slice is the canonical owner. IN_MEMORY entry is
-        // constructed on the agent's resource() and ownership is transferred
-        // via bootstrap_inner_sync (rvalue unique_ptr move).
+        // IN_MEMORY entry is constructed on the agent's resource() and ownership
+        // transferred via bootstrap_inner_sync (rvalue unique_ptr move).
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
@@ -189,10 +180,8 @@ namespace services::disk {
               "manager_disk_t::create_storage_disk_sync , oid : {} , path : {}",
               static_cast<unsigned>(table_oid),
               otbx_path.string());
-        // The routed agent slice is the canonical SFBM owner. The
-        // single_file_block_manager_t is constructed on the agent thread via
-        // bootstrap_create_disk_inner_sync; the manager never opens the
-        // .otbx (would race the exclusive WRITE_LOCK).
+        // SFBM is constructed on the agent thread via bootstrap_create_disk_inner_sync;
+        // the manager never opens .otbx (would race the exclusive WRITE_LOCK).
         if (agents_.empty()) {
             return;
         }
@@ -221,11 +210,10 @@ namespace services::disk {
               static_cast<unsigned>(table_oid),
               otbx_path.string());
 
-        // SFBM ownership lives on the routed agent. single_file_block_manager_t
-        // holds an exclusive WRITE_LOCK on the underlying `.otbx` (posix
-        // advisory lock, per-process semantics — closing either fd releases
-        // it for both). Double-construct of the same OID would race the lock
-        // and corrupt fsync/mmap pairing; only the agent thread opens it.
+        // The SFBM holds an exclusive posix WRITE_LOCK on the .otbx (per-process:
+        // closing either fd releases it for both). Double-constructing the same OID
+        // would race the lock and corrupt fsync/mmap pairing, so only the agent
+        // thread opens it.
         const std::size_t pool_idx =
             agents_.empty() ? 0 : pool_idx_for_oid(table_oid, agents_.size());
         trace(log_,
@@ -234,12 +222,10 @@ namespace services::disk {
               pool_idx,
               otbx_path.string());
 
-        // Pre-read the sidecar wal_id (if present) BEFORE constructing the
-        // SFBM so bootstrap_disk_inner_sync can seed table_storage
-        // .set_checkpoint_wal_id atomically on the agent thread. Sidecar
-        // reads and corrupt-recovery filesystem operations (.prev rename)
-        // stay on the manager thread because they are pre-scheduler-start
-        // filesystem-only steps with no actor ownership.
+        // Pre-read the sidecar wal_id BEFORE constructing the SFBM so
+        // bootstrap_disk_inner_sync can seed set_checkpoint_wal_id atomically on the
+        // agent thread. These filesystem-only steps (sidecar read, .prev rename) stay
+        // on the manager thread — pre-scheduler-start, no actor ownership.
         auto read_sidecar_wal_id = [&](const std::filesystem::path& base) -> wal::id_t {
             auto sidecar = base;
             sidecar += ".wal_id";
@@ -254,8 +240,8 @@ namespace services::disk {
             return wal::id_t{0};
         };
 
-        // Transfer helper — routed agent owns the SFBM. Sidecar wal_id is
-        // passed through so the SFBM picks up the checkpoint floor atomically.
+        // Transfer to the agent, passing the sidecar wal_id so the SFBM picks up
+        // the checkpoint floor atomically.
         auto transfer_to_agent = [&](const std::filesystem::path& path) -> bool {
             if (agents_.empty()) {
                 return false;
@@ -264,9 +250,8 @@ namespace services::disk {
             const auto sidecar_id = read_sidecar_wal_id(path);
             const bool ok = agent->bootstrap_disk_inner_sync(table_oid, path, sidecar_id);
             if (!ok) {
-                // Duplicate-key (agent already owns the OID). The incoming
-                // SFBM is dropped by bootstrap_disk_inner_sync's
-                // pre-construction probe so no WRITE_LOCK race occurs.
+                // Duplicate key: bootstrap_disk_inner_sync's pre-construction probe
+                // drops the incoming SFBM, so no WRITE_LOCK race occurs.
                 trace(log_,
                       "manager_disk_t::load_storage_disk_sync: agent[{}] already owns oid {} (path={})",
                       pool_idx,
@@ -292,17 +277,12 @@ namespace services::disk {
             return;
         }
 
-        // Corrupt-recovery branch (rename .otbx → .broken, .prev → .otbx,
-        // retry) needs to detect SFBM-open failure. The agent's
-        // bootstrap_disk_inner_sync is noexcept but its make_unique<>
-        // call CAN throw on corrupt files. To preserve corrupt-recovery
-        // semantics deterministically, construct a probe entry on the
-        // manager thread first (catches std::exception in try/catch), then
-        // destroy it (releasing the file_handle_t — posix advisory lock is
-        // per-process, so closing this fd releases the lock entirely and
-        // the agent's subsequent open reacquires it cleanly). The
-        // close-then-reopen window is single-threaded (pre-scheduler-start),
-        // so no other thread races in.
+        // Corrupt-recovery (rename .otbx → .broken, .prev → .otbx, retry) must detect
+        // SFBM-open failure, but bootstrap_disk_inner_sync is noexcept (its
+        // make_unique<> swallows the throw on corrupt files). So we probe-construct on
+        // the manager thread to catch the exception, then destroy the probe to release
+        // the WRITE_LOCK before the agent reopens (per-process lock: closing this fd
+        // frees it entirely). The close-reopen window is single-threaded, no race.
         try {
             auto probe = std::make_unique<collection_storage_entry_t>(resource(), otbx_path);
             probe.reset(); // release WRITE_LOCK before agent reopens on agent thread

@@ -158,8 +158,7 @@ TEST_CASE("small_records_fill_page") {
         auto header = reader.read_page_header(1);
 
         REQUIRE(header.num_records == 5);
-        // 5 COMMIT records at 37 bytes each = 185 bytes.
-        // data_size should be close to 185 (exact value depends on encoding).
+        // ~185 bytes (5 × 37); ranged because the exact size depends on encoding.
         REQUIRE(header.data_size >= 180);
         REQUIRE(header.data_size <= 200);
         REQUIRE(header.page_lsn == 1);

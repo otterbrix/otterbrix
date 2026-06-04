@@ -6,20 +6,14 @@ namespace services::disk {
     namespace catalog = components::catalog;
     using namespace detail;
 
-    // All catalog read sites (pg_namespace, pg_class, pg_attribute, pg_type,
-    // pg_proc, pg_computed_column) read agent-0's (CATALOG agent) pg_* tables
-    // through the agent twin storage_scan_batched_inner — i.e. via agent-0's
-    // mailbox. This serialises the read against agent-0's compact path
-    // (checkpoint_inner/vacuum_inner/maybe_cleanup_inner) on the scheduler_disk_
-    // threads, avoiding a borrowed-pointer race. Each site routes via
-    // pool_idx_for_oid(<pg oid>, agents_.size()) (catalog oids land on agent-0)
-    // and passes a default-constructed transaction_data{} ("see all committed"
-    // visibility).
-    //
-    // Generic-table_oid primitives `scan_by_key` and `read_rows_by_key` route
-    // the same way, with one extra hop: storage_column_names_inner resolves
-    // caller-supplied column NAMES to storage indices (the filter is then
-    // built manager-side and shipped to storage_scan_batched_inner).
+    // Every catalog read here goes through agent-0's storage_scan_batched_inner
+    // (catalog oids route to agent-0). Reading via the mailbox — not a borrowed
+    // storage_entry_sync pointer — serialises against agent-0's compact path
+    // (checkpoint/vacuum/maybe_cleanup_inner) running on the scheduler_disk_
+    // threads, avoiding a borrowed-pointer race. transaction_data{} = "see all
+    // committed". scan_by_key / read_rows_by_key add one hop:
+    // storage_column_names_inner resolves column NAMES to indices, then the
+    // filter is built manager-side and shipped to storage_scan_batched_inner.
 
     manager_disk_t::unique_future<resolve_namespace_result_t>
     manager_disk_t::resolve_namespace(execution_context_t /*ctx*/, std::string name, std::uint64_t /*since_version*/) {
@@ -220,8 +214,8 @@ namespace services::disk {
 
         if (!agents_.empty() && agents_[0] != nullptr) {
             std::vector<column_info_t> rows;
-            // column visibility — read added_at_commit_id
-            // (col 10) + dropped_at_commit_id (col 11) and filter by ctx.txn.start_time.
+            // Column MVCC: read added_at_commit_id (col 10) + dropped_at_commit_id
+            // (col 11), filter by ctx.txn.start_time.
             const auto snapshot_start_time = ctx.txn.start_time;
             const std::size_t att_idx = pool_idx_for_oid(pg_attribute_oid, agents_.size());
             std::vector<size_t> att_projected{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
@@ -643,11 +637,8 @@ namespace services::disk {
             co_return out;
         }
 
-        // Routed agent slice is the sole canonical SFBM/IN_MEMORY owner.
-        // Two mailbox round-trips: column names (name→index resolution
-        // happens manager-side on the returned value) + the filtered scan.
-        // No borrowed-pointer access — every same-oid touch is serialized
-        // by the owning agent's mailbox.
+        // Two mailbox round-trips (see file header): column names — name→index
+        // resolution happens manager-side on the result — then the filtered scan.
         if (agents_.empty())
             co_return out;
         const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
@@ -714,11 +705,8 @@ namespace services::disk {
         if (key_col_names.size() != key_values.size() || key_col_names.empty())
             co_return out;
 
-        // Routed agent slice is the sole canonical SFBM/IN_MEMORY owner.
-        // Two mailbox round-trips: column names (name→index resolution
-        // happens manager-side on the returned value) + the filtered scan.
-        // No borrowed-pointer access — every same-oid touch is serialized
-        // by the owning agent's mailbox.
+        // Two mailbox round-trips (see file header): column names — name→index
+        // resolution happens manager-side on the result — then the filtered scan.
         if (agents_.empty())
             co_return out;
         const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());

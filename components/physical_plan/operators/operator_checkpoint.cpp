@@ -13,8 +13,8 @@ namespace components::operators {
     void operator_checkpoint_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
 
     actor_zeta::unique_future<void> operator_checkpoint_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // flush dirty index btrees so any post-recovery rebuild starts from
-        // a consistent on-disk index state (matches legacy dispatcher checkpoint_t).
+        // Flush dirty index btrees so a post-recovery rebuild starts from a
+        // consistent on-disk index state.
         if (ctx->index_address != actor_zeta::address_t::empty_address()) {
             auto [_fi, fif] = actor_zeta::send(ctx->index_address,
                                                &services::index::manager_index_t::flush_all_indexes,

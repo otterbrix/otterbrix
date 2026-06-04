@@ -1,18 +1,8 @@
-// SQL TransactionStmt → logical_plan lowering.
-//
-// Background: gram.y already parses BEGIN / COMMIT / ROLLBACK and produces a
-// TransactionStmt AST node. Each variant maps to a dedicated leaf node;
-// the operator pipeline drives txn_manager / disk side effects.
-//
-// Coverage decisions:
-//   * BEGIN/START → node_begin_transaction_t
-//   * COMMIT      → node_commit_transaction_t
-//   * ROLLBACK    → node_abort_transaction_t
-//   * SAVEPOINT / RELEASE / ROLLBACK TO / 2PC variants are unsupported and
-//     fall through to the default no-op (nullptr) — the dispatch in
-//     transformer.cpp ultimately surfaces a runtime error for unknown plans
-//     so we don't need to throw here; quietly ignoring keeps parity with
-//     other partially-supported statements (e.g. unsupported ALTER subtypes).
+// SQL TransactionStmt → logical_plan lowering. BEGIN/COMMIT/ROLLBACK map to
+// dedicated leaf nodes; the operator pipeline drives the txn_manager/disk side
+// effects. SAVEPOINT / RELEASE / ROLLBACK TO / 2PC variants are unsupported and
+// fall through to nullptr rather than throwing — transformer.cpp surfaces a
+// runtime error for unknown plans, matching other partially-supported statements.
 
 #include <components/logical_plan/node_abort_transaction.hpp>
 #include <components/logical_plan/node_begin_transaction.hpp>

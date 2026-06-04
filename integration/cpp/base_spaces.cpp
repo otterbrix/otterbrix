@@ -122,9 +122,9 @@ namespace otterbrix {
 
         wal_ptr->sync(std::make_tuple(actor_zeta::address_t(manager_disk_address), manager_dispatcher_->address()));
 
-        // Publish the dispatcher address back into manager_disk / manager_index so the
+        // Publish the dispatcher address into manager_disk / manager_index so the
         // GC-ack path (manager_disk → dispatcher → manager_wal truncate) has a
-        // destination. Bootstrap-time sync direct call (pre-scheduler-start, single-threaded).
+        // destination. Sync — pre-scheduler-start.
         if (disk_ptr) {
             disk_ptr->set_manager_dispatcher_sync(manager_dispatcher_->address());
         }
@@ -292,14 +292,11 @@ namespace otterbrix {
             disk_ptr->restore_oid_generator_sync();
         }
 
-        // Catalog scan rebuild — pg_class rows tombstoned by a pre-crash
-        // DROP TABLE that didn't get to physically remove the .otbx are
-        // recovered here, BEFORE scheduler.start. The scan returns
-        // (oid, sentinel delete_id=1) pairs; we rebuild dropped_storages_ on
-        // disk and dropped_table_agents_ on index, and flip the dispatcher's
-        // per-subscriber broadcast flags so the first post-start horizon
-        // advance fires on_horizon_advanced and finishes the deferred GC.
-        // Bootstrap-only sync calls (schedulers haven't started, single-threaded).
+        // Recover pg_class rows tombstoned by a pre-crash DROP TABLE that never
+        // physically removed the .otbx. The scan returns (oid, sentinel
+        // delete_id=1) pairs; rebuild dropped_storages_ on disk and
+        // dropped_table_agents_ on index so the first post-start horizon advance
+        // finishes the deferred GC. Sync — schedulers not yet started.
         if (disk_ptr && manager_index_) {
             auto dropped_oids = disk_ptr->scan_dropped_oids_sync();
             if (!dropped_oids.empty()) {
@@ -331,13 +328,10 @@ namespace otterbrix {
                                                             std::move(sidecars));
                     manager_index_->mark_table_dropped_sync(oid, delete_id);
                 }
-                // Flip the dispatcher's selective-broadcast flags so the next
-                // commit (the first one after scheduler.start) advances the
-                // horizon past 1 and broadcasts on_horizon_advanced to disk &
-                // index, draining the rebuilt dropped_storages_ / dropped_table_agents_
-                // queues. We deliberately do NOT call on_horizon_advanced
-                // inline: its body is a coroutine handler that uses the
-                // actor's mailbox, and the mailbox isn't running yet.
+                // Arm the broadcast flags so the first post-start commit advances
+                // the horizon and broadcasts on_horizon_advanced, draining the
+                // rebuilt queues. Cannot call on_horizon_advanced inline: it is a
+                // coroutine handler driven by the actor mailbox, not yet running.
                 manager_dispatcher_->set_disk_has_dropped_sync(true);
                 manager_dispatcher_->set_index_has_dropped_sync(true);
                 trace(log_,
@@ -346,13 +340,10 @@ namespace otterbrix {
             }
         }
 
-        // Snapshot-aware WAL replay horizon.
-        // Scan COMMIT records (already filtered by 2-pass committed-txn filter in
-        // wal_reader_t) for the maximum commit_id and publish it once so the
-        // post-recovery txn_manager_'s published_horizon_ matches the durable
-        // MVCC frontier. A crash means in-flight commits were never published,
-        // so we only restore the max-COMMIT horizon — never reconstruct
-        // in_flight ids (crashed txns weren't visible to any snapshot anyway).
+        // Publish max COMMIT commit_id so the post-recovery txn_manager_'s
+        // published_horizon_ matches the durable MVCC frontier. Only the
+        // max-COMMIT horizon is restored — in_flight ids are never reconstructed,
+        // since crashed in-flight txns were visible to no snapshot anyway.
         if (!wal_records.empty()) {
             uint64_t max_commit_id = 0;
             for (const auto& r : wal_records) {
@@ -366,8 +357,7 @@ namespace otterbrix {
             }
         }
 
-        // Catalog-driven index bootstrap — must run pre-scheduler-start while
-        // single-threaded. See bootstrap_indexes_sync below for the rationale.
+        // Must run pre-scheduler-start while single-threaded.
         if (disk_ptr && manager_index_) {
             bootstrap_indexes_sync(config.disk);
         }
@@ -424,27 +414,10 @@ namespace otterbrix {
         paths_.erase(main_path_);
     }
 
-    // Catalog-driven index bootstrap.
-    //
-    // Pre-scheduler-start, single-threaded by construction. pg_class /
-    // pg_index / dropped-row scans are already settled by the catalog
-    // rebuild and user-table load above, so the helpers below see the
-    // steady-state catalog.
-    //
-    // Done in three passes:
-    //   - mint an empty index_engine_t per live table oid so subsequent
-    //     bootstrap_index_sync calls find an engine to attach to
-    //     (bootstrap_index_sync does not mint engines on the fly);
-    //   - walk pg_index, spawn one index_agent_disk_t per alive row
-    //     (mirroring manager_index_t::create_index's spawn pattern), hand
-    //     ownership to manager_index_ via bootstrap_index_sync;
-    //   - replay tombstones from scan_dropped_table_oids_sync so
-    //     on_horizon_advanced GC drains rebuilt entries after the first
-    //     post-start commit.
-    //
-    // Errors propagate via log+return: scan helpers return empty pmr
-    // vectors on internal failure, bootstrap_index_sync logs and skips a
-    // malformed row, no throw escapes this method.
+    // Engine pass must precede the pg_index pass: bootstrap_index_sync attaches
+    // to an existing index_engine_t and does not mint one on the fly.
+    // Errors propagate via log+return — scan helpers return empty on internal
+    // failure, bootstrap_index_sync skips malformed rows, no throw escapes.
     void base_otterbrix_t::bootstrap_indexes_sync(const configuration::config_disk& disk_config) {
         auto live_tables = manager_disk_->scan_live_table_oids_sync();
         for (auto oid : live_tables) {
@@ -464,12 +437,9 @@ namespace otterbrix {
                 continue;
             }
 
-            // Mirror manager_index_t::create_index's spawn pattern so the
-            // resulting agent is byte-for-byte equivalent to one produced
-            // by the runtime DDL path. index_agent_disk_t's ctor takes
-            // index_name_t = std::string; pg_index_row_t carries a
-            // std::pmr::string, so we materialise a non-pmr copy here
-            // (cheap — short identifier).
+            // Spawn args must match manager_index_t::create_index so the agent is
+            // equivalent to one from the runtime DDL path. Ctor takes a non-pmr
+            // index_name_t (std::string) but row.name is pmr::string, hence the copy.
             auto agent = actor_zeta::spawn<services::index::index_agent_disk_t>(
                 &resource,
                 disk_config.path,
@@ -496,19 +466,13 @@ namespace otterbrix {
             manager_index_->bootstrap_dropped_sync(oid, delete_id);
         }
 
-        // Rebuild in-memory index against post-restart storage. CHECKPOINT
-        // compacts storage and renumbers physical row_ids contiguously; the
-        // on-disk index btree retains pre-compact row_ids, so the
-        // bootstrap_index_sync btree-load step seeds the in-memory engine
-        // with stale row_ids. Without this rebuild pass, post-restart
-        // equality lookups via index_scan return row_ids that no longer map
-        // to live storage rows and collection_t::fetch silently drops them
-        // (visible as `SELECT WHERE indexed_col = X` returning 0 instead of
-        // the expected row). We rescan storage for every indexed table and
-        // re-populate the engine using the current row_ids. Sync: must run
-        // before the scheduler starts (same window as the bootstrap_*_sync
-        // calls above). live_tables is the same oid set bootstrap_engine_sync
-        // walked, so we iterate it directly rather than re-scanning pg_class.
+        // Rebuild the in-memory index against post-restart storage. CHECKPOINT
+        // renumbers physical row_ids contiguously, but the on-disk btree retains
+        // pre-compact ids, so the bootstrap_index_sync load step seeds the engine
+        // with stale ids. Without this rescan, post-restart equality lookups
+        // return row_ids that no longer map to live rows and collection_t::fetch
+        // silently drops them (SELECT WHERE indexed_col = X returns 0 rows).
+        // Sync — same pre-scheduler-start window as the bootstrap_*_sync calls.
         for (auto oid : live_tables) {
             auto chunk = manager_disk_->scan_storage_for_rebuild_sync(oid, &resource);
             if (!chunk)

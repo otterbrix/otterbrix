@@ -179,11 +179,9 @@ namespace components::operators {
             }
         }
 
-        // Stamp resolved oids onto the logical-plan node so
-        // the dispatcher's validate / enrich / planner passes read them
-        // via plan_resolve_index_t.
-        // Stamped unconditionally (even when !found_) so callers can detect
-        // "name did not resolve" by checking node->table_oid() == INVALID_OID.
+        // Stamp resolved oids onto the node for the validate/enrich/planner
+        // passes (via plan_resolve_index_t). Stamped unconditionally, even when
+        // !found_, so callers detect "did not resolve" via table_oid() == INVALID_OID.
         if (target_node_) {
             target_node_->set_namespace_oid(namespace_oid_);
             target_node_->set_table_oid(table_oid_);
@@ -378,11 +376,9 @@ namespace components::operators {
                                                std::move(pa_vals));
             auto pa_rows = co_await std::move(paf);
 
-            // column visibility under this txn's snapshot.
-            // Column visible iff added_at_commit_id <= snapshot.start_time AND
-            // (dropped_at_commit_id == 0 OR dropped_at_commit_id > snapshot.start_time).
-            // attisdropped boolean tombstone is retained as a structural backup
-            // — set in lockstep with dropped_at_commit_id > 0.
+            // Column visible to this snapshot iff added_at_commit_id <= start_time
+            // AND (dropped_at_commit_id == 0 OR dropped_at_commit_id > start_time).
+            // attisdropped is a structural backup, set in lockstep with dropped_at > 0.
             const auto snapshot_start_time = ctx->txn.start_time;
             for (const auto& row : pa_rows) {
                 if (row.size() < 8)
@@ -390,7 +386,6 @@ namespace components::operators {
                 // Drop tombstones (attisdropped=true).
                 if (!row[7].is_null() && row[7].value<bool>())
                     continue;
-                // filter by MVCC commit-id fields if present.
                 if (row.size() > 10 && !row[10].is_null()) {
                     auto added_at = static_cast<uint64_t>(row[10].value<std::int64_t>());
                     if (added_at > snapshot_start_time)
@@ -474,9 +469,8 @@ namespace components::operators {
             target_node_->set_resolved_metadata(std::move(md));
         }
 
-        // materialize into output chunk. Position is a synthetic
-        // 1-based ordinal (matches manager_disk_resolve.cpp's synthetic
-        // attnum for relkind='g').
+        // Position is a synthetic 1-based ordinal (matches
+        // manager_disk_resolve.cpp's synthetic attnum for relkind='g').
         const auto row_count = rows.size();
         const uint64_t capacity = std::max<uint64_t>(row_count, vector::DEFAULT_VECTOR_CAPACITY);
         output_ = make_operator_data(resource_, out_types, capacity);

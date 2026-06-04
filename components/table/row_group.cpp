@@ -55,10 +55,8 @@ namespace components::table {
             assert(is_loaded_[c]);
             return *columns_[c];
         }
-        // Invariant violation: pointer-table desync during lazy column load.
         assert(column_pointers_.size() == columns_.size() &&
                "Lazy loading a column but the pointer was not set");
-        // Unreachable: get_column entered for a column that's neither loaded nor lazy-loadable.
         assert(false && "row_group_t::get_column: unknown error");
         std::abort();
     }
@@ -212,7 +210,6 @@ namespace components::table {
                 return true;
             }
             case expressions::compare_type::invalid: {
-                // Invariant: planner must not emit invalid compare_type for filters.
                 assert(false && "invalid type for filter selection");
                 std::abort();
             }
@@ -305,9 +302,8 @@ namespace components::table {
 
             uint64_t count;
             if (TYPE == table_scan_type::REGULAR) {
-                // REGULAR scans have no see-all fallback: state.txn must be a
-                // real transaction_data captured by transaction_manager, since
-                // its snapshot fields drive MVCC visibility here.
+                // REGULAR scans have no see-all fallback: state.txn must be a real
+                // transaction_data, as its snapshot fields drive MVCC visibility.
                 count = state.row_group->indexing_vector(state.txn,
                                                          state.vector_index,
                                                          state.valid_indexing,
@@ -445,7 +441,6 @@ namespace components::table {
                 templated_scan<table_scan_type::COMMITTED_ROWS>(state, result);
                 break;
             default:
-                // Invariant: planner must produce a known table_scan_type value.
                 assert(false && "Unrecognized table scan type");
                 std::abort();
         }
@@ -668,10 +663,8 @@ namespace components::table {
 
     uint64_t row_group_t::calculate_size() {
         vector::indexing_vector_t temp_indexing(collection().resource(), count);
-        // calculate_size is metadata accounting, not a user-facing scan, so it
-        // reads all committed rows: a UINT64_MAX horizon with an empty
-        // in_flight set passes the visibility filter for every committed
-        // insert_id < TRANSACTION_ID_START.
+        // Metadata accounting, not a user scan: a UINT64_MAX horizon + empty
+        // in_flight set is a see-all snapshot covering every committed row.
         transaction_data td(0, 0);
         td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
         return indexing_vector(td, index, temp_indexing, count);

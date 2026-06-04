@@ -33,12 +33,10 @@ namespace otterbrix {
 
     [[nodiscard]] std::pair<bool, actor_zeta::detail::enqueue_result>
     wrapper_dispatcher_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
-        // Dead code in production — wrapper.address() is never a send target.
-        // Exists only to satisfy has_enqueue_impl concept in actor-zeta 1.2.0.
-        // Forward to manager_dispatcher's mailbox and ignore the schedule hint
-        // (manager_dispatcher is actor_mixin, not a basic_actor — the
-        // mailbox-drain loop is owned by its own resume() driver, not by
-        // scheduler->enqueue(this)).
+        // Dead in production — wrapper.address() is never a send target. Exists
+        // only to satisfy the has_enqueue_impl concept; do not delete. The
+        // schedule hint is ignored because manager_dispatcher is an actor_mixin
+        // whose drain loop runs from its own resume(), not scheduler->enqueue.
         auto [_, res] = manager_dispatcher_->enqueue_impl(std::move(msg));
         return {false, res};
     }

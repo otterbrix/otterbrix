@@ -30,10 +30,10 @@ namespace components::table {
 
 namespace services::collection::executor {
 
-    // Accumulate per-table DML ranges across sub-plans so FK cascade DELETE
-    // on >=2 tables publishes each child's flip — previously
-    // last-DML-fragment-wins overwrote earlier ranges and silently dropped
-    // publishes for non-last child tables.
+    // One range per (table, DML fragment), accumulated across sub-plans.
+    // Must accumulate, not overwrite: FK cascade DELETE on >=2 tables emits a
+    // range per child table, and a single last-wins field would silently drop
+    // the publishes for every non-last child.
     struct dml_append_range_t {
         components::catalog::oid_t table_oid;
         int64_t row_start;
@@ -55,23 +55,20 @@ namespace services::collection::executor {
         // them onto transaction_t so operator_commit_transaction can patch
         // the rows after commit_id allocation.
         std::vector<components::pg_attribute_commit_id_backfill_t> pg_attribute_commit_id_backfills{};
-        // Per-range DML accumulators flowing through to the dispatcher's
-        // commit/abort phase. For the implicit (auto-commit)
-        // path these are populated and the dispatcher drives
+        // Per-range DML accumulators for the dispatcher's commit/abort phase.
+        // Implicit (auto-commit) path: populated, and the dispatcher drives
         // storage_publish_commit / commit_insert / publish() (or the abort
-        // mirror) per range. For the explicit BEGIN/COMMIT path these are
-        // EMPTY — ranges were drained into transaction_t and
-        // operator_commit_transaction_t will publish them in a batch.
-        // Non-pmr to match sub_plan_result_t's existing convention.
+        // mirror) per range. Explicit BEGIN/COMMIT path: EMPTY — ranges were
+        // drained into transaction_t and operator_commit_transaction_t
+        // publishes them in a batch.
         std::vector<dml_append_range_t> dml_appends{};
         std::vector<dml_delete_range_t> dml_deletes{};
         // True when this DML executed under an explicit SQL BEGIN — the
         // dispatcher must SKIP its DML commit/abort phase (ranges live on
         // transaction_t; operator_commit_transaction_t handles publish).
         bool explicit_txn_no_commit{false};
-        // Session timezone propagated to the dispatcher so it can construct
-        // components::execution_context_t for the storage_publish_* /
-        // commit_* / revert_* sends without re-resolving the session's tz.
+        // Session timezone, so the dispatcher can build execution_context_t for
+        // the storage_publish_* / commit_* / revert_* sends without re-resolving it.
         core::date::timezone_offset_t session_tz{};
     };
 
@@ -130,15 +127,10 @@ namespace services::collection::executor {
                                                      services::context_storage_t context_storage,
                                                      components::table::transaction_data txn);
 
-        // Executor takes over the full manager_dispatcher_t::execute_plan
-        // pipeline — catalog resolve, validate, enrich, planner.rewrite,
-        // optimizer, physical_plan_generator, then operator pipeline. The
-        // current execute_plan method runs the operator pipeline only;
-        // execute_plan_full adds the upstream stages so the dispatcher can
-        // shed them. Implementation: resolve loop → view splice → stamp +
-        // gather → validate / enrich / planner.rewrite, then delegates to
-        // execute_plan for the operator pipeline. Call signature parallels
-        // execute_plan but takes the unrewritten logical_plan.
+        // Runs the full pipeline on an unrewritten logical_plan: catalog
+        // resolve loop, view splice, stamp + gather, validate, enrich,
+        // planner.rewrite, then delegates to execute_plan for the operator
+        // pipeline (which execute_plan runs on its own).
         unique_future<execute_result_t>
         execute_plan_full(components::session::session_id_t session,
                           components::logical_plan::node_ptr logical_plan,
@@ -161,10 +153,6 @@ namespace services::collection::executor {
         // different executor slices) fall back to the dispatcher's
         // `collections_` set; intra-partition DML / DDL can probe
         // `find_local_collection(oid)` before paying that mailbox hop.
-        //
-        // If ownership migration later requires moving state into this slot,
-        // the path is a pmr-allocated owning handle reachable only from this
-        // actor (so it stays single-actor-private).
         struct local_collection_entry_t {
             components::catalog::oid_t oid{components::catalog::INVALID_OID};
             std::string database;
@@ -172,9 +160,6 @@ namespace services::collection::executor {
             std::string name;
         };
 
-        // Kept as an alias for the dispatcher fanout signature continuity —
-        // its body now constructs `local_collection_entry_t` directly. The
-        // typedef is no longer used as a transport type.
         using collection_ptr_t = local_collection_entry_t;
 
         unique_future<void> register_collection_local(components::session::session_id_t session,
@@ -224,12 +209,9 @@ namespace services::collection::executor {
         // Keeps fire-and-forget WAL flush futures alive until they resolve.
         std::pmr::vector<unique_future<void>> pending_void_;
 
-        // collections_ partition slice owned by this executor — holds oids
-        // where (oid % executor_pool_size_) == own_index. Populated by
-        // register_collection_local mailbox handler, cleared by
-        // unregister_collection_local. execute_plan probes this map via
-        // find_local_collection(oid) before falling back to the
-        // dispatcher.collections_ cross-partition path. By-value POD entries —
+        // This executor's collections_ partition slice: oids where
+        // (oid % executor_pool_size_) == own_index, populated/cleared by the
+        // register/unregister_collection_local handlers. By-value POD entries —
         // no shared mutable state with the dispatcher.
         std::pmr::unordered_map<components::catalog::oid_t, local_collection_entry_t> local_collections_;
 

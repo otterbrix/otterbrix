@@ -142,14 +142,14 @@ namespace services::index {
             {
                 std::ofstream output(temp_path, std::ios::trunc);
                 if (!output.good()) {
-                    // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
+                    // -fno-exceptions build: abort instead of throw on I/O failure.
                     assert(false && "bitcask I/O failure");
                     std::abort();
                 }
                 output << segment_id;
                 output.flush();
                 if (!output.good()) {
-                    // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
+                    // -fno-exceptions build: abort instead of throw on I/O failure.
                     assert(false && "bitcask I/O failure");
                     std::abort();
                 }
@@ -199,9 +199,8 @@ namespace services::index {
                                                           resource_);
         load_from_disk();
         if (crc_failure_) {
-            // Direct-ctor callers don't expect recovery to fail. Preserve the
-            // legacy assertion+abort contract — only the factory tolerates
-            // CRC mismatch and converts it to a core::error_t.
+            // Direct ctor aborts on corruption; only create() tolerates a CRC
+            // mismatch and turns it into a core::error_t.
             assert(false && "bitcask I/O failure: direct ctor saw CRC mismatch");
             std::abort();
         }
@@ -214,9 +213,8 @@ namespace services::index {
                                   std::pmr::memory_resource* resource,
                                   uint64_t flush_threshold,
                                   uint64_t segment_record_limit) {
-        // skip_load ctor performs no disk I/O — staging load_from_disk()
-        // separately lets the factory surface CRC failure as core::error_t
-        // before open_active_segment() runs.
+        // skip_load ctor does no I/O, so we can run load_from_disk() and check
+        // crc_failure_ before open_active_segment().
         auto instance = std::unique_ptr<bitcask_index_disk_t>(
             new bitcask_index_disk_t(path, resource, flush_threshold, segment_record_limit, skip_load_tag{}));
         instance->load_from_disk();
@@ -273,7 +271,7 @@ namespace services::index {
     uint32_t bitcask_index_disk_t::segment_id_from_path(const std::filesystem::path& path) {
         uint64_t id = 0;
         if (!parse_segment_id(path, id)) {
-            // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
+            // -fno-exceptions build: abort instead of throw on I/O failure.
             assert(false && "bitcask I/O failure");
             std::abort();
         }
@@ -292,7 +290,7 @@ namespace services::index {
         for (auto& segment : segments) {
             auto f = open_file(fs_, segment.path, file_flags::READ, file_lock_type::NO_LOCK);
             if (!f) {
-                // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
+                // -fno-exceptions build: abort instead of throw on I/O failure.
                 assert(false && "bitcask I/O failure");
                 std::abort();
             }
@@ -322,10 +320,9 @@ namespace services::index {
                     calc = absl::ExtendCrc32c(calc, absl::string_view(payload.data(), payload.size()));
                 }
                 if (static_cast<uint32_t>(calc) != header.crc) {
-                    // CRC mismatch — segment corruption. Set the recovery
-                    // failure flag instead of aborting so the factory caller
-                    // can surface a core::error_t. Trusted callers (direct
-                    // ctor) check this flag post-load and assert.
+                    // Segment corruption: flag and return rather than abort, so
+                    // create() can report a core::error_t. The direct ctor checks
+                    // this flag post-load and asserts.
                     crc_failure_ = true;
                     return;
                 }
@@ -397,7 +394,7 @@ namespace services::index {
                           file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                           file_lock_type::NO_LOCK);
         if (!file_) {
-            // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
+            // -fno-exceptions build: abort instead of throw on I/O failure.
             assert(false && "bitcask I/O failure");
             std::abort();
         }
@@ -545,14 +542,14 @@ namespace services::index {
         {
             std::ofstream out(temp_path, std::ios::trunc);
             if (!out.good()) {
-                // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
+                // -fno-exceptions build: abort instead of throw on I/O failure.
                 assert(false && "bitcask I/O failure");
                 std::abort();
             }
             out << offset;
             out.flush();
             if (!out.good()) {
-                // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
+                // -fno-exceptions build: abort instead of throw on I/O failure.
                 assert(false && "bitcask I/O failure");
                 std::abort();
             }
@@ -592,7 +589,7 @@ namespace services::index {
                                       file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                                       file_lock_type::NO_LOCK);
             if (!txn_log_file_) {
-                // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
+                // -fno-exceptions build: abort instead of throw on I/O failure.
                 assert(false && "bitcask I/O failure");
                 std::abort();
             }
@@ -625,7 +622,7 @@ namespace services::index {
                 break;
             }
             if (header.magic != txn_magic) {
-                // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
+                // -fno-exceptions build: abort instead of throw on I/O failure.
                 assert(false && "bitcask I/O failure");
                 std::abort();
             }
@@ -645,7 +642,7 @@ namespace services::index {
                 calc = absl::ExtendCrc32c(calc, absl::string_view(payload.data(), payload.size()));
             }
             if (static_cast<uint32_t>(calc) != header.crc) {
-                // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
+                // -fno-exceptions build: abort instead of throw on I/O failure.
                 assert(false && "bitcask I/O failure");
                 std::abort();
             }
@@ -660,7 +657,7 @@ namespace services::index {
                 } else if (header.op_kind == 2) {
                     remove(key, row_id);
                 } else {
-                    // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
+                    // -fno-exceptions build: abort instead of throw on I/O failure.
                     assert(false && "bitcask I/O failure");
                     std::abort();
                 }
@@ -680,7 +677,7 @@ namespace services::index {
                                       file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                                       file_lock_type::NO_LOCK);
             if (!txn_log_file_) {
-                // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
+                // -fno-exceptions build: abort instead of throw on I/O failure.
                 assert(false && "bitcask I/O failure");
                 std::abort();
             }
@@ -708,7 +705,7 @@ namespace services::index {
                                       file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                                       file_lock_type::NO_LOCK);
             if (!txn_log_file_) {
-                // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
+                // -fno-exceptions build: abort instead of throw on I/O failure.
                 assert(false && "bitcask I/O failure");
                 std::abort();
             }
@@ -889,7 +886,7 @@ namespace services::index {
                                      file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                                      file_lock_type::NO_LOCK);
         if (!merged_file) {
-            // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
+            // -fno-exceptions build: abort instead of throw on I/O failure.
             assert(false && "bitcask I/O failure");
             std::abort();
         }
@@ -926,7 +923,7 @@ namespace services::index {
         merged_file->sync();
         merged_file.reset();
         if (!move_files(fs_, temp_path, merged_path)) {
-            // I/O failure: -fno-exceptions => conservative-fail (TODO error_code).
+            // -fno-exceptions build: abort instead of throw on I/O failure.
             assert(false && "bitcask I/O failure");
             std::abort();
         }

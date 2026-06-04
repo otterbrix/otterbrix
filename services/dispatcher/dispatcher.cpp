@@ -90,12 +90,8 @@ using namespace components::types;
 namespace services::dispatcher {
 
     namespace catalog = components::catalog;
-    // Resolve helpers shared with the executor live in services::catalog_resolve;
-    // this alias keeps dispatcher.cpp call sites short.
     namespace catalog_resolve = services::catalog_resolve;
 
-    // Back-compat using-decls so dispatcher call sites can keep spelling these
-    // helpers unqualified (definitions in enrich_logical_plan.{hpp,cpp}).
     using catalog_resolve::build_type_search_path_str;
     using catalog_resolve::drop_target_names_from_resolves;
     using catalog_resolve::effective_root_node;
@@ -108,11 +104,9 @@ namespace services::dispatcher {
             return r ? r->type() : components::logical_plan::node_type::unused;
         }
 
-        // subscriber-kind discriminator. Shared between
-        // on_drop_resource_marked / on_subscriber_empty (dispatcher side) and the
-        // subscriber's `on_horizon_advanced` ack send back to the dispatcher.
-        // Two kinds today (disk + index); future subscribers (e.g. matview
-        // refresh tracker) would extend this enum.
+        // subscriber-kind discriminator carried in the on_drop_resource_marked /
+        // on_subscriber_empty / on_horizon_advanced messages between the
+        // dispatcher and its drop-GC subscribers.
         constexpr uint8_t DISK_KIND = 1;
         constexpr uint8_t INDEX_KIND = 2;
 
@@ -143,18 +137,17 @@ namespace services::dispatcher {
         trace(log_, "manager_dispatcher_t::manager_dispatcher_t");
 
         // Event-loop-in-thread model. enqueue_impl (any sender thread) only
-        // pushes the message into the lock-free inbox_ and notifies pump_cv_;
-        // this thread owns ALL processing. The in-flight slot list is LOCAL to
-        // the loop (allocated here; resource() is a synchronized_pool_resource,
-        // thread-safe) so no mutex is needed across the phase logic.
+        // pushes into the lock-free inbox_ and notifies pump_cv_; this thread
+        // owns ALL processing. The in-flight slot list is LOCAL to the loop, so
+        // no mutex guards the phase logic (resource() is a thread-safe
+        // synchronized_pool_resource).
         loop_thread_ = std::thread([this] {
             std::pmr::list<in_flight_entry_t> in_flight(resource());
             uint32_t loop_ticks = 0;
             while (loop_running_.load(std::memory_order_acquire)) {
-                // Drain the lock-free inbox into local slots. release()/re-wrap
-                // round-trips ownership of the message back into a message_ptr;
-                // the coroutine created below holds a raw pointer into it, so
-                // pending_msg must outlive the behavior.
+                // Drain the inbox into local slots, re-wrapping each raw pointer
+                // into a message_ptr. The behavior created below holds a raw
+                // pointer into the message, so pending_msg must outlive it.
                 actor_zeta::mailbox::message* raw = nullptr;
                 while (inbox_.pop(raw)) {
                     in_flight.emplace_back();
@@ -165,12 +158,11 @@ namespace services::dispatcher {
                 while (progress) {
                     progress = false;
 
-                    // (a) Create behavior for the first slot that still needs
-                    //     one. pending_msg STAYS in the slot — the coroutine
-                    //     holds a raw pointer to the message across suspension
-                    //     points. The behavior coroutine runs HERE, on the loop
-                    //     thread, until its first co_await. Marker = behavior
-                    //     handle null (not yet created).
+                    // (a) Create behavior for the first slot that needs one
+                    //     (marker: behavior handle still null). The coroutine
+                    //     runs on this loop thread until its first co_await and
+                    //     holds a raw pointer into pending_msg across suspension,
+                    //     so pending_msg must STAY in the slot.
                     {
                         in_flight_entry_t* slot = nullptr;
                         for (auto& e : in_flight) {
@@ -210,9 +202,9 @@ namespace services::dispatcher {
                         }
                     }
 
-                    // (c) Erase ONE done slot per pass. "Done" = behavior
-                    //     created (handle non-null) AND completed. behavior +
-                    //     pending_msg destruct naturally on this thread.
+                    // (c) Erase one done slot, then restart the pass (the erase
+                    //     invalidates the iteration). behavior + pending_msg
+                    //     destruct on this thread.
                     for (auto it = in_flight.begin(); it != in_flight.end(); ++it) {
                         if (it->behavior && it->behavior.done()) {
                             in_flight.erase(it);
@@ -251,7 +243,7 @@ namespace services::dispatcher {
                                                             kSentinelOid);
                             if (ns)
                                 scheduler_->enqueue(ex.get());
-                            (void) f; // dropped future is memory-safe (Last-One-Out)
+                            (void) f; // safe to drop: dealloc happens when the last of future/promise releases
                         }
                     }
                     for (auto& e : in_flight) e.stale_ticks = 0; // backoff: re-arm threshold
@@ -267,9 +259,9 @@ namespace services::dispatcher {
                 // empty() and wait_for; bounded by the 100µs timeout
                 // (staleness, not loss).
             }
-            // Local in_flight destructs HERE on the loop thread: any still-
-            // suspended behaviors are destroyed safely (~behavior_t destroys
-            // suspended frames; Last-One-Out frees state).
+            // Local in_flight destructs HERE on the loop thread: still-suspended
+            // behaviors are destroyed safely (~behavior_t destroys suspended
+            // frames; future/promise state freed on last release).
         });
     }
 
@@ -392,26 +384,15 @@ namespace services::dispatcher {
         trace(log_, "manager_dispatcher_t: spawned {} executors with WAL/Disk/Index addresses", executor_pool_size_);
     }
 
-    // selective-broadcast helper. Called inline from commit_txn /
-    // abort_txn handler bodies (wiring deferred to follow-up). When
-    // the lowest_active_start_time advances past the cached
-    // `last_broadcast_horizon_`, fan out `on_horizon_advanced(new_lowest)` to
-    // every subscriber whose dropped-resource flag is set. Subscribers without
-    // outstanding drops are skipped entirely (no message bursts on commits
-    // when nothing is queued for GC).
     void manager_dispatcher_t::try_trigger_cleanup_if_horizon_advanced() noexcept {
         auto new_lowest = txn_manager_.lowest_active_start_time();
         if (new_lowest > last_broadcast_horizon_) {
             last_broadcast_horizon_ = new_lowest;
             if (disk_has_dropped_ && disk_address_ != actor_zeta::address_t::empty_address()) {
-                // Fire-and-forget: subscriber acks asynchronously via
-                // on_subscriber_empty mailbox message. pending_void_ is pure GC
-                // bookkeeping for these broadcast futures — poll_pending() drains
-                // them non-blockingly via is_ready(). Dropping the future
-                // immediately would also be memory-safe (the library's
-                // Last-One-Out protocol — future.hpp release_future only flags,
-                // the dealloc happens on the later of future/promise release), so
-                // this is bookkeeping, not a lifetime requirement.
+                // Fire-and-forget (subscriber acks via on_subscriber_empty).
+                // Parking the future on pending_void_ is just bookkeeping —
+                // poll_pending() drains it via is_ready(); dropping it instead
+                // would be memory-safe too.
                 auto disk_send_result =
                     actor_zeta::send(disk_address_,
                                      &services::disk::manager_disk_t::on_horizon_advanced,
@@ -430,9 +411,6 @@ namespace services::dispatcher {
 
     manager_dispatcher_t::unique_future<void>
     manager_dispatcher_t::on_drop_resource_marked(uint8_t subscriber_kind) {
-        // DROP TABLE / DROP INDEX path emits this on the dispatcher's mailbox
-        // so the broadcast helper above starts sending horizon-advance
-        // notifications to the owning subscriber.
         if (subscriber_kind == DISK_KIND) {
             disk_has_dropped_ = true;
         } else if (subscriber_kind == INDEX_KIND) {
@@ -443,9 +421,6 @@ namespace services::dispatcher {
 
     manager_dispatcher_t::unique_future<void>
     manager_dispatcher_t::on_subscriber_empty(uint8_t subscriber_kind) {
-        // Subscriber's dropped_storages_ queue drained — stop broadcasting
-        // horizon updates to it until the next DROP marks something pending
-        // again.
         if (subscriber_kind == DISK_KIND) {
             disk_has_dropped_ = false;
         } else if (subscriber_kind == INDEX_KIND) {
@@ -503,9 +478,9 @@ namespace services::dispatcher {
             auto names = drop_target_names_from_resolves(plan.get());
             drop_target_collection = qualified_name_t{names.first, names.second};
         }
-        // SET TIMEZONE: capture name before the planner consumes the node so
-        // the dispatcher can update default_tz_cat_ (single-owner per rule 10)
-        // after the operator pipeline confirms pg_settings was persisted.
+        // SET TIMEZONE: capture the name before the planner consumes the node,
+        // so the dispatcher can update its solely-owned default_tz_cat_ once the
+        // operator pipeline confirms pg_settings was persisted.
         std::pmr::string pending_set_tz_name{resource()};
         if (original_type == node_type::set_timezone_t) {
             auto* tz_node = static_cast<components::logical_plan::node_set_timezone_t*>(
@@ -691,11 +666,10 @@ namespace services::dispatcher {
             original_type == node_type::drop_view_t || original_type == node_type::drop_macro_t ||
             original_type == node_type::create_database_t || original_type == node_type::alter_table_t ||
             original_type == node_type::create_matview_t;
-        // DML txn begins here (not in executor::execute_plan) to avoid the
+        // DML txn begins here (not in executor::execute_plan) to dodge the
         // cross-actor await + cooperative_actor.hpp framework bug. The executor
         // receives txn_data via the execute_plan(_full) parameter and uses it for
-        // its DML path, skipping its own redundant txn_begin_msg send. Hoisted out
-        // of an inner scope so the DML auto-commit block below can read it.
+        // its DML path, skipping its own redundant txn_begin_msg send.
         const bool needs_dml_txn =
             original_type == node_type::insert_t || original_type == node_type::update_t ||
             original_type == node_type::delete_t;
@@ -708,22 +682,15 @@ namespace services::dispatcher {
         }
 
         collection::executor::execute_result_t exec_result;
-        // Route execution by the effective consumer type;
-        // see comments above the validate switch.
         switch (original_type) {
             case node_type::alter_table_t: {
-                // ALTER TABLE is normally rewritten by the planner into
-                // sequence_t(alter_column_{add,rename,drop}_t × N). Reaching this
-                // case means rewrite_alter_table bailed out because table_oid was
-                // not resolved by enrich (table not found); return no-op success
-                // and let the validate/enrich layer surface a hard error.
-                //
-                // This switch routes by `original_type`, so we still see
-                // alter_table_t here even AFTER the planner has rewritten the
-                // plan into sequence_t. Distinguish the genuine bailout
-                // (logic_plan->type() still alter_table_t) from the
-                // already-rewritten case (logic_plan is sequence_t) — the
-                // latter must run through the executor like every other DDL.
+                // This switch routes by original_type, so alter_table_t is still
+                // seen here even after the planner rewrote the plan into
+                // sequence_t(alter_column_{add,rename,drop}_t × N). A logic_plan
+                // still typed alter_table_t means rewrite_alter_table bailed
+                // (table_oid unresolved by enrich) — return no-op success and let
+                // validate/enrich surface the hard error. The already-rewritten
+                // sequence_t case runs through the executor like any other DDL.
                 if (logic_plan->type() == node_type::alter_table_t) {
                     exec_result = {make_cursor(resource()), {}, {}, {}, {}};
                 } else {
@@ -737,17 +704,12 @@ namespace services::dispatcher {
         }
 
         // ===== DML auto-commit / abort phase =====
-        // Runs here, not in services/collection/executor.cpp, to escape the
-        // cooperative_actor.hpp framework bug that hangs the executor on
-        // multi-await sequences. actor_mixin pump (this actor) drives the
-        // chain — txn_manager_.commit() → storage_publish_* fanout →
-        // index commit_insert/commit_delete fanout → WAL commit_txn (real
-        // commit_id) → txn_manager_.publish() — and mirrors the abort cascade
-        // on failure. txn_manager_ is dispatcher's own member (intra-actor
-        // sync access is OK, no shared state across actors). All cross-actor
-        // calls go through actor_zeta::send + unique_future<value-type>.
-        // No exceptions; index commit errors flip cursor via make_cursor
-        // and run the abort cascade by disjunction (no goto).
+        // Runs here, not in executor.cpp, to escape the cooperative_actor.hpp
+        // framework bug that hangs the executor on multi-await sequences: this
+        // actor's pump drives the commit chain (txn commit → storage_publish_*
+        // → index commit → WAL commit_txn → txn publish) and the abort mirror.
+        // txn_manager_ is this dispatcher's own member, so the sync calls are
+        // intra-actor; every cross-actor step goes through actor_zeta::send.
         if (needs_dml_txn && !exec_result.explicit_txn_no_commit) {
             bool need_abort = false;
 
@@ -756,7 +718,7 @@ namespace services::dispatcher {
                 uint64_t commit_id = txn_manager_.commit(session);
                 core::error_t commit_err = core::error_t::no_error();
 
-                // Per-range storage publish + index commit_insert.
+                // Per-range insert publish + index commit_insert.
                 for (auto& app : exec_result.dml_appends) {
                     components::execution_context_t ctx{session,
                                                         txn_data,
@@ -816,10 +778,9 @@ namespace services::dispatcher {
                     }
                 }
 
-                // Batched pg_catalog publish (DML typically empty; kept for
-                // symmetry with explicit-txn commit operator path). Moves the
-                // vectors out of exec_result so the downstream merge block
-                // below is a no-op (no double-push onto transaction_t).
+                // Batched pg_catalog publish (DML typically empty). Moves the
+                // vectors out of exec_result so the downstream merge block below
+                // is a no-op — otherwise they get double-pushed onto transaction_t.
                 if (!need_abort && !exec_result.pg_catalog_appends.empty()) {
                     components::execution_context_t pgc_ctx{session, txn_data, {}};
                     auto [_pc, pcf] = actor_zeta::send(disk_address_,
@@ -840,15 +801,14 @@ namespace services::dispatcher {
                 }
 
                 if (need_abort) {
-                    // Flip cursor; the abort phase below runs by disjunction
-                    // (need_abort || cursor->is_error()) — no goto.
+                    // Flip cursor to error; the abort phase below then fires via
+                    // its (need_abort || cursor->is_error()) guard.
                     exec_result.cursor = make_cursor(resource(), std::move(commit_err));
                 } else {
-                    // WAL commit_txn carries the real commit_id (mirrors the
-                    // ordering the old executor's commit phase used:
-                    // storage_publish_* → WAL commit_txn → txn_manager publish).
-                    // Snapshot-aware replay restores published_horizon_ from
-                    // this record's commit_id.
+                    // WAL commit_txn must carry the real commit_id, after the
+                    // storage_publish_* sends and before txn_manager_.publish():
+                    // snapshot-aware replay restores published_horizon_ from this
+                    // record's commit_id.
                     if (wal_address_ != actor_zeta::address_t::empty_address()) {
                         constexpr auto db_oid = components::catalog::well_known_oid::main_database;
                         auto [_wc, wcf] = actor_zeta::send(wal_address_,
@@ -860,8 +820,8 @@ namespace services::dispatcher {
                                                           commit_id);
                         co_await std::move(wcf);
                     }
-                    // ProcArray publish barrier (sync intra-actor) — after
-                    // this call concurrent readers see commit_id as visible.
+                    // ProcArray publish barrier — after this, concurrent readers
+                    // see commit_id as visible.
                     txn_manager_.publish(commit_id);
                 }
             }
@@ -905,18 +865,15 @@ namespace services::dispatcher {
             }
         }
 
-        // Hand pg_catalog swap-info up to the transaction so commit/abort
-        // operators (or the inline DDL commit blocks below) can apply
-        // storage_publish_commits / storage_revert_appends after txn_manager_.commit()/abort().
-        // Skip txn=0 (auto-commit / bootstrap path).
-        // Note: for the DML auto-commit path above, exec_result.pg_catalog_*
-        // were moved out into storage_publish_commits/_deletes (or
-        // storage_revert_appends), so the loops below iterate empty ranges —
-        // no double-merge onto txn_t.
-        // THREADING: transaction_t body is single-owner-thread per session
-        // (see transaction.hpp) — this merge runs on the dispatcher loop thread
-        // strictly AFTER the executor's accumulate_* (we co_awaited its result
-        // future above; release/acquire edge). Never mutate the body concurrently.
+        // Hand pg_catalog swap-info up to the transaction so the commit/abort
+        // operators (or the inline DDL commit blocks below) can apply it after
+        // txn_manager_.commit()/abort(). Skip txn=0 (auto-commit / bootstrap).
+        // For the DML auto-commit path above these vectors were already moved
+        // out, so the loops here run empty — no double-merge onto txn_t.
+        // THREADING: transaction_t's body is single-owner-thread per session
+        // (see transaction.hpp). This merge runs on the dispatcher loop thread
+        // strictly AFTER the executor's accumulate_* (co_awaited above —
+        // release/acquire edge); never mutate the body concurrently.
         if (txn_data.transaction_id != 0) {
             if (auto* txn_t = txn_manager_.find_transaction(session)) {
                 for (auto& a : exec_result.pg_catalog_appends) {
@@ -964,11 +921,10 @@ namespace services::dispatcher {
                 t == node_type::drop_view_t || t == node_type::drop_macro_t || t == node_type::alter_table_t ||
                 t == node_type::create_matview_t) {
                 // DDL commit goes through operator_commit_transaction_t in
-                // ddl-commit mode. The operator performs flush (durability
-                // barrier) + wal::commit_txn + txn_manager.commit +
-                // storage_publish_commits/deletes (steps 1-6). Step 7
-                // (CREATE INDEX backfill commit_insert) stays inline below
-                // because it depends on plan structure.
+                // ddl-commit mode: flush (durability barrier) + wal::commit_txn +
+                // txn_manager.commit + storage_publish_commits/deletes. The
+                // CREATE INDEX backfill commit_insert stays inline below instead
+                // (it depends on plan structure the operator can't see).
                 std::uint64_t commit_id = 0;
                 {
                     constexpr auto db_oid = components::catalog::well_known_oid::main_database;
@@ -1014,7 +970,7 @@ namespace services::dispatcher {
                                         ->commit_id();
                     }
                 }
-                // Step 7 (inline, see above): drive index commit_insert for CREATE INDEX.
+                // Inline CREATE INDEX backfill: drive index commit_insert.
                 if (commit_id > 0 && original_type == node_type::create_index_t &&
                     index_address_ != actor_zeta::address_t::empty_address()) {
                     auto* root_after_plan = effective_root_node(logic_plan.get());
@@ -1052,13 +1008,11 @@ namespace services::dispatcher {
                         auto* cm = static_cast<const node_create_matview_t*>(mv_node);
                         auto names = drop_target_names_from_resolves(logic_plan.get());
                         collections_.insert(qualified_name_t{names.first, cm->matviewname()});
-                        // Fan-out the new oid to the owning executor slice
+                        // Fan-out the new oid to its owning executor slice
                         // (single send, NOT broadcast) so it can populate its
-                        // local_collections_ slot with a by-value POD entry — a
-                        // shared collection_t pointer would be mutable state shared
-                        // across actors. The executor uses find_local_collection(oid)
-                        // in execute_plan for intra-partition probes; cross-partition
-                        // queries still read dispatcher.collections_ (not yet migrated).
+                        // local_collections_ slot. By-value POD entry only — a
+                        // shared collection_t pointer would be mutable state
+                        // shared across actors.
                         const auto mv_oid = cm->matview_oid();
                         if (mv_oid != components::catalog::INVALID_OID && !executors_.empty()) {
                             const std::size_t pool_idx =
@@ -1066,8 +1020,8 @@ namespace services::dispatcher {
                             collection::executor::executor_t::local_collection_entry_t entry;
                             entry.oid = mv_oid;
                             entry.database = names.first;
-                            // schema not surfaced by drop_target_names_from_resolves;
-                            // left empty until a later migration carries it through.
+                            // schema left empty: drop_target_names_from_resolves
+                            // does not surface it.
                             entry.name = cm->matviewname();
                             auto reg = actor_zeta::otterbrix::send(
                                 executor_addresses_[pool_idx],
@@ -1078,13 +1032,9 @@ namespace services::dispatcher {
                             if (reg.first && executors_[pool_idx]) {
                                 scheduler_->enqueue(executors_[pool_idx].get());
                             }
-                            // Park the unique_future<void> on pending_void_ as
-                            // GC bookkeeping; poll_pending() drains it via
-                            // is_ready() once register_collection_local completes
-                            // on the executor side. Not a lifetime requirement —
-                            // dropping the future immediately would also be
-                            // memory-safe (library Last-One-Out protocol);
-                            // parking merely batches the release.
+                            // Park the future on pending_void_ as GC bookkeeping
+                            // (poll_pending() drains it via is_ready()); dropping
+                            // it instead would be memory-safe too.
                             pending_void_.emplace_back(std::move(reg.second));
                         }
                     }
@@ -1099,12 +1049,10 @@ namespace services::dispatcher {
                             static_cast<node_create_collection_t*>(root_after_plan->children().front().get());
                         auto names = drop_target_names_from_resolves(logic_plan.get());
                         collections_.insert(qualified_name_t{names.first, cc_child->relname()});
-                        // See create_matview_t fanout above. The planner stamps
-                        // the freshly-allocated oid on the create_collection_t
-                        // node via set_table_oid (OID allocation lives in
-                        // executor_t::execute_plan_full). Entry is a by-value POD —
-                        // a shared collection_t pointer between dispatcher and
-                        // executor would be mutable state shared across actors.
+                        // Fan-out to the owning executor slice — see the
+                        // create_matview_t branch above. The oid was stamped on
+                        // the create_collection_t node by the planner (OID
+                        // allocation lives in executor_t::execute_plan_full).
                         const auto cc_oid = cc_child->table_oid();
                         if (cc_oid != components::catalog::INVALID_OID && !executors_.empty()) {
                             const std::size_t pool_idx =
@@ -1112,8 +1060,8 @@ namespace services::dispatcher {
                             collection::executor::executor_t::local_collection_entry_t entry;
                             entry.oid = cc_oid;
                             entry.database = names.first;
-                            // schema not surfaced by drop_target_names_from_resolves;
-                            // left empty until a later migration carries it through.
+                            // schema left empty: drop_target_names_from_resolves
+                            // does not surface it.
                             entry.name = cc_child->relname();
                             auto reg = actor_zeta::otterbrix::send(
                                 executor_addresses_[pool_idx],
@@ -1321,12 +1269,11 @@ namespace services::dispatcher {
         for (auto oid : dependency_oids) {
             context_copy.known_oids.insert(oid);
         }
-        // Forward resolve_table metadata (relkind + live columns)
-        // so plan generators can build transfer_scan with the right
-        // projection mask instead of inlining pg_class / pg_computed_column
-        // scans. Gather a local index from the plan tree (execute_plan_impl
-        // is callable from sub-plan execution where the caller's
-        // dispatcher_idx isn't visible).
+        // Forward resolve_table metadata (relkind + live columns) so plan
+        // generators build transfer_scan with the right projection mask instead
+        // of inlining pg_class / pg_computed_column scans. Gather a local index
+        // here because execute_plan_impl is also called from sub-plan execution,
+        // where the caller's dispatcher_idx isn't visible.
         {
             catalog_resolve::plan_resolve_index_t local_idx;
             catalog_resolve::gather_plan_resolve_index(logical_plan.get(), local_idx);
@@ -1354,11 +1301,9 @@ namespace services::dispatcher {
               "manager_dispatcher_t:execute_plan_impl: calling executor[{}] (full_pipeline={})",
               pool_idx,
               use_executor_full_pipeline ? "yes" : "no");
-        // execute_plan and execute_plan_full share the exact same call signature
-        // (see executor.hpp) so they have identical member-function-pointer types.
-        // The constexpr ternary collapses at compile time to a single pointer —
-        // no runtime branch, no dead-code warning. The flag must stay paired with
-        // executor.cpp's `enable_pass2_rewrites` (see the note at its definition).
+        // execute_plan and execute_plan_full share a call signature, so they
+        // have identical member-function-pointer types and this constexpr
+        // ternary collapses to a single pointer (no runtime branch).
         constexpr auto execute_method =
             use_executor_full_pipeline ? &collection::executor::executor_t::execute_plan_full
                                        : &collection::executor::executor_t::execute_plan;
@@ -1387,9 +1332,7 @@ namespace services::dispatcher {
         co_return txn.data();
     }
 
-    // low-level wrappers. Each handler runs inside
-    // the dispatcher's actor context, so the underlying txn_manager_ mutation
-    // happens on a single owner — the executor only ever talks via mailbox.
+    // Low-level txn_manager_ wrappers for the executor (see header).
     manager_dispatcher_t::unique_future<components::table::transaction_data>
     manager_dispatcher_t::txn_begin_msg(components::session::session_id_t session) {
         trace(log_, "manager_dispatcher_t::txn_begin_msg, session: {}", session.data());

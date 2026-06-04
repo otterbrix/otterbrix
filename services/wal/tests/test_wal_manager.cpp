@@ -31,11 +31,10 @@ using namespace components::types;
 namespace catalog = components::catalog;
 
 #if defined(OTTERBRIX_TSAN_ENABLED)
-// TSAN cannot see through synchronized_pool_resource's internal mutex,
-// causing false-positive data-race reports on cross-thread memory reuse
-// (manager loop thread vs scheduler workers) — same class of FP as the
-// base_spaces.hpp tsan_resource_t workaround. Delegate to
-// new_delete_resource, whose malloc/free edges TSAN models natively.
+// TSAN can't see through synchronized_pool_resource's internal mutex and
+// false-positives on cross-thread memory reuse (manager loop vs scheduler
+// workers). Delegate to new_delete_resource, whose edges TSAN models natively
+// (same workaround as base_spaces.hpp tsan_resource_t).
 struct test_pool_resource_t final : std::pmr::memory_resource {
 protected:
     void* do_allocate(size_t bytes, size_t align) override {
@@ -50,18 +49,14 @@ protected:
 using test_pool_resource_t = std::pmr::synchronized_pool_resource;
 #endif
 
-// ---------------------------------------------------------------------------
 // The manager self-drives on an internal loop thread and runs its children on
-// the (already started) real shared_work scheduler, so futures returned from a
-// send() to the manager become ready ASYNCHRONOUSLY. Bounded-yield-poll until
-// the future is ready, then take it. take_ready() asserts readiness, so the
-// guard must precede every take.
-// ---------------------------------------------------------------------------
+// the real shared_work scheduler, so futures from a send() to it become ready
+// asynchronously. Poll until ready before take_ready (which asserts readiness).
 template<typename F>
 static decltype(auto) await_ready(F& fut) {
-    // Wall-clock deadline (not iteration-bounded): under TSAN or parallel-
-    // ctest CPU oversubscription the manager-loop -> scheduler-worker
-    // round-trip can outlast any fixed yield budget.
+    // Wall-clock deadline, not iteration-bounded: under TSAN or parallel-ctest
+    // CPU oversubscription the manager-loop -> worker round-trip can outlast any
+    // fixed yield budget.
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::yield();
@@ -100,7 +95,8 @@ struct test_wal_manager {
     }
 
     ~test_wal_manager() {
-        // stop the scheduler FIRST (joins workers; children stop executing), then destroy the manager (joins its loop; post-stop enqueues are benign pushes into the stopped scheduler).
+        // Stop the scheduler first (joins workers, children stop), then destroy
+        // the manager; any post-stop enqueues land harmlessly in the dead scheduler.
         scheduler_->stop();
         manager_.reset();
         std::filesystem::remove_all(path_);
@@ -178,8 +174,8 @@ struct test_wal_manager {
 TEST_CASE("wal_manager::route_by_database_oid") {
     test_wal_manager env(base_mgr_path / "route_db");
 
-    // Await both inserts: processing is asynchronous now (event-loop manager),
-    // and the filesystem check below must not race the WAL writes.
+    // Await both inserts: processing is async, and the filesystem check below
+    // must not race the WAL writes.
     auto f1 = env.send_insert(kTestTableOidA, /*txn_id=*/100, /*row_count=*/5);
     auto f2 = env.send_insert(kTestTableOidB, /*txn_id=*/101, /*row_count=*/5);
     await_ready(f1);

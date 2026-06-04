@@ -56,12 +56,10 @@ namespace services::dispatcher {
 
         using sync_pack = std::tuple<actor_zeta::address_t, actor_zeta::address_t, actor_zeta::address_t>;
 
-        // In-flight slot for the event-loop model. The loop thread drains the
-        // lock-free inbox_ into a loop-private list of these, lazily creates
-        // the behavior (coroutine) for each, resumes ready continuations, and
-        // erases done entries. pending_msg holds the message until the loop
-        // calls behavior(msg.get()); stale_ticks counts consecutive loop
-        // passes a slot has been busy-but-not-ready (watchdog input).
+        // One in-flight message in the event loop. behavior is created lazily;
+        // pending_msg holds the message until the loop calls behavior(msg.get()).
+        // stale_ticks counts consecutive passes the slot stayed busy-but-not-
+        // ready (watchdog input).
         struct in_flight_entry_t {
             actor_zeta::mailbox::message_ptr pending_msg{};
             actor_zeta::behavior_t behavior{};
@@ -83,20 +81,16 @@ namespace services::dispatcher {
 
         void sync(sync_pack pack);
 
-        // Bootstrap-time hook called from base_spaces after WAL replay scans
-        // all records and finds the maximum durable commit_id. Advances
-        // published_horizon_ past everything already on disk so post-recovery
-        // snapshots observe the right MVCC visibility. Direct sync call is
-        // allowed here because scheduler_dispatcher_ has not been started yet.
-        // Idempotent — publish() is monotonic and ignores stale ids.
+        // Bootstrap hook: advance the published horizon past the max durable
+        // commit_id found during WAL replay, so post-recovery snapshots get the
+        // right MVCC visibility. Direct sync call is safe only because the
+        // scheduler is not started yet. Idempotent — publish() ignores stale ids.
         void set_replay_horizon_sync(uint64_t commit_id);
 
-        // Catalog scan rebuild — base_spaces calls these after rebuilding
-        // dropped_storages_ / dropped_table_agents_ so the very first
-        // post-start horizon advance broadcasts on_horizon_advanced to the
-        // affected subscribers and finishes the GC pass that the pre-crash
-        // DROP didn't get to. Equivalent to the mailbox handler
-        // on_drop_resource_marked() but usable before scheduler.start.
+        // Like the on_drop_resource_marked() mailbox handler but usable before
+        // scheduler.start: base_spaces calls these after rebuilding the dropped-
+        // resource queues so the first post-start horizon advance broadcasts
+        // on_horizon_advanced and finishes the GC the pre-crash DROP missed.
         // Idempotent.
         void set_disk_has_dropped_sync(bool value) noexcept { disk_has_dropped_ = value; }
         void set_index_has_dropped_sync(bool value) noexcept { index_has_dropped_ = value; }
@@ -121,17 +115,9 @@ namespace services::dispatcher {
         // dispatcher (anti-pattern — mutable state shared across actors). These
         // handlers replay the same sync calls inside the dispatcher's own actor
         // context, so the executor only ever communicates via the mailbox.
-        //
-        // Each handler is a thin pass-through to `txn_manager_.{method}()`
-        // with no operator-pipeline / WAL / disk side-effects. The heavier
-        // commit_transaction / abort_transaction handlers above continue to
-        // route DDL commits/aborts through their operator pipelines.
-        //
-        //   txn_begin_msg          → tm.begin_transaction(session).data()
-        //   txn_commit_msg         → tm.commit(session)  (returns commit_id)
-        //   txn_abort_msg          → tm.abort(session)
-        //   txn_publish_msg        → tm.publish(commit_id)  (ProcArray barrier)
-        //   txn_lowest_active_msg  → tm.lowest_active_start_time()
+        // Each is a thin pass-through to txn_manager_ with no operator-pipeline /
+        // WAL / disk side-effects; the heavier commit_transaction /
+        // abort_transaction handlers above still route DDL through their pipelines.
         unique_future<components::table::transaction_data>
         txn_begin_msg(components::session::session_id_t session);
         unique_future<uint64_t> txn_commit_msg(components::session::session_id_t session);
@@ -139,18 +125,13 @@ namespace services::dispatcher {
         unique_future<void> txn_publish_msg(uint64_t commit_id);
         unique_future<uint64_t> txn_lowest_active_msg();
 
-        // Selective broadcast — DROP TABLE / DROP INDEX path marks the owning
-        // subscriber as "has dropped resources pending GC" via this mailbox
-        // handler. Cleared by on_subscriber_empty once the subscriber's
-        // dropped_storages_ queue is empty. These are mailbox handlers invoked
-        // via actor_zeta::send. They return unique_future<void> because
-        // actor_zeta::dispatch requires all actor methods to return
-        // unique_future<T> or generator<T>.
+        // Selective broadcast: DROP TABLE / DROP INDEX marks the owning
+        // subscriber as having dropped resources pending GC; on_subscriber_empty
+        // clears the flag once that subscriber's dropped_storages_ queue drains,
+        // stopping further on_horizon_advanced broadcasts to it. Return
+        // unique_future<void> (not void) because actor_zeta::dispatch requires
+        // every actor method to return unique_future<T> or generator<T>.
         unique_future<void> on_drop_resource_marked(uint8_t subscriber_kind);
-        // Subscriber-empty ack — subscriber sends this back once its
-        // dropped_storages_ queue drained (i.e. nothing left to GC for that
-        // kind), which clears the corresponding broadcast flag and stops
-        // further on_horizon_advanced broadcasts to that subscriber.
         unique_future<void> on_subscriber_empty(uint8_t subscriber_kind);
 
         using dispatch_traits = actor_zeta::dispatch_traits<&manager_dispatcher_t::execute_plan,
@@ -168,14 +149,10 @@ namespace services::dispatcher {
                                                             &manager_dispatcher_t::on_subscriber_empty>;
 
     private:
-        // Cleanup-trigger helper. Called INLINE from the commit_txn /
-        // abort_txn handler bodies (not wired yet). Regular private member
-        // function — NOT a std::function callback — so the call site stays a
-        // direct method call without indirection. Reads
-        // `txn_manager_.lowest_active_start_time()`, and if it advanced since
-        // `last_broadcast_horizon_`, sends `on_horizon_advanced(new)` to each
-        // subscriber whose drop-resource flag is set. Skip-send is the common
-        // case (no drops outstanding → no message bursts on every commit).
+        // Reads txn_manager_.lowest_active_start_time(); if it advanced past
+        // last_broadcast_horizon_, sends on_horizon_advanced(new) to each
+        // subscriber whose drop-resource flag is set. Skips the send in the
+        // common case (no drops outstanding), avoiding a message burst per commit.
         void try_trigger_cleanup_if_horizon_advanced() noexcept;
 
         std::pmr::memory_resource* resource_;
@@ -184,15 +161,9 @@ namespace services::dispatcher {
 
         static constexpr std::size_t executor_pool_size_ = 4;
 
-        // FUTURE: this map will be partitioned across 4 executors by `oid % 4`.
-        // Until that migration, collections_ stays here and is the source of
-        // truth. See services/collection/executor.hpp for the migration
-        // contract.
-        //
-        // Fast-path membership cache for collections. Loop-thread-private:
-        // only the event-loop thread (via execute_plan handlers) mutates or
-        // reads it — grep shows zero external readers. Cache rebuild on
-        // init_from_state is cheap.
+        // Fast-path membership cache for collections, and the source of truth
+        // for them. Loop-thread-private: only the event-loop thread (via
+        // execute_plan handlers) mutates or reads it, so no synchronization.
         collection_storage_t collections_;
         std::pmr::vector<services::collection::executor::executor_ptr> executors_;
         std::pmr::vector<actor_zeta::address_t> executor_addresses_;
@@ -213,17 +184,16 @@ namespace services::dispatcher {
         // pins it). Only re-broadcast when the value actually moves forward.
         uint64_t last_broadcast_horizon_{0};
 
-        // Event-loop model: enqueue_impl (any sender thread) only delivers a
-        // message into the lock-free inbox_ and notifies pump_cv_; ALL message
-        // processing — behavior creation, continuation resume, cleanup —
-        // happens on loop_thread_. mutex_/pump_cv_ now guard only the loop's
-        // idle sleep at the bottom of each pass (woken early by enqueue).
+        // Event-loop model: enqueue_impl (any sender thread) only delivers into
+        // inbox_ and notifies pump_cv_; ALL message processing — behavior
+        // creation, continuation resume, cleanup — happens on loop_thread_.
+        // mutex_/pump_cv_ guard only the loop's idle sleep at the end of each
+        // pass (woken early by enqueue).
         std::thread loop_thread_;
         std::atomic<bool> loop_running_{true};
-        // lock-free inbox: senders only deliver; ALL processing happens on
-        // loop_thread_. Stores raw message* (boost::lockfree requires
-        // trivially-copyable): release() on push, re-wrapped into message_ptr
-        // by the loop. Node allocations are non-PMR (infra queue).
+        // Stores raw message* (boost::lockfree requires trivially-copyable):
+        // release() on push, re-wrapped into message_ptr by the loop. Node
+        // allocations are non-PMR (infra queue).
         boost::lockfree::queue<actor_zeta::mailbox::message*> inbox_{128};
         std::mutex mutex_;
         std::condition_variable pump_cv_;
@@ -246,8 +216,7 @@ namespace services::dispatcher {
 
         // Fire-and-forget unique_future<void> GC list. Loop-thread-private —
         // only the event loop appends (broadcast/register sends) and drains it
-        // via poll_pending(); the in_flight slot list is a local inside the
-        // loop lambda (see ctor) rather than a member.
+        // via poll_pending().
         std::pmr::vector<actor_zeta::unique_future<void>> pending_void_;
 
         void poll_pending();

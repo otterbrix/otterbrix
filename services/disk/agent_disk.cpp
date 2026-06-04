@@ -42,18 +42,10 @@ namespace services::disk {
 
     agent_disk_t::~agent_disk_t() { trace(log_, "delete agent_disk_t"); }
 
-    // Agent slice is the SOLE source of truth. Every DISK OID reaches the
-    // slice via bootstrap_disk_inner_sync (load) / bootstrap_create_disk_inner_sync
-    // (create) with a real entry owning the live SFBM.
     bool agent_disk_t::has_storage_sync(components::catalog::oid_t oid) const noexcept {
         return storages_.find(oid) != storages_.end();
     }
 
-    // ──────────────── manager-router delegation helpers ──────────
-    //
-    // Synchronous probes used by manager_disk_t's public accessors
-    // (total_rows_sync / checkpoint_wal_id_sync). Not-owned OIDs return 0;
-    // defensive null-entry skip is unreachable in current control flow.
     uint64_t agent_disk_t::total_rows_inner_sync(components::catalog::oid_t oid) const noexcept {
         auto it = storages_.find(oid);
         if (it == storages_.end()) {
@@ -78,12 +70,6 @@ namespace services::disk {
         return entry->table_storage.checkpoint_wal_id();
     }
 
-    // ──────────────── has_in_memory_inner_sync probe ────────────
-    //
-    // Walk the agent slice looking for any real IN_MEMORY twin. Used by
-    // manager_disk_t::checkpoint_all to decide whether the WAL ID floor may
-    // be sealed (no IN_MEMORY twins anywhere) or must be suppressed
-    // (IN_MEMORY tables still need replay records).
     bool agent_disk_t::has_in_memory_inner_sync() const noexcept {
         for (const auto& [oid, entry] : storages_) {
             if (entry == nullptr) {
@@ -96,13 +82,7 @@ namespace services::disk {
         return false;
     }
 
-    // ──────────────── storage_entry_sync accessor ─────────────
-    //
-    // Borrowed-pointer accessor used by manager-side catalog readers.
-    // Returns nullptr for "OID not in this agent's slice". The pointer is
-    // borrowed — the unique_ptr in the slice retains ownership; callers MUST
-    // NOT keep it across a mailbox-yield. See header for the carve-out
-    // justification.
+    // Borrowed pointer — see header. nullptr when the OID isn't owned.
     const collection_storage_entry_t*
     agent_disk_t::storage_entry_sync(components::catalog::oid_t oid) const noexcept {
         auto it = storages_.find(oid);
@@ -114,27 +94,18 @@ namespace services::disk {
 
     bool agent_disk_t::bootstrap_inner_sync(components::catalog::oid_t oid,
                                             std::unique_ptr<collection_storage_entry_t> entry) noexcept {
-        // Move-only ownership transfer. Returns false on duplicate-key
-        // collision (existing entry retains ownership; incoming unique_ptr is
-        // destroyed when `entry` goes out of scope). Callers log + drop on false.
         if (entry == nullptr) {
             return false;
         }
         return storages_.try_emplace(oid, std::move(entry)).second;
     }
 
-    // ──────────────── DISK ownership constructors ────────────────
-    //
-    // Construct the SFBM-owning collection_storage_entry_t directly on the
-    // agent. The exclusive WRITE_LOCK on the `.otbx` means two SFBMs in the
-    // same process is a footgun (closing either fd releases the posix-
-    // advisory lock for both); the duplicate-key path is reachable only via
-    // programmer error (double-bootstrap), and we MUST not even construct on
-    // collision — open-then-close would release the live entry's lock.
     bool agent_disk_t::bootstrap_disk_inner_sync(components::catalog::oid_t oid,
                                                   const std::filesystem::path& otbx_path,
                                                   wal::id_t sidecar_wal_id) noexcept {
-        // Probe BEFORE constructing the SFBM (see contract note above).
+        // Probe BEFORE constructing the SFBM: on a duplicate key we must not even
+        // open the .otbx, because open-then-close would release the live entry's
+        // WRITE_LOCK (per-process posix lock).
         if (storages_.find(oid) != storages_.end()) {
             trace(log_,
                   "agent_disk_t::bootstrap_disk_inner_sync: agent[{}] oid {} already in slice — drop "
@@ -179,18 +150,10 @@ namespace services::disk {
         return storages_.try_emplace(oid, std::move(entry)).second;
     }
 
-    // ──────────────── WAL-replay direct_* sync helpers ─────────────
-    //
-    // Pre-scheduler-start (base_spaces WAL replay) only. Apply the mutation
-    // directly against the agent's entry. Missing OIDs (another agent owns
-    // them) are logged + no-op'd; defensive null-entry skip is unreachable
-    // in current control flow.
-    //
-    // Mutation logic here is intentionally minimal — schema-adoption /
-    // column-expansion / type-promotion happen upstream in the mailbox body
-    // that fans into this slice. Replay records arrive pre-aligned with the
-    // table schema, so a direct append/delete/update against the entry's
-    // storage_t adapter is correct.
+    // WAL-replay direct_* helpers (see header). Mutation logic is intentionally
+    // minimal: schema-adoption / column-expansion / type-promotion run upstream in
+    // the mailbox body, and replay records arrive pre-aligned with the table schema,
+    // so a direct append/delete/update against the entry's storage adapter is correct.
     void agent_disk_t::direct_append_sync(components::catalog::oid_t table_oid,
                                           components::vector::data_chunk_t& data,
                                           core::date::timezone_offset_t /*session_tz*/,
@@ -205,8 +168,8 @@ namespace services::disk {
         }
         auto& entry = it->second;
         if (entry == nullptr) {
-            // Defensive: null entries (legacy DISK record-only markers) are
-            // unreachable once every DISK OID owns a live SFBM.
+            // Defensive: null entries (legacy record-only markers) are unreachable
+            // now that every DISK OID owns a live SFBM.
             trace(log_,
                   "agent_disk[{}]::direct_append_sync: oid {} has null entry (unreachable post-§8.1.B/C) — no-op",
                   pool_idx_,
@@ -282,13 +245,10 @@ namespace services::disk {
         for (uint64_t i = 0; i < count; i++) {
             ids_vec.set_value(i, components::types::logical_value_t(resource(), row_ids[i]));
         }
-        // new_data is deserialized on the WAL-replay resource (get_default_resource,
-        // wal_page_reader.cpp); the storage lives on this agent's resource. update()
-        // slices (zero-copy refs) into the chunk, so materialize a local deep copy on
-        // resource() first — same boundary rule as ids_vec above and as the manager's
-        // rebuild_chunk does for direct_append_sync (manager_disk_storage.cpp).
-        // Without this, validity_mask_t::operator= asserts resource_ == other.resource_
-        // (validation.cpp) on Debug builds. See docs/wal-recovery-pmr-mismatch.md.
+        // new_data is on the WAL-replay resource; the storage is on this agent's.
+        // update() slices zero-copy refs into the chunk, so deep-copy onto resource()
+        // first — else validity_mask_t::operator= asserts resource_ == other.resource_
+        // on Debug builds. See docs/wal-recovery-pmr-mismatch.md.
         components::vector::data_chunk_t local(resource(), new_data.types(), new_data.size());
         new_data.copy(local, 0);
         entry->storage->update(ids_vec, local);
@@ -306,8 +266,6 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_scan, msg);
                 break;
             }
-            // Mutation set: append + MVCC commit fanout handlers — the slice
-            // owns every mutation.
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_append_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_append_inner, msg);
                 break;
@@ -320,8 +278,6 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_publish_deletes_inner, msg);
                 break;
             }
-            // Abort-path + completion handlers: revert/update/delete/fetch
-            // fanout against the agent's twins.
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_revert_appends_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_revert_appends_inner, msg);
                 break;
@@ -342,8 +298,6 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_fetch_inner, msg);
                 break;
             }
-            // Batched scan + metadata mailbox handlers: scan_batched /
-            // scan_segment / types / total_rows.
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_scan_batched_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_scan_batched_inner, msg);
                 break;
@@ -364,9 +318,6 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_total_rows_inner, msg);
                 break;
             }
-            // Fanout-only mailbox handlers: manager sends one per agent for
-            // checkpoint_all / vacuum_all / on_horizon_advanced; each agent
-            // iterates its local storages_ slice in parallel.
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::checkpoint_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::checkpoint_inner, msg);
                 break;
@@ -375,8 +326,6 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::vacuum_inner, msg);
                 break;
             }
-            // Single-route maintenance handler. Manager computes
-            // pool_idx_for_oid(ctx.table_oid) and sends to the owning agent.
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::maybe_cleanup_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::maybe_cleanup_inner, msg);
                 break;
@@ -385,25 +334,14 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::on_horizon_advanced_inner, msg);
                 break;
             }
-            // Runtime DROP path: manager_disk_t::mark_storage_dropped forwards
-            // the entry here so the per-agent dropped_storages_ slice (sole
-            // owner of GC state) receives it without crossing the actor
-            // boundary as shared mutable state.
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::register_dropped_storage_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::register_dropped_storage_inner, msg);
                 break;
             }
-            // Runtime DROP TABLE storages_ erase. Manager-side drop_storage
-            // is a pure router; this handler performs the canonical erase +
-            // .otbx removal.
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::drop_storage_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::drop_storage_inner, msg);
                 break;
             }
-            // Physical column compaction routed to the owning agent.
-            // drop_column is non-const so it cannot run through the
-            // storage_entry_sync read accessor; manager dispatches here so
-            // the entry is rebuilt on the agent thread.
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::drop_column_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::drop_column_inner, msg);
                 break;
@@ -413,9 +351,6 @@ namespace services::disk {
         }
     }
 
-    // Read-path router fanout target. Returns nullptr when the OID is not
-    // in this agent's slice; caller (manager_disk_t::storage_scan) surfaces
-    // an empty chunk uniformly.
     agent_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
     agent_disk_t::storage_scan(session_id_t /*session*/,
                                components::catalog::oid_t table_oid,
@@ -445,16 +380,8 @@ namespace services::disk {
         co_return std::move(result);
     }
 
-    // ──────────────── mutation-set fanout targets ─────────────────
-    //
-    // Apply the canonical mutation against the agent's slice. Not-owned
-    // OIDs and null entries are logged + no-op'd.
-    //
-    // No exceptions, no shared state across the actor boundary — `data`
-    // arrives by rvalue unique_ptr, `ranges` / `tables` arrive as PMR-backed
-    // by-value vectors. Caller (manager router) already validated
-    // `data != nullptr` / range counts before the send; agent re-checks
-    // defensively because it owns its slice independently.
+    // Mutation fanout targets. The manager router pre-validates, but the agent
+    // re-checks (not-owned / null no-op) because it owns its slice independently.
 
     agent_disk_t::unique_future<std::pair<uint64_t, uint64_t>>
     agent_disk_t::storage_append_inner(components::catalog::oid_t table_oid,
@@ -482,13 +409,8 @@ namespace services::disk {
             co_return std::make_pair(uint64_t{0}, uint64_t{0});
         }
 
-        // Full preprocessing pipeline runs HERE, on the owning agent, so the
-        // preprocessing reads (columns/total_rows/dedup scan) and the final
-        // write are serialized with every other same-oid access by this
-        // agent's mailbox. The manager-side body is a pure router.
-
-        // Computing (relkind='g') tables — `is_computed` flag lives on this
-        // slice's entry.
+        // Full preprocessing pipeline (stages 1-5 below) runs on the owning agent so
+        // its reads and the final write are mailbox-serialized with every same-oid access.
         const bool is_computed_table = entry->is_computed;
 
         // 1. Schema adoption
@@ -694,9 +616,8 @@ namespace services::disk {
     agent_disk_t::unique_future<void>
     agent_disk_t::storage_publish_commits_inner(uint64_t commit_id,
                                                 std::pmr::vector<components::pg_catalog_append_range_t> ranges) {
-        // MVCC visibility flip. Ranges whose table_oid isn't in this agent's
-        // slice are skipped (the owning agent receives its own slice via the
-        // manager's partitioning send).
+        // MVCC visibility flip. Ranges not in this agent's slice are skipped — the
+        // owning agent gets its own slice from the manager's partitioning send.
         for (const auto& r : ranges) {
             if (r.count == 0) {
                 continue;
@@ -718,8 +639,7 @@ namespace services::disk {
     agent_disk_t::storage_publish_deletes_inner(uint64_t txn_id,
                                                 uint64_t commit_id,
                                                 std::pmr::vector<components::catalog::oid_t> tables) {
-        // MVCC delete commit. txn_id==0 means no real transaction (legacy
-        // fast path); short-circuit there, matching original semantics.
+        // txn_id==0 means no real transaction (legacy fast path) — short-circuit.
         if (txn_id == 0) {
             co_return;
         }
@@ -737,21 +657,9 @@ namespace services::disk {
         co_return;
     }
 
-    // ──────────────── abort-path + completion handlers ─────────────
-    //
-    // Canonical bodies for storage_revert_appends / storage_revert_append /
-    // storage_update / storage_delete_rows / storage_fetch. Not-owned OIDs
-    // and null entries are logged + no-op'd (void handlers) or return
-    // nullptr (fetch — caller short-circuits to an empty chunk).
-    //
-    // `ranges` / `row_ids` / `data` arrive by value (PMR vector /
-    // data_chunk_t unique_ptr / vector_t carries its own allocator). No raw
-    // pointers cross the actor boundary, no exceptions.
-
     agent_disk_t::unique_future<void>
     agent_disk_t::storage_revert_appends_inner(std::pmr::vector<components::pg_catalog_append_range_t> ranges) {
-        // Batched abort — reverse-iterate so nested ranges unwind in
-        // append-order opposite.
+        // Reverse-iterate so nested ranges unwind in append-order opposite.
         for (auto it = ranges.rbegin(); it != ranges.rend(); ++it) {
             if (it->count == 0) {
                 continue;
@@ -820,9 +728,8 @@ namespace services::disk {
         if (!data || entry->storage == nullptr) {
             co_return std::pair<int64_t, uint64_t>{0, 0};
         }
-        // Manager-side body has already aligned `data` with the canonical
-        // schema (agent twin shares the same column definitions via
-        // bootstrap_inner_sync).
+        // No preprocessing here: the manager body already aligned `data` with the
+        // canonical schema (the twin shares column defs via bootstrap_inner_sync).
         co_return entry->storage->update(row_ids, *data, txn);
     }
 
@@ -860,8 +767,6 @@ namespace services::disk {
     agent_disk_t::storage_fetch_inner(components::catalog::oid_t table_oid,
                                       components::vector::vector_t row_ids,
                                       uint64_t count) {
-        // Read-path mirror — same nullptr-as-fallback contract as
-        // storage_scan above. Caller surfaces empty chunk on nullptr.
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
             trace(log_,
@@ -884,19 +789,6 @@ namespace services::disk {
         std::memcpy(result->row_ids.data(), row_ids.data(), count * sizeof(int64_t));
         co_return std::move(result);
     }
-
-    // ──────────────── batched-scan + metadata inner handlers ───────
-    //
-    // Read-path mirrors. Not-owned OIDs return sentinel values:
-    //   - storage_scan_batched_inner → empty pmr-vector
-    //   - storage_scan_segment_inner → nullptr
-    //   - storage_types_inner → empty pmr-vector
-    //   - storage_total_rows_inner → 0
-    //
-    // PMR vectors by value, no shared mutable state, no exceptions.
-    // `filter` arrives as a unique_ptr; `projected_cols` as a std::vector
-    // (non-PMR because the routing path is shared with the pipeline
-    // operator's local vector).
 
     agent_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
     agent_disk_t::storage_scan_batched_inner(components::catalog::oid_t table_oid,
@@ -1034,33 +926,17 @@ namespace services::disk {
         co_return;
     }
 
-    // ──────────────── fanout-only inner handlers ───────────────────
-    //
-    // Each handler iterates the agent's local storages_ slice. These
-    // handlers own the canonical checkpoint / vacuum / cleanup work.
-    //
-    // checkpoint_inner runs the full sequence (compact + checkpoint(wal_id)
-    // + sidecar) on the agent thread; the manager's std::min aggregation
-    // across agents produces the global tally.
     agent_disk_t::unique_future<wal::id_t> agent_disk_t::checkpoint_inner(session_id_t /*session*/,
                                                                           wal::id_t current_wal_id) {
         trace(log_,
               "agent_disk[{}]::checkpoint_inner: {} entries in local slice",
               pool_idx_,
               storages_.size());
-        // Canonical checkpoint sequence for DISK entries:
-        //   1. Skip non-DISK / empty-path entries.
-        //   2. Backup current .otbx → .otbx.prev (copy_file overwrite).
-        //   3. Compact + checkpoint(wal_id) — 2 fsync inside.
-        //   4. Persist checkpoint_wal_id to .otbx.wal_id sidecar via
-        //      tmp+rename atomic write.
-        //   5. Delete backup .prev on success.
-        //   6. Tally min(prev_checkpoint_wal_id_) across this agent's DISK
-        //      entries for return.
-        //
-        // IN_MEMORY twins are skipped — they have no live SFBM. Null
-        // entries (defensive — legacy DISK record-only markers, unreachable
-        // once every DISK OID owns a live SFBM) are skipped too.
+        // Per DISK entry, crash-safe checkpoint sequence (order matters):
+        //   backup .otbx → .prev, compact + checkpoint(wal_id), persist the
+        //   .wal_id sidecar via tmp+rename, then delete the .prev backup on success.
+        //   Tally min(prev_checkpoint_wal_id_) for the manager's cross-agent std::min.
+        // IN_MEMORY twins and null entries are skipped.
         wal::id_t min_prev_id = std::numeric_limits<wal::id_t>::max();
         for (auto& [tbl_oid, entry] : storages_) {
             if (entry == nullptr) {
@@ -1081,7 +957,7 @@ namespace services::disk {
             auto prev_path = otbx_path;
             prev_path += ".prev";
 
-            // Step (2) — backup current checkpoint before overwriting.
+            // Backup current checkpoint before overwriting.
             std::error_code copy_error;
             if (std::filesystem::exists(otbx_path)) {
                 std::filesystem::copy_file(otbx_path,
@@ -1098,11 +974,10 @@ namespace services::disk {
                 }
             }
 
-            // Step (3) — compact + checkpoint(wal_id).
             entry->table_storage.table().compact();
             entry->table_storage.checkpoint(current_wal_id);
 
-            // Step (4) — persist sidecar wal_id atomically.
+            // Persist sidecar wal_id atomically (tmp + rename).
             {
                 auto sidecar_path = otbx_path;
                 sidecar_path += ".wal_id";
@@ -1124,14 +999,12 @@ namespace services::disk {
                 }
             }
 
-            // Step (5) — delete backup after successful checkpoint.
+            // Delete backup only after a successful checkpoint.
             if (std::filesystem::exists(prev_path)) {
                 std::error_code remove_error;
                 std::filesystem::remove(prev_path, remove_error);
             }
 
-            // Step (6) — accumulate for the manager-side std::min
-            // aggregation across all agents.
             min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
         }
         co_return min_prev_id;
@@ -1143,9 +1016,6 @@ namespace services::disk {
               "agent_disk[{}]::vacuum_inner: {} entries in local slice",
               pool_idx_,
               storages_.size());
-        // Canonical vacuum body — manager_disk_t::vacuum_all is a pure router.
-        // Real entries (IN_MEMORY twins + DISK SFBMs) get cleanup_versions +
-        // compact; null entries are defensively skipped.
         for (auto& [oid, entry] : storages_) {
             if (entry == nullptr) {
                 continue;
@@ -1157,13 +1027,6 @@ namespace services::disk {
         co_return;
     }
 
-    // Single-route compact threshold handler. Manager dispatches via
-    // pool_idx_for_oid(ctx.table_oid); not-owned OIDs are no-ops.
-    //
-    // Semantics: deleted/total > 0.3 threshold, lowest_active_start_time
-    // gating against TRANSACTION_ID_START, table.compact() only
-    // (cleanup_versions intentionally omitted — scan_committed depends on
-    // intact version metadata before compact rebuilds the row_group).
     agent_disk_t::unique_future<void> agent_disk_t::maybe_cleanup_inner(components::catalog::oid_t table_oid,
                                                                          uint64_t lowest_active_start_time) {
         auto it = storages_.find(table_oid);
@@ -1214,19 +1077,9 @@ namespace services::disk {
         co_return;
     }
 
-    // Per-agent dropped_storages_ GC pass. Walks the slice and physically
-    // removes entries whose dropped_at_commit_id < new_horizon (no live
-    // snapshot can reference the .otbx).
-    //
-    // Also fires on_subscriber_empty(DISK_KIND) to the dispatcher once this
-    // agent's slice has drained (gated on manager_dispatcher_addr_ !=
-    // empty_address()). Each agent emits its own ack; the dispatcher
-    // idempotently collapses N-fold acks into a single disk_has_dropped_
-    // flag flip.
-    //
-    // Kept-vector rebuild avoids iterator-invalidation on partial erase.
-    // All filesystem removes use the std::error_code overload — exceptions
-    // FORBIDDEN.
+    // GC pass over dropped_storages_ (see header). The kept-vector rebuild avoids
+    // iterator-invalidation on partial erase; every filesystem::remove uses the
+    // std::error_code overload — exceptions FORBIDDEN.
     agent_disk_t::unique_future<void> agent_disk_t::on_horizon_advanced_inner(uint64_t new_horizon) {
         trace(log_,
               "agent_disk[{}]::on_horizon_advanced_inner: horizon={}, {} dropped entries in local slice",
@@ -1263,16 +1116,12 @@ namespace services::disk {
         }
         dropped_storages_ = std::move(kept);
 
-        // Per-agent on_subscriber_empty(DISK_KIND) ack: when this agent's
-        // dropped_storages_ slice has drained, send the ack so dispatcher
-        // can clear disk_has_dropped_ and stop broadcasting on_horizon_advanced.
-        // Idempotent at the dispatcher: ack while flag already cleared is
-        // a no-op. Gated on != empty_address() so test fixtures without a
-        // dispatcher still pass through cleanly.
+        // Once the slice drains, ack on_subscriber_empty so the dispatcher clears
+        // disk_has_dropped_ and stops broadcasting. Gated on != empty_address() so
+        // test fixtures without a dispatcher pass cleanly.
         if (dropped_storages_.empty()
             && manager_dispatcher_addr_ != actor_zeta::address_t::empty_address()) {
-            // DISK_KIND = 1 matches the manager-side constant and the
-            // dispatcher's subscriber-kind enum.
+            // DISK_KIND matches the dispatcher's subscriber-kind enum.
             constexpr uint8_t DISK_KIND = 1;
             [[maybe_unused]] auto _ = actor_zeta::send(manager_dispatcher_addr_,
                                                        &services::dispatcher::manager_dispatcher_t::on_subscriber_empty,
@@ -1281,21 +1130,12 @@ namespace services::disk {
         co_return;
     }
 
-    // Dispatcher address plumbing. base_spaces calls this after spawning the
-    // agents and before scheduler.start so each agent owns its own copy of
-    // the manager_dispatcher_t mailbox handle. Single-threaded by construction
-    // at the bootstrap site (no scheduler running yet). After scheduler.start,
-    // the address is read-only from on_horizon_advanced_inner.
+    // See header. Bootstrap-only; after scheduler.start the address is read-only.
     void agent_disk_t::set_manager_dispatcher_sync(actor_zeta::address_t address) {
         manager_dispatcher_addr_ = std::move(address);
     }
 
-    // Per-agent dropped_storages_ slice bootstrap. Pre-scheduler-start
-    // callers only: base_spaces catalog scan rebuild calls manager_disk_t::
-    // register_dropped_storage_sync which forwards here while schedulers are
-    // still idle. After scheduler.start, the runtime DROP path uses the
-    // mailbox-handler overload below (no sync calls across actor boundaries
-    // once mailboxes are live).
+    // Bootstrap-only push-back (see header); runtime DROP uses the mailbox overload below.
     void agent_disk_t::register_dropped_storage_inner_sync(components::catalog::oid_t oid,
                                                             uint64_t dropped_at_commit_id,
                                                             std::filesystem::path path,
@@ -1306,10 +1146,8 @@ namespace services::disk {
                                                              std::move(sidecar_paths)});
     }
 
-    // Mailbox handler — runtime DROP path forwarded from manager_disk_t::
-    // mark_storage_dropped via actor_zeta::otterbrix::send. Delegates to the
-    // sync helper which performs the push_back; the actor mailbox guarantees
-    // serialization w.r.t. on_horizon_advanced_inner.
+    // Runtime DROP path. The mailbox serializes this push_back w.r.t.
+    // on_horizon_advanced_inner.
     agent_disk_t::unique_future<void>
     agent_disk_t::register_dropped_storage_inner(components::catalog::oid_t oid,
                                                   uint64_t dropped_at_commit_id,
@@ -1322,25 +1160,16 @@ namespace services::disk {
         co_return;
     }
 
-    // Runtime DROP TABLE storages_ erase. Forwarded from manager_disk_t::
-    // drop_storage (pure router) via actor_zeta::otterbrix::send. Performs
-    // canonical erase + physical .otbx removal. Idempotent: erasing a
-    // missing key is a no-op. std::pmr::unordered_map::erase drops the
-    // unique_ptr which closes the owned file_handle_t at most once per
-    // process.
-    //
-    // Mailbox guarantees serialization w.r.t. other slice mutations on this
-    // agent (bootstrap_inner_sync runs pre-start; runtime mutators are
-    // storage_*_inner which only read the slice).
+    // Canonical erase + .otbx removal (see header). Idempotent on a missing key;
+    // the erase drops the unique_ptr, closing the file_handle_t once. The mailbox
+    // serializes this against the only other slice writers (bootstrap pre-start;
+    // runtime storage_*_inner handlers only read).
     agent_disk_t::unique_future<void>
     agent_disk_t::drop_storage_inner(components::catalog::oid_t oid) {
-        // Read otbx_path BEFORE the erase so the unique_ptr is still live.
-        // Empty path (IN_MEMORY twins) skips the filesystem remove block;
-        // only DISK entries carry a non-empty otbx_path.
-        //
-        // Filesystem remove sequence: .otbx + .wal_id sidecar + .prev
-        // sidecar + per-oid parent directory. std::error_code overloads on
-        // every remove — exceptions FORBIDDEN.
+        // Read otbx_path BEFORE the erase, while the unique_ptr is still live. Empty
+        // path (IN_MEMORY twins) skips the remove block. Remove sequence: .otbx +
+        // .wal_id + .prev sidecars + per-oid directory, all via std::error_code
+        // overloads — exceptions FORBIDDEN.
         std::filesystem::path otbx_path;
         if (auto it = storages_.find(oid); it != storages_.end()) {
             if (it->second != nullptr) {
@@ -1349,10 +1178,8 @@ namespace services::disk {
         }
         const auto erased = storages_.erase(oid);
         if (erased == 0) {
-            // Logging at trace because manager_disk_t::drop_storage routes
-            // to a single agent (idx = pool_idx_for_oid(oid)), so this path
-            // is only reached for "OID truly missing" — benign (idempotent
-            // DROP).
+            // Trace, not warn: drop_storage routes to a single agent, so this path
+            // is only hit for a truly-missing OID — benign (idempotent DROP).
             trace(log_,
                   "agent_disk[{}]::drop_storage_inner: oid {} not in local slice (no-op)",
                   pool_idx_,
@@ -1364,12 +1191,10 @@ namespace services::disk {
                   static_cast<unsigned>(oid));
         }
         if (!otbx_path.empty()) {
-            // Physically remove the .otbx file (and its sidecars + per-oid
-            // directory). Otherwise a restart would see the surviving .otbx,
-            // WAL replay would synthesise a phantom storage, and re-CREATE
-            // TABLE could collide with the recycled oid. The mark_storage_
-            // dropped / on_horizon_advanced GC sweep is the secondary safety
-            // net — this immediate removal is the primary cleanup.
+            // Remove .otbx + sidecars + per-oid directory now. A surviving .otbx
+            // would let a restart synthesise a phantom storage on WAL replay and let
+            // a re-CREATE TABLE collide with the recycled oid. (The on_horizon GC
+            // sweep is only the secondary net; this is the primary cleanup.)
             std::error_code ec;
             std::filesystem::remove(otbx_path, ec);
             auto sidecar = otbx_path;
@@ -1383,20 +1208,9 @@ namespace services::disk {
         co_return;
     }
 
-    // Physical column compaction routed to the owning agent. The mutation
-    // half of compact_relkind_g_storage lives here because
-    // collection_storage_entry_t::drop_column is non-const: it calls
-    // table_storage_t::drop_column and rebuilds the storage_t adapter (the
-    // adapter holds a data_table_t& that becomes dangling after the rebuild)
-    // against the agent's own arena via resource().
-    //
-    // Outcomes:
-    //   (a) OID not in this agent's slice — logged no-op,
-    //   (b) DISK-mode storage — drop_column is out-of-scope per
-    //       table_storage_t::drop_column (returns false in DISK mode),
-    //   (c) column already gone (idempotent re-issue) — returns false; log
-    //       "not found".
-    // column_name moves by value (std::pmr::string); no shared state.
+    // Mutation half of compact_relkind_g_storage (see header). drop_column is
+    // non-const: it rebuilds the storage_t adapter against the agent's arena because
+    // the adapter holds a data_table_t& that dangles after the rebuild.
     agent_disk_t::unique_future<void>
     agent_disk_t::drop_column_inner(components::catalog::oid_t table_oid,
                                      std::pmr::string column_name) {
@@ -1416,9 +1230,7 @@ namespace services::disk {
                   static_cast<unsigned>(table_oid));
             co_return;
         }
-        // collection_storage_entry_t::drop_column takes std::string; the
-        // mailbox payload is std::pmr::string. Build a std::string view of
-        // the same bytes; the inner call copies into the lookup path.
+        // drop_column takes std::string; the mailbox payload is pmr::string.
         const std::string attname{column_name.data(), column_name.size()};
         const bool dropped = entry->drop_column(attname, resource());
         if (!dropped) {

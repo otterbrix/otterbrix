@@ -77,17 +77,13 @@ namespace otterbrix {
         std::unique_ptr<otterbrix::wrapper_dispatcher_t, actor_zeta::pmr::deleter_t> wrapper_dispatcher_;
         actor_zeta::scheduler_ptr scheduler_disk_;
 
-        // Catalog-driven index bootstrap. Called once during construction,
-        // after WAL replay and before scheduler.start, while the call site is
-        // still single-threaded by construction. Scans pg_class / pg_index
-        // via manager_disk_ sync helpers, then:
+        // Catalog-driven index bootstrap. Called once during construction, after
+        // WAL replay and before scheduler.start, while single-threaded. Scans
+        // pg_class / pg_index via manager_disk_ sync helpers, then:
         //   - creates an empty index_engine_t per live table oid;
-        //   - spawns an index_agent_disk_t per alive pg_index row and
-        //     transfers ownership to manager_index_;
+        //   - spawns an index_agent_disk_t per alive pg_index row and transfers
+        //     ownership to manager_index_;
         //   - restores per-oid dropped-table tombstones.
-        // The disk-config thresholds + scheduler are forwarded into the
-        // spawned disk agents (mirroring manager_index_t's create_index
-        // handler).
         void bootstrap_indexes_sync(const configuration::config_disk& disk_config);
 
     private:

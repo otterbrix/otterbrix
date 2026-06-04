@@ -513,7 +513,6 @@ namespace components::planner {
 
         // DROP DATABASE / TABLE / TYPE / SEQUENCE / VIEW / MACRO → node_dynamic_cascade_delete_t.
         //
-        // Replaces the legacy per-DROP BFS that lived in the dispatcher.
         // The dynamic cascade operator self-resolves the pg_depend closure at runtime
         // and performs catalog row deletes + (for pg_class regular/computed entries)
         // storage drop + index unregister.
@@ -660,9 +659,8 @@ namespace components::planner {
                 case node_type::create_matview_t:
                     return rewrite_create_matview(r, node, oid_batch);
                 case node_type::refresh_matview_t:
-                    // REFRESH not lowered; planner returns node unchanged.
-                    // Future PR wires DELETE + INSERT(re-parsed body) using
-                    // the dispatcher's resolve re-run infrastructure.
+                    // REFRESH not lowered yet; returned unchanged. TODO: lower to
+                    // DELETE + INSERT(re-parsed body) via the dispatcher's resolve re-run.
                     return node;
                 case node_type::create_constraint_t:
                     return rewrite_create_constraint(r, node, oid_batch);

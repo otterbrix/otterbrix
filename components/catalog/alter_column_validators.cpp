@@ -1,6 +1,3 @@
-// ALTER 3-phase atomic validation helpers.
-// Implementation notes: see alter_column_validators.hpp for the design contract.
-
 #include "alter_column_validators.hpp"
 
 #include "system_table_schemas.hpp"
@@ -45,11 +42,7 @@ namespace components::catalog::alter_column_validators {
     core::error_t
     validate_default_value_evaluatable(std::pmr::memory_resource* /*resource*/,
                                        const std::optional<components::types::logical_value_t>& default_value) {
-        // TODO: integrate with the expression evaluator so that computed
-        // defaults (now(), nextval(...), CASE-expressions) are folded here and
-        // rejected when they reference unresolved symbols or fail to evaluate.
-        // Currently every materialised logical_value_t is, by construction,
-        // already evaluatable — no work to do.
+        // A materialised logical_value_t is evaluatable by construction; nothing to check yet.
         (void) default_value;
         return core::error_t::no_error();
     }
@@ -57,10 +50,7 @@ namespace components::catalog::alter_column_validators {
     core::error_t
     validate_cascade_dependencies(std::pmr::memory_resource* /*resource*/,
                                   const std::pmr::vector<std::pair<int, components::catalog::oid_t>>& dependents) {
-        // TODO: replace this stub with the real handler table:
-        //   pg_depend.classid → cascade handler (FK / view / check_constraint /
-        //   index / computed_column). On an unhandled classid return
-        //   error_code_t::other_error so the ALTER fails atomically.
+        // TODO: stub; real handler table dispatches on pg_depend.classid (see .hpp).
         (void) dependents;
         return core::error_t::no_error();
     }
@@ -72,10 +62,7 @@ namespace components::catalog::alter_column_validators {
         if (!default_value.has_value()) {
             return core::error_t::no_error();
         }
-        // Delegate to the existing encoder (system_table_schemas.cpp). It is a
-        // pure function over logical_value_t and returns an empty string for
-        // complex types — we forward that semantics rather than upgrading it
-        // to an error until a richer encoder exists.
+        // encode_default_spec returns "" for complex types; we forward that as success (see .hpp).
         const std::string encoded = components::catalog::encode_default_spec(*default_value);
         out_spec.assign(encoded.begin(), encoded.end());
         return core::error_t::no_error();

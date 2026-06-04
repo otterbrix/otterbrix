@@ -48,7 +48,6 @@ namespace components::operators {
             co_await std::move(f);
         }
 
-        // Register with index manager (oid-keyed).
         if (ctx->index_address != actor_zeta::address_t::empty_address()) {
             auto [_, f] = actor_zeta::send(ctx->index_address,
                                            &services::index::manager_index_t::register_collection,

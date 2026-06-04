@@ -9,12 +9,10 @@
 
 namespace components::logical_plan {
 
-    // CATALOG_RESOLVE_DATABASE: logical-plan leaf carrying the
-    // catalog dependency "resolve database 'X'". pg_database (OID=19) is
-    // distinct from pg_namespace (OID=20) — a database name resolves to a row
-    // in pg_database whose oid is the routing key for multi-database WAL
-    // workers. Default value is INVALID_OID so "not yet resolved" is
-    // observable downstream.
+    // Leaf carrying the catalog dependency "resolve database 'X'". pg_database
+    // (OID=19) is distinct from pg_namespace (OID=20); the resolved oid is the
+    // routing key for multi-database WAL workers. database_oid defaults to
+    // INVALID_OID so "not yet resolved" is observable downstream.
     class node_catalog_resolve_database_t final : public node_t {
     public:
         explicit node_catalog_resolve_database_t(std::pmr::memory_resource* resource, core::dbname_t dbname);

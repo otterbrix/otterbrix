@@ -84,7 +84,6 @@ namespace services::dispatcher {
 
 // catalog-resolve helpers shared by the dispatcher and executor pipelines.
 // Pure functions over plan trees / lookup paths — no member-state access.
-// Definitions live in services/dispatcher/enrich_logical_plan.cpp.
 namespace services::catalog_resolve {
 
     // Propagate OIDs from sibling catalog_resolve_* nodes onto their consumer
@@ -135,8 +134,7 @@ namespace services::catalog_resolve {
     // a sequence_t with no non-resolve children.
     const components::logical_plan::node_t*
     effective_root_node(const components::logical_plan::node_t* n);
-    // Mutable-pointer overload so static_cast<node_X_t*>(plan.get()) call
-    // sites can descend through the transformer's catalog_resolve_* wrapper.
+    // Mutable-pointer overload, for call sites that mutate the consumer node.
     components::logical_plan::node_t* effective_root_node(components::logical_plan::node_t* n);
 
     // drop_* nodes no longer carry user-typed dbname/relname; their sibling
@@ -164,10 +162,7 @@ namespace services::catalog_resolve {
 
 } // namespace services::catalog_resolve
 
-// Back-compat re-export so existing `services::dispatcher` code can keep
-// writing `stamp_oids_from_resolves(...)` unqualified (it picks up the
-// `services::dispatcher` overload via ADL/unqualified lookup) without
-// breaking. New executor-side code uses `catalog_resolve::...` explicitly.
+// Lets dispatcher code keep calling stamp_oids_from_resolves() unqualified.
 namespace services::dispatcher {
     using catalog_resolve::stamp_oids_from_resolves;
 } // namespace services::dispatcher

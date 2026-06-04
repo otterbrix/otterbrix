@@ -13,10 +13,8 @@ namespace components::table {
 
     class transaction_manager_t {
     public:
-        // resource backs the in_flight_snapshot vector inside every snapshot
-        // begin_transaction hands out and take_snapshot() returns. It is
-        // required, not defaulted, so each snapshot is anchored to a real
-        // resource and stays valid when moved.
+        // resource backs the in_flight_snapshot vector in every snapshot handed
+        // out. Required, not defaulted, so each snapshot stays valid when moved.
         explicit transaction_manager_t(std::pmr::memory_resource* resource);
 
         transaction_t& begin_transaction(session::session_id_t session);
@@ -29,16 +27,14 @@ namespace components::table {
         uint64_t lowest_active_start_time() const;
         bool has_active_transactions() const;
 
-        // ProcArray: atomic publish barrier — moves a
-        // committed txn out of in_flight_commits_ and advances published_horizon_.
-        // Called by executor / operator_commit_transaction at the end of the
-        // commit pipeline (after WAL fsync + storage_publish_*), so a fresh
-        // snapshot captures the new txn as visible.
+        // ProcArray atomic publish barrier: moves a committed txn out of
+        // in_flight_commits_ and advances published_horizon_. MUST be called at
+        // the end of the commit pipeline (after WAL fsync + storage_publish_*),
+        // so a fresh snapshot captures the txn as visible.
         void publish(uint64_t commit_id);
 
-        // capture an MVCC snapshot atomically. Caller specifies the
-        // resource for the in_flight_snapshot vector so the resulting
-        // transaction_data can be moved freely without dangling.
+        // Capture an MVCC snapshot atomically. Caller supplies the resource for
+        // the in_flight_snapshot vector so the result can be moved without dangling.
         struct snapshot_t {
             uint64_t snapshot_horizon;
             std::pmr::vector<uint64_t> in_flight_snapshot;

@@ -47,10 +47,8 @@ namespace components::operators {
 
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
-        // 1. Cross-namespace conflict detection. Bail with success_=false on any
-        //    pre-existing pg_proc row sharing this function name (any namespace,
-        //    user or pg_catalog). Mirrors the legacy dispatcher's cross-namespace
-        //    bail path.
+        // 1. Cross-namespace conflict detection: bail on any pre-existing pg_proc
+        //    row with this function name, in any namespace (user or pg_catalog).
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             auto [_rfbn, rfbnf] = actor_zeta::send(ctx->disk_address,
                                                    &services::disk::manager_disk_t::resolve_function_by_name,
@@ -65,13 +63,10 @@ namespace components::operators {
             }
         }
 
-        // 2. Fan out to per-executor function_registry_'s. The dispatcher-
-        //    supplied callable owns scheduler enqueue concerns. Issue ALL sends
-        //    first so per-executor scheduling overlaps (the callable enqueues
-        //    each executor synchronously before returning the future), then
-        //    co_await every ack — this makes the fanout parallel rather than
-        //    serial. Awaiting all acks before returning keeps UDF visibility
-        //    atomic across executors from the caller's perspective.
+        // 2. Fan out to every per-executor function_registry_. Issue ALL sends
+        //    first, then co_await every ack: this overlaps per-executor work
+        //    (parallel, not serial). Awaiting all acks before returning makes
+        //    UDF visibility atomic across executors from the caller's view.
         std::pmr::vector<actor_zeta::unique_future<std::unique_ptr<executor_register_result_t>>> acks(resource_);
         acks.reserve(executor_count_);
         for (std::size_t i = 0; i < executor_count_; ++i) {
@@ -83,8 +78,8 @@ namespace components::operators {
         for (auto& fut : acks) {
             auto res = co_await std::move(fut);
             if (fanout_failed) {
-                // Drain remaining acks to avoid orphaning executor mailbox work
-                // but otherwise discard the results — already in failure mode.
+                // Already failed: drain remaining acks (so executor mailbox work
+                // isn't orphaned) but discard results.
                 continue;
             }
             if (!res || res->has_error()) {
@@ -111,14 +106,11 @@ namespace components::operators {
         }
 
         // 3. Mirror into the global default registry so validate_logical_plan
-        //    lookups (which probe function_registry_t::get_default()) see the
-        //    UDF. Use the LOCAL-allocated UID (uids.front()) so validate-time
-        //    lookups against the global registry produce the same uid that
-        //    the per-executor registries will resolve at execute time.
-        //    Without this the local registries auto-allocate uid starting at
-        //    last-builtin+1, while the global registry's counter keeps growing
-        //    across tests → expr->function_uid() set from global doesn't match
-        //    any local entry, predicate gets a null function pointer at runtime.
+        //    lookups (which probe get_default()) see the UDF. MUST reuse the
+        //    LOCAL uid (uids.front()): otherwise the global counter (which keeps
+        //    growing across tests) and the per-executor counters diverge, so a
+        //    plan's function_uid() set from global matches no local entry and the
+        //    predicate gets a null function pointer at runtime.
         if (auto* def_reg = components::compute::function_registry_t::get_default()) {
             auto res = uids.empty() ? def_reg->add_function(function_->get_copy(resource_))
                                     : def_reg->add_function_with_uid(uids.front(), function_->get_copy(resource_));
@@ -129,9 +121,8 @@ namespace components::operators {
             }
         }
 
-        // 4. Persist to pg_proc — UDFs registered here are user-namespace
-        //    functions. We attach them to the first existing user namespace; if
-        //    none exists, the row lives in pg_catalog. Matches legacy semantics.
+        // 4. Persist to pg_proc, attached to the first existing user namespace;
+        //    if none exists, the row lives in pg_catalog.
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             catalog::oid_t target_ns = catalog::well_known_oid::pg_catalog_namespace;
             {

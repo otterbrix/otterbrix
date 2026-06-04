@@ -16,11 +16,8 @@ namespace services::disk {
                                                 components::vector::data_chunk_t& data,
                                                 core::date::timezone_offset_t session_tz,
                                                 const components::table::transaction_data& txn) {
-        // Probe the routed agent via storage_entry_sync and apply the
-        // append directly. storage_entry_sync returns a borrowed pointer
-        // safe for the manager thread between mailbox handlers
-        // (direct_append_sync runs pre-scheduler-start WAL replay/bootstrap
-        // seeding, or through the manager mailbox at runtime).
+        // The storage_entry_sync borrow is safe here: direct_append_sync runs only
+        // pre-scheduler-start (WAL replay / bootstrap) or inside the manager mailbox.
         components::storage::storage_t* s = nullptr;
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
@@ -106,7 +103,6 @@ namespace services::disk {
                                             const std::pmr::vector<int64_t>& row_ids,
                                             uint64_t count,
                                             const components::table::transaction_data& txn) {
-        // Pure forward to the routed agent slice.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             agents_[pool_idx]->direct_delete_sync(table_oid, row_ids, count, txn);
@@ -116,7 +112,6 @@ namespace services::disk {
     void manager_disk_t::direct_update_sync(catalog::oid_t table_oid,
                                             const std::pmr::vector<int64_t>& row_ids,
                                             components::vector::data_chunk_t& new_data) {
-        // Pure forward to the routed agent slice.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             agents_[pool_idx]->direct_update_sync(table_oid, row_ids, new_data);
@@ -124,11 +119,8 @@ namespace services::disk {
     }
 
     // --- Storage management ---
-    //
-    // Every storage read/write site probes the routed agent slice via
-    // `agents_[pool_idx_for_oid(oid)]->storage_entry_sync(oid)` (or routes
-    // through the agent's storage_*_inner mailbox handlers). No manager-side
-    // storage_t* pointer survives.
+    // Every site routes through agents_[pool_idx_for_oid(oid)] (storage_entry_sync
+    // borrow or storage_*_inner mailbox handler). No manager-side storage_t* survives.
 
     manager_disk_t::unique_future<void>
     manager_disk_t::create_storage(session_id_t session, catalog::oid_t table_oid, catalog::oid_t /*database_oid*/) {
@@ -194,20 +186,12 @@ namespace services::disk {
         auto otbx_path = config_.path / std::to_string(static_cast<unsigned>(database_oid)) /
                          std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
         std::filesystem::create_directories(otbx_path.parent_path());
-        // Runtime CREATE TABLE … DISK. SFBM is constructed on the routed
-        // agent via bootstrap_create_disk_inner_sync; the manager never
-        // opens .otbx (single_file_block_manager_t holds exclusive
-        // WRITE_LOCK — posix advisory, per-process; only the agent path
-        // may emplace).
-        //
-        // Safety contract for calling bootstrap_create_disk_inner_sync from
-        // the manager mailbox handler at runtime mirrors create_storage:
-        //   1. No agent mailbox handler mutates storages_ (find-only).
-        //   2. The new OID is not yet visible to any router: this handler
-        //      publishes it.
-        //   3. The manager actor processes one message at a time.
-        // The helper is noexcept and probes storages_ before constructing
-        // the SFBM, so the dup-key path is observable-but-non-fatal.
+        // Runtime CREATE TABLE … DISK. The SFBM is constructed on the routed agent
+        // via bootstrap_create_disk_inner_sync; the manager never opens .otbx
+        // (single_file_block_manager_t holds an exclusive posix WRITE_LOCK, so only
+        // the agent path may emplace). Same sync-call safety contract as
+        // create_storage above. The helper is noexcept and probes storages_ before
+        // constructing the SFBM, so the dup-key path is observable-but-non-fatal.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
@@ -233,12 +217,10 @@ namespace services::disk {
               "manager_disk_t::drop_storage , session : {} , oid : {}",
               session.data(),
               static_cast<unsigned>(table_oid));
-        // Pure mailbox-router. The agent owns the canonical erase +
-        // filesystem remove sequence in drop_storage_inner; it is
-        // idempotent on a missing key (DROP IF EXISTS / WAL replay re-drop /
-        // not-routed-to-this-agent all reduce to a logged no-op). co_await
-        // preserves ordering w.r.t. operator_dynamic_cascade_delete's
-        // subsequent sends.
+        // The agent owns the canonical erase + filesystem-remove in
+        // drop_storage_inner, idempotent on a missing key (DROP IF EXISTS / WAL
+        // re-drop / not-routed-here all log a no-op). co_await preserves ordering
+        // w.r.t. operator_dynamic_cascade_delete's subsequent sends.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
@@ -257,8 +239,6 @@ namespace services::disk {
 
     manager_disk_t::unique_future<std::pmr::vector<components::types::complex_logical_type>>
     manager_disk_t::storage_types(session_id_t /*session*/, catalog::oid_t table_oid) {
-        // Pure router. Agent returns an empty pmr-vector for not-owned /
-        // schema-less twins — propagate as-is.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
@@ -275,8 +255,6 @@ namespace services::disk {
 
     manager_disk_t::unique_future<uint64_t> manager_disk_t::storage_total_rows(session_id_t /*session*/,
                                                                                catalog::oid_t table_oid) {
-        // Pure router. 0 from the agent means "not owned" OR "empty twin"
-        // — both equivalent for this caller.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
@@ -299,7 +277,6 @@ namespace services::disk {
                                  std::unique_ptr<components::table::table_filter_t> filter,
                                  int limit,
                                  components::table::transaction_data txn) {
-        // Pure router. Agent returns nullptr for not-owned OIDs.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
@@ -325,8 +302,6 @@ namespace services::disk {
                                          int64_t limit,
                                          std::vector<size_t> projected_cols,
                                          components::table::transaction_data txn) {
-        // Pure router. Agent returns an empty pmr-vector for not-owned /
-        // empty twins.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
@@ -350,7 +325,6 @@ namespace services::disk {
                                   catalog::oid_t table_oid,
                                   components::vector::vector_t row_ids,
                                   uint64_t count) {
-        // Pure router. Agent returns nullptr for not-owned OIDs.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
@@ -372,7 +346,6 @@ namespace services::disk {
                                          catalog::oid_t table_oid,
                                          int64_t start,
                                          uint64_t count) {
-        // Pure router. Agent returns nullptr for not-owned OIDs.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
@@ -393,11 +366,10 @@ namespace services::disk {
     manager_disk_t::storage_append(execution_context_t ctx,
                                    catalog::oid_t table_oid,
                                    std::unique_ptr<components::vector::data_chunk_t> data) {
-        // Pure router. The full preprocessing pipeline (schema adoption /
-        // growth, column expansion, NOT NULL, dedup, type promotion) and the
-        // canonical write live in the agent twin (storage_append_inner) so
-        // that every same-oid access is serialized by the agent's mailbox —
-        // no borrowed-pointer access from the manager loop thread.
+        // The full preprocessing pipeline (schema adoption/growth, column
+        // expansion, NOT NULL, dedup, type promotion) and the canonical write live
+        // in the agent twin, so every same-oid access is serialized by the agent's
+        // mailbox — no borrowed-pointer access from the manager loop thread.
         if (!data || data->size() == 0) {
             co_return std::make_pair(uint64_t{0}, uint64_t{0});
         }
@@ -450,8 +422,6 @@ namespace services::disk {
                                                                                 catalog::oid_t table_oid,
                                                                                 components::vector::vector_t row_ids,
                                                                                 uint64_t count) {
-        // Pure router to the agent twin — the agent's mailbox serializes
-        // the canonical write with every other same-oid access.
         if (!agents_.empty()) {
             const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[idx];
@@ -478,9 +448,7 @@ namespace services::disk {
                                                                               uint64_t commit_id,
                                                                               int64_t row_start,
                                                                               uint64_t count) {
-        // Pure router — single-range payload to the plural agent twin
-        // (storage_publish_commits_inner); the agent's mailbox serializes
-        // the MVCC visibility flip with every other same-oid access.
+        // Wraps the single range into the plural storage_publish_commits_inner payload.
         if (agents_.empty())
             co_return;
         const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
@@ -504,7 +472,6 @@ namespace services::disk {
                                                                               catalog::oid_t table_oid,
                                                                               int64_t row_start,
                                                                               uint64_t count) {
-        // Pure forward to the routed agent slice.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
@@ -523,10 +490,8 @@ namespace services::disk {
 
     manager_disk_t::unique_future<void>
     manager_disk_t::storage_publish_delete(execution_context_t ctx, catalog::oid_t table_oid, uint64_t commit_id) {
-        // Pure router — single-oid payload to the plural agent twin
-        // (storage_publish_deletes_inner); the agent's mailbox serializes
-        // the MVCC delete commit with every other same-oid access. txn_id 0
-        // (no real transaction) short-circuits, matching the twin's guard.
+        // Wraps the single oid into the plural storage_publish_deletes_inner payload.
+        // txn_id 0 (no real transaction) short-circuits, matching the twin's guard.
         const auto txn_id = ctx.txn.transaction_id;
         if (txn_id == 0 || agents_.empty())
             co_return;
@@ -552,15 +517,11 @@ namespace services::disk {
     manager_disk_t::storage_publish_commits(execution_context_t /*ctx*/,
                                            uint64_t commit_id,
                                            std::vector<components::pg_catalog_append_range_t> ranges) {
-        // Pure router fanout. Per-agent payload is a PMR vector. ranges may
-        // carry both catalog and user OIDs; agent inner handler is
-        // idempotent for not-owned OIDs (over-routing is safe).
+        // Fanout: ranges may mix catalog and user OIDs; the agent inner handler is
+        // idempotent for not-owned OIDs, so over-routing is safe.
         if (!agents_.empty()) {
-            // Per-agent slice partition. Each slot is an empty pmr-vector
-            // whose allocator is propagated by uses-allocator construction
-            // from the outer `per_agent`'s allocator (libc++ appends the
-            // outer allocator as a trailing argument to `_Tp(...)`, so
-            // `emplace_back()` with no arg yields `vector(alloc)`).
+            // emplace_back() yields vector(alloc): libc++ uses-allocator construction
+            // appends per_agent's allocator as a trailing arg to the inner vector's ctor.
             std::pmr::vector<std::pmr::vector<components::pg_catalog_append_range_t>> per_agent{resource()};
             per_agent.reserve(agents_.size());
             for (std::size_t i = 0; i < agents_.size(); ++i) {
@@ -601,8 +562,7 @@ namespace services::disk {
         if (txn_id == 0)
             co_return;
 
-        // Pure router fanout — same partition-by-agent pattern as
-        // storage_publish_commits.
+        // Same partition-by-agent fanout as storage_publish_commits.
         if (!agents_.empty()) {
             std::pmr::vector<std::pmr::vector<catalog::oid_t>> per_agent{resource()};
             per_agent.reserve(agents_.size());
@@ -639,9 +599,8 @@ namespace services::disk {
     manager_disk_t::unique_future<void>
     manager_disk_t::storage_revert_appends(execution_context_t /*ctx*/,
                                            std::vector<components::pg_catalog_append_range_t> ranges) {
-        // Pure router fanout for batched abort. Same partition-by-agent
-        // pattern as storage_publish_commits; each agent's inner handler
-        // reverse-iterates its slice to preserve append-order opposite.
+        // Batched abort, same partition-by-agent fanout as storage_publish_commits;
+        // each agent's inner handler reverse-iterates to unwind in append-order opposite.
         if (!agents_.empty()) {
             std::pmr::vector<std::pmr::vector<components::pg_catalog_append_range_t>> per_agent{resource()};
             per_agent.reserve(agents_.size());

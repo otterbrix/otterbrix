@@ -49,11 +49,9 @@ namespace services::index {
                                         std::pmr::vector<int64_t> row_ids,
                                         int64_t new_start_row_id);
 
-        // MVCC commit/revert/cleanup
-        // commit_insert / commit_delete return a core::error_t directly
-        // (project-wide convention — error_t::no_error() means success,
-        // contains_error() flags failure). Lets callers branch on a future
-        // index-side abort path without another signature migration.
+        // MVCC commit/revert/cleanup. commit_insert / commit_delete return
+        // core::error_t by the project-wide convention (no_error() = success,
+        // contains_error() = failure) so callers can branch on an index-side abort.
         unique_future<core::error_t>
         commit_insert(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id);
         unique_future<core::error_t>
@@ -106,28 +104,23 @@ namespace services::index {
         // erases routing entries whose dropped_at_commit_id < new_horizon.
         unique_future<void> on_horizon_advanced(uint64_t new_horizon);
 
-        // Runtime DROP TABLE path — operator_dynamic_cascade_delete sends this
-        // from inside the executor actor so the manager_index side records the
+        // Runtime DROP TABLE path: operator_dynamic_cascade_delete records the
         // (oid, dropped_at_commit_id) pair into dropped_table_agents_ for the
-        // next horizon-advance GC sweep. Pair with
+        // next on_horizon_advanced GC sweep. Pairs with
         // manager_dispatcher_t::on_drop_resource_marked(INDEX_KIND).
         unique_future<void> mark_table_dropped(session_id_t session,
                                                components::catalog::oid_t table_oid,
                                                uint64_t dropped_at_commit_id);
 
-        // CREATE INDEX catchup. Called per matching WAL record by
-        // operator_create_index_backfill to apply a
-        // PHYSICAL_{INSERT,DELETE,UPDATE} effect to the build's in-memory
-        // index_engine_t. The chunk + row metadata are shipped over the
-        // mailbox so the handler can drive engine_->insert_row /
-        // mark_delete_row directly (mirrors the insert_rows / delete_rows
-        // DML path). physical_data is the row chunk (NEW rows for
-        // INSERT/UPDATE, empty/null for DELETE — see TBD note in the
-        // handler). physical_row_start is the WAL header's row-id base used
-        // when row_ids is not supplied. txn_id is the CREATE INDEX
-        // transaction so replayed entries land in the PENDING bucket and
-        // get committed by the post-pipeline commit_insert. session_tz is
-        // forwarded into the index key encoder.
+        // CREATE INDEX catchup: operator_create_index_backfill calls this per
+        // matching WAL record to apply a PHYSICAL_{INSERT,DELETE,UPDATE} effect
+        // to the build's in-memory index_engine_t (driving engine_->insert_row /
+        // mark_delete_row, mirroring the DML insert_rows / delete_rows path).
+        //   physical_data:      NEW rows for INSERT/UPDATE, empty/null for DELETE.
+        //   physical_row_start: WAL row-id base, used when row_ids is empty.
+        //   txn_id:             the CREATE INDEX txn, so entries land in the
+        //                       PENDING bucket and are committed by the
+        //                       post-pipeline commit_insert.
         unique_future<void> apply_wal_record_for_index(session_id_t session,
                                                        components::catalog::oid_t table_oid,
                                                        components::catalog::oid_t index_oid,

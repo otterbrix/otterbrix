@@ -306,10 +306,6 @@ namespace services::dispatcher {
             return it != idx->tbl_oid_by_qname.end() ? it->second : components::catalog::INVALID_OID;
         }
 
-        // derive_matview_output_schema lives below in namespace
-        // services::catalog_resolve so it is reachable by
-        // catalog_resolve::stamp_oids_from_resolves.
-
     } // anonymous namespace
 
 } // namespace services::dispatcher
@@ -318,10 +314,10 @@ namespace services::dispatcher {
 namespace services::catalog_resolve {
 
     // Derive a materialized view's output schema from its body plan + the
-    // source table's resolved_metadata. First iteration supports single-table
-    // FROM with scalar_type::get_field expressions (i.e. plain column
-    // references). Returns empty on unsupported shapes — the planner will
-    // surface this as an error (no fallback).
+    // source table's resolved_metadata. Supports only single-table FROM with
+    // scalar_type::get_field expressions (plain column references). Returns
+    // empty on unsupported shapes — the planner surfaces this as an error
+    // (no fallback).
     static std::vector<components::table::column_definition_t>
     derive_matview_output_schema(const components::logical_plan::node_t* body_plan,
                                  const components::logical_plan::resolved_table_metadata_t* source_md) {
@@ -355,7 +351,7 @@ namespace services::catalog_resolve {
                 return {}; // non-scalar (function/aggregate): out of scope
             }
             if (sc->type() != components::expressions::scalar_type::get_field) {
-                return {}; // arithmetic/case_expr/coalesce/...: out of scope (see followups #2)
+                return {}; // arithmetic/case_expr/coalesce/...: out of scope
             }
             const auto& key_storage = sc->key().storage();
             if (key_storage.empty()) {
@@ -632,8 +628,7 @@ namespace services::catalog_resolve {
         }
     }
 
-    // --- SELECT-time view expansion helpers. Pure functions over plan trees
-    // + raw SQL strings — no manager_dispatcher_t state. ---
+    // --- SELECT-time view expansion helpers ---
 
     components::logical_plan::node_catalog_resolve_table_t*
     find_first_view_resolve(components::logical_plan::node_t* root) {
@@ -688,10 +683,9 @@ namespace services::catalog_resolve {
             out.error = components::cursor::make_cursor(resource, tr.error());
             return out;
         }
-        // The transformer returns a fresh plan, typically
+        // Fresh plan with its own resolve wrap, typically
         // sequence_t(catalog_resolve_namespace, catalog_resolve_table(t),
-        //            aggregate(t, ...)). The dispatcher will run the resolve
-        //            operators on this sub_plan's resolves before validate_schema.
+        //            aggregate(t, ...)); its resolves still need a resolve round.
         out.had_expansion = true;
         out.expanded_plan = std::move(tr.value().node);
         out.expanded_params = std::move(tr.value().params);
@@ -736,7 +730,7 @@ namespace services::catalog_resolve {
         return out;
     }
 
-    // === Plan-routing helpers shared by dispatcher and executor pipelines. ===
+    // === Plan-routing helpers ===
 
     const components::logical_plan::node_t*
     effective_root_node(const components::logical_plan::node_t* n) {

@@ -9,20 +9,14 @@ namespace components::operators {
 
     // COMMIT TRANSACTION operator.
     //
-    // RPC mode (is_ddl_commit=false, default): replaces the legacy
-    // manager_dispatcher_t::commit_transaction inline body. Steps:
-    //   1. Snapshot txn_data + swap-info from ctx->txn_manager.
-    //   2. ctx->txn_manager->commit(session) → commit_id.
-    //   3. storage_publish_commits / storage_publish_deletes via disk actor.
+    // RPC mode (default): snapshot txn_data + swap-info, txn_manager->commit()
+    // for a commit_id, then storage_publish_commits / storage_publish_deletes.
     //
-    // DDL-commit mode (is_ddl_commit=true): same as RPC mode plus a
-    // prefix of:
-    //   0a. manager_disk_t::flush(session, wal::id_t{0}) — durability barrier.
-    //   0b. manager_wal_replicate_t::commit_txn(session, txn_id, FULL,
-    //       database_oid) — emit WAL commit record.
+    // DDL-commit mode (set_ddl_commit): prepends a flush durability barrier and
+    // a WAL commit_txn record (with commit_id=0, since it isn't allocated yet)
+    // before the RPC-mode body.
     //
-    // commit_id is exposed via commit_id() so the dispatcher can fulfil its
-    // unique_future<uint64_t> public API.
+    // commit_id() exposes the result for the dispatcher's unique_future API.
     class operator_commit_transaction_t final : public read_write_operator_t {
     public:
         operator_commit_transaction_t(std::pmr::memory_resource* resource, log_t log);

@@ -31,12 +31,9 @@ namespace services::index {
                              uint64_t segment_record_limit = default_segment_record_limit_);
         ~bitcask_index_disk_t() override;
 
-        // Factory: constructs a bitcask_index_disk_t with deferred load and
-        // returns a result_wrapper_t carrying the instance or a core::error_t
-        // when on-disk recovery fails (e.g. CRC mismatch in a segment).
-        // Production code MUST use this entry point — direct construction
-        // still loads from disk and aborts on corruption (preserved for
-        // trusted callers and existing tests that don't exercise corruption).
+        // Factory returning the instance, or a core::error_t when on-disk
+        // recovery fails (e.g. segment CRC mismatch). Production code MUST use
+        // this: the direct ctor below loads from disk and aborts on corruption.
         [[nodiscard]] static core::result_wrapper_t<std::unique_ptr<bitcask_index_disk_t>>
         create(const path_t& path,
                std::pmr::memory_resource* resource,

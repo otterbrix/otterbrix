@@ -19,9 +19,7 @@ namespace components::operators {
     namespace catalog = components::catalog;
 
     namespace {
-        // Mirrors operator_resolve_namespace.cpp's typed setter — direct write
-        // into uint32_t column buffer at (col, row), avoiding a logical_value_t
-        // round-trip.
+        // Direct write into the uint32_t column buffer, avoiding a logical_value_t round-trip.
         inline void set_uint32(vector::data_chunk_t& c, size_t col, size_t row, std::uint32_t v) {
             auto& vec = c.data[col];
             vec.template data<std::uint32_t>()[row] = v;
@@ -51,8 +49,8 @@ namespace components::operators {
     actor_zeta::unique_future<void> operator_resolve_database_t::await_async_and_resume(pipeline::context_t* ctx) {
         constexpr catalog::oid_t kPgDatabase = catalog::well_known_oid::pg_database_table;
 
-        // Single-column UINTEGER output chunk (database_oid). Always emit a
-        // chunk so downstream operators see a consistent schema.
+        // Single-column UINTEGER (database_oid) chunk. Always emitted, even on
+        // miss, so downstream operators see a consistent schema.
         std::pmr::vector<types::complex_logical_type> out_types(resource_);
         out_types.emplace_back(types::logical_type::UINTEGER);
         out_types.back().set_alias("database_oid");
@@ -68,8 +66,7 @@ namespace components::operators {
 
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
-        // pg_database row schema (typical PostgreSQL layout): the lookup is on
-        // the datname column. read_rows_by_key is the pure storage primitive.
+        // Look up pg_database by datname.
         types::logical_value_t name_lv(resource_, std::string_view{name_});
         std::pmr::vector<std::string> db_keys(resource_);
         db_keys.emplace_back("datname");

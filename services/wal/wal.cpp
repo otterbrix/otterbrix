@@ -223,14 +223,13 @@ namespace services::wal {
               static_cast<int>(sync_mode));
 
         if (sync_mode == wal_sync_mode::OFF) {
-            // OFF mode: encode the commit marker but do not write to disk.
-            // Update last_crc_ for chain continuity in case the mode changes later.
+            // OFF mode: encode but don't write — keeps last_crc_ chain continuity
+            // in case sync mode is turned on later.
             encode_buf_.clear();
             last_crc_ = encode_commit(encode_buf_, last_crc_, wal_id, transaction_id, commit_id);
             co_return wal_id;
         }
 
-        // Encode commit marker.
         encode_buf_.clear();
         last_crc_ = encode_commit(encode_buf_, last_crc_, wal_id, transaction_id, commit_id);
 
@@ -313,10 +312,8 @@ namespace services::wal {
     //
     // W-TORN contract: the caller (manager_dispatcher_t after checkpoint_all)
     // must pass min(prev_checkpoint_wal_id_) across all DISK tables — NOT the
-    // latest committed wal_id. Truncating up to the latest wal_id would discard
-    // records still required if any table has to fall back to its .prev backup
-    // at next startup. Using min(prev) keeps WAL coverage for the worst-case
-    // .prev recovery while still trimming records older than every .prev.
+    // latest committed wal_id. The latest wal_id would discard records still
+    // needed if any table falls back to its .prev backup at next startup.
     // -----------------------------------------------------------------------
 
     wal_worker_t::unique_future<void> wal_worker_t::truncate_before(session_id_t /*session*/,

@@ -267,21 +267,19 @@ TEST_CASE("services::disk::ddl::computed_unregister_marks_dead") {
     REQUIRE(tomb_v > live_v);
 }
 
-// 25b. Disk-level mirror of the SQL-level
-// dynamic_schema_drop_then_readd_preserves_old_data test. Verify the post-
+// Disk-level mirror of the SQL-level
+// dynamic_schema_drop_then_readd_preserves_old_data test. Verify the
 // register/unregister/register sequence at the pg_computed_column row level:
 //
 //   register("a", BIGINT)            -> 1 row: a/v0/rc=1
 //   register("b", STRING)            -> 2 rows: a/v0/rc=1, b/v0/rc=1
 //   unregister("b")                  -> 3 rows: a/v0/rc=1, b/v0/rc=1, b-tomb/v1/rc=0
 //                                      (tombstone reuses live attoid_b)
-//   register("b", STRING)            -> EXPECTED 3 rows still: same-type re-
-//                                      register short-circuits to a no-op
-//                                      (operator_computed_field_register.cpp:126-134
-//                                      treats latest_atttypid==new_atttypid as
-//                                      `same_type`; max_version comes from the
-//                                      tombstone, refcount filter is not applied
-//                                      at this read).
+//   register("b", STRING)            -> EXPECTED 3 rows still: a same-type
+//                                      re-register short-circuits to a no-op in
+//                                      operator_computed_field_register (max_version
+//                                      comes from the tombstone, refcount filter
+//                                      not applied at this read).
 //   resolve_table                    -> EXPECTED 1 column ("a") — 'b' is
 //                                      tombstoned and the resolver gates on
 //                                      refcount>0.
@@ -648,20 +646,13 @@ TEST_CASE("services::disk::ddl::dynamic_schema_wal_recovery_skip") {
     WARN("TODO: requires restart fixture; covered by test_recovery.cpp pattern but not yet for relkind='g'");
 }
 
-// 30. Verify storage_append behavior for relkind='g' tables with dynamic
-// schema. The premise under test: an INSERT bringing a new column (not yet
-// in the underlying table_storage_t) should silently extend the storage's
-// schema. This documents what storage_append actually does today
-// (services/disk/manager_disk_storage.cpp):
-//   - If !s->has_schema(), the FIRST chunk's types are adopted (one-shot).
-//   - On subsequent chunks the code only iterates over table_columns and seeks
-//     matching incoming columns by alias. Extra columns in the incoming chunk
-//     (that are NOT yet in table_columns) are silently DROPPED.
-// Conclusion: storage_append does NOT auto-extend an already-adopted schema.
-// adopt_schema is one-shot (data_table.cpp asserts column_definitions_.empty()),
-// so dynamic-schema growth for relkind='g' must happen via an explicit
-// add_column / pg_computed_column path before storage_append. This test pins
-// that behavior down with WARN()s so the regression boundary is explicit.
+// Pins down storage_append for relkind='g' (dynamic-schema) tables:
+//   - first chunk: adopts its types (one-shot, since adopt_schema asserts the
+//     schema is empty);
+//   - later chunks: matches incoming columns to existing ones by alias; columns
+//     not already in the schema are silently DROPPED, not auto-added.
+// So dynamic-schema growth must go through an explicit add_column /
+// pg_computed_column path before storage_append, never via the INSERT itself.
 TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
     using components::types::complex_logical_type;
     using components::types::logical_type;
@@ -714,11 +705,9 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
         (void) start;
     }
 
-    // Expected: storage now has 2 columns; row 1 has b=NULL.
-    // Actual: storage's schema was frozen at 1 column when the first chunk was
-    // appended (adopt_schema is one-shot). The "b" column in the incoming chunk
-    // is silently dropped by manager_disk_storage.cpp:316 (only iterates over
-    // table_columns). storage_total_rows grows to 2, but column count stays 1.
+    // The schema was frozen at 1 column by the first append (adopt_schema is
+    // one-shot), so the incoming "b" is silently dropped: row count grows to 2
+    // but column count stays 1. (Naively you'd expect 2 columns with b=NULL.)
     auto attoid_b = test_computed_register(fx, table_oid, "b", components::catalog::well_known_oid::string_type);
     REQUIRE(attoid_b >= FIRST_USER_OID);
     {
@@ -789,9 +778,9 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
     REQUIRE(rs.columns.size() == 3);
 }
 
-// 26. Computing tables (relkind='g') do not get pg_attribute rows on creation —
-// versioned fields live in pg_computed_column. resolve_table.columns must
-// therefore be empty for a fresh computing table.
+// Computing tables (relkind='g') get no pg_attribute rows on creation —
+// versioned fields live in pg_computed_column, so resolve_table.columns is
+// empty for a fresh computing table.
 TEST_CASE("services::disk::ddl::computing_table_pg_attribute_empty") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "nscempty");

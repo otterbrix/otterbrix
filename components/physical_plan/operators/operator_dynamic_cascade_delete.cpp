@@ -99,9 +99,7 @@ namespace components::operators {
     operator_dynamic_cascade_delete_t::await_async_and_resume(pipeline::context_t* ctx) {
         execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
-        // INVALID_OID seed → resolve never produced a target; nothing to do.
-        // This mirrors the `if (rns.found)` / `if (rt.found)` guards in the
-        // existing dispatcher BFS.
+        // INVALID_OID seed: resolve never produced a target, nothing to do.
         if (seed_objid_ == catalog::INVALID_OID) {
             mark_executed();
             co_return;
@@ -109,11 +107,8 @@ namespace components::operators {
 
         constexpr catalog::oid_t kPgDepend = catalog::well_known_oid::pg_depend_table;
 
-        // async BFS over pg_depend(refclassid, refobjid).
-        //
-        // dep_graph also serves as the visited set: presence of a key
-        // signals "already expanded". This avoids a second container and
-        // keeps the asymptotics the same as the original BFS.
+        // Async BFS over pg_depend(refclassid, refobjid). dep_graph doubles as
+        // the visited set: a present key means "already expanded".
         std::pmr::unordered_map<std::uint64_t, std::pmr::vector<catalog::dependency_t>> dep_graph(resource_);
         std::pmr::vector<std::uint64_t> stack(resource_);
         stack.push_back(encode_key(seed_classid_, seed_objid_));
@@ -159,11 +154,9 @@ namespace components::operators {
             dep_graph.insert_or_assign(k, std::move(deps));
         }
 
-        // feed the closure into catalog::plan_drop. For RESTRICT,
-        // plan_drop returns immediately with status=restrict_blocked when a
-        // 'n' (normal external) dependency is present. For CASCADE it
-        // computes the topological drop order; cycles are surfaced via
-        // status=cycle_detected (blocking_oid carries the offending oid).
+        // plan_drop: RESTRICT returns restrict_blocked on the first 'n' (normal
+        // external) dependency; CASCADE computes the topological drop order and
+        // reports cycle_detected (blocking_oid = offending oid) on a cycle.
         const auto plan = catalog::plan_drop(
             resource_,
             seed_classid_,
@@ -200,12 +193,9 @@ namespace components::operators {
             co_return;
         }
 
-        // for every pg_class object we are about to drop that
-        // backs an actual table (relkind='r'/'g'), record the table_oid
-        // BEFORE we delete its pg_class row. The pg_class scan happens
-        // here (rather than after the deletes) because once the row is
-        // gone we can no longer distinguish storage-backed objects from
-        // pure-catalog ones (sequence/view/macro/composite type).
+        // Record table_oids of storage-backed (relkind 'r'/'g') pg_class objects
+        // BEFORE deleting their pg_class rows: once a row is gone we can no longer
+        // tell storage-backed objects from pure-catalog ones (sequence/view/macro/type).
         struct pending_storage_drop_t {
             catalog::oid_t table_oid{catalog::INVALID_OID};
         };
@@ -266,29 +256,18 @@ namespace components::operators {
             }
         }
 
-        // for each table we identified above, drop the on-disk
-        // storage and unregister the in-memory index entry. Order matters:
-        //   (a) mark_table_dropped / mark_storage_dropped record the (oid,
-        //       commit_id) pairs into manager_index_t::dropped_table_agents_
-        //       and the per-agent dropped_storages_ slices owned by
-        //       agent_disk_t (the manager-side mirror is deleted;
-        //       mark_storage_dropped routes the entry into the owning agent
-        //       slice) for the next horizon-advance GC sweep.
-        //       They must run BEFORE unregister_collection /
-        //       drop_storage because mark_storage_dropped reads the live
-        //       storages_ entry to derive the .otbx path + sidecars — once
-        //       drop_storage erases that entry the path is lost.
-        //   (b) unregister_collection then drop_storage perform the existing
-        //       immediate cleanup; unregister first so any concurrent
+        // Drop on-disk storage + index entry per table. Order matters:
+        //   (a) mark_table_dropped / mark_storage_dropped record (oid, commit_id)
+        //       for the next horizon-advance GC sweep. These MUST precede
+        //       drop_storage: mark_storage_dropped reads the live storages_ entry
+        //       for the .otbx path + sidecars, which drop_storage then erases.
+        //   (b) unregister_collection before drop_storage, so concurrent
         //       index_address consumers stop referencing the collection before
         //       the storage actor frees it.
-        // We pass ctx->txn.transaction_id as the dropped_at_commit_id. The
-        // real post-commit id is not known at execute time; the txn_id is a
-        // monotone upper-bound that the GC predicate
-        // (dropped_at < new_horizon) treats correctly — the horizon eventually
-        // crosses the txn_id once all snapshots that started before this DROP
-        // have closed. For txn=0 (auto-commit / bootstrap path) we record 0,
-        // matching the catalog scan rebuild convention.
+        // dropped_at = txn_id: the real commit_id isn't known yet, but txn_id is a
+        // monotone upper bound that the GC predicate (dropped_at < new_horizon)
+        // handles correctly once every snapshot older than this DROP has closed.
+        // txn=0 (auto-commit/bootstrap) records 0, matching catalog-scan rebuild.
         const uint64_t dropped_at = ctx->txn.transaction_id;
         bool any_storage_drop = false;
         for (auto& sd : pending_storage_drops) {
@@ -319,14 +298,10 @@ namespace components::operators {
             co_await std::move(dsf);
         }
 
-        // flip the dispatcher's selective-broadcast flags so the next
-        // horizon advance fans on_horizon_advanced out to disk + index, which
-        // drain the dropped_storages_ / dropped_table_agents_ queues we just
-        // populated. Fire-and-forget: dispatcher acks the receipt by setting
-        // disk_has_dropped_ / index_has_dropped_ inside its own mailbox.
-        // current_message_sender carries the dispatcher (executor's
-        // parent_address_) — see pipeline::context_t construction in
-        // services/collection/executor.cpp.
+        // Flip the dispatcher's selective-broadcast flags so the next horizon
+        // advance fans on_horizon_advanced out to disk + index, draining the
+        // dropped queues we just populated. Fire-and-forget; the sender is the
+        // dispatcher (executor's parent_address_, see executor.cpp).
         if (any_storage_drop &&
             ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
             constexpr uint8_t DISK_KIND = 1;

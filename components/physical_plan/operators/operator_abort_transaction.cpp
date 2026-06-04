@@ -32,9 +32,8 @@ namespace components::operators {
             // their physical row slots persist until storage_revert_appends.
             txn_t->drain_pg_catalog_pending(swap_appends, swap_deletes_unused);
             swap_deletes_unused.clear();
-            // markers. Their target rows live in swap_appends above and will
-            // be reverted by storage_revert_appends; the markers carry no
-            // residual state.
+            // Backfill markers carry no residual state; their target rows are in
+            // swap_appends and get reverted by storage_revert_appends.
             (void) txn_t->drain_pg_attribute_commit_id_backfills();
         }
 
@@ -43,8 +42,7 @@ namespace components::operators {
             tm->abort(ctx->session);
         }
 
-        // revert any pg_catalog rows appended under this transaction
-        // via the new batched API.
+        // revert any pg_catalog rows appended under this transaction.
         if (txn_data.transaction_id != 0 && !swap_appends.empty() &&
             ctx->disk_address != actor_zeta::address_t::empty_address()) {
             components::execution_context_t swap_ctx{ctx->session, txn_data, {}};

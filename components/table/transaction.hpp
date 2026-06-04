@@ -12,11 +12,9 @@
 
 namespace components::table {
 
-    // Explicit BEGIN..COMMIT txns accumulate DML ranges across statements
-    // instead of publishing per-statement, so COMMIT can publish them in one
-    // batch and give the whole transaction single-atom visibility. Implicit
-    // txns (each statement its own txn) publish per-statement and never touch
-    // these fields.
+    // DML range parked by an explicit BEGIN..COMMIT txn so COMMIT can publish all
+    // statements in one atomic batch. Implicit (per-statement) txns publish inline
+    // and never use these.
     struct dml_append_range_t {
         catalog::oid_t table_oid;
         int64_t row_start;
@@ -29,18 +27,16 @@ namespace components::table {
 
     class transaction_t {
     public:
-        // resource is REQUIRED, not defaulted: the per-txn pending_base_* and
-        // in_flight_snapshot_ pmr containers allocate from it, and falling back
-        // to a global/null default resource would leak allocations across the
-        // txn boundary.
+        // resource is REQUIRED, not defaulted: the per-txn pmr containers allocate
+        // from it, and a global/null default would leak across the txn boundary.
         transaction_t(uint64_t transaction_id,
                       uint64_t start_time,
                       session::session_id_t session,
                       std::pmr::memory_resource* resource);
 
-        // Returns the cached snapshot by value-copy so reads avoid re-locking
-        // the manager (the snapshot is captured once in begin_transaction()).
-        // The vector copy is O(active in-flight commits) — typically <100.
+        // Value-copy of the cached snapshot so reads avoid re-locking the manager
+        // (the snapshot is captured once in begin_transaction). Copy is O(in-flight
+        // commits), typically <100.
         transaction_data data() const {
             return transaction_data(transaction_id_, start_time_, snapshot_horizon_, in_flight_snapshot_);
         }
@@ -57,17 +53,15 @@ namespace components::table {
         void mark_committed();
         void mark_aborted();
 
-        // transaction_manager calls this during begin_transaction after
-        // capturing the snapshot under its lock. The vector is moved in —
-        // the caller transfers ownership of the resource.
+        // Called by transaction_manager during begin_transaction after capturing
+        // the snapshot under its lock; in_flight is moved in.
         void set_snapshot(uint64_t horizon, std::pmr::vector<uint64_t> in_flight) {
             snapshot_horizon_ = horizon;
             in_flight_snapshot_ = std::move(in_flight);
         }
 
-        // The executor consults is_explicit() in the commit phase to choose
-        // between per-statement publish (implicit) and accumulate-until-COMMIT
-        // (explicit).
+        // The executor's commit phase reads is_explicit() to choose per-statement
+        // publish (implicit) vs accumulate-until-COMMIT (explicit).
         void mark_explicit() noexcept { is_explicit_ = true; }
         bool is_explicit() const noexcept { return is_explicit_; }
 
@@ -89,11 +83,8 @@ namespace components::table {
             return out;
         }
 
-        // pg_catalog accumulation for explicit BEGIN..COMMIT. Implicit
-        // (auto-commit) statements publish their pg_catalog append-ranges and
-        // delete-tables inline; explicit statements park them on the
-        // transaction_t so COMMIT drains them into a single batched
-        // storage_publish_commits / storage_publish_deletes.
+        // pg_catalog accumulation for explicit txns: park append-ranges and
+        // delete-tables so COMMIT drains them into one batched publish.
         void accumulate_pg_catalog_pending(
             std::vector<components::pg_catalog_append_range_t>&& appends,
             std::set<components::catalog::oid_t>&& delete_tables) {
@@ -113,10 +104,8 @@ namespace components::table {
             pg_catalog_delete_tables.clear();
         }
 
-        // accumulation/drain for explicit BEGIN..ALTER..COMMIT. Each per-
-        // statement fragment that runs an ALTER COLUMN inside the explicit
-        // txn parks its markers here; operator_commit_transaction_t drains
-        // them after commit_id allocation and patches the rows.
+        // ALTER COLUMN backfill markers parked inside an explicit txn;
+        // operator_commit_transaction_t drains them post-commit_id and patches the rows.
         void accumulate_pg_attribute_commit_id_backfills(
             std::vector<components::pg_attribute_commit_id_backfill_t>&& backfills) {
             for (auto& b : backfills) {
@@ -138,21 +127,17 @@ namespace components::table {
         void add_append(int64_t row_start, uint64_t count);
         const std::vector<append_info>& appends() const { return appends_; }
 
-        // Aggregated across all execute_plan_impl calls within this txn.
-        // Snapshotted by operator_commit_transaction_t / operator_abort_transaction_t
-        // before txn_manager_.commit()/abort() to drive storage_publish_commits /
-        // storage_revert_appends after the swap point.
+        // Aggregated across execute_plan_impl calls; drained by the commit/abort
+        // operators before commit()/abort() to drive storage_publish/revert.
         //
-        // THREADING INVARIANT: the transaction_t BODY (these plain containers)
-        // is single-owner-thread per session. transaction_manager_t::lock_
-        // guards only the session map — find_transaction() returns this object
-        // raw. The executor worker (accumulate_*, executor.cpp) and the
-        // dispatcher loop thread (merge/drain, dispatcher.cpp) both mutate it,
-        // but never concurrently: the dispatcher co_awaits the executor result
-        // future before touching the txn (release/acquire edge), and
-        // wait_future serializes statements per session. Concurrent mutation
-        // is FORBIDDEN — route new cross-thread writes through a txn_*_msg
-        // mailbox handler instead.
+        // THREADING INVARIANT: this transaction_t BODY (these plain containers) is
+        // single-owner-thread per session. transaction_manager_t::lock_ guards only
+        // the session map; find_transaction() hands back this object raw. The
+        // executor worker (accumulate_*) and the dispatcher loop thread (merge/drain)
+        // both mutate it but NEVER concurrently: the dispatcher co_awaits the
+        // executor result before touching the txn (release/acquire), and wait_future
+        // serializes statements per session. Concurrent mutation is FORBIDDEN —
+        // route new cross-thread writes through a txn_*_msg mailbox handler.
         std::vector<components::pg_catalog_append_range_t> pg_catalog_appends;
         std::set<components::catalog::oid_t> pg_catalog_delete_tables;
         // Drained by operator_commit_transaction_t at COMMIT.
@@ -168,19 +153,15 @@ namespace components::table {
         bool is_explicit_{false};
         std::vector<append_info> appends_;
 
-        // ProcArray cached snapshot — set once by transaction_manager
-        // during begin_transaction; never mutated thereafter. Returned by value
-        // from data() each call.
-        //
-        // The pmr members below intentionally have no default member
-        // initializer: the sole ctor initializes them all from its required
-        // `resource`, so no member can silently bind to a global/null default.
+        // ProcArray cached snapshot — set once by transaction_manager during
+        // begin_transaction, never mutated after; returned by value from data().
+        // The pmr members below have no default initializer on purpose: the sole
+        // ctor inits them from its required resource, so none binds to a global default.
         uint64_t snapshot_horizon_{0};
         std::pmr::vector<uint64_t> in_flight_snapshot_;
 
-        // Explicit BEGIN..COMMIT txns park DML ranges here until COMMIT
-        // drains them in a single atomic publish batch. Implicit txns never
-        // touch these (is_explicit_ false).
+        // Explicit txns park DML ranges here until COMMIT drains them in one
+        // atomic publish batch; implicit txns never touch them.
         std::pmr::vector<dml_append_range_t> pending_base_appends_;
         std::pmr::vector<dml_delete_range_t> pending_base_deletes_;
     };

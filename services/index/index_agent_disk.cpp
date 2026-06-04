@@ -79,10 +79,6 @@ namespace services::index {
 
     bool index_agent_disk_t::is_dropped() const { return is_dropped_; }
 
-    // Note: bitcask/btree mutators are assert+abort terminal — no recoverable
-    // failure to surface here. When they gain core::error_t returns, these
-    // methods' signatures will change accordingly.
-
     index_agent_disk_t::unique_future<void> index_agent_disk_t::drop(session_id_t session) {
         trace(log_, "index_agent_disk_t::drop, session: {}", session.data());
         index_disk_->drop();

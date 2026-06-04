@@ -599,7 +599,7 @@ namespace services::disk {
             components::table::table_scan_state scan_state(&scan_resource);
             idx_table.initialize_scan(scan_state, col_indices);
             std::pmr::vector<components::types::complex_logical_type> types(&scan_resource);
-            for (auto idx : {0, 1, 2, 3}) {
+            for (std::size_t idx : {0u, 1u, 2u, 3u}) {
                 types.push_back(idx_table.columns()[idx].type());
             }
             while (true) {

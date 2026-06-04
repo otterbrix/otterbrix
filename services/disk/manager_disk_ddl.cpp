@@ -259,7 +259,7 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<std::uint64_t>
-    manager_disk_t::compact_relkind_g_storage(execution_context_t ctx,
+    manager_disk_t::compact_relkind_g_storage(execution_context_t /*ctx*/,
                                               components::catalog::oid_t table_oid,
                                               std::set<std::string> live_attnames) {
         // The routed agent slice owns the canonical IN_MEMORY twin for

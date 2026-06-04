@@ -570,7 +570,7 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<void>
-    manager_disk_t::mark_storage_dropped(session_id_t session,
+    manager_disk_t::mark_storage_dropped(session_id_t /*session*/,
                                          components::catalog::oid_t table_oid,
                                          uint64_t dropped_at_commit_id) {
         // Runtime DROP TABLE path. operator_dynamic_cascade_delete sends this

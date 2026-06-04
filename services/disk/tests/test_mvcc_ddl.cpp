@@ -531,7 +531,7 @@ TEST_CASE("services::disk::mvcc::dynamic_field_drop_insert_concurrent_TODO") {
 // registers the same attname. MVCC isolation prevents the race: VACUUM's
 // ctx->txn snapshot uses lowest_active_start_time as horizon, so uncommitted
 // INSERT writes are invisible. Both read_rows_by_key and delete_pg_catalog_rows
-// funnel through ctx.txn (verified in manager_disk_resolve.cpp /
+// funnel through ctx.txn (see manager_disk_resolve.cpp /
 // manager_disk_ddl.cpp).
 TEST_CASE("services::disk::mvcc::vacuum_insert_concurrent_TODO") {
     WARN("TODO: requires multi-session concurrent test fixture; race is "

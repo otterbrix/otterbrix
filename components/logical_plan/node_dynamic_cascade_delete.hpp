@@ -10,7 +10,7 @@ namespace components::logical_plan {
     // Planner-emitted DDL leaf: drives a CASCADE/RESTRICT walk over pg_depend
     // starting from a (seed_classid, seed_objid) seed and deletes the transitive
     // closure inline. Replaces the per-DROP BFS that used to live in the
-    // dispatcher (services/dispatcher/ddl.cpp), so the dispatcher can hand
+    // dispatcher, so the dispatcher can hand
     // every DROP to the executor pipeline like every other plan.
     //
     // The classid identifies which catalog owns the seed object — pg_namespace

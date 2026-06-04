@@ -261,8 +261,8 @@ namespace services::disk {
         // create in-memory storages on the first PHYSICAL_INSERT for tables without an .otbx).
         // Pure router into the routed agent slice (the sole source of truth);
         // callers must be single-threaded bootstrap or already inside the
-        // manager's mailbox lock (sync probe into agent is safe under
-        // pre-scheduler carve-out).
+        // manager's mailbox lock (the sync probe into the agent is only safe
+        // pre-scheduler-start, when everything is single-threaded).
         bool has_storage(components::catalog::oid_t table_oid) const noexcept {
             if (agents_.empty())
                 return false;
@@ -333,7 +333,7 @@ namespace services::disk {
         // at startup (before any CREATE INDEX-driven rebuild can populate
         // per-index data). Called by base_spaces between
         // load_user_table_storages_sync and bootstrap_indexes_sync, pre-
-        // scheduler-start (single-threaded — Constraint #11 carve-out).
+        // scheduler-start (single-threaded).
         //
         // Excludes system OIDs (oid < FIRST_USER_OID) and tombstoned rows.
         // Independent of (but consistent with) alive_user_oids_sync() which

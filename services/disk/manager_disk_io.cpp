@@ -137,12 +137,11 @@ namespace services::disk {
         }
 
         // Pure router. The threshold check + compact run in the agent twin
-        // (maybe_cleanup_inner) — byte-identical decision logic — so the
-        // row_group rebuild is serialized by the agent's mailbox with every
-        // other same-oid access. (Previously the manager ALSO compacted
-        // inline through a storage_entry_sync borrow: a duplicate compact
-        // AND a cross-thread race against agent-side scans.) INVALID_OID is
-        // filtered above; agent logs a no-op on not-owned / null entry.
+        // (maybe_cleanup_inner) so the row_group rebuild is serialized by the
+        // agent's mailbox with every other same-oid access. Running the compact
+        // manager-side via a storage_entry_sync borrow would duplicate the
+        // compact and race against agent-side scans. INVALID_OID is filtered
+        // above; agent logs a no-op on not-owned / null entry.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(ctx.table_oid, agents_.size());
             auto& agent = agents_[pool_idx];

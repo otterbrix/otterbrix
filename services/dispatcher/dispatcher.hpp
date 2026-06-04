@@ -87,9 +87,8 @@ namespace services::dispatcher {
         // all records and finds the maximum durable commit_id. Advances
         // published_horizon_ past everything already on disk so post-recovery
         // snapshots observe the right MVCC visibility. Direct sync call is
-        // allowed here: scheduler_dispatcher_ has not been started yet
-        // (rule 11 base_spaces bootstrap exception). Idempotent — publish()
-        // is monotonic and ignores stale ids.
+        // allowed here because scheduler_dispatcher_ has not been started yet.
+        // Idempotent — publish() is monotonic and ignores stale ids.
         void set_replay_horizon_sync(uint64_t commit_id);
 
         // Catalog scan rebuild — base_spaces calls these after rebuilding
@@ -97,8 +96,8 @@ namespace services::dispatcher {
         // post-start horizon advance broadcasts on_horizon_advanced to the
         // affected subscribers and finishes the GC pass that the pre-crash
         // DROP didn't get to. Equivalent to the mailbox handler
-        // on_drop_resource_marked() but usable pre-scheduler.start (rule 11
-        // base_spaces bootstrap exception). Idempotent.
+        // on_drop_resource_marked() but usable before scheduler.start.
+        // Idempotent.
         void set_disk_has_dropped_sync(bool value) noexcept { disk_has_dropped_ = value; }
         void set_index_has_dropped_sync(bool value) noexcept { index_has_dropped_ = value; }
 
@@ -117,12 +116,11 @@ namespace services::dispatcher {
         unique_future<uint64_t> commit_transaction(components::session::session_id_t session);
         unique_future<void> abort_transaction(components::session::session_id_t session);
 
-        // Low-level transaction-manager wrappers for the executor (constraint
-        // #11). The executor currently dereferences a raw
-        // `transaction_manager_t*` shared from this dispatcher (anti-pattern —
-        // mutable state shared across actors). These handlers replay the same
-        // sync calls inside the dispatcher's own actor context, so the
-        // executor only ever communicates via the mailbox.
+        // Low-level transaction-manager wrappers for the executor. The executor
+        // currently dereferences a raw `transaction_manager_t*` shared from this
+        // dispatcher (anti-pattern — mutable state shared across actors). These
+        // handlers replay the same sync calls inside the dispatcher's own actor
+        // context, so the executor only ever communicates via the mailbox.
         //
         // Each handler is a thin pass-through to `txn_manager_.{method}()`
         // with no operator-pipeline / WAL / disk side-effects. The heavier
@@ -145,9 +143,9 @@ namespace services::dispatcher {
         // subscriber as "has dropped resources pending GC" via this mailbox
         // handler. Cleared by on_subscriber_empty once the subscriber's
         // dropped_storages_ queue is empty. These are mailbox handlers invoked
-        // via actor_zeta::send (rule 11 — no sync parent-pointer calls). They
-        // return unique_future<void> because actor_zeta::dispatch requires all
-        // actor methods to return unique_future<T> or generator<T>.
+        // via actor_zeta::send. They return unique_future<void> because
+        // actor_zeta::dispatch requires all actor methods to return
+        // unique_future<T> or generator<T>.
         unique_future<void> on_drop_resource_marked(uint8_t subscriber_kind);
         // Subscriber-empty ack — subscriber sends this back once its
         // dropped_storages_ queue drained (i.e. nothing left to GC for that
@@ -172,8 +170,8 @@ namespace services::dispatcher {
     private:
         // Cleanup-trigger helper. Called INLINE from the commit_txn /
         // abort_txn handler bodies (not wired yet). Regular private member
-        // function — NOT a std::function callback (rule 13) — so the call
-        // site stays a direct method call without indirection. Reads
+        // function — NOT a std::function callback — so the call site stays a
+        // direct method call without indirection. Reads
         // `txn_manager_.lowest_active_start_time()`, and if it advanced since
         // `last_broadcast_horizon_`, sends `on_horizon_advanced(new)` to each
         // subscriber whose drop-resource flag is set. Skip-send is the common
@@ -206,7 +204,7 @@ namespace services::dispatcher {
         // Selective broadcast flags. Set when DROP TABLE / DROP INDEX marks
         // a resource dropped (via on_drop_resource_marked); cleared by the
         // subscriber's on_subscriber_empty ack. Single-actor private state —
-        // no atomic / no shared (rule 10).
+        // no atomic / no shared.
         bool disk_has_dropped_{false};
         bool index_has_dropped_{false};
         // Cached last-broadcast horizon to skip redundant on_horizon_advanced

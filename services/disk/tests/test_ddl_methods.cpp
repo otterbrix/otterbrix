@@ -652,13 +652,13 @@ TEST_CASE("services::disk::ddl::dynamic_schema_wal_recovery_skip") {
 // schema. The premise under test: an INSERT bringing a new column (not yet
 // in the underlying table_storage_t) should silently extend the storage's
 // schema. This documents what storage_append actually does today
-// (services/disk/manager_disk_storage.cpp lines 290+):
+// (services/disk/manager_disk_storage.cpp):
 //   - If !s->has_schema(), the FIRST chunk's types are adopted (one-shot).
 //   - On subsequent chunks the code only iterates over table_columns and seeks
 //     matching incoming columns by alias. Extra columns in the incoming chunk
 //     (that are NOT yet in table_columns) are silently DROPPED.
 // Conclusion: storage_append does NOT auto-extend an already-adopted schema.
-// adopt_schema is one-shot (data_table.cpp:90 asserts column_definitions_.empty()),
+// adopt_schema is one-shot (data_table.cpp asserts column_definitions_.empty()),
 // so dynamic-schema growth for relkind='g' must happen via an explicit
 // add_column / pg_computed_column path before storage_append. This test pins
 // that behavior down with WARN()s so the regression boundary is explicit.
@@ -701,7 +701,6 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
         return chunk;
     };
 
-    // register column "a" then storage_append a row with just "a".
     auto attoid_a = test_computed_register(fx, table_oid, "a", components::catalog::well_known_oid::int64_type);
     REQUIRE(attoid_a >= FIRST_USER_OID);
     {
@@ -715,7 +714,6 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
         (void) start;
     }
 
-    // register column "b" and storage_append a row with both "a" and "b".
     // Expected: storage now has 2 columns; row 1 has b=NULL.
     // Actual: storage's schema was frozen at 1 column when the first chunk was
     // appended (adopt_schema is one-shot). The "b" column in the incoming chunk
@@ -752,7 +750,6 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
         REQUIRE(rows->size() == 2);
     }
 
-    // register "c" and storage_append a row with all three columns.
     auto attoid_c = test_computed_register(fx, table_oid, "c", components::catalog::well_known_oid::float64_type);
     REQUIRE(attoid_c >= FIRST_USER_OID);
     {
@@ -794,8 +791,7 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
 
 // 26. Computing tables (relkind='g') do not get pg_attribute rows on creation —
 // versioned fields live in pg_computed_column. resolve_table.columns must
-// therefore be empty for a fresh computing table. Doc test alias:
-// test_computing_table_pg_attribute_empty (catalog-migration-to-postgresql-style.md §14).
+// therefore be empty for a fresh computing table.
 TEST_CASE("services::disk::ddl::computing_table_pg_attribute_empty") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "nscempty");

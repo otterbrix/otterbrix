@@ -56,7 +56,7 @@ namespace services::collection::executor {
         // the rows after commit_id allocation.
         std::vector<components::pg_attribute_commit_id_backfill_t> pg_attribute_commit_id_backfills{};
         // Per-range DML accumulators flowing through to the dispatcher's
-        // commit/abort phase (Option Delta). For the implicit (auto-commit)
+        // commit/abort phase. For the implicit (auto-commit)
         // path these are populated and the dispatcher drives
         // storage_publish_commit / commit_insert / publish() (or the abort
         // mirror) per range. For the explicit BEGIN/COMMIT path these are
@@ -156,17 +156,15 @@ namespace services::collection::executor {
         //
         // The entry is a value-type POD (oid + database + schema + name) the
         // executor copy-stores in its own map. NOT a `collection_t*` and NOT
-        // a `shared_ptr<collection_t>` (rule 14, constraint #11): mutable
-        // `collection_t` must never cross actors. Cross-partition queries
-        // (JOIN of tables landing in different executor slices) fall back to
-        // the dispatcher's `collections_` set; intra-partition DML / DDL can
-        // probe `find_local_collection(oid)` before paying that mailbox hop.
+        // a `shared_ptr<collection_t>`: mutable `collection_t` must never
+        // cross actors. Cross-partition queries (JOIN of tables landing in
+        // different executor slices) fall back to the dispatcher's
+        // `collections_` set; intra-partition DML / DDL can probe
+        // `find_local_collection(oid)` before paying that mailbox hop.
         //
-        // FUTURE: erase `dispatcher.collections_` entirely once the 8
-        // physical_plan_generator membership probes that read it indirectly
-        // through enrich/validate are migrated. If ownership migration later
-        // requires moving state into this slot, the path is a pmr-allocated
-        // owning handle reachable only from this actor.
+        // If ownership migration later requires moving state into this slot,
+        // the path is a pmr-allocated owning handle reachable only from this
+        // actor (so it stays single-actor-private).
         struct local_collection_entry_t {
             components::catalog::oid_t oid{components::catalog::INVALID_OID};
             std::string database;
@@ -189,7 +187,7 @@ namespace services::collection::executor {
         // nullptr for oids whose hash routes to a different executor slice —
         // callers must then fall through to the cross-partition path (today:
         // dispatcher.collections_ + disk_address_ resolve). Single-actor
-        // private map, no synchronization (rule 10).
+        // private map, no synchronization needed.
         const local_collection_entry_t*
         find_local_collection(components::catalog::oid_t oid) const noexcept {
             auto it = local_collections_.find(oid);
@@ -214,25 +212,6 @@ namespace services::collection::executor {
                                                            plan_t plan_data,
                                                            components::table::transaction_data txn);
 
-        // FUTURE WORK — collections_ partition:
-        // manager_dispatcher_t::collections_ map currently owns all tables.
-        // Plan is to partition this across the executor pool by hash:
-        //   pool_idx = oid % executor_pool_size_ = oid % 4
-        // Each executor owns its slice (`std::pmr::unordered_map<oid_t,
-        // collection_ptr>`) so DML hot path stops crossing the
-        // manager_dispatcher mailbox for local-partition ops.
-        //
-        // Cross-partition queries (JOIN) fall back to resolve_table via
-        // disk_address_ (already async). Pre-check on CREATE/DROP DDL: each
-        // executor maintains local pre/post DDL checks on its own slice — no
-        // router round-trip on CREATE success.
-        //
-        // Migration order: (1) add executors_'s `local_collections_` map AND
-        // the routing helper `pool_idx_for_plan(node_ptr)`; (2) populate each
-        // executor's slice from manager_dispatcher's collections_ at
-        // base_spaces bootstrap; (3) DML hot path reads from
-        // local_collections_; (4) remove manager_dispatcher::collections_
-        // once all callers are migrated.
     private:
         actor_zeta::address_t parent_address_ = actor_zeta::address_t::empty_address();
         actor_zeta::address_t wal_address_ = actor_zeta::address_t::empty_address();
@@ -251,7 +230,7 @@ namespace services::collection::executor {
         // unregister_collection_local. execute_plan probes this map via
         // find_local_collection(oid) before falling back to the
         // dispatcher.collections_ cross-partition path. By-value POD entries —
-        // no shared mutable state with the dispatcher (constraint #11).
+        // no shared mutable state with the dispatcher.
         std::pmr::unordered_map<components::catalog::oid_t, local_collection_entry_t> local_collections_;
 
         void poll_pending();

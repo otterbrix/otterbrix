@@ -29,8 +29,7 @@ namespace components::cursor {
         // iteration via chunk_data() should only see real data.
         table_data_.drop_unprojected_placeholders();
         // Mirror final column shape into type_data_ so callers querying the
-        // result's typed-column descriptor (e.g. variant-e3 differential
-        // tests) see one entry per output column.
+        // result's typed-column descriptor see one entry per output column.
         const auto& chunk_types = table_data_.types();
         type_data_.assign(chunk_types.begin(), chunk_types.end());
     }

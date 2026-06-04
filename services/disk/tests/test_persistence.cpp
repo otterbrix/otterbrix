@@ -19,9 +19,8 @@
 #include <thread>
 #include <unistd.h>
 
-// Phase-5 persistence tests (catalog-migration-to-postgresql-style.md §9, §14 lines
-// 2746–2757). These cover the doc's named persistence cases that aren't already
-// represented in integration/cpp/test/test_clean_break_startup.cpp:
+// Persistence cases not already covered by
+// integration/cpp/test/test_clean_break_startup.cpp:
 //   test_type_persistence_across_restart
 //   test_function_persistence
 //   test_constraint_persistence
@@ -218,9 +217,8 @@ TEST_CASE("services::disk::persistence::test_constraint_persistence") {
 }
 
 // 5. test_oid_persistence: OIDs allocated to a table (and its columns) before
-// checkpoint resolve to the same OIDs after restart. Validates Phase-0 design
-// rule "OIDs are immutable after assignment" (catalog-migration-to-postgresql-style.md §4)
-// across the full disk round-trip.
+// checkpoint resolve to the same OIDs after restart. Validates the design rule
+// "OIDs are immutable after assignment" across the full disk round-trip.
 TEST_CASE("services::disk::persistence::test_oid_persistence") {
     auto dir = persist_dir() + "/oid_persist";
     std::filesystem::remove_all(dir);
@@ -270,7 +268,7 @@ TEST_CASE("services::disk::persistence::test_oid_persistence") {
 // — but persisted OIDs include the dropped table's siblings, so even though the
 // row is gone, the counter has already advanced past it (the OID generator never
 // recycles). Validates "OIDs are never reused after DROP (gaps are acceptable)"
-// (catalog-migration-to-postgresql-style.md §4 design rule 2).
+// (design rule: gaps are acceptable, reuse is not).
 TEST_CASE("services::disk::persistence::test_oid_no_reuse_after_drop") {
     auto dir = persist_dir() + "/oid_no_reuse";
     std::filesystem::remove_all(dir);

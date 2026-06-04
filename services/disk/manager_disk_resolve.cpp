@@ -11,21 +11,18 @@ namespace services::disk {
     // through the agent twin storage_scan_batched_inner — i.e. via agent-0's
     // mailbox. This serialises the read against agent-0's compact path
     // (checkpoint_inner/vacuum_inner/maybe_cleanup_inner) on the scheduler_disk_
-    // threads, eliminating the borrowed-pointer race that the old
-    // storage_entry_sync + inline_scan probe carried. Each site routes via
+    // threads, avoiding a borrowed-pointer race. Each site routes via
     // pool_idx_for_oid(<pg oid>, agents_.size()) (catalog oids land on agent-0)
-    // and passes a default-constructed transaction_data{} ("see all committed",
-    // identical visibility to the old inline_scan which used a zero-snapshot
-    // table_scan_state).
+    // and passes a default-constructed transaction_data{} ("see all committed"
+    // visibility).
     //
     // Generic-table_oid primitives `scan_by_key` and `read_rows_by_key` route
     // the same way, with one extra hop: storage_column_names_inner resolves
     // caller-supplied column NAMES to storage indices (the filter is then
-    // built manager-side and shipped to storage_scan_batched_inner). No
-    // storage_entry_sync borrows remain anywhere in this file.
+    // built manager-side and shipped to storage_scan_batched_inner).
 
     manager_disk_t::unique_future<resolve_namespace_result_t>
-    manager_disk_t::resolve_namespace(execution_context_t ctx, std::string name, std::uint64_t /*since_version*/) {
+    manager_disk_t::resolve_namespace(execution_context_t /*ctx*/, std::string name, std::uint64_t /*since_version*/) {
         resolve_namespace_result_t out(resource());
 
         if (!agents_.empty() && agents_[0] != nullptr) {
@@ -476,7 +473,7 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<resolve_type_result_t>
-    manager_disk_t::resolve_type(execution_context_t ctx,
+    manager_disk_t::resolve_type(execution_context_t /*ctx*/,
                                  components::catalog::oid_t namespace_oid,
                                  std::string name,
                                  std::uint64_t /*since_version*/) {
@@ -484,7 +481,7 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<resolve_function_result_t>
-    manager_disk_t::resolve_function(execution_context_t ctx,
+    manager_disk_t::resolve_function(execution_context_t /*ctx*/,
                                      components::catalog::oid_t namespace_oid,
                                      std::string name,
                                      std::uint64_t /*since_version*/) {
@@ -541,7 +538,7 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<std::pmr::vector<resolve_function_result_t>>
-    manager_disk_t::resolve_function_by_name(execution_context_t ctx,
+    manager_disk_t::resolve_function_by_name(execution_context_t /*ctx*/,
                                              std::string name,
                                              std::uint64_t /*since_version*/) {
         std::pmr::vector<resolve_function_result_t> out(resource());
@@ -591,7 +588,7 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<std::pmr::vector<std::string>>
-    manager_disk_t::list_namespaces(execution_context_t ctx) {
+    manager_disk_t::list_namespaces(execution_context_t /*ctx*/) {
         std::pmr::vector<std::string> out(resource());
         if (agents_.empty() || agents_[0] == nullptr) {
             co_return out;

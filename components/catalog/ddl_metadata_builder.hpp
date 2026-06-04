@@ -128,8 +128,8 @@ namespace components::catalog {
     // Row-builder helpers for update-operations (rename_column, drop_column tombstone,
     // index_set_valid). Return a single data_chunk_t, not a catalog_write_t vector.
 
-    // added_at_commit_id and dropped_at_commit_id are populated by
-    // operator_alter_column_* / ddl_create_table_attribute paths.
+    // added_at_commit_id and dropped_at_commit_id are populated by the
+    // operator_alter_column_* and CREATE TABLE attribute-building paths.
     // For initial schema columns (CREATE TABLE), pass added_at_commit_id = 0
     // (always visible). For ALTER TABLE ADD COLUMN, pass the commit_id of the
     // ALTER. For ALTER TABLE DROP COLUMN write a tombstone row with the same

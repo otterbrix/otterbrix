@@ -10,7 +10,7 @@ namespace components::operators {
     // from a (seed_classid, seed_objid) seed and deletes the transitive
     // closure inline using catalog::plan_drop. Replaces the per-DROP BFS
     // that used to be duplicated across the dispatcher's drop_database /
-    // drop_collection / drop_sequence/view/macro handlers (services/dispatcher/ddl.cpp).
+    // drop_collection / drop_sequence/view/macro handlers.
     //
     // Behavior:
     //   - RESTRICT: walks pg_depend; on first 'n' (normal external) dependency,

@@ -332,14 +332,14 @@ namespace services::index {
     }
 
     manager_index_t::unique_future<void>
-    manager_index_t::mark_table_dropped(session_id_t session,
+    manager_index_t::mark_table_dropped(session_id_t /*session*/,
                                         components::catalog::oid_t table_oid,
                                         uint64_t dropped_at_commit_id) {
         // Runtime DROP TABLE path — operator_dynamic_cascade_delete sends this
         // from inside the executor actor. Thin coroutine wrapper around
         // mark_table_dropped_sync so the operator can co_await a real future
         // and the dropped_table_agents_ mutation stays on the manager_index_t
-        // actor's mailbox (rule 11 — no sync inter-actor mutation).
+        // actor's mailbox (no synchronous cross-actor mutation).
         trace(log_,
               "manager_index_t::mark_table_dropped , oid : {} , commit_id : {}",
               static_cast<unsigned>(table_oid),
@@ -373,8 +373,8 @@ namespace services::index {
                                                index_agent_disk_ptr disk_agent_owned) {
         // Bootstrap path — base_spaces::bootstrap_indexes_sync invokes this
         // once per alive pg_index row recovered from the catalog scan, BEFORE
-        // scheduler.start (rule 11 exception — single-threaded by
-        // construction). Mirrors the runtime create_index handler below
+        // scheduler.start (single-threaded by construction, so direct mutation
+        // is safe here). Mirrors the runtime create_index handler below
         // (in-memory index_t construction + engine wiring + per-oid fan-out
         // registration) without the mailbox-send overhead, plus takes
         // ownership of the disk-persistence actor whose spawn responsibility
@@ -552,7 +552,7 @@ namespace services::index {
 
     // --- Collection lifecycle ---
 
-    manager_index_t::unique_future<void> manager_index_t::register_collection(session_id_t session,
+    manager_index_t::unique_future<void> manager_index_t::register_collection(session_id_t /*session*/,
                                                                               components::catalog::oid_t table_oid) {
         trace(log_, "manager_index_t::register_collection: oid={}", static_cast<unsigned>(table_oid));
 
@@ -563,7 +563,7 @@ namespace services::index {
         co_return;
     }
 
-    manager_index_t::unique_future<void> manager_index_t::unregister_collection(session_id_t session,
+    manager_index_t::unique_future<void> manager_index_t::unregister_collection(session_id_t /*session*/,
                                                                                 components::catalog::oid_t table_oid) {
         trace(log_, "manager_index_t::unregister_collection: oid={}", static_cast<unsigned>(table_oid));
 
@@ -574,7 +574,7 @@ namespace services::index {
 
     // --- DDL: index management ---
 
-    manager_index_t::unique_future<uint32_t> manager_index_t::create_index(session_id_t session,
+    manager_index_t::unique_future<uint32_t> manager_index_t::create_index(session_id_t /*session*/,
                                                                            components::catalog::oid_t table_oid,
                                                                            index_name_t index_name,
                                                                            components::index::keys_base_storage_t keys,
@@ -762,7 +762,7 @@ namespace services::index {
 
     // --- Query ---
 
-    manager_index_t::unique_future<bool> manager_index_t::has_index(session_id_t session,
+    manager_index_t::unique_future<bool> manager_index_t::has_index(session_id_t /*session*/,
                                                                     components::catalog::oid_t table_oid,
                                                                     index_name_t index_name) {
         auto it = engines_.find(table_oid);
@@ -1018,7 +1018,7 @@ namespace services::index {
         co_return;
     }
 
-    manager_index_t::unique_future<void> manager_index_t::cleanup_all_versions(session_id_t session,
+    manager_index_t::unique_future<void> manager_index_t::cleanup_all_versions(session_id_t /*session*/,
                                                                                uint64_t lowest_active) {
         for (auto& [oid, engine] : engines_) {
             engine->cleanup_versions(lowest_active);
@@ -1027,7 +1027,7 @@ namespace services::index {
         co_return;
     }
 
-    manager_index_t::unique_future<void> manager_index_t::rebuild_indexes(session_id_t session,
+    manager_index_t::unique_future<void> manager_index_t::rebuild_indexes(session_id_t /*session*/,
                                                                           components::catalog::oid_t table_oid) {
         auto it = engines_.find(table_oid);
         if (it == engines_.end())
@@ -1053,7 +1053,7 @@ namespace services::index {
     // --- Txn-aware Query ---
 
     manager_index_t::unique_future<std::pmr::vector<int64_t>>
-    manager_index_t::search_with_preferred_type(session_id_t session,
+    manager_index_t::search_with_preferred_type(session_id_t /*session*/,
                                                 components::catalog::oid_t table_oid,
                                                 components::index::keys_base_storage_t keys,
                                                 components::types::logical_value_t value,
@@ -1079,7 +1079,7 @@ namespace services::index {
     }
 
     manager_index_t::unique_future<std::pmr::vector<int64_t>>
-    manager_index_t::search(session_id_t session,
+    manager_index_t::search(session_id_t /*session*/,
                             components::catalog::oid_t table_oid,
                             components::index::keys_base_storage_t keys,
                             components::types::logical_value_t value,
@@ -1101,7 +1101,7 @@ namespace services::index {
     }
 
     manager_index_t::unique_future<std::pmr::vector<components::index::keys_base_storage_t>>
-    manager_index_t::get_indexed_keys(session_id_t session, components::catalog::oid_t table_oid) {
+    manager_index_t::get_indexed_keys(session_id_t /*session*/, components::catalog::oid_t table_oid) {
         auto it = engines_.find(table_oid);
         if (it == engines_.end()) {
             co_return std::pmr::vector<components::index::keys_base_storage_t>(resource_);
@@ -1110,7 +1110,7 @@ namespace services::index {
     }
 
     manager_index_t::unique_future<std::pmr::vector<components::index::index_description_t>>
-    manager_index_t::get_indexed_descriptions(session_id_t session, components::catalog::oid_t table_oid) {
+    manager_index_t::get_indexed_descriptions(session_id_t /*session*/, components::catalog::oid_t table_oid) {
         auto it = engines_.find(table_oid);
         if (it == engines_.end()) {
             co_return std::pmr::vector<components::index::index_description_t>(resource_);
@@ -1213,7 +1213,7 @@ namespace services::index {
     // chunk for the delete half. See operator_create_index_backfill.cpp for
     // the catchup loop that drives this sequence.
     manager_index_t::unique_future<void>
-    manager_index_t::apply_wal_record_for_index(session_id_t session,
+    manager_index_t::apply_wal_record_for_index(session_id_t /*session*/,
                                                 components::catalog::oid_t table_oid,
                                                 components::catalog::oid_t index_oid,
                                                 uint64_t wal_record_id,

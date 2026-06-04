@@ -113,7 +113,7 @@ namespace services::disk {
     // races with no observer.
     //
     // Storage layer note: data_table_t::update() rewrites every column in
-    // the target row (see components/table/data_table.cpp:401 — it builds
+    // the target row (see components/table/data_table.cpp — it builds
     // column_ids = [0..column_count) unconditionally). A naive "patch one
     // column" chunk would NULL out the other ten. We therefore read the
     // full row first, mutate the target field in the read-back chunk, and

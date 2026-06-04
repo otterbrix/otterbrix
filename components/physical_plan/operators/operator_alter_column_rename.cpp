@@ -118,10 +118,10 @@ namespace components::operators {
             // atttypid), so the re-appended row MUST preserve the original
             // column's added_at_commit_id captured above. dropped_at remains
             // 0 (column is still live). If att_added_at_commit_id was 0 at
-            // capture time (column originally CREATEd, or pre-OPTION-X
-            // ALTERed and not yet backfilled), preserving 0 is still
-            // correct — RENAME never widens visibility, and the next ALTER
-            // ADD against this column would push its own backfill marker.
+            // capture time (column originally CREATEd, or ALTERed but not yet
+            // backfilled), preserving 0 is still correct — RENAME never widens
+            // visibility, and the next ALTER ADD against this column would push
+            // its own backfill marker.
             auto new_row = catalog::build_pg_attribute_row(resource_,
                                                            attoid,
                                                            table_oid_,

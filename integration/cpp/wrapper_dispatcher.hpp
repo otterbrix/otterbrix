@@ -127,7 +127,7 @@ namespace otterbrix {
         while (!future.is_ready()) {
             std::unique_lock<std::mutex> lock(event_loop_mutex_);
             if (!future.is_ready()) {
-                // 100µs (was 10ms): with event-loop managers, enqueue returns
+                // 100µs poll: with event-loop managers, enqueue returns
                 // instantly and nobody notifies event_loop_cv_ — the poll tick
                 // bounds per-query handoff latency. Matched to the manager
                 // loops' own 100µs cadence.

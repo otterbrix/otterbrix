@@ -33,8 +33,8 @@ namespace components::operators {
     }
 
     actor_zeta::unique_future<void> operator_set_timezone_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // IN_MEMORY-only deployment: no pg_settings persistence available.
-        // Matches the legacy dispatcher.cpp:1447 guard.
+        // IN_MEMORY-only deployment (no disk actor): no pg_settings
+        // persistence available, so skip the catalog write.
         if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
             mark_executed();
             co_return;

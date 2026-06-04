@@ -265,8 +265,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 REQUIRE(cur->size() == kNumInserts);
                 // column[1] will be filled with 100 default values (PostgreSQL
                 // semantic: DEFAULT applies for omitted columns regardless of
-                // nullability — see test_persistence::disk_partial_insert and
-                // docs/remaining-5-tests-plan.md "Group 4 / Plan").
+                // nullability — see test_persistence::disk_partial_insert).
             }
             {
                 auto cur = select_all(table_collection_name_value_defaults);

@@ -2,9 +2,8 @@
 
 namespace components::table {
 
-    // The resource is REQUIRED for the per-txn pending_base_* and
-    // in_flight_snapshot pmr containers — no default (null_memory_resource /
-    // get_default_resource defaults are forbidden by project rules).
+    // resource is required (not defaulted): it backs every per-txn pmr
+    // container, so it must not fall back to a global/null default resource.
     transaction_t::transaction_t(uint64_t transaction_id,
                                  uint64_t start_time,
                                  session::session_id_t session,

@@ -209,7 +209,7 @@ namespace components::operators {
         }
 
         // explicit BEGIN..COMMIT durability: emit WAL commit_txn marker
-        // for the explicit txn. DDL-commit branch already emits at lines 32-44;
+        // for the explicit txn. The DDL-commit branch above already emits one;
         // skip if that path ran.
         if (!is_ddl_commit_ && ctx->wal_address != actor_zeta::address_t::empty_address() &&
             txn_data.transaction_id != 0 && commit_id_ > 0) {

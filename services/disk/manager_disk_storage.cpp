@@ -256,7 +256,7 @@ namespace services::disk {
     // --- Storage queries ---
 
     manager_disk_t::unique_future<std::pmr::vector<components::types::complex_logical_type>>
-    manager_disk_t::storage_types(session_id_t session, catalog::oid_t table_oid) {
+    manager_disk_t::storage_types(session_id_t /*session*/, catalog::oid_t table_oid) {
         // Pure router. Agent returns an empty pmr-vector for not-owned /
         // schema-less twins — propagate as-is.
         if (!agents_.empty()) {
@@ -273,7 +273,7 @@ namespace services::disk {
         co_return std::pmr::vector<components::types::complex_logical_type>(resource());
     }
 
-    manager_disk_t::unique_future<uint64_t> manager_disk_t::storage_total_rows(session_id_t session,
+    manager_disk_t::unique_future<uint64_t> manager_disk_t::storage_total_rows(session_id_t /*session*/,
                                                                                catalog::oid_t table_oid) {
         // Pure router. 0 from the agent means "not owned" OR "empty twin"
         // — both equivalent for this caller.
@@ -319,7 +319,7 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
-    manager_disk_t::storage_scan_batched(session_id_t session,
+    manager_disk_t::storage_scan_batched(session_id_t /*session*/,
                                          catalog::oid_t table_oid,
                                          std::unique_ptr<components::table::table_filter_t> filter,
                                          int64_t limit,
@@ -346,7 +346,7 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
-    manager_disk_t::storage_fetch(session_id_t session,
+    manager_disk_t::storage_fetch(session_id_t /*session*/,
                                   catalog::oid_t table_oid,
                                   components::vector::vector_t row_ids,
                                   uint64_t count) {
@@ -368,7 +368,7 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
-    manager_disk_t::storage_scan_segment(session_id_t session,
+    manager_disk_t::storage_scan_segment(session_id_t /*session*/,
                                          catalog::oid_t table_oid,
                                          int64_t start,
                                          uint64_t count) {
@@ -473,7 +473,7 @@ namespace services::disk {
 
     // MVCC commit/revert methods
 
-    manager_disk_t::unique_future<void> manager_disk_t::storage_publish_commit(execution_context_t ctx,
+    manager_disk_t::unique_future<void> manager_disk_t::storage_publish_commit(execution_context_t /*ctx*/,
                                                                               catalog::oid_t table_oid,
                                                                               uint64_t commit_id,
                                                                               int64_t row_start,
@@ -500,7 +500,7 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::storage_revert_append(execution_context_t ctx,
+    manager_disk_t::unique_future<void> manager_disk_t::storage_revert_append(execution_context_t /*ctx*/,
                                                                               catalog::oid_t table_oid,
                                                                               int64_t row_start,
                                                                               uint64_t count) {
@@ -549,7 +549,7 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<void>
-    manager_disk_t::storage_publish_commits(execution_context_t ctx,
+    manager_disk_t::storage_publish_commits(execution_context_t /*ctx*/,
                                            uint64_t commit_id,
                                            std::vector<components::pg_catalog_append_range_t> ranges) {
         // Pure router fanout. Per-agent payload is a PMR vector. ranges may
@@ -637,7 +637,7 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<void>
-    manager_disk_t::storage_revert_appends(execution_context_t ctx,
+    manager_disk_t::storage_revert_appends(execution_context_t /*ctx*/,
                                            std::vector<components::pg_catalog_append_range_t> ranges) {
         // Pure router fanout for batched abort. Same partition-by-agent
         // pattern as storage_publish_commits; each agent's inner handler

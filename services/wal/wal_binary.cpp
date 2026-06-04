@@ -243,11 +243,10 @@ namespace services::wal {
                           id_t wal_id,
                           uint64_t txn_id,
                           uint64_t commit_id) {
-        // COMMIT records carry a trailing commit_id — snapshot-aware replay
-        // reads it back to restore published_horizon_. Layout:
-        //   last_crc32(4) wal_id(8) txn_id(8) type(1) commit_id(8).
-        // The type byte stays at the original offset so DML decode (which only
-        // reads up to the type byte before branching) is unaffected.
+        // commit_id is appended AFTER the type byte so the type byte keeps its
+        // original offset — DML decode (which reads only up to the type byte
+        // before branching) is unaffected. snapshot-aware replay reads commit_id
+        // back to restore published_horizon_.
         static constexpr uint32_t COMMIT_BODY_SIZE = 4 + 8 + 8 + 1 + 8;  // = 29
         static constexpr size_t COMMIT_TOTAL = 4 + COMMIT_BODY_SIZE + 4; // = 37
 

@@ -732,7 +732,7 @@ TEST_CASE("variant-e3 differential: CREATE CONSTRAINT CHECK") {
 
     // Inverse proxy: violating row rejected by CHECK enforcement — the same
     // pg_constraint row drives the violation path through
-    // operator_check_constraint. Per test_sql_features.cpp:1455 this is the
+    // operator_check_constraint. Per test_sql_features.cpp this is the
     // canonical negative case for contype='c'.
     fx.execute_sql("INSERT INTO ve3_chk.items (id, age, name) VALUES (2, -1, 'bad');");
     {

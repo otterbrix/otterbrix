@@ -39,44 +39,36 @@ namespace components::table {
         uint64_t transaction_id{0};
         uint64_t start_time{0};
 
-        // ProcArray: snapshot of MVCC state captured at
-        // begin_transaction by transaction_manager_t::take_snapshot().
+        // MVCC snapshot captured at begin_transaction by
+        // transaction_manager_t::take_snapshot().
         //
-        // snapshot_horizon = published_horizon_ at capture time. Any commit_id
-        // greater than this is "future" relative to the snapshot and not visible.
+        // snapshot_horizon = published_horizon_ at capture time. A commit_id
+        // greater than this committed after the snapshot and is not visible.
         //
-        // in_flight_snapshot = sorted commit_ids that were allocated by commit()
-        // but not yet publish()-published when this txn captured its snapshot.
-        // Visibility filter rejects rows whose insert_id is in this set, even if
-        // the id is below the horizon — those commits become visible only to
-        // snapshots taken after publish().
+        // in_flight_snapshot = sorted commit_ids allocated by commit() but not
+        // yet publish()-published when the snapshot was taken. Rows whose
+        // insert_id is in this set stay invisible even below the horizon; they
+        // become visible only to snapshots taken after publish().
         //
-        // Visibility filter is canonical:
+        // Canonical visibility filter (see use_inserted_version):
         //   if (id == transaction_id)                   return true;   // self-write
         //   if (id >= TRANSACTION_ID_START)             return false;  // other-txn pending
         //   if (id > snapshot_horizon)                  return false;  // post-snapshot
         //   if (in_flight_snapshot contains id)         return false;  // in-flight at snapshot
         //   return true;
         //
-        // Default = UINT64_MAX so a default-constructed transaction_data means
-        // "see all committed rows" (an empty in_flight_snapshot below makes
-        // the in-flight rejection rule degenerate). The ProcArray populates
-        // this field for MVCC reads via set_snapshot() inside begin_transaction,
-        // overwriting the default; so MVCC isolation is preserved. Catalog
-        // scans, recovery, WAL-replay paths and any other helper that bypasses
-        // transaction_manager can use the default to get a "see all committed"
-        // view without explicit plumbing.
+        // Default = UINT64_MAX with an empty in_flight_snapshot makes a
+        // default-constructed transaction_data mean "see all committed rows".
+        // begin_transaction overwrites it for MVCC reads, so isolation holds;
+        // catalog scans, recovery and WAL-replay paths that bypass
+        // transaction_manager rely on the default for a see-all view.
         uint64_t snapshot_horizon{std::numeric_limits<uint64_t>::max()};
-        // Plain std::vector (deliberate exception to the prefer-pmr rule):
-        // transaction_data is a VALUE type that crosses actor boundaries by
-        // copy inside message buffers and gets copy/move-assigned into
-        // arbitrarily-constructed targets. A pmr vector here either anchors
-        // to a banned hidden resource (get_default_resource on implicit
-        // copies, null_memory_resource as a default — both forbidden by
-        // project rules) or bad_allocs on assignment, because pmr allocator
-        // traits do not propagate on copy/move assignment. The snapshot is
-        // tiny (in-flight commit ids, typically <100) and captured once per
-        // transaction — value semantics on the global heap is correct here.
+        // Plain std::vector, not pmr: transaction_data is a value type copied
+        // across actor boundaries and copy/move-assigned into arbitrary targets.
+        // A pmr vector here would either bind to a hidden/global resource or
+        // bad_alloc on assignment, since pmr allocators do not propagate on
+        // copy/move assignment. The snapshot is tiny (<100 ids) and captured
+        // once per txn, so global-heap value semantics is the right tradeoff.
         std::vector<uint64_t> in_flight_snapshot;
     };
     enum class chunk_info_type : uint8_t

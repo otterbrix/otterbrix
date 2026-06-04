@@ -66,15 +66,12 @@ namespace components::operators {
         }
 
         // 2. Fan out to per-executor function_registry_'s. The dispatcher-
-        //    supplied callable owns scheduler enqueue concerns. We issue ALL
-        //    sends first so per-executor scheduling overlaps (the dispatcher
-        //    callable enqueues each executor onto the scheduler synchronously
-        //    before returning the future), then co_await every ack — this
-        //    makes the fanout truly parallel (≈40μs total vs. ≈4×40μs for the
-        //    serial pattern) while preserving the "router co_awaits all four
-        //    executor acks before returning success" SYNCHRONOUS contract:
-        //    UDF visibility is still atomic across executors from the
-        //    caller's perspective.
+        //    supplied callable owns scheduler enqueue concerns. Issue ALL sends
+        //    first so per-executor scheduling overlaps (the callable enqueues
+        //    each executor synchronously before returning the future), then
+        //    co_await every ack — this makes the fanout parallel rather than
+        //    serial. Awaiting all acks before returning keeps UDF visibility
+        //    atomic across executors from the caller's perspective.
         std::pmr::vector<actor_zeta::unique_future<std::unique_ptr<executor_register_result_t>>> acks(resource_);
         acks.reserve(executor_count_);
         for (std::size_t i = 0; i < executor_count_; ++i) {

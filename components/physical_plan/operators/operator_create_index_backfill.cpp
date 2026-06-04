@@ -304,12 +304,11 @@ namespace components::operators {
             catchup_start_wal = max_wal_id_seen;
         }
         if (!converged) {
-            // a graceful-fail path: emit a typed error
-            // cursor via the operator's existing set_error helper and co_return.
-            // +V1 expedited cleanup runs because ready_since=0 — index
-            // never published, no snapshot ever referenced it, safe to GC.
-            // release the WAL retention guard before exiting
-            // so the next checkpoint can truncate freely.
+            // Graceful-fail path: emit a typed error cursor and co_return.
+            // Expedited cleanup is safe (ready_since=0) — the index was never
+            // published and no snapshot ever referenced it, so it is GC-able.
+            // Release the WAL retention guard before exiting so the next
+            // checkpoint can truncate freely.
             if (build_start_registered) {
                 auto [_u, uf] = actor_zeta::send(ctx->wal_address,
                                                  &services::wal::manager_wal_replicate_t::unregister_active_build,

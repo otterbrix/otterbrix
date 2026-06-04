@@ -50,11 +50,10 @@ namespace services::index {
                                         int64_t new_start_row_id);
 
         // MVCC commit/revert/cleanup
-        // Parallel A.B3: commit_insert / commit_delete now return a
-        // core::error_t directly (project-wide convention — error_t::no_error()
-        // means success, contains_error() flags failure). Lets callers branch
-        // on a future C §3.1 index-side abort path without another signature
-        // migration.
+        // commit_insert / commit_delete return a core::error_t directly
+        // (project-wide convention — error_t::no_error() means success,
+        // contains_error() flags failure). Lets callers branch on a future
+        // index-side abort path without another signature migration.
         unique_future<core::error_t>
         commit_insert(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id);
         unique_future<core::error_t>
@@ -116,8 +115,8 @@ namespace services::index {
                                                components::catalog::oid_t table_oid,
                                                uint64_t dropped_at_commit_id);
 
-        // d — CREATE INDEX Phase 2.5 catchup. Called per
-        // matching WAL record by operator_create_index_backfill to apply a
+        // CREATE INDEX catchup. Called per matching WAL record by
+        // operator_create_index_backfill to apply a
         // PHYSICAL_{INSERT,DELETE,UPDATE} effect to the build's in-memory
         // index_engine_t. The chunk + row metadata are shipped over the
         // mailbox so the handler can drive engine_->insert_row /

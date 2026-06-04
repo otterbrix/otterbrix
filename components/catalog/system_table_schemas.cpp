@@ -44,8 +44,8 @@
 //   pg_database   — added                     : full hierarchy database → namespace → relation.
 //                                              10th system table beyond the doc's 9.
 //
-// Reconcile via docs/catalog-migration-to-postgresql-style.md (intentional deltas) — do
-// not "fix" these to match the doc literally without considering the implementation cost.
+// These deltas are intentional — do not "fix" them to match the original design
+// doc literally without considering the implementation cost.
 
 namespace components::catalog {
 

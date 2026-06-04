@@ -15,8 +15,7 @@
 #include <thread>
 #include <unistd.h>
 
-// Recovery (3 tests) — covers docs/catalog-migration-to-postgresql-style.md §14
-// "Recovery (3 tests)":
+// Recovery (3 tests):
 //   - test_recovery_system_wal_before_user — system DDL replayed first on restart, before
 //     anyone touches user storages.
 //   - test_recovery_ring_buffer_empty — fresh process: no events have been pushed, the

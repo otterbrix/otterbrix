@@ -13,11 +13,10 @@
 namespace components::table {
 
     // Explicit BEGIN..COMMIT txns accumulate DML ranges across statements
-    // instead of publishing per-statement. operator_commit_transaction drains
-    // these vectors in batched storage_publish_* calls at COMMIT, producing
-    // single-atom visibility for the whole transaction. Implicit txns (each
-    // statement is its own txn) continue to publish per-statement and never
-    // touch these fields.
+    // instead of publishing per-statement, so COMMIT can publish them in one
+    // batch and give the whole transaction single-atom visibility. Implicit
+    // txns (each statement its own txn) publish per-statement and never touch
+    // these fields.
     struct dml_append_range_t {
         catalog::oid_t table_oid;
         int64_t row_start;
@@ -30,19 +29,18 @@ namespace components::table {
 
     class transaction_t {
     public:
-        // The resource is REQUIRED (no default — null_memory_resource /
-        // get_default_resource defaults are forbidden by project rules):
-        // the per-txn pending_base_* and in_flight_snapshot_ pmr containers
-        // allocate from it.
+        // resource is REQUIRED, not defaulted: the per-txn pending_base_* and
+        // in_flight_snapshot_ pmr containers allocate from it, and falling back
+        // to a global/null default resource would leak allocations across the
+        // txn boundary.
         transaction_t(uint64_t transaction_id,
                       uint64_t start_time,
                       session::session_id_t session,
                       std::pmr::memory_resource* resource);
 
-        // data() returns the cached snapshot by value-copy. The snapshot is
-        // set once by transaction_manager during begin_transaction(); subsequent
-        // reads avoid re-locking the manager. The vector copy is O(active
-        // in-flight commits) — typically <100.
+        // Returns the cached snapshot by value-copy so reads avoid re-locking
+        // the manager (the snapshot is captured once in begin_transaction()).
+        // The vector copy is O(active in-flight commits) — typically <100.
         transaction_data data() const {
             return transaction_data(transaction_id_, start_time_, snapshot_horizon_, in_flight_snapshot_);
         }
@@ -67,10 +65,9 @@ namespace components::table {
             in_flight_snapshot_ = std::move(in_flight);
         }
 
-        // Explicit-txn accumulation API. operator_begin_transaction marks an
-        // explicit txn; executor consults is_explicit() in the commit phase to
-        // decide between per-statement publish (implicit) and accumulate
-        // (explicit). operator_commit_transaction drains the vectors at COMMIT.
+        // The executor consults is_explicit() in the commit phase to choose
+        // between per-statement publish (implicit) and accumulate-until-COMMIT
+        // (explicit).
         void mark_explicit() noexcept { is_explicit_ = true; }
         bool is_explicit() const noexcept { return is_explicit_; }
 
@@ -92,20 +89,11 @@ namespace components::table {
             return out;
         }
 
-        // pg_catalog accumulation for explicit BEGIN..COMMIT. Each per-
-        // statement fragment inside an explicit txn produces a vector of
-        // pg_catalog append-ranges and a set of delete-tables (from
-        // operator_primitive_write_t / register_udf / create_collection /
-        // etc.). Implicit (auto-commit) statements publish these inline in
-        // the executor's commit phase; explicit statements PARK them onto
-        // the transaction_t here so operator_commit_transaction_t drains
-        // them into a single batched storage_publish_commits /
-        // storage_publish_deletes at COMMIT.
-        //
-        // Storage shape mirrors the existing public `pg_catalog_appends` /
-        // `pg_catalog_delete_tables` vectors (already drained by
-        // operator_commit_transaction). The accumulate_*/drain_* API just
-        // wraps them so callers don't reach into the raw fields.
+        // pg_catalog accumulation for explicit BEGIN..COMMIT. Implicit
+        // (auto-commit) statements publish their pg_catalog append-ranges and
+        // delete-tables inline; explicit statements park them on the
+        // transaction_t so COMMIT drains them into a single batched
+        // storage_publish_commits / storage_publish_deletes.
         void accumulate_pg_catalog_pending(
             std::vector<components::pg_catalog_append_range_t>&& appends,
             std::set<components::catalog::oid_t>&& delete_tables) {
@@ -184,10 +172,9 @@ namespace components::table {
         // during begin_transaction; never mutated thereafter. Returned by value
         // from data() each call.
         //
-        // NOTE: the pmr members below carry NO default member initializer
-        // (null_memory_resource / get_default_resource defaults are forbidden
-        // by project rules) — the sole ctor initializes all of them from its
-        // required `resource` parameter.
+        // The pmr members below intentionally have no default member
+        // initializer: the sole ctor initializes them all from its required
+        // `resource`, so no member can silently bind to a global/null default.
         uint64_t snapshot_horizon_{0};
         std::pmr::vector<uint64_t> in_flight_snapshot_;
 

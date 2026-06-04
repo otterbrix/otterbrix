@@ -17,7 +17,7 @@
 #include <thread>
 #include <unistd.h>
 
-// D4 lazy-loading tests (catalog-migration-to-postgresql-style.md §3 lines 323–434).
+// D4 lazy-loading tests.
 // Verify that after bootstrap only the 10 pg_catalog.* system tables are loaded,
 // user tables stay out of storages_ until explicitly accessed, and DDL on unloaded
 // user tables modifies only system catalog rows (pg_class / pg_attribute) without

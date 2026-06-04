@@ -131,8 +131,7 @@ TEST_CASE("small_records_fill_page") {
     tmp_dir_t dir("test_wal_page_small_records");
     auto filepath = dir.file("wal_segment_0");
 
-    // Create writer and write 5 small COMMIT records. The on-disk record layout
-    // for COMMIT in ProcArray (post-cad41ea9 Block F) is 37 bytes: size 4 +
+    // The on-disk record layout for a COMMIT is 37 bytes: size 4 +
     // last_crc 4 + wal_id 8 + txn_id 8 + record_type 1 + commit_id 8 + crc 4.
     // 5 records × 37 bytes = 185 bytes total.
     {

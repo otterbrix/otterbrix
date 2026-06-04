@@ -44,7 +44,7 @@ namespace services::disk {
 
     /// Agent role classifier (storages_ partition).
     /// agent_disk_0 is the CATALOG agent: it co-locates oid_gen_, stored_catalog_,
-    /// file_wal_id_, and (after migration completes) the pg_* system storages.
+    /// file_wal_id_, and the pg_* system storages.
     /// agent_disk_[1..N-1] are USER_POOL agents: hash-routed by table_oid % (N-1)
     /// to spread user-table storage ownership across schedulers.
     /// Match must align with manager_disk_t::pool_idx_for_oid: idx 0 ↔ CATALOG.
@@ -59,8 +59,7 @@ namespace services::disk {
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
 
-        /// Default-constructed agent: CATALOG role, pool_idx = 0. Delegates to
-        /// the role-aware overload with {CATALOG, 0}.
+        /// Default-constructed agent: CATALOG role, pool_idx = 0.
         agent_disk_t(std::pmr::memory_resource* resource, manager_disk_t* manager, const path_t& path_db, log_t& log);
 
         /// Role-aware constructor. agent 0 = CATALOG; agents 1..N-1 = USER_POOL

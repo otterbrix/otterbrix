@@ -208,10 +208,10 @@ namespace components::table {
 
     void data_table_t::append_lock(table_append_state& state) {
         state.append_lock = std::unique_lock(append_lock_);
-        // Recoverable: concurrent DDL altered table. TODO: return core::error_t for graceful
-        // txn abort (full plumb via state.error or signature change).
-        // Current fix: assert+abort eliminates actor-zeta UB (-fno-exceptions swallows throws
-        // silently inside coroutines). For DDL-DML race detection this is conservative-fail.
+        // Concurrent DDL altered the table out from under this append. abort()
+        // rather than throw: under -fno-exceptions a throw inside an actor-zeta
+        // coroutine is silently swallowed (UB). TODO: return core::error_t so
+        // the txn can abort gracefully instead of crashing.
         assert(is_root_ && "Transaction conflict: adding entries to a table that has been altered!");
         if (!is_root_) {
             std::abort();
@@ -439,8 +439,9 @@ namespace components::table {
             return;
         }
 
-        // Recoverable: concurrent DDL altered table. TODO follow-up: core::error_t return for
-        // graceful txn abort. Current: assert+abort eliminates actor-zeta -fno-exceptions UB.
+        // Concurrent DDL altered the table. abort() rather than throw: under
+        // -fno-exceptions a throw inside an actor-zeta coroutine is silently
+        // swallowed (UB). TODO: return core::error_t for a graceful txn abort.
         assert(is_root_ && "Transaction conflict: cannot update a table that has been altered!");
         if (!is_root_) {
             std::abort();

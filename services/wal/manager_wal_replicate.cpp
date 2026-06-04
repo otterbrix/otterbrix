@@ -93,7 +93,7 @@ namespace services::wal {
 
                 // wal manager has no fire-and-forget call-sites (all sends are
                 // co_await'ed inline) — therefore no pending_<T>_ containers and
-                // no poll_pending(). See plan main-misty-castle.md.
+                // no poll_pending().
 
                 // (a) Create a behavior for the next entry that still needs one.
                 //     pending_msg STAYS in slot — coroutine holds raw pointer to
@@ -281,22 +281,21 @@ namespace services::wal {
 
     // -----------------------------------------------------------------------
     // Mailbox-handler twins of the _sync helpers above. Called by
-    // operator_create_index_backfill which runs inside the executor actor —
-    // rule 11 forbids sync inter-actor calls there, so we route the same
-    // in-place set mutation through the manager's mailbox. The handler body is
-    // intentionally thin: dispatch into the actor's own coroutine, run the sync
-    // helper (we are now on the manager's thread per actor-zeta single-consumer
-    // mailbox model), co_return.
+    // operator_create_index_backfill, which runs inside the executor actor and
+    // therefore cannot make sync inter-actor calls — so the same set mutation is
+    // routed through the manager's mailbox. The body runs on the manager's
+    // thread (actor-zeta single-consumer mailbox), so it can call the sync helper
+    // directly.
     // -----------------------------------------------------------------------
 
     manager_wal_replicate_t::unique_future<void>
-    manager_wal_replicate_t::register_active_build(session_id_t session, wal::id_t build_start_wal_position) {
+    manager_wal_replicate_t::register_active_build(session_id_t /*session*/, wal::id_t build_start_wal_position) {
         register_active_build_sync(build_start_wal_position);
         co_return;
     }
 
     manager_wal_replicate_t::unique_future<void>
-    manager_wal_replicate_t::unregister_active_build(session_id_t session, wal::id_t build_start_wal_position) {
+    manager_wal_replicate_t::unregister_active_build(session_id_t /*session*/, wal::id_t build_start_wal_position) {
         unregister_active_build_sync(build_start_wal_position);
         co_return;
     }
@@ -380,7 +379,7 @@ namespace services::wal {
             scheduler_->enqueue(worker);
         }
         auto result = co_await std::move(fut);
-        // Track WAL bytes for auto-checkpoint threshold (atomic).
+        // Track WAL bytes for auto-checkpoint threshold.
         wal_bytes_since_checkpoint_.store(total_wal_bytes(), std::memory_order_relaxed);
         co_return result;
     }

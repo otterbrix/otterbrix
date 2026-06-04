@@ -513,7 +513,7 @@ namespace components::planner {
 
         // DROP DATABASE / TABLE / TYPE / SEQUENCE / VIEW / MACRO → node_dynamic_cascade_delete_t.
         //
-        // Replaces the per-DROP BFS that used to live in services/dispatcher/ddl.cpp.
+        // Replaces the legacy per-DROP BFS that lived in the dispatcher.
         // The dynamic cascade operator self-resolves the pg_depend closure at runtime
         // and performs catalog row deletes + (for pg_class regular/computed entries)
         // storage drop + index unregister.
@@ -598,7 +598,7 @@ namespace components::planner {
             for (const auto& sub : alter->subcommands()) {
                 if (sub.kind == logical_plan::alter_table_kind::add_column) {
                     auto col = sub.column;
-                    // Mirror ddl.cpp: resolve UNKNOWN-by-name builtins.
+                    // Resolve UNKNOWN-by-name builtins.
                     if (col.type().type() == components::types::logical_type::UNKNOWN) {
                         const auto lt = catalog::pg_name_to_logical_type(col.type().type_name());
                         if (lt != components::types::logical_type::UNKNOWN) {

@@ -92,7 +92,7 @@ namespace components::operators {
         }
         if (attoid == catalog::INVALID_OID) {
             // Row not found (or already dropped). No-op, no error — matches the
-            // legacy ddl.cpp behavior which simply `break`-ed out of the switch.
+            // legacy dispatcher behavior (silently skipped).
             mark_executed();
             co_return;
         }

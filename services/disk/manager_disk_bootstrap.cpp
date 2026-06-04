@@ -213,18 +213,15 @@ namespace services::disk {
             freshly_created == std::unordered_set<catalog::oid_t>{catalog::well_known_oid::pg_settings_table}) {
             // Only pg_settings was freshly created — still need to checkpoint it if disk-backed.
             //
-            // A unblocker — agent-first entry probe (mirrors the
-            // bootstrap_one skip-if-present migration). pg_settings DISK
-            // storage is currently a record-only marker on agent 0 (the
-            // SFBM still lives on manager.storages_ until 8.1.B/8.1.C
-            // execute the transfer). storage_entry_sync returns nullptr
-            // for record-only markers, so on the DISK catalog path we
-            // fall through to the manager map and checkpoint the manager
-            // SFBM. Post-8.1.B (agent owns the SFBM) the agent entry
-            // becomes non-null and the checkpoint runs against the
-            // agent-owned table_storage_t — table_storage_t::checkpoint
-            // is a no-op for IN_MEMORY (mode_ != DISK) so the agent
-            // branch is harmless when invoked against an IN_MEMORY twin.
+            // Agent-first entry probe. pg_settings DISK storage may be a
+            // record-only marker on agent 0 (SFBM still on manager.storages_);
+            // storage_entry_sync returns nullptr for record-only markers, so on
+            // the DISK catalog path we fall through to the manager map and
+            // checkpoint the manager SFBM. When the agent owns the SFBM the
+            // entry is non-null and the checkpoint runs against the agent-owned
+            // table_storage_t — table_storage_t::checkpoint is a no-op for
+            // IN_MEMORY (mode_ != DISK) so the agent branch is harmless when
+            // invoked against an IN_MEMORY twin.
             if (disk_backed && freshly_created.count(catalog::well_known_oid::pg_settings_table)) {
                 constexpr auto settings_oid = catalog::well_known_oid::pg_settings_table;
                 const collection_storage_entry_t* entry = nullptr;
@@ -237,9 +234,8 @@ namespace services::disk {
                     // const pointer (the slice's unique_ptr ownership is
                     // immutable across the actor boundary), but the
                     // checkpoint operation is a routine maintenance
-                    // mutation on the entry's interior state. Same
-                    // Constraint #11 carve-out as the sync probe — the
-                    // agent thread is idle vs. this bootstrap-time call.
+                    // mutation on the entry's interior state. Safe because
+                    // the agent thread is idle at this bootstrap-time call.
                     const_cast<collection_storage_entry_t*>(entry)->table_storage.checkpoint();
                 }
             }
@@ -305,17 +301,13 @@ namespace services::disk {
 
         if (disk_backed) {
             for (auto tbl_oid : freshly_created) {
-                // A unblocker — agent-first checkpoint target
-                // probe (same rationale as the pg_settings early-checkpoint
-                // branch above). Catalog OIDs all live on agent 0; DISK
-                // record-only markers (current state for catalog DISK
-                // entries until 8.1.B) make storage_entry_sync return
-                // nullptr, so we fall back to the manager SFBM. The
-                // table_storage_t::checkpoint method is a no-op when
-                // mode_ != DISK, which makes the IN_MEMORY-twin branch
-                // (post-8.1.B, when the agent owns the entry) safe even
-                // for the catalog OIDs whose agent twin happens to be
-                // IN_MEMORY today.
+                // Agent-first checkpoint target probe (same rationale as the
+                // pg_settings early-checkpoint branch above). Catalog OIDs all
+                // live on agent 0; DISK record-only markers make
+                // storage_entry_sync return nullptr, so we fall back to the
+                // manager SFBM. table_storage_t::checkpoint is a no-op when
+                // mode_ != DISK, which makes the IN_MEMORY-twin branch safe
+                // even for catalog OIDs whose agent twin is IN_MEMORY.
                 const collection_storage_entry_t* entry = nullptr;
                 if (!agents_.empty() && agents_[0] != nullptr) {
                     entry = agents_[0]->storage_entry_sync(tbl_oid);
@@ -572,7 +564,7 @@ namespace services::disk {
         // attoid → attname via pg_attribute) in two follow-up sweeps over the
         // catalog tables on agents_[0]. Three single-pass sweeps total: O(C)
         // catalog scans, not O(N_indexes × C).
-        // Pre-scheduler-start, single-threaded — Constraint #11 carve-out.
+        // Pre-scheduler-start, single-threaded.
         std::pmr::vector<pg_index_row_t> result{resource_};
         if (agents_.empty() || agents_[0] == nullptr) {
             return result;

@@ -12,7 +12,6 @@ namespace services::disk {
                                manager_disk_t* manager,
                                const path_t& path_db,
                                log_t& log)
-        // Default-constructed agent: CATALOG role, pool_idx 0.
         : agent_disk_t(resource, manager, path_db, log, agent_role_t::CATALOG, 0) {}
 
     agent_disk_t::agent_disk_t(std::pmr::memory_resource* resource,
@@ -207,7 +206,7 @@ namespace services::disk {
         auto& entry = it->second;
         if (entry == nullptr) {
             // Defensive: null entries (legacy DISK record-only markers) are
-            // unreachable after §8.1.B/C SFBM transfer.
+            // unreachable once every DISK OID owns a live SFBM.
             trace(log_,
                   "agent_disk[{}]::direct_append_sync: oid {} has null entry (unreachable post-§8.1.B/C) — no-op",
                   pool_idx_,
@@ -289,7 +288,7 @@ namespace services::disk {
         // resource() first — same boundary rule as ids_vec above and as the manager's
         // rebuild_chunk does for direct_append_sync (manager_disk_storage.cpp).
         // Without this, validity_mask_t::operator= asserts resource_ == other.resource_
-        // (validation.cpp:44) on Debug builds. See docs/wal-recovery-pmr-mismatch.md.
+        // (validation.cpp) on Debug builds. See docs/wal-recovery-pmr-mismatch.md.
         components::vector::data_chunk_t local(resource(), new_data.types(), new_data.size());
         new_data.copy(local, 0);
         entry->storage->update(ids_vec, local);
@@ -1060,8 +1059,8 @@ namespace services::disk {
         //      entries for return.
         //
         // IN_MEMORY twins are skipped — they have no live SFBM. Null
-        // entries (defensive — legacy DISK record-only markers,
-        // unreachable post §8.1.B/C) are skipped too.
+        // entries (defensive — legacy DISK record-only markers, unreachable
+        // once every DISK OID owns a live SFBM) are skipped too.
         wal::id_t min_prev_id = std::numeric_limits<wal::id_t>::max();
         for (auto& [tbl_oid, entry] : storages_) {
             if (entry == nullptr) {

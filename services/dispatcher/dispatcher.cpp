@@ -90,19 +90,12 @@ using namespace components::types;
 namespace services::dispatcher {
 
     namespace catalog = components::catalog;
-    // the helpers below (find_first_view_resolve,
-    // expand_view_body, extract_unresolved_resolves, stamp_oids_from_resolves,
-    // plan_resolve_index_t, gather_plan_resolve_index, …) were promoted to
-    // services::catalog_resolve so the executor-side resolve migration can
-    // call them. This alias keeps dispatcher.cpp call sites short.
+    // Resolve helpers shared with the executor live in services::catalog_resolve;
+    // this alias keeps dispatcher.cpp call sites short.
     namespace catalog_resolve = services::catalog_resolve;
 
-    // probe_type_in_path / build_type_search_path_str /
-    // effective_root_node / drop_target_names_from_resolves were promoted out
-    // of this anonymous namespace into services::catalog_resolve (declared in
-    // enrich_logical_plan.hpp, defined in enrich_logical_plan.cpp) so the
-    // executor's execute_plan_full can reuse them. Back-compat using-decls
-    // keep dispatcher call sites unchanged.
+    // Back-compat using-decls so dispatcher call sites can keep spelling these
+    // helpers unqualified (definitions in enrich_logical_plan.{hpp,cpp}).
     using catalog_resolve::build_type_search_path_str;
     using catalog_resolve::drop_target_names_from_resolves;
     using catalog_resolve::effective_root_node;
@@ -115,19 +108,6 @@ namespace services::dispatcher {
             return r ? r->type() : components::logical_plan::node_type::unused;
         }
 
-        // === SELECT-time view expansion ===
-        //
-        // The helpers (`view_expansion_result_t`, `find_first_view_resolve`,
-        // `expand_view_body`, `extract_unresolved_resolves`) were promoted
-        // out of this anonymous namespace into `services::catalog_resolve`
-        // (declared in services/dispatcher/enrich_logical_plan.hpp, defined
-        // in services/dispatcher/enrich_logical_plan.cpp) so
-        // executor_t::execute_plan_full can reuse them. Dispatcher call
-        // sites below reach them through the
-        // `namespace catalog_resolve = services::catalog_resolve` alias
-        // declared at the top of the enclosing `services::dispatcher`
-        // namespace.
-
         // subscriber-kind discriminator. Shared between
         // on_drop_resource_marked / on_subscriber_empty (dispatcher side) and the
         // subscriber's `on_horizon_advanced` ack send back to the dispatcher.
@@ -136,44 +116,11 @@ namespace services::dispatcher {
         constexpr uint8_t DISK_KIND = 1;
         constexpr uint8_t INDEX_KIND = 2;
 
-        // cut-over feature flag.
-        //
-        // When `false` (current production default), `execute_plan_impl`
-        // routes the resolved/enriched logical plan to the operator-pipeline
-        // entry point `executor_t::execute_plan`. The dispatcher continues
-        // to run resolve+stamp+view expansion, validation, and
-        // post_validate_optimize + enrich_plan + planner.create_plan + DDL
-        // OID-batch allocation upstream of the executor.
-        //
-        // When flipped to `true`, the dispatcher will instead send the
-        // unrewritten logical plan to `executor_t::execute_plan_full`, and
-        // the executor's gated implementation (behind
-        // `enable_pass2_rewrites`) takes over the work. At that point the
-        // dispatcher-side pre-execute blocks in `execute_plan` become dead
-        // code and are scheduled for deletion.
-        //
-        // SAFETY MATRIX (paired with executor.cpp's `enable_pass2_rewrites`):
-        //   (this=false, executor=false) — CURRENT PRODUCTION. Dispatcher
-        //                                  runs pre-execute upstream,
-        //                                  executor runs operator pipeline
-        //                                  only. Correct, single-rewrite.
-        //   (this=true,  executor=false) — Equivalent to production: routes
-        //                                  to execute_plan_full but the
-        //                                  gated rewrites are off, so the
-        //                                  executor falls through to the
-        //                                  same operator pipeline. Safe for
-        //                                  smoke-testing the routing path.
-        //   (this=false, executor=true)  — NO-OP: executor's gated rewrites
-        //                                  are unreachable (still routed to
-        //                                  execute_plan). Dispatcher
-        //                                  pre-execute still drives
-        //                                  correctness.
-        //   (this=true,  executor=true)  — TARGET STATE. Dispatcher
-        //                                  pre-execute MUST be deleted in
-        //                                  the same commit, else it runs
-        //                                  TWICE (broken-plan double-wrap).
-        // The atomic-flip commit therefore flips both flags here +
-        // executor.cpp and deletes the dispatcher's pre-execute block.
+        // Routes the unrewritten logical plan to executor_t::execute_plan_full
+        // (vs. the dispatcher running resolve/validate/enrich/plan upstream and
+        // calling executor_t::execute_plan). MUST stay paired with executor.cpp's
+        // `enable_pass2_rewrites`: if this is true but the dispatcher also runs
+        // its pre-execute rewrites, the plan is rewritten TWICE (broken double-wrap).
         constexpr bool use_executor_full_pipeline = true;
     } // namespace
 
@@ -277,21 +224,15 @@ namespace services::dispatcher {
                     poll_pending();
                 }
 
-                // WATCHDOG (replaces the deleted idle-tick executor re-enqueue
-                // band-aid): a slot stuck busy && !ready for ~10ms
-                // (>100 ticks at the 100µs idle cadence) signals the proven
-                // actor-zeta parking race on an executor
-                // (docs/actor-zeta-lost-wakeup.md): the executor's mailbox is
+                // WATCHDOG for the actor-zeta parking race on an executor
+                // (docs/actor-zeta-lost-wakeup.md): the executor's mailbox can be
                 // reader_blocked while its awaited future is READY, and
-                // resume_impl's blocked-check precedes the busy/ready check. A
-                // mailbox PUSH unblocks it (proven via live lldb experiment).
-                // We poke with an EXISTING no-op message:
-                // unregister_collection_local(session{}, kSentinelOid) just does
-                // local_collections_.erase(absent key) (executor.cpp:1815-1821).
-                // Threshold 20 ticks (≈2ms at the 100µs idle cadence): healing must
-                // outrun bounded test polls (~80ms) with margin; the poke is a no-op
-                // message, so firing early on a legitimately long executor operation
-                // is harmless (one warn line + erase of an absent key).
+                // resume_impl's blocked-check precedes the busy/ready check, so it
+                // never wakes. A mailbox PUSH unblocks it. A slot stuck busy &&
+                // !ready past the staleness threshold signals this; we poke with a
+                // no-op message (unregister_collection_local with an absent key).
+                // Firing early on a legitimately long executor operation is
+                // harmless (one warn line + erase of an absent key).
                 bool any_stale = false;
                 for (auto& e : in_flight)
                     if (e.behavior && !e.behavior.done() && e.behavior.is_busy()
@@ -394,7 +335,6 @@ namespace services::dispatcher {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::abort_transaction, msg);
                 break;
             }
-            // the executor. See declarations in dispatcher.hpp.
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_begin_msg>: {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::txn_begin_msg, msg);
                 break;
@@ -466,14 +406,12 @@ namespace services::dispatcher {
             if (disk_has_dropped_ && disk_address_ != actor_zeta::address_t::empty_address()) {
                 // Fire-and-forget: subscriber acks asynchronously via
                 // on_subscriber_empty mailbox message. pending_void_ is pure GC
-                // bookkeeping for these broadcast futures — poll_pending()
-                // (dispatcher.cpp:347-351) drains them non-blockingly via
-                // is_ready(). Parking here merely batches their release;
-                // dropping the future immediately would also be memory-safe
-                // (the library's Last-One-Out protocol — future.hpp
-                // release_future only flags, the dealloc happens on the later
-                // of future/promise release), so this is not a lifetime
-                // requirement, just bookkeeping.
+                // bookkeeping for these broadcast futures — poll_pending() drains
+                // them non-blockingly via is_ready(). Dropping the future
+                // immediately would also be memory-safe (the library's
+                // Last-One-Out protocol — future.hpp release_future only flags,
+                // the dealloc happens on the later of future/promise release), so
+                // this is bookkeeping, not a lifetime requirement.
                 auto disk_send_result =
                     actor_zeta::send(disk_address_,
                                      &services::disk::manager_disk_t::on_horizon_advanced,
@@ -753,12 +691,11 @@ namespace services::dispatcher {
             original_type == node_type::drop_view_t || original_type == node_type::drop_macro_t ||
             original_type == node_type::create_database_t || original_type == node_type::alter_table_t ||
             original_type == node_type::create_matview_t;
-        // DML txn begin moved here from executor::execute_plan to avoid the
-        // cross-actor await + cooperative_actor.hpp:310-320 bug. Same
-        // execution semantics — executor receives txn_data via the
-        // execute_plan(_full) parameter and uses it for its DML path,
-        // skipping its own redundant txn_begin_msg send. Hoisted out of an
-        // inner scope so the DML auto-commit block at ~line 774 can read it.
+        // DML txn begins here (not in executor::execute_plan) to avoid the
+        // cross-actor await + cooperative_actor.hpp framework bug. The executor
+        // receives txn_data via the execute_plan(_full) parameter and uses it for
+        // its DML path, skipping its own redundant txn_begin_msg send. Hoisted out
+        // of an inner scope so the DML auto-commit block below can read it.
         const bool needs_dml_txn =
             original_type == node_type::insert_t || original_type == node_type::update_t ||
             original_type == node_type::delete_t;
@@ -799,9 +736,9 @@ namespace services::dispatcher {
                 break;
         }
 
-        // ===== DML auto-commit / abort phase (Option Delta) =====
-        // Moved out of services/collection/executor.cpp to escape the
-        // cooperative_actor.hpp:310-320 framework bug that hangs executor on
+        // ===== DML auto-commit / abort phase =====
+        // Runs here, not in services/collection/executor.cpp, to escape the
+        // cooperative_actor.hpp framework bug that hangs the executor on
         // multi-await sequences. actor_mixin pump (this actor) drives the
         // chain — txn_manager_.commit() → storage_publish_* fanout →
         // index commit_insert/commit_delete fanout → WAL commit_txn (real
@@ -1005,9 +942,8 @@ namespace services::dispatcher {
             // SET TIMEZONE — operator pipeline persisted the ('TimeZone', <name>)
             // row to pg_settings. Refresh the dispatcher's session_catalog_t
             // cache so subsequent session_tz(session) reads see the new value.
-            // Single-owner per rule 10: only this dispatcher coroutine mutates
-            // default_tz_cat_; forward-compatible with option c (replace cache
-            // with ProcArray snapshot read from pg_settings).
+            // Only this dispatcher coroutine mutates default_tz_cat_, so no
+            // synchronization is needed.
             if (t == node_type::set_timezone_t && !pending_set_tz_name.empty()) {
                 (void) default_tz_cat_.set_timezone(
                     resource(),
@@ -1078,7 +1014,7 @@ namespace services::dispatcher {
                                         ->commit_id();
                     }
                 }
-                // (only): drive index commit_insert for CREATE INDEX.
+                // Step 7 (inline, see above): drive index commit_insert for CREATE INDEX.
                 if (commit_id > 0 && original_type == node_type::create_index_t &&
                     index_address_ != actor_zeta::address_t::empty_address()) {
                     auto* root_after_plan = effective_root_node(logic_plan.get());
@@ -1097,9 +1033,8 @@ namespace services::dispatcher {
                                                            swap_ctx,
                                                            indexed_tbl_oid,
                                                            commit_id);
-                        // core::error_t. Today bitcask is assert+abort
-                        // terminal so contains_error() never trips on the
-                        // CREATE INDEX path.
+                        // Today bitcask is assert+abort terminal, so
+                        // contains_error() never trips on the CREATE INDEX path.
                         auto ci_result = co_await std::move(cif);
                         if (ci_result.contains_error()) {
                             // TODO: index-side abort path for CREATE INDEX
@@ -1119,11 +1054,11 @@ namespace services::dispatcher {
                         collections_.insert(qualified_name_t{names.first, cm->matviewname()});
                         // Fan-out the new oid to the owning executor slice
                         // (single send, NOT broadcast) so it can populate its
-                        // local_collections_ slot with a by-value POD entry —
-                        // no shared collection_t pointer (constraint #11). The
-                        // executor uses find_local_collection(oid) in execute_plan
-                        // for intra-partition probes; cross-partition queries
-                        // still read dispatcher.collections_ (Step 3+ migration).
+                        // local_collections_ slot with a by-value POD entry — a
+                        // shared collection_t pointer would be mutable state shared
+                        // across actors. The executor uses find_local_collection(oid)
+                        // in execute_plan for intra-partition probes; cross-partition
+                        // queries still read dispatcher.collections_ (not yet migrated).
                         const auto mv_oid = cm->matview_oid();
                         if (mv_oid != components::catalog::INVALID_OID && !executors_.empty()) {
                             const std::size_t pool_idx =
@@ -1132,7 +1067,7 @@ namespace services::dispatcher {
                             entry.oid = mv_oid;
                             entry.database = names.first;
                             // schema not surfaced by drop_target_names_from_resolves;
-                            // left empty until Step 3+ migration carries it through.
+                            // left empty until a later migration carries it through.
                             entry.name = cm->matviewname();
                             auto reg = actor_zeta::otterbrix::send(
                                 executor_addresses_[pool_idx],
@@ -1166,10 +1101,10 @@ namespace services::dispatcher {
                         collections_.insert(qualified_name_t{names.first, cc_child->relname()});
                         // See create_matview_t fanout above. The planner stamps
                         // the freshly-allocated oid on the create_collection_t
-                        // node via set_table_oid; OID allocation now lives in
-                        // executor_t::execute_plan_full.
-                        // Entry is a by-value POD — no shared collection_t
-                        // pointer between dispatcher and executor (constraint #11).
+                        // node via set_table_oid (OID allocation lives in
+                        // executor_t::execute_plan_full). Entry is a by-value POD —
+                        // a shared collection_t pointer between dispatcher and
+                        // executor would be mutable state shared across actors.
                         const auto cc_oid = cc_child->table_oid();
                         if (cc_oid != components::catalog::INVALID_OID && !executors_.empty()) {
                             const std::size_t pool_idx =
@@ -1178,7 +1113,7 @@ namespace services::dispatcher {
                             entry.oid = cc_oid;
                             entry.database = names.first;
                             // schema not surfaced by drop_target_names_from_resolves;
-                            // left empty until Step 3+ migration carries it through.
+                            // left empty until a later migration carries it through.
                             entry.name = cc_child->relname();
                             auto reg = actor_zeta::otterbrix::send(
                                 executor_addresses_[pool_idx],
@@ -1419,12 +1354,11 @@ namespace services::dispatcher {
               "manager_dispatcher_t:execute_plan_impl: calling executor[{}] (full_pipeline={})",
               pool_idx,
               use_executor_full_pipeline ? "yes" : "no");
-        // exact same call signature (executor.hpp:110-114 vs 125-130) so
-        // they have identical member-function-pointer types. The constexpr
-        // ternary collapses at compile time to a single pointer — no
-        // runtime branch, no dead-code warning. Keep the flag `false`
-        // until executor.cpp's `enable_pass2_rewrites` is also flipped —
-        // see the matching note above the flag definition.
+        // execute_plan and execute_plan_full share the exact same call signature
+        // (see executor.hpp) so they have identical member-function-pointer types.
+        // The constexpr ternary collapses at compile time to a single pointer —
+        // no runtime branch, no dead-code warning. The flag must stay paired with
+        // executor.cpp's `enable_pass2_rewrites` (see the note at its definition).
         constexpr auto execute_method =
             use_executor_full_pipeline ? &collection::executor::executor_t::execute_plan_full
                                        : &collection::executor::executor_t::execute_plan;

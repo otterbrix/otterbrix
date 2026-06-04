@@ -68,7 +68,7 @@ namespace services::index {
         // pump_cv_ is notified. ALL processing (behavior creation, resume,
         // cleanup) happens on the dedicated loop_thread_, which owns a local
         // std::pmr::list<in_flight_entry_t> and drains inbox_ each pass. No
-        // locks are taken on the DML/DDL path — Pure MVCC rule #12 holds.
+        // locks are taken on the DML/DDL path.
         [[nodiscard]] std::pair<bool, actor_zeta::detail::enqueue_result>
         enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
@@ -97,8 +97,8 @@ namespace services::index {
         void set_manager_dispatcher_sync(actor_zeta::address_t address);
 
         // Bootstrap helpers — called from base_spaces::bootstrap_indexes_sync
-        // BEFORE scheduler.start, single-threaded by construction (rule 11
-        // base_spaces exception). They populate the manager's owned data
+        // BEFORE scheduler.start, single-threaded by construction (direct
+        // mutation is safe pre-start). They populate the manager's owned data
         // structures (engines_, disk_agents_owned_, disk_agents_per_oid_,
         // dropped_table_agents_) from the catalog scan results so the manager
         // starts steady state with a complete view.
@@ -275,11 +275,10 @@ namespace services::index {
         uint64_t btree_flush_threshold_{1000};
 
         // Per-collection in-memory index engines (keyed by table oid). The
-        // single, authoritative owner — manager_index_t is the sole holder
-        // (rule 10: no shared mutable state between actors). The map is
-        // populated either by bootstrap_engine_sync at base_spaces Phase 4
-        // (for catalog-known tables) or lazily by register_collection (for
-        // runtime CREATE TABLE).
+        // single, authoritative owner — manager_index_t is the sole holder (no
+        // shared mutable state between actors). The map is populated either by
+        // bootstrap_engine_sync at base_spaces startup (for catalog-known
+        // tables) or lazily by register_collection (for runtime CREATE TABLE).
         std::pmr::unordered_map<components::catalog::oid_t, components::index::index_engine_ptr> engines_;
 
         // Dropped per-table marker map. Populated by mark_table_dropped_sync
@@ -292,7 +291,7 @@ namespace services::index {
         // Per-index disk persistence actor addresses, grouped by table oid.
         // Used by commit_insert / commit_delete fan-out and by on_horizon_advanced
         // GC. Populated by create_index (runtime CREATE INDEX) and
-        // bootstrap_index_sync (Phase 4 catalog rebuild).
+        // bootstrap_index_sync (catalog rebuild).
         std::pmr::unordered_map<components::catalog::oid_t,
                                  std::pmr::vector<actor_zeta::address_t>> disk_agents_per_oid_;
 
@@ -326,7 +325,7 @@ namespace services::index {
         // behavior list locally; senders only deliver into inbox_ and wake the
         // loop via pump_cv_. mutex_ guards ONLY the cv idle-wait — it is never
         // held across behavior creation, cont.resume() or behavior_t
-        // destruction, so Pure MVCC rule #12 (no locks for DML/DDL) holds.
+        // destruction, so the DML/DDL path stays lock-free.
         std::mutex mutex_;
         // Wakes the loop thread out of its bounded idle wait.
         std::condition_variable pump_cv_;

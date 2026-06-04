@@ -366,13 +366,8 @@ namespace otterbrix {
             }
         }
 
-        // Catalog-driven index bootstrap. Walks pg_class + pg_index via
-        // manager_disk_ sync helpers, then for each live table oid mints
-        // an empty index_engine_t on manager_index_; for each alive
-        // pg_index row spawns the persistence disk_agent and hands
-        // ownership to manager_index_; for each dropped table restores
-        // the tombstone so on_horizon_advanced finishes the deferred GC.
-        // Single-threaded by construction (pre-scheduler-start).
+        // Catalog-driven index bootstrap — must run pre-scheduler-start while
+        // single-threaded. See bootstrap_indexes_sync below for the rationale.
         if (disk_ptr && manager_index_) {
             bootstrap_indexes_sync(config.disk);
         }
@@ -451,13 +446,11 @@ namespace otterbrix {
     // vectors on internal failure, bootstrap_index_sync logs and skips a
     // malformed row, no throw escapes this method.
     void base_otterbrix_t::bootstrap_indexes_sync(const configuration::config_disk& disk_config) {
-        // engines for every live table OID.
         auto live_tables = manager_disk_->scan_live_table_oids_sync();
         for (auto oid : live_tables) {
             manager_index_->bootstrap_engine_sync(oid);
         }
 
-        // disk agents for every alive pg_index row.
         std::size_t indexes_wired = 0;
         std::size_t indexes_skipped_unfinished = 0;
         auto index_rows = manager_disk_->scan_alive_pg_index_sync();
@@ -498,7 +491,6 @@ namespace otterbrix {
             ++indexes_wired;
         }
 
-        // restore dropped tombstones from pg_class.
         auto dropped = manager_disk_->scan_dropped_table_oids_sync();
         for (auto& [oid, delete_id] : dropped) {
             manager_index_->bootstrap_dropped_sync(oid, delete_id);

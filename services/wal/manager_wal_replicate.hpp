@@ -98,8 +98,8 @@ namespace services::wal {
 
         // Mailbox-handler twins of the _sync helpers, used by
         // operator_create_index_backfill which runs inside the executor actor
-        // (rule 11: no sync inter-actor calls). Forwards to the same underlying
-        // active_build_start_positions_ set.
+        // and so cannot make sync inter-actor calls. Forwards to the same
+        // underlying active_build_start_positions_ set.
         unique_future<void> register_active_build(session_id_t session, wal::id_t build_start_wal_position);
         unique_future<void> unregister_active_build(session_id_t session, wal::id_t build_start_wal_position);
 

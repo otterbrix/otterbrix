@@ -83,7 +83,6 @@ TEST_CASE("Block E transaction_t::data() snapshot caching",
     REQUIRE(data1.in_flight_snapshot.size() == data2.in_flight_snapshot.size());
     REQUIRE(data2.in_flight_snapshot.size() == data3.in_flight_snapshot.size());
 
-    // Cleanup
     mgr.abort(session);
 }
 
@@ -109,7 +108,7 @@ TEST_CASE("Block E cross-agent atomic visibility (Version B*)",
 
     // Canonical visibility filter (mirrors transaction_version_operator in
     // row_version_manager.cpp). Tested-against contract documented on
-    // transaction_data in row_version_manager.hpp lines 43-48.
+    // transaction_data in row_version_manager.hpp.
     auto visible = [](const transaction_manager_t::snapshot_t& snap,
                       uint64_t id) -> bool {
         if (id >= TRANSACTION_ID_START) return false;       // other-txn pending

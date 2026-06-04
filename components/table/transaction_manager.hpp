@@ -13,11 +13,10 @@ namespace components::table {
 
     class transaction_manager_t {
     public:
-        // pmr resource is REQUIRED. It is used to allocate the
-        // in_flight_snapshot vector inside each transaction_data that
-        // begin_transaction hands out and inside take_snapshot()'s return.
-        // No std::pmr::get_default_resource() — every snapshot must be
-        // anchored to a real resource.
+        // resource backs the in_flight_snapshot vector inside every snapshot
+        // begin_transaction hands out and take_snapshot() returns. It is
+        // required, not defaulted, so each snapshot is anchored to a real
+        // resource and stays valid when moved.
         explicit transaction_manager_t(std::pmr::memory_resource* resource);
 
         transaction_t& begin_transaction(session::session_id_t session);

@@ -94,7 +94,7 @@ namespace services::catalog_resolve {
     // fields are no longer present.
     void stamp_oids_from_resolves(components::logical_plan::node_t* root);
 
-    // Phase 1.5 SELECT-time view expansion. Result of expand_view_body():
+    // SELECT-time view expansion. Result of expand_view_body():
     // a fresh logical plan parsed/transformed from the view's body SQL,
     // ready to be spliced into the outer plan in place of the view
     // reference. `error` is set (non-null) when re-parse / re-transform

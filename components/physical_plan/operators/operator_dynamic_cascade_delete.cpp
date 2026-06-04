@@ -25,8 +25,7 @@ namespace components::operators {
     namespace {
 
         // Encode (classid, objid) into a single uint64 for use as map key /
-        // visited-set element. Mirrors the encoding used in the original
-        // dispatcher BFS (services/dispatcher/ddl.cpp drop_database).
+        // visited-set element.
         inline std::uint64_t encode_key(catalog::oid_t cls, catalog::oid_t oid) noexcept {
             return (static_cast<std::uint64_t>(cls) << 32) | static_cast<std::uint64_t>(oid);
         }
@@ -110,9 +109,7 @@ namespace components::operators {
 
         constexpr catalog::oid_t kPgDepend = catalog::well_known_oid::pg_depend_table;
 
-        // async BFS over pg_depend(refclassid, refobjid). The walk
-        // is identical to the four copies in services/dispatcher/ddl.cpp
-        // (drop_database / drop_collection / drop_sequence|view|macro).
+        // async BFS over pg_depend(refclassid, refobjid).
         //
         // dep_graph also serves as the visited set: presence of a key
         // signals "already expanded". This avoids a second container and

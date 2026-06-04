@@ -235,13 +235,18 @@ namespace services::disk {
         // owners of each mutation; the manager-side bodies are pure routers.
         // Not-owned OIDs are logged + no-op'd.
         //
-        // storage_append_inner — minimal append against entry->storage. The
-        //   manager-side router owns the schema-adoption / column-expansion /
-        //   type-promotion / dedup / NOT NULL enforcement pipeline before
-        //   dispatch; this handler applies the final aligned write.
-        unique_future<void> storage_append_inner(components::catalog::oid_t table_oid,
-                                                 std::unique_ptr<components::vector::data_chunk_t> data,
-                                                 components::table::transaction_data txn);
+        // storage_append_inner — canonical append against entry->storage.
+        //   Owns the FULL preprocessing pipeline (schema adoption / dynamic
+        //   schema growth / column expansion / NOT NULL enforcement / dedup /
+        //   type promotion) so that every same-oid access — preprocessing
+        //   reads included — is serialized by this agent's mailbox. The
+        //   manager-side body is a pure router. Returns (start_row, count)
+        //   of the canonical write; (0, 0) on no-op/violation.
+        unique_future<std::pair<uint64_t, uint64_t>>
+        storage_append_inner(components::catalog::oid_t table_oid,
+                             std::unique_ptr<components::vector::data_chunk_t> data,
+                             components::table::transaction_data txn,
+                             core::date::timezone_offset_t session_tz);
 
         // storage_publish_commits_inner — MVCC visibility flip. Iterates
         //   `ranges` and calls commit_append per range against owned twins;
@@ -276,17 +281,20 @@ namespace services::disk {
                                                         uint64_t count);
 
         // storage_update_inner — single-OID UPDATE mutation against the
-        //   agent twin.
-        unique_future<void> storage_update_inner(components::catalog::oid_t table_oid,
-                                                 components::vector::vector_t row_ids,
-                                                 std::unique_ptr<components::vector::data_chunk_t> data,
-                                                 components::table::transaction_data txn);
+        //   agent twin. Returns storage_t::update's (updated, appended)
+        //   pair; (0, 0) on no-op.
+        unique_future<std::pair<int64_t, uint64_t>>
+        storage_update_inner(components::catalog::oid_t table_oid,
+                             components::vector::vector_t row_ids,
+                             std::unique_ptr<components::vector::data_chunk_t> data,
+                             components::table::transaction_data txn);
 
-        // storage_delete_rows_inner — single-OID DELETE mutation.
-        unique_future<void> storage_delete_rows_inner(components::catalog::oid_t table_oid,
-                                                      components::vector::vector_t row_ids,
-                                                      uint64_t count,
-                                                      components::table::transaction_data txn);
+        // storage_delete_rows_inner — single-OID DELETE mutation. Returns
+        //   the deleted-row count; 0 on no-op.
+        unique_future<uint64_t> storage_delete_rows_inner(components::catalog::oid_t table_oid,
+                                                          components::vector::vector_t row_ids,
+                                                          uint64_t count,
+                                                          components::table::transaction_data txn);
 
         // storage_fetch_inner — read-path mirror for point-fetches by row_id.
         //   Returns nullptr when the agent doesn't own the OID.
@@ -319,6 +327,14 @@ namespace services::disk {
         // storage_types_inner — schema metadata accessor.
         unique_future<std::pmr::vector<components::types::complex_logical_type>>
         storage_types_inner(components::catalog::oid_t table_oid);
+
+        // storage_column_names_inner — column names in storage-column order
+        //   (index in the vector == storage column index). Lets the manager
+        //   resolve name-keyed filters to column indices without borrowing
+        //   the agent-owned columns() across the actor boundary. Empty
+        //   vector means "not owned" / record-only marker.
+        unique_future<std::pmr::vector<std::string>>
+        storage_column_names_inner(components::catalog::oid_t table_oid);
 
         // storage_total_rows_inner — row-count metadata accessor. 0 means
         //   either "not owned" or "empty twin" — both equivalent for callers.
@@ -432,6 +448,7 @@ namespace services::disk {
                                                             &agent_disk_t::storage_scan_batched_inner,
                                                             &agent_disk_t::storage_scan_segment_inner,
                                                             &agent_disk_t::storage_types_inner,
+                                                            &agent_disk_t::storage_column_names_inner,
                                                             &agent_disk_t::storage_total_rows_inner,
                                                             &agent_disk_t::checkpoint_inner,
                                                             &agent_disk_t::vacuum_inner,

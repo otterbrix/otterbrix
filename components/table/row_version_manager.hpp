@@ -26,12 +26,7 @@ namespace components::table {
             : transaction_id(id)
             , start_time(time) {}
         // Full snapshot ctor — used by transaction_t::data() to construct a
-        // copy with in_flight_snapshot anchored to the source's pmr resource.
-        // The default-init below (null_memory_resource) makes assignment-based
-        // mutation from a non-empty vector throw bad_alloc: pmr's allocator
-        // propagation traits do NOT propagate on copy or move assignment, so
-        // both routes go through the null sink. The element-by-element
-        // construction below avoids that pitfall.
+        // copy from the transaction's pmr-anchored snapshot vector.
         transaction_data(uint64_t id,
                          uint64_t time,
                          uint64_t horizon,
@@ -39,7 +34,7 @@ namespace components::table {
             : transaction_id(id)
             , start_time(time)
             , snapshot_horizon(horizon)
-            , in_flight_snapshot(in_flight.begin(), in_flight.end(), in_flight.get_allocator()) {}
+            , in_flight_snapshot(in_flight.begin(), in_flight.end()) {}
 
         uint64_t transaction_id{0};
         uint64_t start_time{0};
@@ -72,11 +67,17 @@ namespace components::table {
         // transaction_manager can use the default to get a "see all committed"
         // view without explicit plumbing.
         uint64_t snapshot_horizon{std::numeric_limits<uint64_t>::max()};
-        // No get_default_resource: the default vector is anchored to
-        // null_memory_resource — empty is fine; any allocation aborts. The
-        // ProcArray populates this field via move-assignment from a vector
-        // built against the transaction's own pmr resource.
-        std::pmr::vector<uint64_t> in_flight_snapshot{std::pmr::null_memory_resource()};
+        // Plain std::vector (deliberate exception to the prefer-pmr rule):
+        // transaction_data is a VALUE type that crosses actor boundaries by
+        // copy inside message buffers and gets copy/move-assigned into
+        // arbitrarily-constructed targets. A pmr vector here either anchors
+        // to a banned hidden resource (get_default_resource on implicit
+        // copies, null_memory_resource as a default — both forbidden by
+        // project rules) or bad_allocs on assignment, because pmr allocator
+        // traits do not propagate on copy/move assignment. The snapshot is
+        // tiny (in-flight commit ids, typically <100) and captured once per
+        // transaction — value semantics on the global heap is correct here.
+        std::vector<uint64_t> in_flight_snapshot;
     };
     enum class chunk_info_type : uint8_t
     {

@@ -426,9 +426,12 @@ namespace services::disk {
                                                           components::catalog::oid_t namespace_oid,
                                                           std::string name,
                                                           std::uint64_t since_version);
-        // Sync internal: pg_type → pg_class fallback. Self-recurses for composite STRUCT
-        // field references (UNKNOWN-by-name) without going through actor messaging.
-        resolve_type_result_t resolve_type_sync(components::catalog::oid_t namespace_oid, const std::string& name);
+        // Internal: pg_type → pg_class fallback. Self-recurses for composite STRUCT
+        // field references (UNKNOWN-by-name). Reads route through the agent-0 mailbox
+        // via storage_scan_batched_inner, so this is a coroutine (co_await at the
+        // recursion site and at the resolve_type call site).
+        unique_future<resolve_type_result_t> resolve_type_sync(components::catalog::oid_t namespace_oid,
+                                                               const std::string& name);
         unique_future<resolve_function_result_t> resolve_function(execution_context_t ctx,
                                                                   components::catalog::oid_t namespace_oid,
                                                                   std::string name,

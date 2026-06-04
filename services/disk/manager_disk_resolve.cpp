@@ -7,43 +7,59 @@ namespace services::disk {
     using namespace detail;
 
     // All catalog read sites (pg_namespace, pg_class, pg_attribute, pg_type,
-    // pg_proc, pg_computed_column) probe agents_[0] (CATALOG agent) via
-    // storage_entry_sync; a null result is a terminal "no entry". The
-    // raw-pointer borrow is the documented carve-out (see
-    // agent_disk_t::storage_entry_sync header) — pre-scheduler reads are
-    // race-free; post-scheduler reads happen from inside the manager mailbox
-    // while the agent thread is idle for this OID. Choosing the borrow over
-    // a mailbox round-trip avoids per-resolve scheduler latency on every
-    // catalog probe.
+    // pg_proc, pg_computed_column) read agent-0's (CATALOG agent) pg_* tables
+    // through the agent twin storage_scan_batched_inner — i.e. via agent-0's
+    // mailbox. This serialises the read against agent-0's compact path
+    // (checkpoint_inner/vacuum_inner/maybe_cleanup_inner) on the scheduler_disk_
+    // threads, eliminating the borrowed-pointer race that the old
+    // storage_entry_sync + inline_scan probe carried. Each site routes via
+    // pool_idx_for_oid(<pg oid>, agents_.size()) (catalog oids land on agent-0)
+    // and passes a default-constructed transaction_data{} ("see all committed",
+    // identical visibility to the old inline_scan which used a zero-snapshot
+    // table_scan_state).
     //
-    // Generic-table_oid primitives `scan_by_key` and `read_rows_by_key`
-    // route via pool_idx_for_oid(table_oid, agents_.size()).
+    // Generic-table_oid primitives `scan_by_key` and `read_rows_by_key` route
+    // the same way, with one extra hop: storage_column_names_inner resolves
+    // caller-supplied column NAMES to storage indices (the filter is then
+    // built manager-side and shipped to storage_scan_batched_inner). No
+    // storage_entry_sync borrows remain anywhere in this file.
 
     manager_disk_t::unique_future<resolve_namespace_result_t>
     manager_disk_t::resolve_namespace(execution_context_t ctx, std::string name, std::uint64_t /*since_version*/) {
         resolve_namespace_result_t out(resource());
 
-        const collection_storage_entry_t* ns_entry = nullptr;
         if (!agents_.empty() && agents_[0] != nullptr) {
-            ns_entry = agents_[0]->storage_entry_sync(pg_namespace_oid_tbl);
-        }
-        if (ns_entry != nullptr) {
-            std::pmr::synchronized_pool_resource scan_resource;
-            inline_scan(ns_entry->table_storage.table(),
-                        {0, 1},
-                        &scan_resource,
-                        [&](components::vector::data_chunk_t& chunk, uint64_t i) {
-                            auto oid_v = chunk.value(0, i);
-                            auto name_v = chunk.value(1, i);
-                            if (oid_v.is_null() || name_v.is_null())
-                                return true;
-                            if (name_v.value<std::string_view>() != name)
-                                return true;
-                            out.found = true;
-                            out.oid = static_cast<components::catalog::oid_t>(oid_v.value<std::uint32_t>());
-                            out.name = name;
-                            return false;
-                        });
+            const std::size_t idx = pool_idx_for_oid(pg_namespace_oid_tbl, agents_.size());
+            std::vector<size_t> projected{0, 1};
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agents_[idx]->address(),
+                                                                  &agent_disk_t::storage_scan_batched_inner,
+                                                                  pg_namespace_oid_tbl,
+                                                                  std::unique_ptr<components::table::table_filter_t>{},
+                                                                  int64_t{-1},
+                                                                  std::move(projected),
+                                                                  components::table::transaction_data{});
+            if (needs_sched) {
+                scheduler_disk_->enqueue(agents_[idx].get());
+            }
+            auto batches = co_await std::move(fut);
+            for (auto& chunk : batches) {
+                bool stop = false;
+                for (uint64_t i = 0; i < chunk.size(); ++i) {
+                    auto oid_v = chunk.value(0, i);
+                    auto name_v = chunk.value(1, i);
+                    if (oid_v.is_null() || name_v.is_null())
+                        continue;
+                    if (name_v.value<std::string_view>() != name)
+                        continue;
+                    out.found = true;
+                    out.oid = static_cast<components::catalog::oid_t>(oid_v.value<std::uint32_t>());
+                    out.name = name;
+                    stop = true;
+                    break;
+                }
+                if (stop)
+                    break;
+            }
         }
         co_return out;
     }
@@ -56,35 +72,46 @@ namespace services::disk {
         resolve_table_result_t out(resource());
         out.namespace_oid = namespace_oid;
 
-        const collection_storage_entry_t* cls_entry = nullptr;
         if (!agents_.empty() && agents_[0] != nullptr) {
-            cls_entry = agents_[0]->storage_entry_sync(pg_class_oid);
-        }
-        if (cls_entry != nullptr) {
-            std::pmr::synchronized_pool_resource scan_resource;
-            inline_scan(cls_entry->table_storage.table(),
-                        {0, 1, 2, 3},
-                        &scan_resource,
-                        [&](components::vector::data_chunk_t& chunk, uint64_t i) {
-                            auto ns_v = chunk.value(2, i);
-                            if (ns_v.is_null())
-                                return true;
-                            if (static_cast<components::catalog::oid_t>(ns_v.value<std::uint32_t>()) != namespace_oid)
-                                return true;
-                            auto name_v = chunk.value(1, i);
-                            if (name_v.is_null() || name_v.value<std::string_view>() != name)
-                                return true;
-                            out.found = true;
-                            out.oid = static_cast<components::catalog::oid_t>(chunk.value(0, i).value<std::uint32_t>());
-                            out.name = name;
-                            auto kind_v = chunk.value(3, i);
-                            if (!kind_v.is_null()) {
-                                auto ks = kind_v.value<std::string_view>();
-                                if (!ks.empty())
-                                    out.relkind = ks.front();
-                            }
-                            return false;
-                        });
+            const std::size_t idx = pool_idx_for_oid(pg_class_oid, agents_.size());
+            std::vector<size_t> projected{0, 1, 2, 3};
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agents_[idx]->address(),
+                                                                  &agent_disk_t::storage_scan_batched_inner,
+                                                                  pg_class_oid,
+                                                                  std::unique_ptr<components::table::table_filter_t>{},
+                                                                  int64_t{-1},
+                                                                  std::move(projected),
+                                                                  components::table::transaction_data{});
+            if (needs_sched) {
+                scheduler_disk_->enqueue(agents_[idx].get());
+            }
+            auto batches = co_await std::move(fut);
+            for (auto& chunk : batches) {
+                bool stop = false;
+                for (uint64_t i = 0; i < chunk.size(); ++i) {
+                    auto ns_v = chunk.value(2, i);
+                    if (ns_v.is_null())
+                        continue;
+                    if (static_cast<components::catalog::oid_t>(ns_v.value<std::uint32_t>()) != namespace_oid)
+                        continue;
+                    auto name_v = chunk.value(1, i);
+                    if (name_v.is_null() || name_v.value<std::string_view>() != name)
+                        continue;
+                    out.found = true;
+                    out.oid = static_cast<components::catalog::oid_t>(chunk.value(0, i).value<std::uint32_t>());
+                    out.name = name;
+                    auto kind_v = chunk.value(3, i);
+                    if (!kind_v.is_null()) {
+                        auto ks = kind_v.value<std::string_view>();
+                        if (!ks.empty())
+                            out.relkind = ks.front();
+                    }
+                    stop = true;
+                    break;
+                }
+                if (stop)
+                    break;
+            }
         }
 
         if (!out.found) {
@@ -92,12 +119,7 @@ namespace services::disk {
         }
 
         if (out.relkind == catalog::relkind::computed) {
-            const collection_storage_entry_t* cc_entry = nullptr;
             if (!agents_.empty() && agents_[0] != nullptr) {
-                cc_entry = agents_[0]->storage_entry_sync(pg_computed_column_oid);
-            }
-            if (cc_entry != nullptr) {
-                std::pmr::synchronized_pool_resource cc_scan_resource;
                 struct cc_row_t {
                     components::catalog::oid_t attoid;
                     std::string attname;
@@ -118,35 +140,47 @@ namespace services::disk {
                     std::int64_t attrefcount;
                 };
                 std::unordered_map<std::string, cc_row_with_rc_t> latest_any;
-                inline_scan(cc_entry->table_storage.table(),
-                            {0, 1, 2, 3, 4, 5, 6},
-                            &cc_scan_resource,
-                            [&](components::vector::data_chunk_t& chunk, uint64_t i) {
-                                auto rel = chunk.value(0, i);
-                                if (rel.is_null())
-                                    return true;
-                                if (static_cast<components::catalog::oid_t>(rel.value<std::uint32_t>()) != out.oid)
-                                    return true;
-                                cc_row_with_rc_t row;
-                                row.base.attoid =
-                                    static_cast<components::catalog::oid_t>(chunk.value(1, i).value<std::uint32_t>());
-                                row.base.attname = std::string(chunk.value(2, i).value<std::string_view>());
-                                row.base.atttypid = chunk.value(3, i).is_null()
-                                                        ? components::catalog::INVALID_OID
-                                                        : static_cast<components::catalog::oid_t>(
-                                                              chunk.value(3, i).value<std::uint32_t>());
-                                auto spec_v = chunk.value(4, i);
-                                if (!spec_v.is_null())
-                                    row.atttypspec = std::string(spec_v.value<std::string_view>());
-                                row.base.attversion = chunk.value(5, i).value<std::int64_t>();
-                                auto rc_v = chunk.value(6, i);
-                                row.attrefcount = rc_v.is_null() ? 0 : rc_v.value<std::int64_t>();
-                                auto it = latest_any.find(row.base.attname);
-                                if (it == latest_any.end() || it->second.base.attversion < row.base.attversion) {
-                                    latest_any[row.base.attname] = std::move(row);
-                                }
-                                return true;
-                            });
+                const std::size_t cc_idx = pool_idx_for_oid(pg_computed_column_oid, agents_.size());
+                std::vector<size_t> cc_projected{0, 1, 2, 3, 4, 5, 6};
+                auto [cc_needs_sched, cc_fut] =
+                    actor_zeta::otterbrix::send(agents_[cc_idx]->address(),
+                                                &agent_disk_t::storage_scan_batched_inner,
+                                                pg_computed_column_oid,
+                                                std::unique_ptr<components::table::table_filter_t>{},
+                                                int64_t{-1},
+                                                std::move(cc_projected),
+                                                components::table::transaction_data{});
+                if (cc_needs_sched) {
+                    scheduler_disk_->enqueue(agents_[cc_idx].get());
+                }
+                auto cc_batches = co_await std::move(cc_fut);
+                for (auto& chunk : cc_batches) {
+                    for (uint64_t i = 0; i < chunk.size(); ++i) {
+                        auto rel = chunk.value(0, i);
+                        if (rel.is_null())
+                            continue;
+                        if (static_cast<components::catalog::oid_t>(rel.value<std::uint32_t>()) != out.oid)
+                            continue;
+                        cc_row_with_rc_t row;
+                        row.base.attoid =
+                            static_cast<components::catalog::oid_t>(chunk.value(1, i).value<std::uint32_t>());
+                        row.base.attname = std::string(chunk.value(2, i).value<std::string_view>());
+                        row.base.atttypid = chunk.value(3, i).is_null()
+                                                ? components::catalog::INVALID_OID
+                                                : static_cast<components::catalog::oid_t>(
+                                                      chunk.value(3, i).value<std::uint32_t>());
+                        auto spec_v = chunk.value(4, i);
+                        if (!spec_v.is_null())
+                            row.atttypspec = std::string(spec_v.value<std::string_view>());
+                        row.base.attversion = chunk.value(5, i).value<std::int64_t>();
+                        auto rc_v = chunk.value(6, i);
+                        row.attrefcount = rc_v.is_null() ? 0 : rc_v.value<std::int64_t>();
+                        auto it = latest_any.find(row.base.attname);
+                        if (it == latest_any.end() || it->second.base.attversion < row.base.attversion) {
+                            latest_any[row.base.attname] = std::move(row);
+                        }
+                    }
+                }
                 // Filter: column is live iff its max-version row has rc > 0.
                 std::unordered_map<std::string, std::string> typspec_by_name;
                 for (auto& [name, full] : latest_any) {
@@ -187,67 +221,74 @@ namespace services::disk {
             co_return out;
         }
 
-        const collection_storage_entry_t* att_entry = nullptr;
         if (!agents_.empty() && agents_[0] != nullptr) {
-            att_entry = agents_[0]->storage_entry_sync(pg_attribute_oid);
-        }
-        if (att_entry != nullptr) {
-            std::pmr::synchronized_pool_resource scan_resource;
             std::vector<column_info_t> rows;
             // column visibility — read added_at_commit_id
             // (col 10) + dropped_at_commit_id (col 11) and filter by ctx.txn.start_time.
             const auto snapshot_start_time = ctx.txn.start_time;
-            inline_scan(att_entry->table_storage.table(),
-                        {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11},
-                        &scan_resource,
-                        [&](components::vector::data_chunk_t& chunk, uint64_t i) {
-                            auto rel = chunk.value(1, i);
-                            if (rel.is_null())
-                                return true;
-                            if (static_cast<components::catalog::oid_t>(rel.value<std::uint32_t>()) != out.oid)
-                                return true;
-                            auto dropped = chunk.value(7, i);
-                            const bool is_dropped = !dropped.is_null() && dropped.value<bool>();
-                            if (is_dropped)
-                                return true;
-                            // MVCC visibility — column added after snapshot is hidden;
-                            // column dropped before snapshot is hidden.
-                            auto added_at_v = chunk.value(10, i);
-                            if (!added_at_v.is_null()) {
-                                auto added_at = static_cast<uint64_t>(added_at_v.value<std::int64_t>());
-                                if (added_at > snapshot_start_time)
-                                    return true;
-                            }
-                            auto dropped_at_v = chunk.value(11, i);
-                            if (!dropped_at_v.is_null()) {
-                                auto dropped_at = static_cast<uint64_t>(dropped_at_v.value<std::int64_t>());
-                                if (dropped_at != 0 && dropped_at <= snapshot_start_time)
-                                    return true;
-                            }
-                            column_info_t info;
-                            info.attoid =
-                                static_cast<components::catalog::oid_t>(chunk.value(0, i).value<std::uint32_t>());
-                            auto name_v = chunk.value(2, i);
-                            if (!name_v.is_null())
-                                info.attname = std::string(name_v.value<std::string_view>());
-                            auto typid_v = chunk.value(3, i);
-                            if (!typid_v.is_null())
-                                info.atttypid = static_cast<components::catalog::oid_t>(typid_v.value<std::uint32_t>());
-                            info.attnum = chunk.value(4, i).value<std::int32_t>();
-                            auto nn_v = chunk.value(5, i);
-                            info.attnotnull = !nn_v.is_null() && nn_v.value<bool>();
-                            auto def_v = chunk.value(6, i);
-                            info.atthasdefault = !def_v.is_null() && def_v.value<bool>();
-                            info.attisdropped = false;
-                            auto typspec_v = chunk.value(8, i);
-                            if (!typspec_v.is_null())
-                                info.atttypspec = std::string(typspec_v.value<std::string_view>());
-                            auto defspec_v = chunk.value(9, i);
-                            if (!defspec_v.is_null())
-                                info.attdefspec = std::string(defspec_v.value<std::string_view>());
-                            rows.push_back(std::move(info));
-                            return true;
-                        });
+            const std::size_t att_idx = pool_idx_for_oid(pg_attribute_oid, agents_.size());
+            std::vector<size_t> att_projected{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
+            auto [att_needs_sched, att_fut] =
+                actor_zeta::otterbrix::send(agents_[att_idx]->address(),
+                                            &agent_disk_t::storage_scan_batched_inner,
+                                            pg_attribute_oid,
+                                            std::unique_ptr<components::table::table_filter_t>{},
+                                            int64_t{-1},
+                                            std::move(att_projected),
+                                            components::table::transaction_data{});
+            if (att_needs_sched) {
+                scheduler_disk_->enqueue(agents_[att_idx].get());
+            }
+            auto att_batches = co_await std::move(att_fut);
+            for (auto& chunk : att_batches) {
+                for (uint64_t i = 0; i < chunk.size(); ++i) {
+                    auto rel = chunk.value(1, i);
+                    if (rel.is_null())
+                        continue;
+                    if (static_cast<components::catalog::oid_t>(rel.value<std::uint32_t>()) != out.oid)
+                        continue;
+                    auto dropped = chunk.value(7, i);
+                    const bool is_dropped = !dropped.is_null() && dropped.value<bool>();
+                    if (is_dropped)
+                        continue;
+                    // MVCC visibility — column added after snapshot is hidden;
+                    // column dropped before snapshot is hidden.
+                    auto added_at_v = chunk.value(10, i);
+                    if (!added_at_v.is_null()) {
+                        auto added_at = static_cast<uint64_t>(added_at_v.value<std::int64_t>());
+                        if (added_at > snapshot_start_time)
+                            continue;
+                    }
+                    auto dropped_at_v = chunk.value(11, i);
+                    if (!dropped_at_v.is_null()) {
+                        auto dropped_at = static_cast<uint64_t>(dropped_at_v.value<std::int64_t>());
+                        if (dropped_at != 0 && dropped_at <= snapshot_start_time)
+                            continue;
+                    }
+                    column_info_t info;
+                    info.attoid =
+                        static_cast<components::catalog::oid_t>(chunk.value(0, i).value<std::uint32_t>());
+                    auto name_v = chunk.value(2, i);
+                    if (!name_v.is_null())
+                        info.attname = std::string(name_v.value<std::string_view>());
+                    auto typid_v = chunk.value(3, i);
+                    if (!typid_v.is_null())
+                        info.atttypid = static_cast<components::catalog::oid_t>(typid_v.value<std::uint32_t>());
+                    info.attnum = chunk.value(4, i).value<std::int32_t>();
+                    auto nn_v = chunk.value(5, i);
+                    info.attnotnull = !nn_v.is_null() && nn_v.value<bool>();
+                    auto def_v = chunk.value(6, i);
+                    info.atthasdefault = !def_v.is_null() && def_v.value<bool>();
+                    info.attisdropped = false;
+                    auto typspec_v = chunk.value(8, i);
+                    if (!typspec_v.is_null())
+                        info.atttypspec = std::string(typspec_v.value<std::string_view>());
+                    auto defspec_v = chunk.value(9, i);
+                    if (!defspec_v.is_null())
+                        info.attdefspec = std::string(defspec_v.value<std::string_view>());
+                    rows.push_back(std::move(info));
+                }
+            }
             std::sort(rows.begin(), rows.end(), [](const column_info_t& a, const column_info_t& b) {
                 return a.attnum < b.attnum;
             });
@@ -264,79 +305,98 @@ namespace services::disk {
         co_return out;
     }
 
-    resolve_type_result_t manager_disk_t::resolve_type_sync(components::catalog::oid_t namespace_oid,
-                                                            const std::string& name) {
+    manager_disk_t::unique_future<resolve_type_result_t>
+    manager_disk_t::resolve_type_sync(components::catalog::oid_t namespace_oid, const std::string& name) {
         resolve_type_result_t out(resource());
         out.namespace_oid = namespace_oid;
 
-        const collection_storage_entry_t* type_entry = nullptr;
         if (!agents_.empty() && agents_[0] != nullptr) {
-            type_entry = agents_[0]->storage_entry_sync(pg_type_oid);
-        }
-        if (type_entry != nullptr) {
-            std::pmr::synchronized_pool_resource scan_resource;
-            inline_scan(type_entry->table_storage.table(),
-                        {0, 1, 2, 3},
-                        &scan_resource,
-                        [&](components::vector::data_chunk_t& chunk, uint64_t i) {
-                            auto ns = chunk.value(2, i);
-                            if (ns.is_null())
-                                return true;
-                            if (static_cast<components::catalog::oid_t>(ns.value<std::uint32_t>()) != namespace_oid)
-                                return true;
-                            if (!str_equals(chunk.value(1, i), name))
-                                return true;
-                            out.found = true;
-                            out.oid = static_cast<components::catalog::oid_t>(chunk.value(0, i).value<std::uint32_t>());
-                            out.name = name;
-                            auto def_v = chunk.value(3, i);
-                            if (!def_v.is_null())
-                                out.typdefspec = std::string(def_v.value<std::string_view>());
-                            return false;
-                        });
+            const std::size_t type_idx = pool_idx_for_oid(pg_type_oid, agents_.size());
+            std::vector<size_t> type_projected{0, 1, 2, 3};
+            auto [type_needs_sched, type_fut] =
+                actor_zeta::otterbrix::send(agents_[type_idx]->address(),
+                                            &agent_disk_t::storage_scan_batched_inner,
+                                            pg_type_oid,
+                                            std::unique_ptr<components::table::table_filter_t>{},
+                                            int64_t{-1},
+                                            std::move(type_projected),
+                                            components::table::transaction_data{});
+            if (type_needs_sched) {
+                scheduler_disk_->enqueue(agents_[type_idx].get());
+            }
+            auto type_batches = co_await std::move(type_fut);
+            for (auto& chunk : type_batches) {
+                bool stop = false;
+                for (uint64_t i = 0; i < chunk.size(); ++i) {
+                    auto ns = chunk.value(2, i);
+                    if (ns.is_null())
+                        continue;
+                    if (static_cast<components::catalog::oid_t>(ns.value<std::uint32_t>()) != namespace_oid)
+                        continue;
+                    if (!str_equals(chunk.value(1, i), name))
+                        continue;
+                    out.found = true;
+                    out.oid = static_cast<components::catalog::oid_t>(chunk.value(0, i).value<std::uint32_t>());
+                    out.name = name;
+                    auto def_v = chunk.value(3, i);
+                    if (!def_v.is_null())
+                        out.typdefspec = std::string(def_v.value<std::string_view>());
+                    stop = true;
+                    break;
+                }
+                if (stop)
+                    break;
+            }
         }
         if (out.found) {
-            return out;
+            co_return out;
         }
-        const collection_storage_entry_t* cls_entry = nullptr;
-        if (!agents_.empty() && agents_[0] != nullptr) {
-            cls_entry = agents_[0]->storage_entry_sync(pg_class_oid);
-        }
-        if (cls_entry == nullptr) {
-            return out;
+        if (agents_.empty() || agents_[0] == nullptr) {
+            co_return out;
         }
         components::catalog::oid_t composite_oid = components::catalog::INVALID_OID;
-        std::pmr::synchronized_pool_resource scan_resource;
-        inline_scan(cls_entry->table_storage.table(),
-                    {0, 1, 2, 3},
-                    &scan_resource,
-                    [&](components::vector::data_chunk_t& chunk, uint64_t i) {
-                        auto rns_v = chunk.value(2, i);
-                        if (rns_v.is_null())
-                            return true;
-                        if (static_cast<components::catalog::oid_t>(rns_v.value<std::uint32_t>()) != namespace_oid)
-                            return true;
-                        auto kind_v = chunk.value(3, i);
-                        if (kind_v.is_null())
-                            return true;
-                        auto kind_s = kind_v.value<std::string_view>();
-                        if (kind_s.empty() || kind_s.front() != catalog::relkind::composite_type)
-                            return true;
-                        if (!str_equals(chunk.value(1, i), name))
-                            return true;
-                        composite_oid =
-                            static_cast<components::catalog::oid_t>(chunk.value(0, i).value<std::uint32_t>());
-                        return false;
-                    });
+        {
+            const std::size_t cls_idx = pool_idx_for_oid(pg_class_oid, agents_.size());
+            std::vector<size_t> cls_projected{0, 1, 2, 3};
+            auto [cls_needs_sched, cls_fut] =
+                actor_zeta::otterbrix::send(agents_[cls_idx]->address(),
+                                            &agent_disk_t::storage_scan_batched_inner,
+                                            pg_class_oid,
+                                            std::unique_ptr<components::table::table_filter_t>{},
+                                            int64_t{-1},
+                                            std::move(cls_projected),
+                                            components::table::transaction_data{});
+            if (cls_needs_sched) {
+                scheduler_disk_->enqueue(agents_[cls_idx].get());
+            }
+            auto cls_batches = co_await std::move(cls_fut);
+            for (auto& chunk : cls_batches) {
+                bool stop = false;
+                for (uint64_t i = 0; i < chunk.size(); ++i) {
+                    auto rns_v = chunk.value(2, i);
+                    if (rns_v.is_null())
+                        continue;
+                    if (static_cast<components::catalog::oid_t>(rns_v.value<std::uint32_t>()) != namespace_oid)
+                        continue;
+                    auto kind_v = chunk.value(3, i);
+                    if (kind_v.is_null())
+                        continue;
+                    auto kind_s = kind_v.value<std::string_view>();
+                    if (kind_s.empty() || kind_s.front() != catalog::relkind::composite_type)
+                        continue;
+                    if (!str_equals(chunk.value(1, i), name))
+                        continue;
+                    composite_oid =
+                        static_cast<components::catalog::oid_t>(chunk.value(0, i).value<std::uint32_t>());
+                    stop = true;
+                    break;
+                }
+                if (stop)
+                    break;
+            }
+        }
         if (composite_oid == components::catalog::INVALID_OID) {
-            return out;
-        }
-        const collection_storage_entry_t* att_entry = nullptr;
-        if (!agents_.empty() && agents_[0] != nullptr) {
-            att_entry = agents_[0]->storage_entry_sync(pg_attribute_oid);
-        }
-        if (att_entry == nullptr) {
-            return out;
+            co_return out;
         }
         struct field_row {
             std::string attname;
@@ -345,32 +405,46 @@ namespace services::disk {
             std::string atttypspec;
         };
         std::vector<field_row> fields;
-        inline_scan(att_entry->table_storage.table(),
-                    {1, 2, 3, 4, 7, 8},
-                    &scan_resource,
-                    [&](components::vector::data_chunk_t& chunk, uint64_t i) {
-                        auto rel = chunk.value(0, i);
-                        if (rel.is_null())
-                            return true;
-                        if (static_cast<components::catalog::oid_t>(rel.value<std::uint32_t>()) != composite_oid)
-                            return true;
-                        auto dropped = chunk.value(4, i);
-                        if (!dropped.is_null() && dropped.value<bool>())
-                            return true;
-                        field_row r;
-                        auto name_v = chunk.value(1, i);
-                        if (!name_v.is_null())
-                            r.attname = std::string(name_v.value<std::string_view>());
-                        auto typid_v = chunk.value(2, i);
-                        if (!typid_v.is_null())
-                            r.atttypid = static_cast<components::catalog::oid_t>(typid_v.value<std::uint32_t>());
-                        r.attnum = chunk.value(3, i).value<std::int32_t>();
-                        auto spec_v = chunk.value(5, i);
-                        if (!spec_v.is_null())
-                            r.atttypspec = std::string(spec_v.value<std::string_view>());
-                        fields.push_back(std::move(r));
-                        return true;
-                    });
+        {
+            const std::size_t att_idx = pool_idx_for_oid(pg_attribute_oid, agents_.size());
+            std::vector<size_t> att_projected{1, 2, 3, 4, 7, 8};
+            auto [att_needs_sched, att_fut] =
+                actor_zeta::otterbrix::send(agents_[att_idx]->address(),
+                                            &agent_disk_t::storage_scan_batched_inner,
+                                            pg_attribute_oid,
+                                            std::unique_ptr<components::table::table_filter_t>{},
+                                            int64_t{-1},
+                                            std::move(att_projected),
+                                            components::table::transaction_data{});
+            if (att_needs_sched) {
+                scheduler_disk_->enqueue(agents_[att_idx].get());
+            }
+            auto att_batches = co_await std::move(att_fut);
+            for (auto& chunk : att_batches) {
+                for (uint64_t i = 0; i < chunk.size(); ++i) {
+                    auto rel = chunk.value(0, i);
+                    if (rel.is_null())
+                        continue;
+                    if (static_cast<components::catalog::oid_t>(rel.value<std::uint32_t>()) != composite_oid)
+                        continue;
+                    auto dropped = chunk.value(4, i);
+                    if (!dropped.is_null() && dropped.value<bool>())
+                        continue;
+                    field_row r;
+                    auto name_v = chunk.value(1, i);
+                    if (!name_v.is_null())
+                        r.attname = std::string(name_v.value<std::string_view>());
+                    auto typid_v = chunk.value(2, i);
+                    if (!typid_v.is_null())
+                        r.atttypid = static_cast<components::catalog::oid_t>(typid_v.value<std::uint32_t>());
+                    r.attnum = chunk.value(3, i).value<std::int32_t>();
+                    auto spec_v = chunk.value(5, i);
+                    if (!spec_v.is_null())
+                        r.atttypspec = std::string(spec_v.value<std::string_view>());
+                    fields.push_back(std::move(r));
+                }
+            }
+        }
         std::sort(fields.begin(), fields.end(), [](const field_row& a, const field_row& b) {
             return a.attnum < b.attnum;
         });
@@ -384,7 +458,7 @@ namespace services::disk {
             if (ft.type() == components::types::logical_type::UNKNOWN) {
                 std::string ref_name(ft.type_name());
                 if (!ref_name.empty()) {
-                    auto nested = resolve_type_sync(namespace_oid, ref_name);
+                    auto nested = co_await resolve_type_sync(namespace_oid, ref_name);
                     if (nested.found && !nested.typdefspec.empty()) {
                         ft = components::catalog::decode_type_spec(resource(), nested.typdefspec);
                     }
@@ -398,7 +472,7 @@ namespace services::disk {
         out.oid = composite_oid;
         out.name = name;
         out.typdefspec = components::catalog::encode_type_spec(struct_t);
-        return out;
+        co_return out;
     }
 
     manager_disk_t::unique_future<resolve_type_result_t>
@@ -406,7 +480,7 @@ namespace services::disk {
                                  components::catalog::oid_t namespace_oid,
                                  std::string name,
                                  std::uint64_t /*since_version*/) {
-        co_return resolve_type_sync(namespace_oid, name);
+        co_return co_await resolve_type_sync(namespace_oid, name);
     }
 
     manager_disk_t::unique_future<resolve_function_result_t>
@@ -417,40 +491,51 @@ namespace services::disk {
         resolve_function_result_t out(resource());
         out.namespace_oid = namespace_oid;
 
-        const collection_storage_entry_t* proc_entry = nullptr;
         if (!agents_.empty() && agents_[0] != nullptr) {
-            proc_entry = agents_[0]->storage_entry_sync(pg_proc_oid);
-        }
-        if (proc_entry != nullptr) {
-            std::pmr::synchronized_pool_resource scan_resource;
-            inline_scan(proc_entry->table_storage.table(),
-                        {0, 1, 2, 3, 4, 5, 6},
-                        &scan_resource,
-                        [&](components::vector::data_chunk_t& chunk, uint64_t i) {
-                            auto ns = chunk.value(2, i);
-                            if (ns.is_null())
-                                return true;
-                            if (static_cast<components::catalog::oid_t>(ns.value<std::uint32_t>()) != namespace_oid)
-                                return true;
-                            if (!str_equals(chunk.value(1, i), name))
-                                return true;
-                            out.found = true;
-                            out.oid = static_cast<components::catalog::oid_t>(chunk.value(0, i).value<std::uint32_t>());
-                            out.name = name;
-                            auto nargs_v = chunk.value(3, i);
-                            if (!nargs_v.is_null())
-                                out.pronargs = nargs_v.value<std::int32_t>();
-                            auto uid_v = chunk.value(4, i);
-                            if (!uid_v.is_null())
-                                out.prouid = uid_v.value<std::uint64_t>();
-                            auto args_v = chunk.value(5, i);
-                            if (!args_v.is_null())
-                                out.proargmatchers = std::string(args_v.value<std::string_view>());
-                            auto ret_v = chunk.value(6, i);
-                            if (!ret_v.is_null())
-                                out.prorettype = std::string(ret_v.value<std::string_view>());
-                            return false;
-                        });
+            const std::size_t idx = pool_idx_for_oid(pg_proc_oid, agents_.size());
+            std::vector<size_t> projected{0, 1, 2, 3, 4, 5, 6};
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agents_[idx]->address(),
+                                                                  &agent_disk_t::storage_scan_batched_inner,
+                                                                  pg_proc_oid,
+                                                                  std::unique_ptr<components::table::table_filter_t>{},
+                                                                  int64_t{-1},
+                                                                  std::move(projected),
+                                                                  components::table::transaction_data{});
+            if (needs_sched) {
+                scheduler_disk_->enqueue(agents_[idx].get());
+            }
+            auto batches = co_await std::move(fut);
+            for (auto& chunk : batches) {
+                bool stop = false;
+                for (uint64_t i = 0; i < chunk.size(); ++i) {
+                    auto ns = chunk.value(2, i);
+                    if (ns.is_null())
+                        continue;
+                    if (static_cast<components::catalog::oid_t>(ns.value<std::uint32_t>()) != namespace_oid)
+                        continue;
+                    if (!str_equals(chunk.value(1, i), name))
+                        continue;
+                    out.found = true;
+                    out.oid = static_cast<components::catalog::oid_t>(chunk.value(0, i).value<std::uint32_t>());
+                    out.name = name;
+                    auto nargs_v = chunk.value(3, i);
+                    if (!nargs_v.is_null())
+                        out.pronargs = nargs_v.value<std::int32_t>();
+                    auto uid_v = chunk.value(4, i);
+                    if (!uid_v.is_null())
+                        out.prouid = uid_v.value<std::uint64_t>();
+                    auto args_v = chunk.value(5, i);
+                    if (!args_v.is_null())
+                        out.proargmatchers = std::string(args_v.value<std::string_view>());
+                    auto ret_v = chunk.value(6, i);
+                    if (!ret_v.is_null())
+                        out.prorettype = std::string(ret_v.value<std::string_view>());
+                    stop = true;
+                    break;
+                }
+                if (stop)
+                    break;
+            }
         }
         co_return out;
     }
@@ -460,66 +545,78 @@ namespace services::disk {
                                              std::string name,
                                              std::uint64_t /*since_version*/) {
         std::pmr::vector<resolve_function_result_t> out(resource());
-        const collection_storage_entry_t* proc_entry = nullptr;
-        if (!agents_.empty() && agents_[0] != nullptr) {
-            proc_entry = agents_[0]->storage_entry_sync(pg_proc_oid);
-        }
-        if (proc_entry == nullptr) {
+        if (agents_.empty() || agents_[0] == nullptr) {
             co_return out;
         }
-        std::pmr::synchronized_pool_resource scan_resource;
-        inline_scan(proc_entry->table_storage.table(),
-                    {0, 1, 2, 3, 4, 5, 6},
-                    &scan_resource,
-                    [&](components::vector::data_chunk_t& chunk, uint64_t i) {
-                        if (!str_equals(chunk.value(1, i), name))
-                            return true;
-                        resolve_function_result_t r(resource());
-                        r.found = true;
-                        r.name = name;
-                        r.oid = static_cast<components::catalog::oid_t>(chunk.value(0, i).value<std::uint32_t>());
-                        auto ns_v = chunk.value(2, i);
-                        if (!ns_v.is_null())
-                            r.namespace_oid = static_cast<components::catalog::oid_t>(ns_v.value<std::uint32_t>());
-                        auto nargs_v = chunk.value(3, i);
-                        if (!nargs_v.is_null())
-                            r.pronargs = nargs_v.value<std::int32_t>();
-                        auto uid_v = chunk.value(4, i);
-                        if (!uid_v.is_null())
-                            r.prouid = uid_v.value<std::uint64_t>();
-                        auto args_v = chunk.value(5, i);
-                        if (!args_v.is_null())
-                            r.proargmatchers = std::string(args_v.value<std::string_view>());
-                        auto ret_v = chunk.value(6, i);
-                        if (!ret_v.is_null())
-                            r.prorettype = std::string(ret_v.value<std::string_view>());
-                        out.push_back(std::move(r));
-                        return true;
-                    });
+        const std::size_t idx = pool_idx_for_oid(pg_proc_oid, agents_.size());
+        std::vector<size_t> projected{0, 1, 2, 3, 4, 5, 6};
+        auto [needs_sched, fut] = actor_zeta::otterbrix::send(agents_[idx]->address(),
+                                                              &agent_disk_t::storage_scan_batched_inner,
+                                                              pg_proc_oid,
+                                                              std::unique_ptr<components::table::table_filter_t>{},
+                                                              int64_t{-1},
+                                                              std::move(projected),
+                                                              components::table::transaction_data{});
+        if (needs_sched) {
+            scheduler_disk_->enqueue(agents_[idx].get());
+        }
+        auto batches = co_await std::move(fut);
+        for (auto& chunk : batches) {
+            for (uint64_t i = 0; i < chunk.size(); ++i) {
+                if (!str_equals(chunk.value(1, i), name))
+                    continue;
+                resolve_function_result_t r(resource());
+                r.found = true;
+                r.name = name;
+                r.oid = static_cast<components::catalog::oid_t>(chunk.value(0, i).value<std::uint32_t>());
+                auto ns_v = chunk.value(2, i);
+                if (!ns_v.is_null())
+                    r.namespace_oid = static_cast<components::catalog::oid_t>(ns_v.value<std::uint32_t>());
+                auto nargs_v = chunk.value(3, i);
+                if (!nargs_v.is_null())
+                    r.pronargs = nargs_v.value<std::int32_t>();
+                auto uid_v = chunk.value(4, i);
+                if (!uid_v.is_null())
+                    r.prouid = uid_v.value<std::uint64_t>();
+                auto args_v = chunk.value(5, i);
+                if (!args_v.is_null())
+                    r.proargmatchers = std::string(args_v.value<std::string_view>());
+                auto ret_v = chunk.value(6, i);
+                if (!ret_v.is_null())
+                    r.prorettype = std::string(ret_v.value<std::string_view>());
+                out.push_back(std::move(r));
+            }
+        }
         co_return out;
     }
 
     manager_disk_t::unique_future<std::pmr::vector<std::string>>
     manager_disk_t::list_namespaces(execution_context_t ctx) {
         std::pmr::vector<std::string> out(resource());
-        const collection_storage_entry_t* ns_entry = nullptr;
-        if (!agents_.empty() && agents_[0] != nullptr) {
-            ns_entry = agents_[0]->storage_entry_sync(pg_namespace_oid_tbl);
-        }
-        if (ns_entry == nullptr) {
+        if (agents_.empty() || agents_[0] == nullptr) {
             co_return out;
         }
-        std::pmr::synchronized_pool_resource scan_resource;
-        inline_scan(ns_entry->table_storage.table(),
-                    {0, 1},
-                    &scan_resource,
-                    [&](components::vector::data_chunk_t& chunk, uint64_t i) {
-                        auto name_v = chunk.value(1, i);
-                        if (!name_v.is_null()) {
-                            out.emplace_back(std::string(name_v.value<std::string_view>()));
-                        }
-                        return true;
-                    });
+        const std::size_t idx = pool_idx_for_oid(pg_namespace_oid_tbl, agents_.size());
+        std::vector<size_t> projected{0, 1};
+        auto [needs_sched, fut] = actor_zeta::otterbrix::send(agents_[idx]->address(),
+                                                              &agent_disk_t::storage_scan_batched_inner,
+                                                              pg_namespace_oid_tbl,
+                                                              std::unique_ptr<components::table::table_filter_t>{},
+                                                              int64_t{-1},
+                                                              std::move(projected),
+                                                              components::table::transaction_data{});
+        if (needs_sched) {
+            scheduler_disk_->enqueue(agents_[idx].get());
+        }
+        auto batches = co_await std::move(fut);
+        for (auto& chunk : batches) {
+            for (uint64_t i = 0; i < chunk.size(); ++i) {
+                auto name_v = chunk.value(1, i);
+                if (!name_v.is_null()) {
+                    out.emplace_back(std::string(name_v.value<std::string_view>()));
+                }
+            }
+        }
         co_return out;
     }
 
@@ -550,28 +647,37 @@ namespace services::disk {
         }
 
         // Routed agent slice is the sole canonical SFBM/IN_MEMORY owner.
+        // Two mailbox round-trips: column names (name→index resolution
+        // happens manager-side on the returned value) + the filtered scan.
+        // No borrowed-pointer access — every same-oid touch is serialized
+        // by the owning agent's mailbox.
         if (agents_.empty())
             co_return out;
         const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
-        if (agents_[idx] == nullptr)
-            co_return out;
-        const collection_storage_entry_t* entry = agents_[idx]->storage_entry_sync(table_oid);
-        if (entry == nullptr)
+        auto& agent = agents_[idx];
+        if (agent == nullptr)
             co_return out;
 
-        auto& tbl = entry->table_storage.table();
-        const auto& all_cols = tbl.columns();
+        auto [names_ns, names_fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                                  &agent_disk_t::storage_column_names_inner,
+                                                                  table_oid);
+        if (names_ns) {
+            scheduler_disk_->enqueue(agent.get());
+        }
+        auto all_names = co_await std::move(names_fut);
+        if (all_names.empty())
+            co_return out;
 
         auto filter = std::make_unique<components::table::conjunction_and_filter_t>();
         for (std::size_t ki = 0; ki < key_col_names.size(); ++ki) {
-            std::size_t col_idx = all_cols.size();
-            for (std::size_t ci = 0; ci < all_cols.size(); ++ci) {
-                if (all_cols[ci].name() == key_col_names[ki]) {
+            std::size_t col_idx = all_names.size();
+            for (std::size_t ci = 0; ci < all_names.size(); ++ci) {
+                if (all_names[ci] == key_col_names[ki]) {
                     col_idx = ci;
                     break;
                 }
             }
-            if (col_idx == all_cols.size())
+            if (col_idx == all_names.size())
                 co_return out;
             std::pmr::vector<uint64_t> idx_vec(resource());
             idx_vec.push_back(static_cast<uint64_t>(col_idx));
@@ -581,11 +687,22 @@ namespace services::disk {
                                                                        std::move(idx_vec)));
         }
 
-        auto types = entry->storage->types();
-        components::vector::data_chunk_t chunk(resource(), types);
-        entry->storage->scan(chunk, filter.get(), -1, ctx.txn);
-        for (uint64_t i = 0; i < chunk.size(); ++i) {
-            out.push_back(chunk.row_ids.data<std::int64_t>()[i]);
+        auto [scan_ns, scan_fut] =
+            actor_zeta::otterbrix::send(agent->address(),
+                                        &agent_disk_t::storage_scan_batched_inner,
+                                        table_oid,
+                                        std::unique_ptr<components::table::table_filter_t>{std::move(filter)},
+                                        int64_t{-1},
+                                        std::vector<size_t>{},
+                                        ctx.txn);
+        if (scan_ns) {
+            scheduler_disk_->enqueue(agent.get());
+        }
+        auto batches = co_await std::move(scan_fut);
+        for (auto& chunk : batches) {
+            for (uint64_t i = 0; i < chunk.size(); ++i) {
+                out.push_back(chunk.row_ids.data<std::int64_t>()[i]);
+            }
         }
         co_return out;
     }
@@ -601,28 +718,37 @@ namespace services::disk {
             co_return out;
 
         // Routed agent slice is the sole canonical SFBM/IN_MEMORY owner.
+        // Two mailbox round-trips: column names (name→index resolution
+        // happens manager-side on the returned value) + the filtered scan.
+        // No borrowed-pointer access — every same-oid touch is serialized
+        // by the owning agent's mailbox.
         if (agents_.empty())
             co_return out;
         const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
-        if (agents_[idx] == nullptr)
-            co_return out;
-        const collection_storage_entry_t* entry = agents_[idx]->storage_entry_sync(table_oid);
-        if (entry == nullptr)
+        auto& agent = agents_[idx];
+        if (agent == nullptr)
             co_return out;
 
-        auto& tbl = entry->table_storage.table();
-        const auto& all_cols = tbl.columns();
+        auto [names_ns, names_fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                                  &agent_disk_t::storage_column_names_inner,
+                                                                  table_oid);
+        if (names_ns) {
+            scheduler_disk_->enqueue(agent.get());
+        }
+        auto all_names = co_await std::move(names_fut);
+        if (all_names.empty())
+            co_return out;
 
         auto filter = std::make_unique<components::table::conjunction_and_filter_t>();
         for (std::size_t ki = 0; ki < key_col_names.size(); ++ki) {
-            std::size_t col_idx = all_cols.size();
-            for (std::size_t ci = 0; ci < all_cols.size(); ++ci) {
-                if (all_cols[ci].name() == key_col_names[ki]) {
+            std::size_t col_idx = all_names.size();
+            for (std::size_t ci = 0; ci < all_names.size(); ++ci) {
+                if (all_names[ci] == key_col_names[ki]) {
                     col_idx = ci;
                     break;
                 }
             }
-            if (col_idx == all_cols.size())
+            if (col_idx == all_names.size())
                 co_return out;
             std::pmr::vector<uint64_t> idx_vec(resource());
             idx_vec.push_back(static_cast<uint64_t>(col_idx));
@@ -632,17 +758,27 @@ namespace services::disk {
                                                                        std::move(idx_vec)));
         }
 
-        auto types = entry->storage->types();
-        components::vector::data_chunk_t chunk(resource(), types);
-        entry->storage->scan(chunk, filter.get(), -1, ctx.txn);
-
-        for (uint64_t i = 0; i < chunk.size(); ++i) {
-            row_t row(resource());
-            row.reserve(chunk.column_count());
-            for (uint64_t c = 0; c < chunk.column_count(); ++c) {
-                row.push_back(chunk.value(c, i));
+        auto [scan_ns, scan_fut] =
+            actor_zeta::otterbrix::send(agent->address(),
+                                        &agent_disk_t::storage_scan_batched_inner,
+                                        table_oid,
+                                        std::unique_ptr<components::table::table_filter_t>{std::move(filter)},
+                                        int64_t{-1},
+                                        std::vector<size_t>{},
+                                        ctx.txn);
+        if (scan_ns) {
+            scheduler_disk_->enqueue(agent.get());
+        }
+        auto batches = co_await std::move(scan_fut);
+        for (auto& chunk : batches) {
+            for (uint64_t i = 0; i < chunk.size(); ++i) {
+                row_t row(resource());
+                row.reserve(chunk.column_count());
+                for (uint64_t c = 0; c < chunk.column_count(); ++c) {
+                    row.push_back(chunk.value(c, i));
+                }
+                out.push_back(std::move(row));
             }
-            out.push_back(std::move(row));
         }
         co_return out;
     }

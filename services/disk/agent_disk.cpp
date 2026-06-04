@@ -2,6 +2,7 @@
 #include "manager_disk.hpp"
 #include <services/dispatcher/dispatcher.hpp>
 #include <fstream>
+#include <unordered_set>
 
 namespace services::disk {
 
@@ -356,6 +357,10 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_types_inner, msg);
                 break;
             }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_column_names_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::storage_column_names_inner, msg);
+                break;
+            }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_total_rows_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_total_rows_inner, msg);
                 break;
@@ -452,17 +457,18 @@ namespace services::disk {
     // `data != nullptr` / range counts before the send; agent re-checks
     // defensively because it owns its slice independently.
 
-    agent_disk_t::unique_future<void>
+    agent_disk_t::unique_future<std::pair<uint64_t, uint64_t>>
     agent_disk_t::storage_append_inner(components::catalog::oid_t table_oid,
                                        std::unique_ptr<components::vector::data_chunk_t> data,
-                                       components::table::transaction_data txn) {
+                                       components::table::transaction_data txn,
+                                       core::date::timezone_offset_t session_tz) {
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
             trace(log_,
                   "agent_disk[{}]::storage_append_inner: oid {} not owned by this agent — no-op",
                   pool_idx_,
                   static_cast<unsigned>(table_oid));
-            co_return;
+            co_return std::make_pair(uint64_t{0}, uint64_t{0});
         }
         auto& entry = it->second;
         if (entry == nullptr) {
@@ -470,20 +476,220 @@ namespace services::disk {
                   "agent_disk[{}]::storage_append_inner: oid {} has null entry — no-op",
                   pool_idx_,
                   static_cast<unsigned>(table_oid));
-            co_return;
+            co_return std::make_pair(uint64_t{0}, uint64_t{0});
         }
-        if (!data || data->size() == 0 || entry->storage == nullptr) {
-            co_return;
+        auto* s = entry->storage.get();
+        if (!s || !data || data->size() == 0) {
+            co_return std::make_pair(uint64_t{0}, uint64_t{0});
         }
-        // Manager-side router already performed schema-adoption /
-        // column-expansion / NOT NULL enforcement / dedup / type-promotion;
-        // `data` is row-compatible with this slice's adapter.
+
+        // Full preprocessing pipeline runs HERE, on the owning agent, so the
+        // preprocessing reads (columns/total_rows/dedup scan) and the final
+        // write are serialized with every other same-oid access by this
+        // agent's mailbox. The manager-side body is a pure router.
+
+        // Computing (relkind='g') tables — `is_computed` flag lives on this
+        // slice's entry.
+        const bool is_computed_table = entry->is_computed;
+
+        // 1. Schema adoption
+        if (!s->has_schema() && data->column_count() > 0) {
+            s->adopt_schema(data->types());
+        }
+
+        // 1b. Dynamic schema growth for IN_MEMORY storages. Trigger: alias
+        // mismatch at differing chunk/table width = schema growth; equal
+        // width = positional rename, handled by column expansion below.
+        if (s->has_schema() && data->column_count() > 0 &&
+            (is_computed_table || data->column_count() != s->columns().size()) &&
+            entry->table_storage.mode() == storage_mode_t::IN_MEMORY) {
+            std::vector<components::table::column_definition_t> new_columns;
+            for (uint64_t col = 0; col < data->column_count(); col++) {
+                if (!data->data[col].type().has_alias()) {
+                    continue;
+                }
+                const auto alias = data->data[col].type().alias();
+                const auto ctype = data->data[col].type().type();
+                bool present = false;
+                for (const auto& tc : s->columns()) {
+                    if (tc.name() == alias && (!is_computed_table || tc.type().type() == ctype)) {
+                        present = true;
+                        break;
+                    }
+                }
+                if (!present) {
+                    auto ct = data->data[col].type();
+                    ct.set_alias(alias);
+                    new_columns.emplace_back(alias, ct);
+                }
+            }
+            if (!new_columns.empty()) {
+                for (auto& col : new_columns) {
+                    entry->add_column(col, resource());
+                }
+                // add_column rebuilt the storage adapter; refresh our local
+                // storage_t* to point at the new adapter.
+                s = entry->storage.get();
+                if (!s) {
+                    co_return std::make_pair(uint64_t{0}, uint64_t{0});
+                }
+            }
+        }
+
+        // 2. Column expansion
+        const auto& table_columns = s->columns();
+        if (!table_columns.empty() && data->column_count() > 0) {
+            std::pmr::vector<components::types::complex_logical_type> full_types(resource());
+            for (const auto& col_def : table_columns) {
+                full_types.push_back(col_def.type());
+            }
+
+            std::vector<components::vector::vector_t> expanded_data;
+            expanded_data.reserve(table_columns.size());
+            // Computing tables match by (name, type) so each type-variant lands in
+            // its own physical column; unmatched variants get NULL. Positional
+            // fallback is disabled there (it assumes one column per name).
+            const bool positional_fallback = !is_computed_table && (data->column_count() == table_columns.size());
+            for (size_t t = 0; t < table_columns.size(); t++) {
+                bool found = false;
+                for (uint64_t col = 0; col < data->column_count(); col++) {
+                    if (data->data[col].type().has_alias() &&
+                        data->data[col].type().alias() == table_columns[t].name() &&
+                        (!is_computed_table || data->data[col].type().type() == table_columns[t].type().type())) {
+                        expanded_data.push_back(std::move(data->data[col]));
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found && positional_fallback && t < data->column_count()) {
+                    expanded_data.push_back(std::move(data->data[t]));
+                    found = true;
+                }
+                if (!found) {
+                    if (table_columns[t].has_default_value()) {
+                        expanded_data.emplace_back(resource(), full_types[t], data->size());
+                        for (uint64_t row = 0; row < data->size(); row++) {
+                            expanded_data.back().set_value(row, table_columns[t].default_value());
+                        }
+                    } else {
+                        expanded_data.emplace_back(resource(), full_types[t], data->size());
+                        expanded_data.back().validity().set_all_invalid(data->size());
+                    }
+                }
+            }
+            data->data = std::move(expanded_data);
+        }
+
+        // 2b. NOT NULL enforcement
+        if (!table_columns.empty()) {
+            for (size_t col = 0; col < table_columns.size() && col < data->column_count(); col++) {
+                if (table_columns[col].is_not_null()) {
+                    for (uint64_t row = 0; row < data->size(); row++) {
+                        if (!data->data[col].validity().row_is_valid(row)) {
+                            trace(log_,
+                                  "agent_disk[{}]::storage_append_inner: NOT NULL violation on column '{}'",
+                                  pool_idx_,
+                                  table_columns[col].name());
+                            co_return std::make_pair(uint64_t{0}, uint64_t{0});
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Dedup
+        if (s->total_rows() > 0) {
+            int64_t id_col = -1;
+            for (uint64_t col = 0; col < data->column_count(); col++) {
+                if (data->data[col].type().has_alias() && data->data[col].type().alias() == "_id") {
+                    id_col = static_cast<int64_t>(col);
+                    break;
+                }
+            }
+            if (id_col >= 0) {
+                auto existing = std::make_unique<components::vector::data_chunk_t>(resource(), s->types(), 0);
+                s->scan(*existing, nullptr, -1);
+
+                int64_t existing_id_col = -1;
+                for (uint64_t col = 0; col < existing->column_count(); col++) {
+                    if (existing->data[col].type().has_alias() && existing->data[col].type().alias() == "_id") {
+                        existing_id_col = static_cast<int64_t>(col);
+                        break;
+                    }
+                }
+
+                if (existing_id_col >= 0 && existing->size() > 0) {
+                    std::unordered_set<std::string> existing_ids;
+                    for (uint64_t i = 0; i < existing->size(); i++) {
+                        auto val = existing->data[static_cast<size_t>(existing_id_col)].value(i);
+                        if (!val.is_null()) {
+                            existing_ids.emplace(val.value<std::string_view>());
+                        }
+                    }
+
+                    std::vector<uint64_t> keep_rows;
+                    keep_rows.reserve(data->size());
+                    for (uint64_t i = 0; i < data->size(); i++) {
+                        auto val = data->data[static_cast<size_t>(id_col)].value(i);
+                        if (val.is_null() ||
+                            existing_ids.find(std::string(val.value<std::string_view>())) == existing_ids.end()) {
+                            keep_rows.push_back(i);
+                        }
+                    }
+
+                    if (keep_rows.empty()) {
+                        co_return std::make_pair(uint64_t{0}, uint64_t{0});
+                    }
+
+                    if (keep_rows.size() < data->size()) {
+                        auto filtered = std::make_unique<components::vector::data_chunk_t>(resource(),
+                                                                                           data->types(),
+                                                                                           keep_rows.size());
+                        for (uint64_t col = 0; col < data->column_count(); col++) {
+                            for (uint64_t i = 0; i < keep_rows.size(); i++) {
+                                auto val = data->data[col].value(keep_rows[i]);
+                                filtered->data[col].set_value(i, val);
+                            }
+                        }
+                        data = std::move(filtered);
+                    }
+                }
+            }
+        }
+
+        // 4. Type promotion
+        if (s->has_schema() && !table_columns.empty()) {
+            for (size_t i = 0; i < table_columns.size() && i < data->column_count(); i++) {
+                auto src_type = data->data[i].type();
+                auto tgt_type = table_columns[i].type();
+                if (src_type != tgt_type && src_type.is_convertable_to(tgt_type)) {
+                    auto& src_vec = data->data[i];
+                    auto target_type = table_columns[i].type();
+                    if (src_vec.type().has_alias()) {
+                        target_type.set_alias(src_vec.type().alias());
+                    }
+                    components::vector::vector_t casted(resource(), target_type, data->size());
+                    for (uint64_t row = 0; row < data->size(); row++) {
+                        if (src_vec.validity().row_is_valid(row)) {
+                            casted.set_value(row, src_vec.value(row).cast_as(target_type, session_tz));
+                        } else {
+                            casted.validity().set_invalid(row);
+                        }
+                    }
+                    data->data[i] = std::move(casted);
+                }
+            }
+        }
+
+        // 5. Append — the canonical write.
+        auto actual_count = data->size();
+        uint64_t start_row;
         if (txn.transaction_id != 0) {
-            entry->storage->append(*data, txn);
+            start_row = s->append(*data, txn);
         } else {
-            entry->storage->append(*data);
+            start_row = s->append(*data);
         }
-        co_return;
+        co_return std::make_pair(start_row, actual_count);
     }
 
     agent_disk_t::unique_future<void>
@@ -591,7 +797,7 @@ namespace services::disk {
         co_return;
     }
 
-    agent_disk_t::unique_future<void>
+    agent_disk_t::unique_future<std::pair<int64_t, uint64_t>>
     agent_disk_t::storage_update_inner(components::catalog::oid_t table_oid,
                                        components::vector::vector_t row_ids,
                                        std::unique_ptr<components::vector::data_chunk_t> data,
@@ -602,7 +808,7 @@ namespace services::disk {
                   "agent_disk[{}]::storage_update_inner: oid {} not owned by this agent — no-op",
                   pool_idx_,
                   static_cast<unsigned>(table_oid));
-            co_return;
+            co_return std::pair<int64_t, uint64_t>{0, 0};
         }
         auto& entry = it->second;
         if (entry == nullptr) {
@@ -610,19 +816,18 @@ namespace services::disk {
                   "agent_disk[{}]::storage_update_inner: oid {} has null entry — no-op",
                   pool_idx_,
                   static_cast<unsigned>(table_oid));
-            co_return;
+            co_return std::pair<int64_t, uint64_t>{0, 0};
         }
         if (!data || entry->storage == nullptr) {
-            co_return;
+            co_return std::pair<int64_t, uint64_t>{0, 0};
         }
         // Manager-side body has already aligned `data` with the canonical
         // schema (agent twin shares the same column definitions via
         // bootstrap_inner_sync).
-        entry->storage->update(row_ids, *data, txn);
-        co_return;
+        co_return entry->storage->update(row_ids, *data, txn);
     }
 
-    agent_disk_t::unique_future<void>
+    agent_disk_t::unique_future<uint64_t>
     agent_disk_t::storage_delete_rows_inner(components::catalog::oid_t table_oid,
                                             components::vector::vector_t row_ids,
                                             uint64_t count,
@@ -633,7 +838,7 @@ namespace services::disk {
                   "agent_disk[{}]::storage_delete_rows_inner: oid {} not owned by this agent — no-op",
                   pool_idx_,
                   static_cast<unsigned>(table_oid));
-            co_return;
+            co_return 0;
         }
         auto& entry = it->second;
         if (entry == nullptr) {
@@ -641,17 +846,15 @@ namespace services::disk {
                   "agent_disk[{}]::storage_delete_rows_inner: oid {} has null entry — no-op",
                   pool_idx_,
                   static_cast<unsigned>(table_oid));
-            co_return;
+            co_return 0;
         }
         if (entry->storage == nullptr || count == 0) {
-            co_return;
+            co_return 0;
         }
         if (txn.transaction_id != 0) {
-            entry->storage->delete_rows(row_ids, count, txn.transaction_id);
-        } else {
-            entry->storage->delete_rows(row_ids, count);
+            co_return entry->storage->delete_rows(row_ids, count, txn.transaction_id);
         }
-        co_return;
+        co_return entry->storage->delete_rows(row_ids, count);
     }
 
     agent_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
@@ -773,6 +976,34 @@ namespace services::disk {
             co_return std::pmr::vector<components::types::complex_logical_type>{resource()};
         }
         co_return entry->storage->types();
+    }
+
+    agent_disk_t::unique_future<std::pmr::vector<std::string>>
+    agent_disk_t::storage_column_names_inner(components::catalog::oid_t table_oid) {
+        auto it = storages_.find(table_oid);
+        if (it == storages_.end()) {
+            trace(log_,
+                  "agent_disk[{}]::storage_column_names_inner: oid {} not owned by this agent — fallback to manager",
+                  pool_idx_,
+                  static_cast<unsigned>(table_oid));
+            co_return std::pmr::vector<std::string>{resource()};
+        }
+        auto& entry = it->second;
+        if (entry == nullptr || entry->storage == nullptr) {
+            trace(log_,
+                  "agent_disk[{}]::storage_column_names_inner: oid {} is a DISK record-only marker — "
+                  "fallback to manager",
+                  pool_idx_,
+                  static_cast<unsigned>(table_oid));
+            co_return std::pmr::vector<std::string>{resource()};
+        }
+        const auto& cols = entry->storage->columns();
+        std::pmr::vector<std::string> names{resource()};
+        names.reserve(cols.size());
+        for (const auto& col : cols) {
+            names.push_back(col.name());
+        }
+        co_return std::move(names);
     }
 
     agent_disk_t::unique_future<uint64_t>

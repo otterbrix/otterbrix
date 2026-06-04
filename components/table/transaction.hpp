@@ -30,21 +30,20 @@ namespace components::table {
 
     class transaction_t {
     public:
+        // The resource is REQUIRED (no default — null_memory_resource /
+        // get_default_resource defaults are forbidden by project rules):
+        // the per-txn pending_base_* and in_flight_snapshot_ pmr containers
+        // allocate from it.
         transaction_t(uint64_t transaction_id,
                       uint64_t start_time,
                       session::session_id_t session,
-                      std::pmr::memory_resource* resource = std::pmr::null_memory_resource());
+                      std::pmr::memory_resource* resource);
 
         // data() returns the cached snapshot by value-copy. The snapshot is
         // set once by transaction_manager during begin_transaction(); subsequent
         // reads avoid re-locking the manager. The vector copy is O(active
-        // in-flight commits) — typically <100, amortized by the txn's pmr arena.
+        // in-flight commits) — typically <100.
         transaction_data data() const {
-            // Use the 4-arg ctor — it constructs in_flight_snapshot in-place
-            // against the source's allocator, bypassing the default
-            // null_memory_resource trap (pmr propagate-on-* traits are all
-            // false, so any post-init assignment-based mutation from a real
-            // arena throws bad_alloc).
             return transaction_data(transaction_id_, start_time_, snapshot_horizon_, in_flight_snapshot_);
         }
         uint64_t transaction_id() const { return transaction_id_; }
@@ -184,14 +183,19 @@ namespace components::table {
         // ProcArray cached snapshot — set once by transaction_manager
         // during begin_transaction; never mutated thereafter. Returned by value
         // from data() each call.
+        //
+        // NOTE: the pmr members below carry NO default member initializer
+        // (null_memory_resource / get_default_resource defaults are forbidden
+        // by project rules) — the sole ctor initializes all of them from its
+        // required `resource` parameter.
         uint64_t snapshot_horizon_{0};
-        std::pmr::vector<uint64_t> in_flight_snapshot_{std::pmr::null_memory_resource()};
+        std::pmr::vector<uint64_t> in_flight_snapshot_;
 
         // Explicit BEGIN..COMMIT txns park DML ranges here until COMMIT
         // drains them in a single atomic publish batch. Implicit txns never
         // touch these (is_explicit_ false).
-        std::pmr::vector<dml_append_range_t> pending_base_appends_{std::pmr::null_memory_resource()};
-        std::pmr::vector<dml_delete_range_t> pending_base_deletes_{std::pmr::null_memory_resource()};
+        std::pmr::vector<dml_append_range_t> pending_base_appends_;
+        std::pmr::vector<dml_delete_range_t> pending_base_deletes_;
     };
 
 } // namespace components::table

@@ -3,10 +3,8 @@
 namespace components::table {
 
     // The resource is REQUIRED for the per-txn pending_base_* and
-    // in_flight_snapshot pmr containers.
-    // null_memory_resource default keeps the literal {id, time, session}
-    // construct compilable for legacy tests, but any allocation on those
-    // vectors aborts — production callers MUST pass the manager's resource.
+    // in_flight_snapshot pmr containers — no default (null_memory_resource /
+    // get_default_resource defaults are forbidden by project rules).
     transaction_t::transaction_t(uint64_t transaction_id,
                                  uint64_t start_time,
                                  session::session_id_t session,

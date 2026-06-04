@@ -21,12 +21,34 @@
 #include <services/wal/wal.hpp>
 #include <services/wal/wal_contract.hpp>
 #include <services/wal/wal_sync_mode.hpp>
+#include <chrono>
+#include <core/config.hpp>
 #include <thread>
 
 using namespace services::wal;
 using namespace components::session;
 using namespace components::vector;
 using namespace components::types;
+
+#if defined(OTTERBRIX_TSAN_ENABLED)
+// TSAN cannot see through synchronized_pool_resource's internal mutex,
+// causing false-positive data-race reports on cross-thread memory reuse
+// (manager loop thread vs scheduler workers) — same class of FP as the
+// base_spaces.hpp tsan_resource_t workaround. Delegate to
+// new_delete_resource, whose malloc/free edges TSAN models natively.
+struct test_pool_resource_t final : std::pmr::memory_resource {
+protected:
+    void* do_allocate(size_t bytes, size_t align) override {
+        return std::pmr::new_delete_resource()->allocate(bytes, align);
+    }
+    void do_deallocate(void* p, size_t bytes, size_t align) override {
+        std::pmr::new_delete_resource()->deallocate(p, bytes, align);
+    }
+    bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override { return this == &other; }
+};
+#else
+using test_pool_resource_t = std::pmr::synchronized_pool_resource;
+#endif
 
 namespace catalog_ns = components::catalog;
 constexpr auto kMainDb = catalog_ns::well_known_oid::main_database;
@@ -43,7 +65,11 @@ static const std::filesystem::path base_wal_worker_path = "/tmp/otterbrix_test_w
 // ---------------------------------------------------------------------------
 template<typename F>
 static decltype(auto) await_ready(F& fut) {
-    for (int i = 0; i < 1000000 && !fut.is_ready(); ++i) {
+    // Wall-clock deadline (not iteration-bounded): under TSAN or parallel-
+    // ctest CPU oversubscription the manager-loop -> scheduler-worker
+    // round-trip can outlast any fixed yield budget.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::yield();
     }
     REQUIRE(fut.is_ready());
@@ -168,7 +194,7 @@ struct test_wal_worker {
     }
 
     std::filesystem::path path_;
-    std::pmr::synchronized_pool_resource resource_;
+    test_pool_resource_t resource_;
     log_t log_;
     actor_zeta::scheduler_ptr scheduler_;
     configuration::config_wal config_;
@@ -308,7 +334,7 @@ TEST_CASE("wal_worker::corruption_stop") {
         std::filesystem::remove_all(test_path);
         std::filesystem::create_directories(test_path);
 
-        std::pmr::synchronized_pool_resource resource;
+        test_pool_resource_t resource;
         auto log = initialization_logger("python", "/tmp/docker_logs/");
         auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
         configuration::config_wal config(test_path);
@@ -375,7 +401,7 @@ TEST_CASE("wal_worker::corruption_stop") {
     REQUIRE(corrupted);
 
     // Re-create the environment on the same path (without clearing).
-    std::pmr::synchronized_pool_resource resource;
+    test_pool_resource_t resource;
     auto log = initialization_logger("python", "/tmp/docker_logs/");
     auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
     configuration::config_wal config(test_path);
@@ -423,7 +449,7 @@ TEST_CASE("wal_worker::crc_chain_startup") {
         std::filesystem::remove_all(test_path);
         std::filesystem::create_directories(test_path);
 
-        std::pmr::synchronized_pool_resource resource;
+        test_pool_resource_t resource;
         auto log = initialization_logger("python", "/tmp/docker_logs/");
         auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
         configuration::config_wal config(test_path);
@@ -471,7 +497,7 @@ TEST_CASE("wal_worker::crc_chain_startup") {
 
     // Re-open on the same directory (no cleanup).
     {
-        std::pmr::synchronized_pool_resource resource;
+        test_pool_resource_t resource;
         auto log = initialization_logger("python", "/tmp/docker_logs/");
         auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
         configuration::config_wal config(test_path);
@@ -521,7 +547,7 @@ TEST_CASE("wal_worker::segment_rotation") {
     std::filesystem::remove_all(test_path);
     std::filesystem::create_directories(test_path);
 
-    std::pmr::synchronized_pool_resource resource;
+    test_pool_resource_t resource;
     auto log = initialization_logger("python", "/tmp/docker_logs/");
     auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
     configuration::config_wal config(test_path);
@@ -628,7 +654,7 @@ TEST_CASE("wal_worker::fsync_full_mode") {
     std::filesystem::remove_all(test_path);
     std::filesystem::create_directories(test_path);
 
-    std::pmr::synchronized_pool_resource resource;
+    test_pool_resource_t resource;
     auto log = initialization_logger("python", "/tmp/docker_logs/");
     auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
     configuration::config_wal config(test_path);
@@ -692,7 +718,7 @@ TEST_CASE("wal_worker::fsync_off_mode") {
     std::filesystem::remove_all(test_path);
     std::filesystem::create_directories(test_path);
 
-    std::pmr::synchronized_pool_resource resource;
+    test_pool_resource_t resource;
     auto log = initialization_logger("python", "/tmp/docker_logs/");
     auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
     configuration::config_wal config(test_path);

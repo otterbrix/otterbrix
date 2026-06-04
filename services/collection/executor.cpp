@@ -472,13 +472,15 @@ namespace services::collection::executor {
         //    case while the dispatcher's own resolve still runs upstream).
         //    Once the dispatcher's resolve is retired, this call becomes
         //    the authoritative resolve-scope txn.
-        components::table::transaction_data resolve_txn;
-        {
-            auto [_tb, tbf] = actor_zeta::send(parent_address_,
-                                               &services::dispatcher::manager_dispatcher_t::txn_begin_msg,
-                                               session);
-            resolve_txn = co_await std::move(tbf);
-        }
+        // Move-construct directly from the awaited value (historically a
+        // default-construct + assign here element-copied the snapshot into a
+        // null_memory_resource-anchored pmr vector — bad_alloc/abort under
+        // concurrent transactions; transaction_data now uses a plain
+        // std::vector snapshot, see row_version_manager.hpp).
+        auto [_tb, tbf] = actor_zeta::send(parent_address_,
+                                           &services::dispatcher::manager_dispatcher_t::txn_begin_msg,
+                                           session);
+        components::table::transaction_data resolve_txn = co_await std::move(tbf);
         trace(log_,
               "executor::execute_plan_full: resolve-scope txn {}, session: {}",
               resolve_txn.transaction_id,

@@ -136,58 +136,13 @@ namespace services::disk {
             co_return;
         }
 
-        // Probe the owning agent via storage_entry_sync (carve-out — this
-        // is a mailbox handler; agent mailbox is idle vs. this sync read).
-        const collection_storage_entry_t* entry = nullptr;
-        if (!agents_.empty()) {
-            const std::size_t idx = pool_idx_for_oid(ctx.table_oid, agents_.size());
-            if (agents_[idx] != nullptr) {
-                entry = agents_[idx]->storage_entry_sync(ctx.table_oid);
-            }
-        }
-        if (entry == nullptr) {
-            co_return;
-        }
-
-        // const_cast — `storage_entry_sync` returns a const pointer (the
-        // slice's unique_ptr ownership is immutable across the actor
-        // boundary), but table_storage_t::table() and data_table_t::
-        // compact() are non-const operations on the entry's interior
-        // state. Same Constraint #11 carve-out as the sync probe (the
-        // agent thread is idle vs. this mailbox handler).
-        auto& table = const_cast<collection_storage_entry_t*>(entry)->table_storage.table();
-        auto rg = table.row_group();
-        auto total = rg->total_rows();
-        if (total == 0) {
-            co_return;
-        }
-
-        auto committed = rg->committed_row_count();
-        auto deleted = total - committed;
-
-        static constexpr double gc_threshold = 0.3;
-        if (static_cast<double>(deleted) / static_cast<double>(total) > gc_threshold) {
-            if (lowest_active_start_time < components::table::TRANSACTION_ID_START) {
-                co_return;
-            }
-            trace(log_,
-                  "manager_disk_t::maybe_cleanup: oid={}, deleted {}/{}, running compact",
-                  static_cast<unsigned>(ctx.table_oid),
-                  deleted,
-                  total);
-            // Compact reads via scan_committed(COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED) which
-            // depends on intact version metadata to filter tombstones. Calling cleanup_versions
-            // before compact strips that metadata and makes scan return 0 rows — the bug
-            // documented previously. Compact alone is correct: it rebuilds the row_group from
-            // currently-visible committed rows and finalizes them as committed-at-0.
-            // cleanup_versions afterwards is unnecessary because the new collection's rows
-            // are all txn{0,0} (no version chain to clean).
-            table.compact();
-        }
-
-        // Forward to owning agent which runs the same threshold check
-        // against its IN_MEMORY twin. INVALID_OID is filtered above; agent
-        // logs a no-op on not-owned / null entry.
+        // Pure router. The threshold check + compact run in the agent twin
+        // (maybe_cleanup_inner) — byte-identical decision logic — so the
+        // row_group rebuild is serialized by the agent's mailbox with every
+        // other same-oid access. (Previously the manager ALSO compacted
+        // inline through a storage_entry_sync borrow: a duplicate compact
+        // AND a cross-thread race against agent-side scans.) INVALID_OID is
+        // filtered above; agent logs a no-op on not-owned / null entry.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(ctx.table_oid, agents_.size());
             auto& agent = agents_[pool_idx];

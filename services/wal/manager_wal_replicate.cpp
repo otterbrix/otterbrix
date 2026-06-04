@@ -481,7 +481,7 @@ namespace services::wal {
     // -----------------------------------------------------------------------
 
     manager_wal_replicate_t::unique_future<wal::id_t>
-    manager_wal_replicate_t::auto_checkpoint_wal_id(session_id_t session) {
+    manager_wal_replicate_t::auto_checkpoint_wal_id(session_id_t /*session*/) {
         if (!needs_auto_checkpoint()) {
             co_return wal::id_t{0};
         }

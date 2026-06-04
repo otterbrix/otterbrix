@@ -282,7 +282,16 @@ namespace services::disk {
         for (uint64_t i = 0; i < count; i++) {
             ids_vec.set_value(i, components::types::logical_value_t(resource(), row_ids[i]));
         }
-        entry->storage->update(ids_vec, new_data);
+        // new_data is deserialized on the WAL-replay resource (get_default_resource,
+        // wal_page_reader.cpp); the storage lives on this agent's resource. update()
+        // slices (zero-copy refs) into the chunk, so materialize a local deep copy on
+        // resource() first — same boundary rule as ids_vec above and as the manager's
+        // rebuild_chunk does for direct_append_sync (manager_disk_storage.cpp).
+        // Without this, validity_mask_t::operator= asserts resource_ == other.resource_
+        // (validation.cpp:44) on Debug builds. See docs/wal-recovery-pmr-mismatch.md.
+        components::vector::data_chunk_t local(resource(), new_data.types(), new_data.size());
+        new_data.copy(local, 0);
+        entry->storage->update(ids_vec, local);
     }
 
     auto agent_disk_t::make_type() const noexcept -> const char* { return "agent_disk"; }

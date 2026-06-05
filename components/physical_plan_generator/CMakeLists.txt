@@ -17,6 +17,8 @@ set(${PROJECT_NAME}_SOURCES
         impl/create_plan_join.cpp
         impl/create_plan_hash_join.cpp
         impl/create_plan_union.cpp
+        impl/create_plan_cte_scan.cpp
+        impl/create_plan_recursive_cte.cpp
         impl/create_plan_check_constraint.cpp
         impl/create_plan_fk_check.cpp
         impl/create_plan_fk_cascade.cpp

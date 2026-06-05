@@ -22,12 +22,20 @@
 #include <components/logical_plan/node_catalog_resolve_table.hpp>
 #include <components/logical_plan/node_catalog_resolve_type.hpp>
 
+#include <components/types/types.hpp>
 #include <queue>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 namespace services::dispatcher::impl {
+
+    struct cte_schema_column_t {
+        std::pmr::string name;
+        components::types::complex_logical_type type;
+    };
+    using cte_schema_t = std::vector<cte_schema_column_t>;
 
     struct plan_resolve_index_t {
         // Namespace name -> ns_oid (from node_catalog_resolve_namespace_t
@@ -60,6 +68,11 @@ namespace services::dispatcher::impl {
             referencing_fks_by_oid;
         std::unordered_map<components::catalog::oid_t, std::vector<std::pair<std::string, std::string>>>
             check_exprs_by_oid;
+
+        // CTE name → anchor column schema for recursive CTE working-set resolution.
+        // Populated by validate_schema when processing node_recursive_cte_t;
+        // read by validate_schema when processing node_cte_scan_t.
+        std::unordered_map<std::pmr::string, cte_schema_t> cte_schemas;
 
         bool empty() const noexcept {
             return ns_by_dbname.empty() && tbl_ns_by_qname.empty() && type_oid_by_qname.empty() &&

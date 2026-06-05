@@ -59,6 +59,8 @@ set(SOURCE_${PROJECT_NAME}
         node_select.cpp
         node_sort.cpp
         node_union.cpp
+        node_recursive_cte.cpp
+        node_cte_scan.cpp
         node_update.cpp
         node_set_timezone.cpp
         node_vacuum.cpp

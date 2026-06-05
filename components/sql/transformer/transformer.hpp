@@ -5,6 +5,7 @@
 
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node.hpp>
+#include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/sql/parser/nodes/parsenodes.h>
@@ -187,6 +188,13 @@ namespace components::sql::transform {
         logical_plan::node_ptr
         transform_function(FuncCall& node, const name_collection_t& names, logical_plan::parameter_node_t* params);
 
+        // Build the logical node for a FROM-clause reference to a recursive CTE.
+        // Returns an aggregate wrapping either a cte_scan (inside recursive member) or
+        // a recursive_cte node (in the outer query). Returns nullptr on error.
+        logical_plan::node_aggregate_ptr build_recursive_cte_ref(const std::string& cte_name,
+                                                                 const std::string& effective_alias,
+                                                                 logical_plan::execution_plan_t* plan);
+
         void join_dfs(std::pmr::memory_resource* resource,
                       JoinExpr* join,
                       logical_plan::node_join_ptr& node_join,
@@ -209,6 +217,8 @@ namespace components::sql::transform {
         size_t aggregate_counter_{0};
         std::pmr::vector<expressions::expression_ptr> pending_internal_aggs_{resource_};
         std::pmr::unordered_map<std::string_view, SelectStmt*> cte_queries_{resource_};
+        std::pmr::unordered_map<std::string, SelectStmt*> recursive_cte_queries_{resource_};
+        bool transforming_recursive_member_{false};
         core::error_t error_;
     };
 } // namespace components::sql::transform

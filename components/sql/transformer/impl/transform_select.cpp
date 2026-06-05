@@ -5,10 +5,12 @@
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
+#include <components/logical_plan/node_cte_scan.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/node_match.hpp>
+#include <components/logical_plan/node_recursive_cte.hpp>
 #include <components/logical_plan/node_select.hpp>
 #include <components/logical_plan/node_sort.hpp>
 #include <components/logical_plan/node_union.hpp>
@@ -19,6 +21,44 @@
 using namespace components::expressions;
 
 namespace components::sql::transform {
+
+    logical_plan::node_aggregate_ptr transformer::build_recursive_cte_ref(const std::string& cte_name,
+                                                                          const std::string& effective_alias,
+                                                                          logical_plan::execution_plan_t* plan) {
+        auto agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+        if (transforming_recursive_member_) {
+            auto scan = logical_plan::make_node_cte_scan(resource_, std::pmr::string{cte_name, resource_});
+            scan->set_result_alias(effective_alias);
+            agg->append_child(std::move(scan));
+        } else {
+            auto cte_it = recursive_cte_queries_.find(cte_name);
+            if (cte_it == recursive_cte_queries_.end()) {
+                error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                       std::pmr::string{"recursive CTE not found: " + cte_name, resource_});
+                return nullptr;
+            }
+            SelectStmt* union_stmt = cte_it->second;
+            auto anchor_plan = transform_select(*union_stmt->larg, plan);
+            if (has_error()) {
+                return nullptr;
+            }
+            transforming_recursive_member_ = true;
+            auto recursive_plan = transform_select(*union_stmt->rarg, plan);
+            transforming_recursive_member_ = false;
+            if (has_error()) {
+                return nullptr;
+            }
+            auto recursive_cte = logical_plan::make_node_recursive_cte(resource_,
+                                                                       std::pmr::string{cte_name, resource_},
+                                                                       union_stmt->all,
+                                                                       std::move(anchor_plan),
+                                                                       std::move(recursive_plan));
+            recursive_cte->set_result_alias(effective_alias);
+            agg->append_child(std::move(recursive_cte));
+        }
+        return agg;
+    }
+
     void transformer::join_dfs(std::pmr::memory_resource* resource,
                                JoinExpr* join,
                                logical_plan::node_join_ptr& node_join,
@@ -65,13 +105,19 @@ namespace components::sql::transform {
                 auto table_r = pg_ptr_cast<RangeVar>(join->rarg);
                 sub_query_names.right_name = rangevar_to_qualified_name(table_r);
                 sub_query_names.right_alias = construct_alias(table_r->alias);
+                const std::string& effective_alias_r = sub_query_names.right_alias.empty()
+                                                           ? sub_query_names.right_name.relname
+                                                           : sub_query_names.right_alias;
                 if (auto cte_it = cte_queries_.find(table_r->relname); cte_it != cte_queries_.end()) {
                     auto agg_r = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
                     agg_r->append_child(transform_select(*cte_it->second, plan));
-                    const std::string& effective_alias = sub_query_names.right_alias.empty()
-                                                             ? sub_query_names.right_name.relname
-                                                             : sub_query_names.right_alias;
-                    agg_r->children().back()->set_result_alias(effective_alias);
+                    agg_r->children().back()->set_result_alias(effective_alias_r);
+                    node_join->append_child(std::move(agg_r));
+                } else if (recursive_cte_queries_.count(table_r->relname)) {
+                    auto agg_r = build_recursive_cte_ref(table_r->relname, effective_alias_r, plan);
+                    if (has_error()) {
+                        return;
+                    }
                     node_join->append_child(std::move(agg_r));
                 } else {
                     auto agg_r = logical_plan::make_node_aggregate(resource,
@@ -102,33 +148,47 @@ namespace components::sql::transform {
                 return;
             }
             node_join = logical_plan::make_node_join(resource, core::dbname_t{}, core::relname_t{}, j_type);
-            if (auto cte_it = cte_queries_.find(table_l->relname); cte_it != cte_queries_.end()) {
-                auto agg_l = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
-                agg_l->append_child(transform_select(*cte_it->second, plan));
-                const std::string& effective_alias =
+            {
+                const std::string& effective_alias_l =
                     names.left_alias.empty() ? names.left_name.relname : names.left_alias;
-                agg_l->children().back()->set_result_alias(effective_alias);
-                node_join->append_child(std::move(agg_l));
-            } else {
-                auto agg_l = logical_plan::make_node_aggregate(resource,
-                                                               core::uid_t{names.left_name.uuid},
-                                                               core::dbname_t{names.left_name.dbname},
-                                                               core::relname_t{names.left_name.relname});
-                if (!names.left_alias.empty()) {
-                    agg_l->set_result_alias(names.left_alias);
+                if (auto cte_it = cte_queries_.find(table_l->relname); cte_it != cte_queries_.end()) {
+                    auto agg_l = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+                    agg_l->append_child(transform_select(*cte_it->second, plan));
+                    agg_l->children().back()->set_result_alias(effective_alias_l);
+                    node_join->append_child(std::move(agg_l));
+                } else if (recursive_cte_queries_.count(table_l->relname)) {
+                    auto agg_l = build_recursive_cte_ref(table_l->relname, effective_alias_l, plan);
+                    if (has_error()) {
+                        return;
+                    }
+                    node_join->append_child(std::move(agg_l));
+                } else {
+                    auto agg_l = logical_plan::make_node_aggregate(resource,
+                                                                   core::uid_t{names.left_name.uuid},
+                                                                   core::dbname_t{names.left_name.dbname},
+                                                                   core::relname_t{names.left_name.relname});
+                    if (!names.left_alias.empty()) {
+                        agg_l->set_result_alias(names.left_alias);
+                    }
+                    node_join->append_child(std::move(agg_l));
                 }
-                node_join->append_child(std::move(agg_l));
             }
             if (nodeTag(join->rarg) == T_RangeVar) {
                 auto table_r = pg_ptr_cast<RangeVar>(join->rarg);
                 names.right_name = rangevar_to_qualified_name(table_r);
                 names.right_alias = construct_alias(table_r->alias);
+                const std::string& effective_alias_r =
+                    names.right_alias.empty() ? names.right_name.relname : names.right_alias;
                 if (auto cte_it = cte_queries_.find(table_r->relname); cte_it != cte_queries_.end()) {
                     auto agg_r = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
                     agg_r->append_child(transform_select(*cte_it->second, plan));
-                    const std::string& effective_alias =
-                        names.right_alias.empty() ? names.right_name.relname : names.right_alias;
-                    agg_r->children().back()->set_result_alias(effective_alias);
+                    agg_r->children().back()->set_result_alias(effective_alias_r);
+                    node_join->append_child(std::move(agg_r));
+                } else if (recursive_cte_queries_.count(table_r->relname)) {
+                    auto agg_r = build_recursive_cte_ref(table_r->relname, effective_alias_r, plan);
+                    if (has_error()) {
+                        return;
+                    }
                     node_join->append_child(std::move(agg_r));
                 } else {
                     auto agg_r = logical_plan::make_node_aggregate(resource,
@@ -184,12 +244,18 @@ namespace components::sql::transform {
                 auto table_r = pg_ptr_cast<RangeVar>(join->rarg);
                 names.right_name = rangevar_to_qualified_name(table_r);
                 names.right_alias = construct_alias(table_r->alias);
+                const std::string& effective_alias_r =
+                    names.right_alias.empty() ? names.right_name.relname : names.right_alias;
                 if (auto cte_it = cte_queries_.find(table_r->relname); cte_it != cte_queries_.end()) {
                     auto agg_r = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
                     agg_r->append_child(transform_select(*cte_it->second, plan));
-                    const std::string& effective_alias =
-                        names.right_alias.empty() ? names.right_name.relname : names.right_alias;
-                    agg_r->children().back()->set_result_alias(effective_alias);
+                    agg_r->children().back()->set_result_alias(effective_alias_r);
+                    node_join->append_child(std::move(agg_r));
+                } else if (recursive_cte_queries_.count(table_r->relname)) {
+                    auto agg_r = build_recursive_cte_ref(table_r->relname, effective_alias_r, plan);
+                    if (has_error()) {
+                        return;
+                    }
                     node_join->append_child(std::move(agg_r));
                 } else {
                     auto agg_r = logical_plan::make_node_aggregate(resource,
@@ -261,13 +327,15 @@ namespace components::sql::transform {
         }
         if (node.withClause) {
             if (node.withClause->recursive) {
-                error_ = core::error_t(core::error_code_t::unimplemented_yet,
-                                       std::pmr::string{"WITH RECURSIVE is not yet supported", resource_});
-                return nullptr;
-            }
-            for (const auto& item : node.withClause->ctes->lst) {
-                auto* cte = pg_ptr_cast<CommonTableExpr>(item.data);
-                cte_queries_.emplace(cte->ctename, pg_ptr_cast<SelectStmt>(cte->ctequery));
+                for (const auto& item : node.withClause->ctes->lst) {
+                    auto* cte = pg_ptr_cast<CommonTableExpr>(item.data);
+                    recursive_cte_queries_.emplace(cte->ctename, pg_ptr_cast<SelectStmt>(cte->ctequery));
+                }
+            } else {
+                for (const auto& item : node.withClause->ctes->lst) {
+                    auto* cte = pg_ptr_cast<CommonTableExpr>(item.data);
+                    cte_queries_.emplace(cte->ctename, pg_ptr_cast<SelectStmt>(cte->ctequery));
+                }
             }
         }
         logical_plan::node_aggregate_ptr agg = nullptr;
@@ -329,12 +397,17 @@ namespace components::sql::transform {
                 auto table = pg_ptr_cast<RangeVar>(from_first);
                 names.left_name = rangevar_to_qualified_name(table);
                 names.left_alias = construct_alias(table->alias);
+                const std::string& effective_alias =
+                    names.left_alias.empty() ? names.left_name.relname : names.left_alias;
                 if (auto cte_it = cte_queries_.find(table->relname); cte_it != cte_queries_.end()) {
                     agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
                     agg->append_child(transform_select(*cte_it->second, plan));
-                    const std::string& effective_alias =
-                        names.left_alias.empty() ? names.left_name.relname : names.left_alias;
                     agg->children().back()->set_result_alias(effective_alias);
+                } else if (recursive_cte_queries_.count(table->relname)) {
+                    agg = build_recursive_cte_ref(table->relname, effective_alias, plan);
+                    if (has_error()) {
+                        return nullptr;
+                    }
                 } else {
                     agg = logical_plan::make_node_aggregate(resource_,
                                                             core::uid_t{names.left_name.uuid},

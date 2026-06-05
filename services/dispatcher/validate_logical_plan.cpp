@@ -37,6 +37,7 @@
 #include <components/logical_plan/node_create_macro.hpp>
 #include <components/logical_plan/node_create_sequence.hpp>
 #include <components/logical_plan/node_create_view.hpp>
+#include <components/logical_plan/node_cte_scan.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_drop_collection.hpp>
@@ -53,6 +54,7 @@
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/node_match.hpp>
+#include <components/logical_plan/node_recursive_cte.hpp>
 #include <components/logical_plan/node_select.hpp>
 #include <components/logical_plan/node_sort.hpp>
 #include <components/table/column_definition.hpp>
@@ -2456,6 +2458,68 @@ namespace services::dispatcher {
                 }
                 // All children are catalog_resolve_* — no consumer, empty schema.
                 break;
+            }
+            case node_type::recursive_cte_t: {
+                if (node->children().size() < 2 || !node->children()[0] || !node->children()[1]) {
+                    return core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"recursive CTE requires both anchor and recursive members", resource});
+                }
+                const auto* cte_node = static_cast<const components::logical_plan::node_recursive_cte_t*>(node);
+                auto anchor_res = validate_schema(resource, idx, node->children()[0].get(), parameters);
+                if (anchor_res.has_error()) {
+                    return anchor_res;
+                }
+
+                // Build the CTE column schema from the anchor result and store in a
+                // modified idx so that node_cte_scan_t inside the recursive member can
+                // look it up without any parameter threading.
+                impl::plan_resolve_index_t idx_with_cte = idx ? *idx : impl::plan_resolve_index_t{};
+                {
+                    impl::cte_schema_t cte_cols;
+                    for (const auto& entry : anchor_res.value()) {
+                        cte_cols.push_back(
+                            {std::pmr::string{entry.type.has_alias() ? entry.type.alias() : "", resource}, entry.type});
+                    }
+                    idx_with_cte.cte_schemas[cte_node->cte_name()] = std::move(cte_cols);
+                }
+                // Validate recursive member — sets expression paths for SELECT/WHERE/JOIN ON.
+                // Errors here indicate a schema mismatch between anchor and recursive member.
+                auto recursive_res = validate_schema(resource, &idx_with_cte, node->children()[1].get(), parameters);
+                if (recursive_res.has_error()) {
+                    return recursive_res;
+                }
+
+                // Remap result_alias to the CTE's visible alias.
+                if (!node->result_alias().empty()) {
+                    for (auto& entry : anchor_res.value()) {
+                        entry.result_alias = node->result_alias();
+                    }
+                }
+                return anchor_res;
+            }
+            case node_type::cte_scan_t: {
+                if (!idx) {
+                    return core::error_t(core::error_code_t::sql_parse_error,
+                                         std::pmr::string{"cte_scan_t reached without resolve index", resource});
+                }
+                const auto* scan_node = static_cast<const components::logical_plan::node_cte_scan_t*>(node);
+                auto it = idx->cte_schemas.find(scan_node->cte_name());
+                if (it == idx->cte_schemas.end()) {
+                    return core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"cte_scan_t: no schema for CTE '" + scan_node->cte_name() + "'", resource});
+                }
+                std::string_view alias = node->result_alias().empty() ? std::string_view(scan_node->cte_name())
+                                                                      : std::string_view(node->result_alias());
+                named_schema cte_result{resource};
+                for (const auto& col : it->second) {
+                    type_from_t entry;
+                    entry.result_alias = alias;
+                    entry.type = col.type;
+                    cte_result.push_back(std::move(entry));
+                }
+                return cte_result;
             }
             default:
                 // TODO: add check to validate schema, if assert is triggered

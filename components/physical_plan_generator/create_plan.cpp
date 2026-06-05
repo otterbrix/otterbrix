@@ -12,6 +12,7 @@
 #include "impl/create_plan_computed_field_register.hpp"
 #include "impl/create_plan_computed_field_unregister.hpp"
 #include "impl/create_plan_create_matview.hpp"
+#include "impl/create_plan_cte_scan.hpp"
 #include "impl/create_plan_data.hpp"
 #include "impl/create_plan_delete.hpp"
 #include "impl/create_plan_dynamic_cascade_delete.hpp"
@@ -25,6 +26,7 @@
 #include "impl/create_plan_match.hpp"
 #include "impl/create_plan_primitive_delete.hpp"
 #include "impl/create_plan_primitive_write.hpp"
+#include "impl/create_plan_recursive_cte.hpp"
 #include "impl/create_plan_resolve_constraint.hpp"
 #include "impl/create_plan_resolve_function.hpp"
 #include "impl/create_plan_resolve_namespace.hpp"
@@ -54,6 +56,10 @@ namespace services::planner {
                 return impl::create_plan_data(node);
             case node_type::union_t:
                 return impl::create_plan_union(context, function_registry, node, std::move(limit), params);
+            case node_type::recursive_cte_t:
+                return impl::create_plan_recursive_cte(context, function_registry, node, std::move(limit), params);
+            case node_type::cte_scan_t:
+                return impl::create_plan_cte_scan(context, function_registry, node, std::move(limit), params);
             case node_type::delete_t:
                 return impl::create_plan_delete(context, node);
             case node_type::insert_t:

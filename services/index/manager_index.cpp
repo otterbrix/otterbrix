@@ -873,10 +873,16 @@ namespace services::index {
         // the collected futures and only then flip the in-memory engines. Engines
         // with no entry in engines_ are skipped silently.
         std::pmr::vector<unique_future<void>> futures(resource_);
-        // Engines whose pending entries were actually fanned out, in batch order,
-        // so the in-memory flip happens only after every disk send is awaited.
-        std::pmr::vector<components::index::index_engine_t*> engines_to_flip(resource_);
-        engines_to_flip.reserve(table_oids.size());
+        // Oids whose pending entries were actually fanned out, in batch order.
+        // We record OIDS, not engine pointers: every co_await below suspends this
+        // single-threaded loop, during which unregister_collection or
+        // on_horizon_advanced may run and erase the engine from engines_ (table
+        // dropped mid-commit), invalidating any cached engine pointer. We
+        // re-lookup engines_.find(oid) after the awaits and flip only engines
+        // that still exist; a vanished engine = table dropped, so skipping its
+        // flip is correct — its entries died with it.
+        std::pmr::vector<components::catalog::oid_t> oids_to_flip(resource_);
+        oids_to_flip.reserve(table_oids.size());
 
         for (auto table_oid : table_oids) {
             auto it = engines_.find(table_oid);
@@ -919,7 +925,7 @@ namespace services::index {
                 schedule_agent(addr, ns);
                 futures.emplace_back(std::move(f));
             }
-            engines_to_flip.emplace_back(engine.get());
+            oids_to_flip.emplace_back(table_oid);
         }
 
         // Await every disk batch across all oids before flipping any engine.
@@ -927,9 +933,16 @@ namespace services::index {
             co_await std::move(f);
         }
 
-        // In-memory flip is unconditional: a disk-agent failure would already
-        // have aborted the process via the assert in bitcask.
-        for (auto* engine : engines_to_flip) {
+        // Re-lookup each oid: the awaits above suspended the loop, so an engine
+        // recorded before the fan-out may have been erased meanwhile (see the
+        // suspension-window note where oids_to_flip is declared). Flip only the
+        // engines that still exist. The in-memory flip is otherwise unconditional:
+        // a disk-agent failure would already have aborted via the bitcask assert.
+        for (auto oid : oids_to_flip) {
+            auto it = engines_.find(oid);
+            if (it == engines_.end())
+                continue;
+            auto& engine = it->second;
             engine->commit_insert(txn_id, commit_id);
             if (txn_id != 0) {
                 engine->commit_insert(0, commit_id);
@@ -950,9 +963,13 @@ namespace services::index {
 
         // Batch mirror of commit_inserts: send all remove_many across every oid
         // before awaiting, then flip the in-memory engines (see commit_inserts).
+        // As there, we record OIDS (not engine pointers): the co_awaits below
+        // suspend this single-threaded loop, and unregister_collection /
+        // on_horizon_advanced may erase an engine while suspended. We re-lookup
+        // per oid after the awaits and skip any engine that vanished.
         std::pmr::vector<unique_future<void>> futures(resource_);
-        std::pmr::vector<components::index::index_engine_t*> engines_to_flip(resource_);
-        engines_to_flip.reserve(table_oids.size());
+        std::pmr::vector<components::catalog::oid_t> oids_to_flip(resource_);
+        oids_to_flip.reserve(table_oids.size());
 
         for (auto table_oid : table_oids) {
             auto it = engines_.find(table_oid);
@@ -992,14 +1009,20 @@ namespace services::index {
                 schedule_agent(addr, ns);
                 futures.emplace_back(std::move(f));
             }
-            engines_to_flip.emplace_back(engine.get());
+            oids_to_flip.emplace_back(table_oid);
         }
 
         for (auto& f : futures) {
             co_await std::move(f);
         }
 
-        for (auto* engine : engines_to_flip) {
+        // Re-lookup each oid after the awaits; flip only engines that still
+        // exist (see commit_inserts for the suspension-window invariant).
+        for (auto oid : oids_to_flip) {
+            auto it = engines_.find(oid);
+            if (it == engines_.end())
+                continue;
+            auto& engine = it->second;
             engine->commit_delete(txn_id, commit_id);
             if (txn_id != 0) {
                 engine->commit_delete(0, commit_id);
@@ -1125,15 +1148,18 @@ namespace services::index {
     manager_index_t::unique_future<std::pmr::vector<components::catalog::oid_t>>
     manager_index_t::tables_without_indexes(session_id_t /*session*/,
                                             std::pmr::vector<components::catalog::oid_t> table_oids) {
-        // Compact gate (see index_contract.hpp): the engine map is populated at
-        // CREATE INDEX / bootstrap and erased on DROP, so an entry == the table
-        // has at least one live in-memory index with positional row refs. Return
-        // the subset of the input WITHOUT an engine (safe to compact), input
-        // order preserved.
+        // Compact gate (see index_contract.hpp): an engine is created for EVERY
+        // table at bootstrap/register_collection, so engine presence alone does
+        // not mean the table is indexed — the engine starts EMPTY and only
+        // CREATE INDEX adds indexes to it. A table is therefore safe to compact
+        // when it has no engine, or when its engine holds ZERO indexes
+        // (index_engine_t::size() counts registered indexes, not entries).
+        // Return the subset that is safe to compact, input order preserved.
         std::pmr::vector<components::catalog::oid_t> result(resource_);
         result.reserve(table_oids.size());
         for (auto table_oid : table_oids) {
-            if (engines_.find(table_oid) == engines_.end()) {
+            auto it = engines_.find(table_oid);
+            if (it == engines_.end() || it->second->size() == 0) {
                 result.emplace_back(table_oid);
             }
         }

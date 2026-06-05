@@ -100,8 +100,10 @@ namespace services::index {
 
         unique_future<void> flush_all_indexes(session_id_t session);
 
-        // Compact gate: returns the subset of the input oids that have NO index
-        // engine (i.e. are safe to compact), input order preserved.
+        // Compact gate: returns the subset of the input oids that are safe to
+        // compact — those with NO index engine, plus those whose engine holds
+        // ZERO indexes (an engine is created empty for every table, so engine
+        // presence alone does not mean indexed). Input order preserved.
         // operator_commit_transaction queries this before fanning out
         // maybe_cleanup — compact() rebuilds the row_group and shifts row
         // positions, which would silently invalidate the positional row refs

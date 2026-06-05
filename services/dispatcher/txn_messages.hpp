@@ -60,13 +60,24 @@ namespace services::dispatcher {
     };
 
     // Result of txn_abort_drain_msg: txn_data snapshot + the pg_catalog appends
-    // that need storage_revert_appends. Mirrors operator_abort_transaction_t's
-    // drain (delete-tables and backfill markers are discarded on abort: rows
-    // written under an uncommitted txn_id stay invisible and VACUUM reclaims
-    // them). The handler calls txn_manager.abort() after draining.
+    // that need storage_revert_appends, plus the UNIQUE base-table oids the txn
+    // accumulated appends for so the abort operator can fan out
+    // manager_index_t::revert_insert per oid (parity with the failed-DML path in
+    // executor.cpp, which reverts PENDING in-memory index entries per touched
+    // base table). Mirrors operator_abort_transaction_t's drain (delete-tables
+    // and backfill markers are discarded on abort: rows written under an
+    // uncommitted txn_id stay invisible and VACUUM reclaims them). The handler
+    // calls txn_manager.abort() after draining.
+    //
+    // base_append_tables collapses the drained base-append ranges to a table-oid
+    // set (loss-free: every range carries the same explicit txn id). pg_catalog
+    // tables are deliberately absent — they have no index engines, so a
+    // revert_insert on a pg_catalog oid is a no-op by manager_index_t's engines_
+    // lookup; reverting only base oids is both correct and minimal.
     struct txn_abort_drain_t {
         components::table::transaction_data txn{0, 0};
         std::vector<components::pg_catalog_append_range_t> swap_appends{};
+        std::set<components::catalog::oid_t> base_append_tables{};
     };
 
     // Payload of txn_accumulate_msg: every range an executor statement parks on

@@ -476,6 +476,16 @@ namespace services::collection::executor {
         const bool needs_dml_txn =
             original_type == node_type::insert_t || original_type == node_type::update_t ||
             original_type == node_type::delete_t;
+        // SET TIMEZONE and VACUUM are append/delete-shaped catalog writers that
+        // are neither DDL nor DML but still produce committable pg_catalog
+        // ranges (SET TIMEZONE → pg_settings append; VACUUM → pg_computed_column
+        // tombstone deletes). They ride the SAME append-shaped unified DML tail
+        // (accumulate + implicit commit / revert) rather than the DDL tail,
+        // which carries no base append/delete handling. Kept as a separate bool
+        // (not merged into needs_dml_txn) so the trace text and the dml_*
+        // semantics stay literally about INSERT/UPDATE/DELETE.
+        const bool needs_commit_txn =
+            original_type == node_type::set_timezone_t || original_type == node_type::vacuum_t;
 
         // Run the catalog_resolve_*_t front-children through their operators via
         // co_await this->execute_plan (not a sync inter-actor call): those
@@ -1344,7 +1354,7 @@ namespace services::collection::executor {
         // SQL COMMIT statement for explicit txns. The operator drains, batch-
         // publishes storage, commits the index mirrors per table, writes the
         // WAL marker and crosses the ProcArray barrier — in that order.
-        if (needs_dml_txn) {
+        if (needs_dml_txn || needs_commit_txn) {
             if (exec_result.cursor->is_success()) {
                 services::dispatcher::txn_accumulate_payload_t payload;
                 payload.base_appends.reserve(exec_result.dml_appends.size());
@@ -1549,13 +1559,14 @@ namespace services::collection::executor {
         //   - explicit txns (a SELECT inside BEGIN..COMMIT must not abort it);
         //   - BEGIN itself (the operator just marked the txn explicit);
         //   - COMMIT/ROLLBACK (their operators already ended the txn);
-        //   - SET TIMEZONE (its pg_settings row was written under this txn).
+        //   - needs_commit_txn plans (SET TIMEZONE / VACUUM): their pg_catalog
+        //     writes were accumulated and committed by the DML tail above, so
+        //     aborting here would discard the very rows they persisted.
         const bool releases_resolve_txn =
-            !needs_ddl_txn && !needs_dml_txn && !session_ctx.is_explicit &&
+            !needs_ddl_txn && !needs_dml_txn && !needs_commit_txn && !session_ctx.is_explicit &&
             original_type != node_type::begin_transaction_t &&
             original_type != node_type::commit_transaction_t &&
-            original_type != node_type::abort_transaction_t &&
-            original_type != node_type::set_timezone_t;
+            original_type != node_type::abort_transaction_t;
         if (releases_resolve_txn) {
             auto [_rl, rlf] = actor_zeta::send(
                 parent_address_,

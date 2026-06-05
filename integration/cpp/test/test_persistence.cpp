@@ -1751,3 +1751,76 @@ TEST_CASE("integration::cpp::test_persistence::index_recovery_phase4_catalog_dri
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.users WHERE email = 'user_10@x';", 1);
     }
 }
+
+// SET TIMEZONE writes a 'TimeZone' row into the pg_settings system table, which
+// the disk agent persists like any other catalog table; on restart the dispatcher
+// refreshes its default_tz_cat_ from that row. pg_settings is not queryable via
+// SELECT (no SHOW / no pg_catalog read path is wired into the SQL pipeline), so
+// the persisted value cannot be asserted directly. Instead we assert indirectly:
+// phase 1 sets the timezone alongside real table data; phase 2 confirms the
+// catalog/WAL still recover cleanly after the SET (the table data survives) and a
+// fresh SET TIMEZONE applies post-restart. Limitation: this characterizes that the
+// SET TIMEZONE write does not corrupt persistence and the path stays usable across
+// restart; the exact stored value is not observable from SQL.
+TEST_CASE("integration::cpp::test_persistence::set_timezone_survives_restart") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/set_timezone_survives_restart");
+    test_clear_directory(config);
+
+    INFO("phase 1: SET TIMEZONE, then create + populate a table") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SET TIMEZONE TO 'Asia/Tokyo';");
+            REQUIRE(cur->is_success());
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE TABLE TestDatabase.TestCollection (name string, count bigint);");
+            REQUIRE(cur->is_success());
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.TestCollection (name, count) VALUES "
+                                               "('alice', 1), ('bob', 2), ('charlie', 3);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+        }
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 3);
+    }
+
+    INFO("phase 2: restart — persistence recovered cleanly, SET TIMEZONE still works") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        // The SET TIMEZONE row in pg_settings did not corrupt catalog/WAL recovery:
+        // user table data survives the restart intact.
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 3);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 1;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 3;", 1);
+
+        // The SET TIMEZONE path remains usable after restart: a fresh valid SET
+        // applies, and an unknown timezone is still rejected.
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SET TIMEZONE TO 'Europe/London';");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SET TIMEZONE TO 'not_a_real_timezone';");
+            REQUIRE(cur->is_error());
+        }
+    }
+}

@@ -3617,3 +3617,181 @@ TEST_CASE("integration::cpp::test_sql_features::create_table_if_not_exists") {
     // the target relation (no resolve_table sibling). The IF NOT EXISTS short-circuit
     // is what matters for benchmark idempotency, and step 2 above covers it.
 }
+
+// ROLLBACK must leave a secondary index consistent with the heap: rows inserted
+// inside an aborted transaction must not survive in the index, and the index must
+// stay functional for subsequent autocommit writes. BEGIN/INSERT/ROLLBACK share a
+// single session_id_t (transaction_manager_t keys active txns by session.data()),
+// and execute_sql runs only the FIRST statement of a string, so each step is a
+// separate call. Verification runs on fresh sessions through the index path
+// (equality on the indexed 'count' column).
+TEST_CASE("integration::cpp::test_sql_features::rollback_indexed_insert_leaves_clean_index") {
+    auto config = test_create_config("/tmp/test_sql_features/rollback_indexed_insert");
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup: table + index on count") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE TABLE TestDatabase.TestCollection (name string, count bigint);");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur =
+                dispatcher->execute_sql(session, "CREATE INDEX idx_count ON TestDatabase.TestCollection (count);");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("BEGIN; INSERT indexed rows; ROLLBACK — one shared session") {
+        auto session = otterbrix::session_id_t();
+        auto begin_cur = dispatcher->execute_sql(session, "BEGIN;");
+        REQUIRE(begin_cur->is_success());
+        auto ins_cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.TestCollection (name, count) VALUES "
+                                               "('alice', 10), ('bob', 20), ('charlie', 30);");
+        REQUIRE(ins_cur->is_success());
+        auto rollback_cur = dispatcher->execute_sql(session, "ROLLBACK;");
+        REQUIRE(rollback_cur->is_success());
+    }
+
+    INFO("index path returns no rolled-back rows on fresh sessions") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 0);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE count = 10;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 0);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE count = 30;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 0);
+        }
+    }
+
+    INFO("index still functional: autocommit re-insert is found via index path") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.TestCollection (name, count) VALUES "
+                                               "('alice', 10), ('bob', 20), ('charlie', 30);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE count = 10;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE count = 30;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+        }
+    }
+}
+
+// Characterization: VACUUM after an ALTER TABLE ADD/DROP COLUMN cycle keeps the
+// table usable for ordinary DML. ALTER COLUMN add/drop propagate as success
+// cursors (see test_sql_features::ddl_error_propagation), VACUUM compacts the
+// heap, and the table must still accept INSERTs and return correct SELECT counts.
+// Kept minimal and robust — deep GC/compaction invariants are asserted in
+// production::compaction_checkpoint_cycle, not here.
+TEST_CASE("integration::cpp::test_sql_features::vacuum_after_alter_keeps_working") {
+    auto config = test_create_config("/tmp/test_sql_features/vacuum_after_alter");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup: table with a couple rows") {
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.items (id bigint, val bigint);")
+                        ->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.items (id, val) VALUES "
+                                               "(1, 10), (2, 20), (3, 30);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+        }
+    }
+
+    INFO("ALTER TABLE ADD then DROP COLUMN cycle") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "ALTER TABLE TestDatabase.items ADD COLUMN extra bigint;");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "ALTER TABLE TestDatabase.items DROP COLUMN extra;");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("VACUUM after the ALTER cycle") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "VACUUM;");
+        REQUIRE(cur->is_success());
+    }
+
+    INFO("table still accepts DML and returns correct results") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.items;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.items (id, val) VALUES (4, 40), (5, 50);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.items;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 5);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.items WHERE val = 40;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+    }
+}

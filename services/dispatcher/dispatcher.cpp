@@ -656,6 +656,21 @@ namespace services::dispatcher {
             txn_t->drain_pg_catalog_pending(out.swap_appends, deletes_discarded);
             auto backfills_discarded = txn_t->drain_pg_attribute_commit_id_backfills();
             (void) backfills_discarded;
+            // Drain the parked base appends only to collect the UNIQUE table
+            // oids they touched: the abort operator fans out
+            // manager_index_t::revert_insert per oid to drop this txn's PENDING
+            // in-memory index entries (parity with executor.cpp's failed-DML
+            // revert). The ranges themselves are discarded — their physical row
+            // slots ride in the pg_catalog/base storage_revert path, and the
+            // index revert keys per (table_oid, txn_id), not per range. Base
+            // deletes are dropped here too (PENDING index DELETE markers are the
+            // separate M3.4/F15 task).
+            auto drained_appends = txn_t->drain_base_appends();
+            for (const auto& r : drained_appends) {
+                out.base_append_tables.insert(r.table_oid);
+            }
+            auto base_deletes_discarded = txn_t->drain_base_deletes();
+            (void) base_deletes_discarded;
         }
         txn_manager_.abort(session);
         // Aborting removes the txn from the active set, so the lowest-active

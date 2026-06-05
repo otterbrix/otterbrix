@@ -2,7 +2,7 @@
 
 // ALTER atomic validation: async data-gathering layer.
 //
-// The pure validators in catalog/alter_column_validators.{hpp,cpp} take
+// The pure validators in components/catalog/alter_column_validators.{hpp,cpp} take
 // pre-materialised inputs by const-reference; this file provides the async
 // helpers that gather those inputs from manager_disk_t. The split keeps the
 // pure validators testable without an actor harness while still letting ALTER

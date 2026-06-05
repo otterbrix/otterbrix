@@ -136,7 +136,7 @@ namespace components::compute {
     type_matcher_fn string_types_matcher() {
         return [](const types::complex_logical_type& t) {
             auto id = t.type();
-            // NA — SQL NULL может быть в любой позиции; kernel body propagates.
+            // NA — SQL NULL may appear at any position; the kernel body propagates it.
             return id == types::logical_type::NA || types::is_string(id);
         };
     }

@@ -1,52 +1,52 @@
-# actor-zeta: lost-wakeup в cooperative_actor — диагноз и доработки
+# actor-zeta: lost-wakeup in cooperative_actor — diagnosis and fixes
 
-**Дата:** 2026-06-04
-**Статус:** корень доказан инспекцией живого процесса; фикс предложен (не применён — решение за автором библиотеки)
-**Симптом в otterbrix:** вис `test_otterbrix_multithread` (конкурентные INSERT, 4 потока) — известный флэйк; re-enqueue из `production_idle_tick` не помогает даже на 100k/сек (зафиксировано ещё в b54f3256).
+**Date:** 2026-06-04
+**Status:** root cause proven by inspecting the live process; fix proposed (not applied — the decision is up to the library author)
+**Symptom in otterbrix:** hang in `test_otterbrix_multithread` (concurrent INSERTs, 4 threads) — a known flake; re-enqueue from `production_idle_tick` does not help even at 100k/sec (recorded back in b54f3256).
 
-## Доказательная база (живой процесс, lldb)
+## Evidence base (live process, lldb)
 
-Вис воспроизведён, у зависшего процесса сняты стеки всех потоков и состояние акторов:
+The hang was reproduced; from the hung process the stacks of all threads and the actor states were captured:
 
-| Наблюдение | Значение |
+| Observation | Value |
 |---|---|
-| executor[0] `current_behavior_.is_busy()` | **true** (корутина suspended) |
-| executor[0] `is_awaited_ready()` | **true** (future давно готов!) |
-| `awaited_continuation_` slot | **non-null** (0x5e403a810 — continuation на месте) |
+| executor[0] `current_behavior_.is_busy()` | **true** (coroutine suspended) |
+| executor[0] `is_awaited_ready()` | **true** (future ready long ago!) |
+| `awaited_continuation_` slot | **non-null** (0x5e403a810 — continuation in place) |
 | `awaited_flags_` | 9 = value_set \| promise_released |
 | executor[0] `state_` | **idle** (0) |
-| executor[0] `mailbox().blocked()` | **true** ← ключ |
-| `resume_impl<executor_t>` | вызывается постоянно (брейкпоинт бьётся на 3 воркерах) |
-| CPU | 72% (горячий no-op цикл), RSS — плоский |
-| Прогресс | ноль |
+| executor[0] `mailbox().blocked()` | **true** ← the key |
+| `resume_impl<executor_t>` | called continuously (breakpoint hits on 3 workers) |
+| CPU | 72% (hot no-op loop), RSS — flat |
+| Progress | zero |
 
-**Контрольный эксперимент:** ручной `try_unblock()` mailbox'а через lldb → система мгновенно сдвинулась (в логе появились `execute_plan: result received` спустя 8 часов виса), затем сработал ассерт инварианта `lifo_inbox::take_head:78` (ожидаемо — вмешательство мимо протокола). Корень подтверждён.
+**Control experiment:** a manual `try_unblock()` of the mailbox via lldb → the system moved instantly (`execute_plan: result received` appeared in the log after 8 hours of the hang), then the invariant assert `lifo_inbox::take_head:78` fired (as expected — an intervention outside the protocol). Root cause confirmed.
 
-## Механизм
+## Mechanism
 
 ```
-1. Корутина executor'а suspended'ится на cross-actor co_await.
-   В окне суспензии awaited_flags_ ещё не опубликованы → is_busy() == false.
-2. resume_impl в этом окне: «не busy, mailbox пуст» → try_block() → актор ПАРКУЕТСЯ
+1. The executor's coroutine suspends on a cross-actor co_await.
+   In the suspension window awaited_flags_ are not yet published → is_busy() == false.
+2. resume_impl in this window: "not busy, mailbox empty" → try_block() → the actor is PARKED
    (mailbox → reader_blocked).
-3. Producer завершает future: release_promise ставит ТОЛЬКО флаг promise_released.
-   Mailbox никто не разблокирует (готовность — не сообщение).
-4. Каждый последующий resume (хоть 100k/сек от re-enqueue):
+3. The producer completes the future: release_promise sets ONLY the promise_released flag.
+   Nobody unblocks the mailbox (readiness is not a message).
+4. Every subsequent resume (even 100k/sec from re-enqueue):
        cooperative_actor.hpp:292   if (mailbox().blocked())
-                                       return awaiting;        ← СРАБАТЫВАЕТ ПЕРВОЙ
-       cooperative_actor.hpp:299   if (current_behavior_.is_busy()) { Q6 ... }  ← НЕ ДОСТИГАЕТСЯ
-5. Готовый continuation никогда не берётся. Вечный no-op цикл.
+                                       return awaiting;        ← FIRES FIRST
+       cooperative_actor.hpp:299   if (current_behavior_.is_busy()) { Q6 ... }  ← NOT REACHED
+5. The ready continuation is never taken. An eternal no-op loop.
 ```
 
-Поэтому re-enqueue-заплатка (`production_idle_tick` диспетчера) бессильна: проблема не в «актора забыли запланировать», а в том, что resume **отваливается на blocked-чеке до Q6**.
+That is why the re-enqueue patch (the dispatcher's `production_idle_tick`) is powerless: the problem is not that "the actor was forgotten to be scheduled", but that resume **falls out on the blocked-check before Q6**.
 
-## Предлагаемый фикс (cooperative_actor.hpp, entry resume_impl)
+## Proposed fix (cooperative_actor.hpp, entry resume_impl)
 
-Поднять Q6-блок выше blocked-чека + re-check после resume (зеркально in-loop guard'у):
+Lift the Q6 block above the blocked-check + re-check after resume (mirroring the in-loop guard):
 
 ```cpp
-// Q6 FIRST — обязан исполняться даже при заблокированном mailbox (parked):
-// готовность awaited-future флаговая (release_promise), inbox она не разблокирует.
+// Q6 FIRST — must execute even with a blocked mailbox (parked):
+// readiness of the awaited-future is flag-based (release_promise), it does not unblock the inbox.
 if (current_behavior_.is_busy()) {
     if (current_behavior_.is_awaited_ready()) {
         auto cont = current_behavior_.take_awaited_continuation();
@@ -54,9 +54,9 @@ if (current_behavior_.is_busy()) {
             cont.resume();
         }
     }
-    // Re-check (зеркало in-loop guard'а): await мог быть не готов, либо
-    // корутина после resume пере-suspended'илась на следующем co_await.
-    // Падение отсюда в blocked-return / try_block re-strand'ит её снова.
+    // Re-check (mirror of the in-loop guard): the await may not have been ready, or
+    // the coroutine re-suspended after resume on the next co_await.
+    // Falling through here into blocked-return / try_block re-strands it again.
     if (current_behavior_.is_busy()) {
         return finalize(scheduler::resume_result::resume, 0, true);
     }
@@ -67,19 +67,19 @@ if (mailbox().blocked()) {
 }
 ```
 
-Свойства:
-- **Самоизлечение**: даже если гонка из шага 1-2 запаркует актора, первый же resume (от re-enqueue / нового сообщения) дренирует готовый continuation. Гонку публикации awaited_flags_ можно чинить отдельно — система перестаёт быть к ней фатально чувствительной.
-- Заодно закрывается вторая асимметрия entry-пути: «busy+ready → resume → re-suspend → провал в try_block → drop» (in-loop путь имеет guard на :348, entry — не имел).
-- После этого фикса re-enqueue-заплатка в otterbrix (`production_idle_tick` диспетчера: цикл по executors_ + 10µs sleep) становится удаляемой.
+Properties:
+- **Self-healing**: even if the race from step 1-2 parks the actor, the very first resume (from re-enqueue / a new message) drains the ready continuation. The awaited_flags_ publication race can be fixed separately — the system stops being fatally sensitive to it.
+- It also closes the second asymmetry of the entry path: "busy+ready → resume → re-suspend → fall into try_block → drop" (the in-loop path has a guard at :348, the entry path did not).
+- After this fix the re-enqueue patch in otterbrix (the dispatcher's `production_idle_tick`: loop over executors_ + 10µs sleep) becomes removable.
 
-## Сопутствующие доработки (кандидаты, по результатам анализа)
+## Related fixes (candidates, based on the analysis)
 
-1. **Публикация awaited_flags_ vs try_block** — первопричина паркования busy-актора: закрыть окно (порядок публикации цепочки до возврата управления из суспензии), либо считать допустимой при наличии самоизлечения выше.
-2. **`lifo_inbox::take_head:78` инвариант** — ассерт корректен; внешних вмешательств не предполагает. Не трогать.
-3. **Документировать контракт**: «готовность future не будит актора — будит только push в mailbox или принудительный resume; resume обязан проверять busy/ready до любых early-return'ов».
+1. **awaited_flags_ publication vs try_block** — the prime cause of parking a busy actor: close the window (the publication order of the chain before control returns from the suspension), or consider it acceptable given the self-healing above.
+2. **`lifo_inbox::take_head:78` invariant** — the assert is correct; it does not anticipate external interventions. Do not touch.
+3. **Document the contract**: "future readiness does not wake the actor — only a push into the mailbox or a forced resume does; resume must check busy/ready before any early-returns".
 
-## Воспроизведение / верификация фикса
+## Reproduction / verification of the fix
 
-- Репро: `test_otterbrix` `integration::cpp::test_otterbrix_multithread` (4×INSERT по 25k значений) — висит с вероятностью ~50-100% на прогон до фикса.
-- Критерий фикса: 10 прогонов подряд без виса + существующие тесты actor-zeta зелёные.
-- Минимальный standalone-репро для test-suite библиотеки: актор A co_await'ит актора B; между суспензией и публикацией awaited-цепочки врезать yield (или гонять под нагрузкой 4+ потоков отправителей); проверить, что A доезжает после готовности B при предварительно заблокированном mailbox A.
+- Repro: `test_otterbrix` `integration::cpp::test_otterbrix_multithread` (4×INSERT of 25k values each) — hangs with ~50-100% probability per run before the fix.
+- Fix criterion: 10 runs in a row without a hang + existing actor-zeta tests green.
+- Minimal standalone repro for the library test-suite: actor A co_awaits actor B; between the suspension and the publication of the awaited-chain, insert a yield (or run under a load of 4+ sender threads); verify that A makes it through after B becomes ready while A's mailbox is blocked beforehand.

@@ -13,7 +13,7 @@ namespace services::disk {
 
         // ----------------------------------------------------------------------
         // Builtin seed rows for pg_catalog bootstrap.
-        // Previously in components/catalog/builtin_seed.{cpp,hpp}; inlined here
+        // Previously a standalone catalog builtin-seed unit; inlined here
         // since manager_disk_bootstrap.cpp is the only consumer.
         // ----------------------------------------------------------------------
 

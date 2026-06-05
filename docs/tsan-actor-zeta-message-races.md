@@ -1,90 +1,90 @@
-# TSAN: остаточные репорты на message-буферах actor-zeta (для автора библиотеки)
+# TSAN: residual reports on actor-zeta message buffers (for the library author)
 
-**Дата:** 2026-06-04. **Контекст:** полный TSAN-прогон 771 теста (Debug, `ENABLE_TSAN=ON`,
-otterbrix на стоковой actor-zeta 1.2.0, менеджеры — event-loop-in-thread). Итог прогона:
-44 предупреждения в 32 файлах; после вычета FP от `synchronized_pool_resource` в WAL-тестах
-(пофикшено: TSAN-шим ресурса в фикстурах) и Catch2-гонок (пофикшено: REQUIRE убран из
-воркер-потоков) остаётся **один кластер из ~20 репортов** в `test_otterbrix`, целиком
-внутри actor-zeta. Фиксы библиотеки исключены из скоупа сессии — этот документ фиксирует
-диагноз и решающий эксперимент.
+**Date:** 2026-06-04. **Context:** full TSAN run of 771 tests (Debug, `ENABLE_TSAN=ON`,
+otterbrix on stock actor-zeta 1.2.0, managers = event-loop-in-thread). Run outcome:
+44 warnings across 32 files; after subtracting the FP from `synchronized_pool_resource` in the WAL tests
+(fixed: TSAN shim for the resource in the fixtures) and Catch2 races (fixed: REQUIRE removed from
+worker threads), **one cluster of ~20 reports** remains in `test_otterbrix`, entirely
+inside actor-zeta. Library fixes are out of scope for this session — this document records the
+diagnosis and the decisive experiment.
 
-## Сигнатура кластера
+## Cluster signature
 
-Все репорты — на байтах ОДНОГО 120-байтного `mailbox::message` (header) и его 400-байтного
-rtt-буфера аргументов (`execute_plan`/`execute_plan_full`):
+All reports are on the bytes of ONE 120-byte `mailbox::message` (header) and its 400-byte
+rtt argument buffer (`execute_plan`/`execute_plan_full`):
 
-- WRITE: поток цикла manager_dispatcher (`std::thread` из ctor, dispatcher.cpp:203) —
-  конструирование сообщения: `make_message` → rtt copy-ctors аргументов
-  (`storage_parameters` pmr-hashmap, `intrusive_ptr<node_t>`), `init_future_slot`
+- WRITE: manager_dispatcher loop thread (`std::thread` from the ctor, dispatcher.cpp:203) —
+  message construction: `make_message` → rtt copy-ctors of the arguments
+  (`storage_parameters` pmr hashmap, `intrusive_ptr<node_t>`), `init_future_slot`
   (message.hpp:56, `result_slot_`).
-- READ: воркер `scheduler_dispatcher_` (cooperative_actor executor_t) — потребление:
-  `dispatch()` → `get_result_promise` (message.hpp:177), `type_list_at` move-ctors из rtt.
+- READ: `scheduler_dispatcher_` worker (cooperative_actor executor_t) — consumption:
+  `dispatch()` → `get_result_promise` (message.hpp:177), `type_list_at` move-ctors from rtt.
 
-То есть TSAN видит «производитель ещё пишет сообщение, потребитель уже читает» — или
-переиспользование адреса без смоделированной грани.
+That is, TSAN sees "the producer is still writing the message, the consumer is already reading it" — or
+address reuse without a modeled edge.
 
-## Две гипотезы (агенты-аналитики разошлись)
+## Two hypotheses (the analyst agents diverged)
 
-### H1: настоящая гонка видимости (construction-vs-consumption)
-Сообщение становится достижимо потребителю ДО того, как store'ы конструирования
-release-нуты. Контракт send.hpp:51-57 — «полностью сконструировать, потом enqueue» —
-корректен, только если ВСЕ пути доставки идут через release/acquire-грань
-(`lifo_inbox::push_front` CAS seq_cst → `take_head` CAS). Если существует путь, где
-потребитель добирается до сообщения мимо этой цепочки (например, ресжум по уже
-закэшированному указателю), грань теряется.
+### H1: a genuine visibility race (construction-vs-consumption)
+The message becomes reachable to the consumer BEFORE the construction stores are
+release-published. The send.hpp:51-57 contract — "fully construct, then enqueue" —
+is correct only if ALL delivery paths go through a release/acquire edge
+(`lifo_inbox::push_front` CAS seq_cst → `take_head` CAS). If there is a path where the
+consumer reaches the message bypassing this chain (e.g., a resume via an already
+cached pointer), the edge is lost.
 
-### H2: непромоделированный TSAN-ом реюз памяти
-Цепочка push(release) → take_head(acquire) полна; значит «гонка» — это два РАЗНЫХ
-сообщения на одних переиспользованных байтах: воркер читал message-A, освободил
-(message_guard; `transfer_ownership` в dispatch.hpp:127 гасит только cleanup_fn_),
-loop-поток выделил message-B по тому же адресу и записал. Слабое место H2: в
-test_otterbrix аллокации идут через `tsan_resource_t` → `new_delete_resource` →
-malloc/free, чьи free→malloc-грани TSAN моделирует штатно — реюз-FP не должен выживать.
-Это главный аргумент ПРОТИВ H2 и в пользу H1 либо третьего механизма (например,
-аллокация message через иной, не перехватываемый путь).
+### H2: memory reuse not modeled by TSAN
+The push(release) → take_head(acquire) chain is complete; therefore the "race" is two DIFFERENT
+messages on the same reused bytes: the worker read message-A, freed it
+(message_guard; `transfer_ownership` in dispatch.hpp:127 only quenches cleanup_fn_),
+the loop thread allocated message-B at the same address and wrote to it. The weak point of H2: in
+test_otterbrix the allocations go through `tsan_resource_t` → `new_delete_resource` →
+malloc/free, whose free→malloc edges TSAN models natively — a reuse FP should not survive.
+This is the main argument AGAINST H2 and in favor of H1 or a third mechanism (e.g.,
+message allocation through a different, non-intercepted path).
 
-## Дополнительная улика (контрольный прогон после twin-роутинга диска)
+## Additional evidence (control run after twin-routing of the disk)
 
-После перевода DML/resolve-путей disk-менеджера на mailbox-роутинг (больше send'ов на
-запрос) кластер вырос пропорционально трафику (44 → ~79 предупреждений), при этом:
-- ни в одном репорте нет кадров storage-внутренностей (row_group/data_table/compact) —
-  прикладных гонок ноль;
-- новые репорты появились ровно на НОВЫХ send'ах (например, rtt-буфер
-  `storage_publish_commits_inner`: WRITE = `rtt::push_back_no_realloc` в make_message на
-  loop-потоке менеджера, READ = `rtt::get<>` move-out в dispatch на потоке агента);
-- в этих парах обе стороны — один и тот же тип хендлера, т.е. согласуются с ОДНИМ
-  жизненным циклом сообщения. Это смещает баланс в пользу H1 (видимость
-  construction-vs-consumption): реюз (H2) чаще сводил бы разные типы сообщений на одном
-  адресе. Решающим остаётся эксперимент с поколением сообщения (ниже).
+After moving the disk manager's DML/resolve paths onto mailbox routing (more sends per
+request) the cluster grew proportionally to the traffic (44 → ~79 warnings), and meanwhile:
+- not a single report has storage-internal frames (row_group/data_table/compact) —
+  zero application-level races;
+- the new reports appeared exactly on the NEW sends (e.g., the rtt buffer of
+  `storage_publish_commits_inner`: WRITE = `rtt::push_back_no_realloc` in make_message on
+  the manager's loop thread, READ = `rtt::get<>` move-out in dispatch on the agent's thread);
+- in these pairs both sides are the same handler type, i.e., they are consistent with ONE
+  message lifecycle. This shifts the balance in favor of H1 (construction-vs-consumption
+  visibility): reuse (H2) would more often collide different message types at the same
+  address. The decisive factor remains the message-generation experiment (below).
 
-## Эксперимент с malloc-backed ресурсом — ВЫПОЛНЕН, H2 практически закрыта
+## Experiment with a malloc-backed resource — DONE, H2 practically closed
 
-Фикстуры standalone test_wal переведены на malloc-backed ресурс (test_pool_resource_t →
-new_delete_resource). Результат контрольного прогона: pool-след исчез ПОЛНОСТЬЮ
-(0 кадров `__allocate_in_new_chunk` во всех репортах; heap-origin сообщений —
-`operator new` через test_pool_resource_t::do_allocate), но 15 репортов
-`message.hpp:177` в test_wal ОСТАЛИСЬ. TSAN моделирует free→malloc happens-before
-штатно, поэтому переиспользование памяти (H2) не может объяснять выжившие репорты.
-Вместе с парностью «один тип хендлера в обеих стеках» вердикт смещается к H1:
-в handoff сообщения actor-zeta 1.2.0 существует путь, на котором store'ы
-конструирования не упорядочены с чтением потребителя. Тесты при этом зелёные (771/771) —
-окно либо практически не материализуется на arm64, либо закрывается смежной
-синхронизацией; тем не менее для библиотеки это кандидат на реальный фикс, а не
-suppression. Финальную точку ставит эксперимент с поколением сообщения (ниже).
+The standalone test_wal fixtures were moved to a malloc-backed resource (test_pool_resource_t →
+new_delete_resource). Control-run result: the pool footprint disappeared COMPLETELY
+(0 `__allocate_in_new_chunk` frames in all reports; message heap origin =
+`operator new` via test_pool_resource_t::do_allocate), but 15 reports of
+`message.hpp:177` in test_wal REMAINED. TSAN models the free→malloc happens-before
+natively, so memory reuse (H2) cannot explain the surviving reports.
+Together with the "same handler type in both stacks" pairing, the verdict shifts toward H1:
+in the message handoff of actor-zeta 1.2.0 there is a path on which the construction stores
+are not ordered with the consumer's read. The tests are green throughout (771/771) —
+the window either practically never materializes on arm64, or is closed by adjacent
+synchronization; nevertheless for the library this is a candidate for a real fix, not a
+suppression. The final word comes from the message-generation experiment (below).
 
-## Решающий эксперимент (когда дойдут руки до библиотеки)
+## Decisive experiment (when there's time for the library)
 
-1. В TSAN-сборке логировать адрес+поколение сообщения (atomic счётчик в ctor) и в
-   момент репорта сверять: одно поколение (→ H1) или разные (→ H2).
-2. Либо: обернуть `result_slot_` в `std::atomic_ref<void*>` release/acquire и перегнать
-   прогон — если репорты на rtt-полях останутся, H1 подтверждается для буфера аргументов
-   (атомарность одного слота не лечит видимость всего буфера; лечит только правильная
-   грань на enqueue/dequeue).
-3. Если H2: достаточно `__tsan_acquire/__tsan_release`-аннотаций на free/alloc сообщения
-   (или suppression на message.hpp) — корректность кода не затронута.
+1. In a TSAN build, log the message address+generation (atomic counter in the ctor) and at
+   report time check: one generation (→ H1) or different ones (→ H2).
+2. Or: wrap `result_slot_` in `std::atomic_ref<void*>` release/acquire and re-run
+   — if reports on the rtt fields remain, H1 is confirmed for the argument buffer
+   (atomicity of a single slot does not heal the visibility of the whole buffer; only the correct
+   edge on enqueue/dequeue does).
+3. If H2: `__tsan_acquire/__tsan_release` annotations on message free/alloc are enough
+   (or a suppression on message.hpp) — code correctness is unaffected.
 
-## Связанное
-- Паркинг-гонка cooperative_actor (blocked-check раньше Q6) — отдельный документ:
-  `docs/actor-zeta-lost-wakeup.md`; обходится сторожем в dispatcher-цикле otterbrix.
-- FP-класс `synchronized_pool_resource` задокументирован в `integration/cpp/base_spaces.hpp`
-  (tsan_resource_t) и теперь продублирован в фикстурах services/wal/tests.
+## Related
+- The cooperative_actor parking race (blocked-check before Q6) — separate document:
+  `docs/actor-zeta-lost-wakeup.md`; worked around with a guard in the otterbrix dispatcher loop.
+- The `synchronized_pool_resource` FP class is documented in `integration/cpp/base_spaces.hpp`
+  (tsan_resource_t) and is now duplicated in the services/wal/tests fixtures.

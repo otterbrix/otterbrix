@@ -846,19 +846,16 @@ namespace services::index {
     }
 
     bitcask_index_disk_t::result bitcask_index_disk_t::lower_bound(const value_t& /*value*/) const {
-        // Hashed index has no ordering — lower_bound/upper_bound are unreachable.
         assert(false && "not supported");
         std::abort();
     }
 
     void bitcask_index_disk_t::upper_bound(const value_t& /*value*/, result& /*res*/) const {
-        // Hashed index has no ordering — lower_bound/upper_bound are unreachable.
         assert(false && "not supported");
         std::abort();
     }
 
     bitcask_index_disk_t::result bitcask_index_disk_t::upper_bound(const value_t& /*value*/) const {
-        // Hashed index has no ordering — lower_bound/upper_bound are unreachable.
         assert(false && "not supported");
         std::abort();
     }

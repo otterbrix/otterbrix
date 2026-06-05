@@ -378,10 +378,10 @@ namespace services::disk {
         // Public accessor — ddl_* methods take their OIDs from this generator.
         components::catalog::oid_generator& oid_gen() noexcept { return oid_gen_; }
 
-        // Per-item resolve methods. Каждый метод сканирует соответствующую pg_*-таблицу
-        // на disk actor thread и возвращает найденный объект (или {found=false}).
-        // Параметр since_version сохранён для совместимости с message dispatch (всегда
-        // игнорируется — версионирование больше не используется).
+        // Per-item resolve methods. Each method scans the corresponding pg_* table
+        // on the disk actor thread and returns the found object (or {found=false}).
+        // The since_version parameter is kept for message-dispatch compatibility
+        // (always ignored — versioning is no longer used).
         unique_future<resolve_namespace_result_t>
         resolve_namespace(execution_context_t ctx, std::string name, std::uint64_t since_version);
         unique_future<resolve_table_result_t> resolve_table(execution_context_t ctx,

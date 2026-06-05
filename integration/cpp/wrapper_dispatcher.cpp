@@ -2,6 +2,7 @@
 #include <components/logical_plan/node_create_collection.hpp>
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_drop_collection.hpp>
+#include <components/logical_plan/node_drop_database.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_set_timezone.hpp>
 #include <components/logical_plan/node_update.hpp>
@@ -78,6 +79,17 @@ namespace otterbrix {
         auto drop = components::logical_plan::make_node_drop_collection(resource());
         components::logical_plan::node_ptr plan =
             components::sql::transform::maybe_wrap_with_catalog_resolve_table(resource(), database, collection, drop);
+        return send_plan(session, plan, components::logical_plan::make_parameter_node(resource()));
+    }
+
+    auto wrapper_dispatcher_t::drop_database(const components::session::session_id_t& session,
+                                             const database_name_t& database) -> cursor_t_ptr {
+        // Drop nodes carry no names; the (db) identity travels via a
+        // sibling catalog_resolve_namespace_t wrapped in a sequence_t. Pass 1
+        // in the dispatcher resolves namespace_oid and stamps it on the drop.
+        auto drop = components::logical_plan::make_node_drop_database(resource());
+        components::logical_plan::node_ptr plan =
+            components::sql::transform::maybe_wrap_with_catalog_resolve_namespace(resource(), database, drop);
         return send_plan(session, plan, components::logical_plan::make_parameter_node(resource()));
     }
 

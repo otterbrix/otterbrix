@@ -16,6 +16,19 @@ namespace components::compute {
     arity arity::fixed_num(size_t num) { return {num, false}; }
     arity arity::var_args(size_t min) { return {min, true}; }
 
+    target_preference_t prefer_cpu_only() noexcept {
+        target_preference_t pref{};
+        pref.fill(kernel_target::cpu);
+        return pref;
+    }
+
+    target_preference_t prefer_gpu_first() noexcept {
+        target_preference_t pref{};
+        pref[0] = kernel_target::gpu_opencl;
+        pref[1] = kernel_target::cpu;
+        return pref;
+    }
+
     function::function(std::string name, arity fn_arity, function_doc doc, const function_options* default_options)
         : name_(std::move(name))
         , arity_(fn_arity)
@@ -39,6 +52,21 @@ namespace components::compute {
         }
 
         return std::ref(*kernel);
+    }
+
+    core::result_wrapper_t<std::reference_wrapper<const compute_kernel>>
+    function::dispatch_best(std::pmr::memory_resource* resource,
+                            const std::pmr::vector<complex_logical_type>& types,
+                            const target_preference_t& preference) const {
+        if (!arity_.varargs && arity_.num_args != types.size()) {
+            return core::error_t(core::error_code_t::kernel_error, std::pmr::string{"Arity mismatch", resource});
+        }
+
+        if (auto* kernel = detail::dispatch_best_impl(*this, types, preference)) {
+            return std::ref(*kernel);
+        }
+
+        return core::error_t(core::error_code_t::kernel_error, std::pmr::string{"No matching kernel", resource});
     }
 
     // function_executor_impl_t owns kernel_executor_t & corresponding kernel_ctx.
@@ -442,6 +470,35 @@ namespace components::compute {
                 }
             }
 
+            return nullptr;
+        }
+
+        const compute_kernel* dispatch_best_impl(const function& func,
+                                                 const std::pmr::vector<complex_logical_type>& in_types,
+                                                 const target_preference_t& preference) {
+            std::array<const compute_kernel*, kernel_target_count> matches{};
+            matches.fill(nullptr);
+
+            for (size_t i = 0; i < func.num_kernels(); ++i) {
+                kernel_nth_visitor vis(i);
+                func.accept_visitor(vis);
+
+                const compute_kernel* k = vis.result;
+                if (!k || !k->signature().matches_inputs(in_types)) {
+                    continue;
+                }
+                const auto slot = static_cast<size_t>(k->target());
+                if (slot < kernel_target_count && matches[slot] == nullptr) {
+                    matches[slot] = k;
+                }
+            }
+
+            for (auto target : preference) {
+                const auto slot = static_cast<size_t>(target);
+                if (slot < kernel_target_count && matches[slot] != nullptr) {
+                    return matches[slot];
+                }
+            }
             return nullptr;
         }
     } // namespace detail

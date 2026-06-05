@@ -1,0 +1,3 @@
+leak:opencl_runtime_t::init
+leak:libOpenCL
+leak:libpocl

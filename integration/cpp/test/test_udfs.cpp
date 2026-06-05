@@ -1,6 +1,7 @@
 #include "test_config.hpp"
 
 #include <catch2/catch.hpp>
+#include <components/compute/gpu_aggregate.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
@@ -21,6 +22,8 @@ static const std::string udf1_name = "concat";
 static const std::string udf2_name = "mult";
 static const std::string udf3_name = "is_even";
 static const std::string udf4_name = "modulo";
+static const std::string udf5_name = "sum_alias";
+static const std::string udf6_name = "smallest";
 
 struct concat_kernel_state : kernel_state {
     std::string value;
@@ -104,6 +107,120 @@ std::unique_ptr<aggregate_function> make_mult_func(std::pmr::memory_resource* re
     return fn;
 }
 
+struct sum_alias_kernel_state : kernel_state {
+    int64_t value{0};
+};
+
+static core::result_wrapper_t<kernel_state_ptr> sum_alias_init(kernel_context&, kernel_init_args) {
+    auto c = std::make_unique<sum_alias_kernel_state>();
+    c->value = 0;
+    return c;
+}
+
+static core::error_t sum_alias_consume(kernel_context& ctx, const vector::data_chunk_t& in) {
+    auto* acc = static_cast<sum_alias_kernel_state*>(ctx.state());
+    for (size_t i = 0; i < in.size(); i++) {
+        acc->value += in.data[0].data<int64_t>()[i];
+    }
+    return core::error_t::no_error();
+}
+
+static core::error_t sum_alias_merge(aggregate_kernel_context& ctx, kernel_state&& from, kernel_state&) {
+    ctx.batch_results.emplace_back(ctx.batch_results.get_allocator().resource(),
+                                   static_cast<sum_alias_kernel_state&>(from).value);
+    return core::error_t::no_error();
+}
+
+static core::error_t sum_alias_finalize(aggregate_kernel_context&) { return core::error_t::no_error(); }
+
+std::unique_ptr<aggregate_function> make_sum_alias_func(std::pmr::memory_resource* resource) {
+    function_doc doc{"short_doc", "full_doc", {"arg"}, false};
+
+    auto fn = std::make_unique<aggregate_function>(udf5_name, arity::unary(), doc, 2);
+
+    kernel_signature_t cpu_sig(function_type_t::aggregate,
+                               {exact_type_matcher(types::logical_type::BIGINT)},
+                               {output_type::fixed(types::logical_type::BIGINT)});
+    (void) fn->add_kernel(resource,
+                          aggregate_kernel{std::move(cpu_sig),
+                                           sum_alias_init,
+                                           sum_alias_consume,
+                                           sum_alias_merge,
+                                           sum_alias_finalize});
+
+    kernel_signature_t gpu_sig(function_type_t::aggregate,
+                               {exact_type_matcher(types::logical_type::BIGINT)},
+                               {output_type::fixed(types::logical_type::BIGINT)});
+    (void) fn->add_kernel(resource,
+                          make_gpu_aggregate_kernel(std::move(gpu_sig),
+                                                    sum_alias_init,
+                                                    sum_alias_consume,
+                                                    sum_alias_merge,
+                                                    sum_alias_finalize,
+                                                    gpu_aggregate_op::sum));
+
+    return fn;
+}
+
+struct smallest_kernel_state : kernel_state {
+    int64_t value{std::numeric_limits<int64_t>::max()};
+    bool initialized{false};
+};
+
+static core::result_wrapper_t<kernel_state_ptr> smallest_init(kernel_context&, kernel_init_args) {
+    auto c = std::make_unique<smallest_kernel_state>();
+    return c;
+}
+
+static core::error_t smallest_consume(kernel_context& ctx, const vector::data_chunk_t& in) {
+    auto* acc = static_cast<smallest_kernel_state*>(ctx.state());
+    for (size_t i = 0; i < in.size(); i++) {
+        const auto value = in.data[0].data<int64_t>()[i];
+        if (!acc->initialized || value < acc->value) {
+            acc->value = value;
+            acc->initialized = true;
+        }
+    }
+    return core::error_t::no_error();
+}
+
+static core::error_t smallest_merge(aggregate_kernel_context& ctx, kernel_state&& from, kernel_state&) {
+    ctx.batch_results.emplace_back(ctx.batch_results.get_allocator().resource(),
+                                   static_cast<smallest_kernel_state&>(from).value);
+    return core::error_t::no_error();
+}
+
+static core::error_t smallest_finalize(aggregate_kernel_context&) { return core::error_t::no_error(); }
+
+std::unique_ptr<aggregate_function> make_smallest_func(std::pmr::memory_resource* resource) {
+    function_doc doc{"short_doc", "full_doc", {"arg"}, false};
+
+    auto fn = std::make_unique<aggregate_function>(udf6_name, arity::unary(), doc, 2);
+
+    kernel_signature_t cpu_sig(function_type_t::aggregate,
+                               {exact_type_matcher(types::logical_type::BIGINT)},
+                               {output_type::fixed(types::logical_type::BIGINT)});
+    (void) fn->add_kernel(resource,
+                          aggregate_kernel{std::move(cpu_sig),
+                                           smallest_init,
+                                           smallest_consume,
+                                           smallest_merge,
+                                           smallest_finalize});
+
+    kernel_signature_t gpu_sig(function_type_t::aggregate,
+                               {exact_type_matcher(types::logical_type::BIGINT)},
+                               {output_type::fixed(types::logical_type::BIGINT)});
+    (void) fn->add_kernel(resource,
+                          make_gpu_aggregate_kernel(std::move(gpu_sig),
+                                                    smallest_init,
+                                                    smallest_consume,
+                                                    smallest_merge,
+                                                    smallest_finalize,
+                                                    gpu_aggregate_op::min));
+
+    return fn;
+}
+
 static core::error_t is_even_exec(kernel_context& ctx,
                                   const std::pmr::vector<types::logical_value_t>& in,
                                   std::pmr::vector<types::logical_value_t>& out) {
@@ -174,9 +291,6 @@ TEST_CASE("integration::cpp::test_udfs") {
     }
 
     INFO("insert") {
-        // Each insert needs its own freshly-built plan: the data_chunk is moved
-        // into the insert node and consumed at execute time, so re-running the
-        // same `ins` would replay against an emptied chunk.
         for (int batch = 0; batch < 2; ++batch) {
             auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
             auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
@@ -210,6 +324,16 @@ TEST_CASE("integration::cpp::test_udfs") {
         {
             auto session = otterbrix::session_id_t();
             auto result = dispatcher->register_udf(session, make_modulo_func(dispatcher->resource()));
+            REQUIRE(result);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            bool result = dispatcher->register_udf(session, make_sum_alias_func(dispatcher->resource()));
+            REQUIRE(result);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            bool result = dispatcher->register_udf(session, make_smallest_func(dispatcher->resource()));
             REQUIRE(result);
         }
         // Trying to create same function will result in error
@@ -253,6 +377,40 @@ TEST_CASE("integration::cpp::test_udfs") {
                 REQUIRE(chunk.data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 1));
                 auto d = static_cast<double>(i + 1);
                 REQUIRE(core::is_equals(chunk.data[1].data<double>()[i], ((d + 0.1) * d) * 2));
+            }
+        }
+        INFO("aggregate udf aliased to built-in sum GPU kernel") {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               R"_(SELECT count, sum_alias(count) AS result )_"
+                                               R"_(FROM TestDatabase.TestCollection )_"
+                                               R"_(GROUP BY count )_"
+                                               R"_(ORDER BY count ASC;)_");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == kNumInserts);
+            auto& chunk = cur->chunk_data();
+            REQUIRE(chunk.column_count() == 2);
+            for (size_t i = 0; i < chunk.size(); i++) {
+                auto value = static_cast<int64_t>(i + 1);
+                REQUIRE(chunk.data[0].data<int64_t>()[i] == value);
+                REQUIRE(chunk.data[1].data<int64_t>()[i] == value * 2);
+            }
+        }
+        INFO("aggregate udf aliased to built-in min GPU kernel") {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               R"_(SELECT count, smallest(count) AS result )_"
+                                               R"_(FROM TestDatabase.TestCollection )_"
+                                               R"_(GROUP BY count )_"
+                                               R"_(ORDER BY count ASC;)_");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == kNumInserts);
+            auto& chunk = cur->chunk_data();
+            REQUIRE(chunk.column_count() == 2);
+            for (size_t i = 0; i < chunk.size(); i++) {
+                auto value = static_cast<int64_t>(i + 1);
+                REQUIRE(chunk.data[0].data<int64_t>()[i] == value);
+                REQUIRE(chunk.data[1].data<int64_t>()[i] == value);
             }
         }
         INFO("multiple arguments with parameter") {

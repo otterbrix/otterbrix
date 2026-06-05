@@ -3,7 +3,9 @@
 #include "kernel_executor.hpp"
 #include "kernel_signature.hpp"
 
+#include <array>
 #include <components/types/types.hpp>
+#include <concepts>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -71,6 +73,11 @@ namespace components::compute {
             : result(std::move(init)) {}
     };
 
+    using target_preference_t = std::array<kernel_target, kernel_target_count>;
+
+    [[nodiscard]] target_preference_t prefer_cpu_only() noexcept;
+    [[nodiscard]] target_preference_t prefer_gpu_first() noexcept;
+
     class function {
     public:
         virtual ~function() = default;
@@ -78,6 +85,9 @@ namespace components::compute {
         const std::string& name() const { return name_; }
         const arity& fn_arity() const { return arity_; }
         const function_doc& doc() const { return doc_; }
+
+        [[nodiscard]] virtual bool has_kernel_for(kernel_target target) const = 0;
+        [[nodiscard]] bool has_gpu_kernel() const { return has_kernel_for(kernel_target::gpu_opencl); }
 
         virtual size_t num_kernels() const = 0;
         virtual void accept_visitor(function_visitor& visitor) const = 0;
@@ -99,6 +109,11 @@ namespace components::compute {
         virtual core::result_wrapper_t<std::reference_wrapper<const compute_kernel>>
         dispatch_exact(std::pmr::memory_resource* resource,
                        const std::pmr::vector<types::complex_logical_type>& types) const;
+
+        virtual core::result_wrapper_t<std::reference_wrapper<const compute_kernel>>
+        dispatch_best(std::pmr::memory_resource* resource,
+                      const std::pmr::vector<types::complex_logical_type>& types,
+                      const target_preference_t& preference = prefer_cpu_only()) const;
 
         virtual core::result_wrapper_t<std::unique_ptr<detail::kernel_executor_t>>
         get_best_executor(std::pmr::memory_resource* resource,
@@ -126,8 +141,8 @@ namespace components::compute {
     };
 
     namespace detail {
-        // function_impl is responsive for lifetime of function & all of its kernels
         template<typename KernelType>
+        requires std::derived_from<KernelType, compute_kernel>
         class function_impl : public function {
         public:
             function_impl(std::string name, arity fn_arity, function_doc doc, size_t available_kernel_slots)
@@ -148,6 +163,15 @@ namespace components::compute {
             }
 
             size_t num_kernels() const override { return kernels_.size(); }
+
+            bool has_kernel_for(kernel_target target) const override {
+                for (const auto& kernel : kernels_) {
+                    if (kernel.target() == target) {
+                        return true;
+                    }
+                }
+                return false;
+            }
 
             core::error_t add_kernel(std::pmr::memory_resource* resource, KernelType kernel) {
                 if (kernels_.size() >= kernel_slots_) {
@@ -178,6 +202,7 @@ namespace components::compute {
         };
 
         template<typename KernelType>
+        requires std::derived_from<KernelType, compute_kernel>
         [[nodiscard]] std::vector<kernel_signature_t> function_impl<KernelType>::get_signatures() const {
             std::vector<kernel_signature_t> result;
             result.reserve(kernels_.size());
@@ -211,6 +236,10 @@ namespace components::compute {
 
         const compute_kernel* dispatch_exact_impl(const function& func,
                                                   const std::pmr::vector<types::complex_logical_type>&);
+
+        const compute_kernel* dispatch_best_impl(const function& func,
+                                                 const std::pmr::vector<types::complex_logical_type>&,
+                                                 const target_preference_t&);
     } // namespace detail
 
     class vector_function : public detail::function_impl<vector_kernel> {
@@ -252,19 +281,12 @@ namespace components::compute {
         static void reset_default();
 
         [[nodiscard]] core::result_wrapper_t<function_uid> add_function(function_ptr function);
-        // Insert with a caller-supplied UID. Used when the canonical UID was
-        // chosen by another registry (e.g. the global default) and per-executor
-        // LOCAL registries must agree so validate/predicate lookups are
-        // cross-registry stable.
         [[nodiscard]] core::result_wrapper_t<function_uid> add_function_with_uid(function_uid uid,
                                                                                  function_ptr function);
         function* get_function(function_uid uid) const;
         [[nodiscard]] std::vector<std::pair<std::string, function_uid>> get_functions() const;
 
-        // Remove a function by uid (DROP FUNCTION / unregister_udf path). No-op if uid not present.
         bool remove_function(function_uid uid);
-        // Remove a function by (name, input types) signature match — used by dispatcher to drop a
-        // single overload.
         bool remove_function_by_signature(const std::string& name,
                                           const std::pmr::vector<types::complex_logical_type>& inputs);
 

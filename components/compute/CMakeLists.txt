@@ -3,6 +3,7 @@ project(compute)
 set(${PROJECT_NAME}_SOURCES
         compute_kernel.cpp
         function.cpp
+        gpu_aggregate.cpp
         kernel_executor.cpp
         kernel_signature.cpp
         kernel_utils.cpp

@@ -250,6 +250,7 @@ TEST_CASE("core::tests::self_move_assignment") {
 #elif defined(__GNUC__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpessimizing-move"
+#pragma GCC diagnostic ignored "-Wself-move"
 #endif
 
     buff = std::move(buff);

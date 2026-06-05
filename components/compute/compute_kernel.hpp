@@ -5,8 +5,11 @@
 
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <cstdint>
 #include <functional>
 #include <memory>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace components::compute {
@@ -15,6 +18,22 @@ namespace components::compute {
     // originally, arrow-compute's datum is a variant<scalar, vector<T>, data_chunk>.
     // in our implementation it is a little bit simplified
     using datum_t = std::variant<std::pmr::vector<types::logical_value_t>, vector::data_chunk_t>;
+
+    enum class kernel_target : uint8_t
+    {
+        cpu = 0,
+        gpu_opencl = 1,
+    };
+
+    constexpr inline size_t kernel_target_count = 2;
+
+    [[nodiscard]] std::string_view to_string(kernel_target target) noexcept;
+
+    class kernel_target_data_t {
+    public:
+        virtual ~kernel_target_data_t() = default;
+    };
+    using kernel_target_data_ptr = std::shared_ptr<kernel_target_data_t>;
 
     // opaque kernel-specific state, for example, if there is some kind of initialization required
     class kernel_state {
@@ -45,8 +64,6 @@ namespace components::compute {
         kernel_state* state_;
     };
 
-    // merge and finalize receive aggregate_kernel_context — results go into ctx.batch_results
-    // note: consume still gets base kernel_context to avoid batch result copying
     class aggregate_kernel_context : public kernel_context {
     public:
         aggregate_kernel_context(exec_context_t& exec_ctx, const compute_kernel& kernel)
@@ -64,11 +81,21 @@ namespace components::compute {
         virtual ~compute_kernel() = default;
 
         const kernel_signature_t& signature() const { return signature_; }
+
+        [[nodiscard]] kernel_target target() const noexcept { return target_; }
+        void set_target(kernel_target t) noexcept { target_ = t; }
+        [[nodiscard]] bool is_gpu_target() const noexcept { return target_ != kernel_target::cpu; }
+
+        void set_target_data(kernel_target_data_ptr data) noexcept { target_data_ = std::move(data); }
+        [[nodiscard]] const kernel_target_data_t* target_data() const noexcept { return target_data_.get(); }
+
         core::result_wrapper_t<kernel_state_ptr> init(kernel_context& ctx, const kernel_init_args& args) const;
 
     protected:
         kernel_signature_t signature_;
         kernel_init_fn init_;
+        kernel_target target_{kernel_target::cpu};
+        kernel_target_data_ptr target_data_;
     };
 
     using vector_exec_fn = core::error_t (*)(kernel_context& ctx,

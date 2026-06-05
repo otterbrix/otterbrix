@@ -3,6 +3,16 @@
 using namespace components::vector;
 
 namespace components::compute {
+    std::string_view to_string(kernel_target target) noexcept {
+        switch (target) {
+            case kernel_target::cpu:
+                return "cpu";
+            case kernel_target::gpu_opencl:
+                return "gpu_opencl";
+        }
+        return "unknown";
+    }
+
     kernel_context::kernel_context(exec_context_t& exec_ctx, const compute_kernel& kernel)
         : exec_ctx_(exec_ctx)
         , kernel_(kernel)

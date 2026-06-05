@@ -33,6 +33,7 @@ namespace components::logical_plan {
                               const limit_t& limit);
 
         const limit_t& limit() const;
+        void set_limit(const limit_t& limit) { limit_ = limit; }
 
         const std::string& relname() const noexcept { return relname_; }
         const std::string& dbname() const noexcept { return dbname_; }

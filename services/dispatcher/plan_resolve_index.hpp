@@ -164,32 +164,6 @@ namespace services::catalog_resolve {
         }
     }
 
-    // ns_oid_for resolves the namespace_oid for a table_id by probing
-    // the plan-tree index. Returns INVALID_OID when the namespace was not
-    // emitted as a catalog_resolve_namespace / catalog_resolve_table in the
-    // current plan (the transformer wrap is expected to cover every
-    // meaningful DDL/DML path).
-    inline components::catalog::oid_t ns_oid_for(const plan_resolve_index_t* idx,
-                                                 const components::catalog::table_id& id) {
-        auto& ns = id.get_namespace();
-        if (ns.empty())
-            return components::catalog::INVALID_OID;
-        if (!idx)
-            return components::catalog::INVALID_OID;
-        std::string ns_key(ns.front().data(), ns.front().size());
-        std::string qkey;
-        qkey.reserve(ns_key.size() + 1 + id.table_name().size());
-        qkey.append(ns_key).push_back('|');
-        qkey.append(id.table_name().data(), id.table_name().size());
-        if (auto it = idx->tbl_ns_by_qname.find(qkey); it != idx->tbl_ns_by_qname.end()) {
-            return it->second;
-        }
-        if (auto it = idx->ns_by_dbname.find(ns_key); it != idx->ns_by_dbname.end()) {
-            return it->second;
-        }
-        return components::catalog::INVALID_OID;
-    }
-
     inline const components::logical_plan::resolved_table_metadata_t*
     tbl_md_for(const plan_resolve_index_t* idx, std::string_view dbname, std::string_view relname) {
         if (!idx)
@@ -238,7 +212,6 @@ namespace services::catalog_resolve {
 // Lets dispatcher/validate/resolve_type keep spelling these as `impl::...`.
 namespace services::dispatcher::impl {
     using catalog_resolve::gather_plan_resolve_index;
-    using catalog_resolve::ns_oid_for;
     using catalog_resolve::ns_oid_for_dbname;
     using catalog_resolve::plan_resolve_index_t;
     using catalog_resolve::tbl_md_for;

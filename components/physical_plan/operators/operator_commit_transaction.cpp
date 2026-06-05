@@ -2,8 +2,9 @@
 
 #include <components/context/context.hpp>
 #include <components/context/execution_context.hpp>
-#include <components/table/transaction_manager.hpp>
 #include <services/disk/manager_disk.hpp>
+#include <services/dispatcher/dispatcher.hpp>
+#include <services/dispatcher/txn_messages.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
 namespace components::operators {
@@ -18,9 +19,9 @@ namespace components::operators {
         : read_write_operator_t(resource, std::move(log), operator_type::commit_transaction) {}
 
     void operator_commit_transaction_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
-        // Synchronous txn_manager work + an async disk send. Defer the entire
-        // body to await_async_and_resume so the disk send participates in the
-        // pipeline's await chain.
+        // A dispatcher round-trip (txn_commit_drain_msg) plus async disk/WAL
+        // sends. Defer the entire body to await_async_and_resume so every send
+        // participates in the pipeline's await chain.
         async_wait();
     }
 
@@ -49,14 +50,17 @@ namespace components::operators {
             }
         }
 
-        // Snapshot txn_data AND swap-info BEFORE commit() purges the
-        // active map; then commit; then dispatch the batched APIs against
-        // the post-swap state.
-        auto* tm = ctx->txn_manager;
-        auto* txn_t = tm ? tm->find_transaction(ctx->session) : nullptr;
-
-        components::table::transaction_data txn_data =
-            txn_t ? txn_t->data() : components::table::transaction_data{0, 0};
+        // Snapshot txn_data, drain all swap-info and allocate the commit_id in a
+        // single dispatcher round-trip. The dispatcher (sole owner of
+        // transaction_manager_t) does find_transaction → drain_* → remap →
+        // commit(), all on its own loop thread, and returns everything by value
+        // because after commit() purges the active map the txn_t is unreadable.
+        // The drained struct fields arrive in exactly the shapes the publish
+        // block below consumes: base appends are pre-remapped to
+        // pg_catalog_append_range_t, base deletes pre-collapsed to a table-oid set.
+        // INVARIANT: the handler must NOT call publish() — that is the ProcArray
+        // barrier, deferred to txn_publish_msg after storage_publish_* / WAL.
+        components::table::transaction_data txn_data{0, 0};
         std::vector<components::pg_catalog_append_range_t> swap_appends;
         std::set<components::catalog::oid_t> swap_deletes;
         // backfill markers (added by operator_alter_column_{add,drop,rename}
@@ -68,32 +72,21 @@ namespace components::operators {
         // BEFORE the ProcArray publish() barrier so readers see an atomic flip.
         std::vector<components::pg_catalog_append_range_t> base_appends;
         std::set<components::catalog::oid_t> base_delete_tables;
-        if (txn_t) {
-            // Explicit txns park per-statement pg_catalog ranges on transaction_t
-            // (executor.cpp accumulate_pg_catalog_pending); implicit txns publish
-            // inline, leaving these empty so the drain is a no-op.
-            txn_t->drain_pg_catalog_pending(swap_appends, swap_deletes);
-            swap_backfills = txn_t->drain_pg_attribute_commit_id_backfills();
-            auto drained_appends = txn_t->drain_base_appends();
-            base_appends.reserve(drained_appends.size());
-            for (const auto& r : drained_appends) {
-                // Field-name remap: dml_append_range_t (table_oid, row_start,
-                // row_count) -> pg_catalog_append_range_t (table_oid, start_row, count).
-                base_appends.push_back(components::pg_catalog_append_range_t{
-                    r.table_oid, r.row_start, r.row_count});
-            }
-            auto drained_deletes = txn_t->drain_base_deletes();
-            for (const auto& d : drained_deletes) {
-                // storage_publish_deletes keys by (ctx.txn.transaction_id, table_oid);
-                // every drained range carries the same txn_id (the explicit
-                // txn's id), so collapsing to a table set is loss-free.
-                base_delete_tables.insert(d.table_oid);
-            }
+        // Null-sender guard (mirrors today's `tm ? : 0`): with no dispatcher to
+        // talk to there is no txn to drain — leave commit_id_ = 0 and skip.
+        if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
+            auto [_dr, drf] = actor_zeta::send(ctx->current_message_sender,
+                                               &services::dispatcher::manager_dispatcher_t::txn_commit_drain_msg,
+                                               ctx->session);
+            services::dispatcher::txn_commit_drain_t drain = co_await std::move(drf);
+            txn_data = drain.txn;
+            swap_appends = std::move(drain.swap_appends);
+            swap_deletes = std::move(drain.swap_deletes);
+            swap_backfills = std::move(drain.swap_backfills);
+            base_appends = std::move(drain.base_appends);
+            base_delete_tables = std::move(drain.base_delete_tables);
+            commit_id_ = drain.commit_id;
         }
-
-        // commit the transaction in the txn_manager. Synchronous —
-        // returns the commit_id used to flip MVCC on pg_catalog appends.
-        commit_id_ = tm ? tm->commit(ctx->session) : 0;
 
         // Patch the placeholder commit_id columns on the ALTER's pg_attribute
         // rows (swap_backfills names the (attoid, kind) pairs). Safe to do here
@@ -164,9 +157,14 @@ namespace components::operators {
 
         // ProcArray publish barrier: advances published_horizon_ so subsequent
         // snapshots see this txn. MUST run after all storage_publish_* so a
-        // reader can never observe a not-yet-flipped pg_catalog row.
-        if (commit_id_ > 0 && tm != nullptr) {
-            tm->publish(commit_id_);
+        // reader can never observe a not-yet-flipped pg_catalog row. Routed to
+        // the dispatcher (sole txn_manager owner) via txn_publish_msg — the
+        // drain handler deliberately left this barrier un-advanced.
+        if (commit_id_ > 0 && ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
+            auto [_p, pf] = actor_zeta::send(ctx->current_message_sender,
+                                             &services::dispatcher::manager_dispatcher_t::txn_publish_msg,
+                                             commit_id_);
+            co_await std::move(pf);
         }
 
         // Durability: emit the WAL commit_txn marker. Skip when the DDL-commit

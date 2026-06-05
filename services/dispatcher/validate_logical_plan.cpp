@@ -1054,7 +1054,7 @@ namespace services::dispatcher {
         auto check_node = [&](node_t* node) {
             // Drop-nodes skip existence + type collection here.
             // Their catalog_resolve_* children verify existence at parse time;
-            // CASCADE/RESTRICT is enforced by validate_drop_restrict downstream.
+            // CASCADE/RESTRICT is enforced by the cascade-delete operator downstream.
             switch (node->type()) {
                 case node_type::drop_collection_t:
                 case node_type::drop_database_t:
@@ -1259,6 +1259,14 @@ namespace services::dispatcher {
         named_schema result{resource};
 
         switch (node->type()) {
+            // SQL transaction-control leaves (BEGIN/COMMIT/ROLLBACK): no table
+            // schema to validate — empty schema, like an all-resolve sequence_t.
+            // Defensive mirror of the executor's validate break-group; without
+            // these the default arm below assert(false)s on the node type.
+            case node_type::begin_transaction_t:
+            case node_type::commit_transaction_t:
+            case node_type::abort_transaction_t:
+                break;
             case node_type::aggregate_t: {
                 node_group_t* node_group = nullptr;
                 node_match_t* node_match = nullptr;
@@ -2411,70 +2419,6 @@ namespace services::dispatcher {
         }
 
         return result;
-    }
-
-    // -----------------------------------------------------------------------
-    // validate_drop_restrict (E3.2)
-    // -----------------------------------------------------------------------
-    components::cursor::cursor_t_ptr validate_drop_restrict(std::pmr::memory_resource* resource,
-                                                            components::catalog::oid_t seed_classid,
-                                                            components::catalog::oid_t seed_oid,
-                                                            const components::catalog::fetch_deps_fn& fetch_deps) {
-        using namespace components::catalog;
-        using namespace components::cursor;
-        auto plan =
-            plan_drop(resource, seed_classid, seed_oid, components::catalog::drop_behavior_t::restrict_, fetch_deps);
-        if (plan.status == components::catalog::ddl_status::restrict_blocked) {
-            return make_cursor(
-                resource,
-                core::error_t{core::error_code_t::other_error,
-                              std::pmr::string{("DROP RESTRICT: object OID " + std::to_string(plan.blocking_oid) +
-                                                " depends on the target")
-                                                   .c_str(),
-                                               resource}});
-        }
-        return make_cursor(resource);
-    }
-
-    // -----------------------------------------------------------------------
-    // validate_type_recursion (E3.3)
-    // -----------------------------------------------------------------------
-    components::cursor::cursor_t_ptr validate_type_recursion(std::pmr::memory_resource* resource,
-                                                             const impl::plan_resolve_index_t* idx,
-                                                             const components::types::complex_logical_type& root_type) {
-        using namespace components::cursor;
-        // DFS through user-type references; detect revisit (cycle).
-        std::unordered_set<std::string> visited;
-        std::vector<std::string> work;
-
-        // Collect top-level names from root_type.
-        walk_user_type_refs(root_type, [&](std::string_view n) { work.emplace_back(n); });
-
-        while (!work.empty()) {
-            auto name = std::move(work.back());
-            work.pop_back();
-            if (visited.count(name)) {
-                return make_cursor(
-                    resource,
-                    core::error_t(core::error_code_t::other_error,
-                                  std::pmr::string{("type recursion detected: '" + name + "'").c_str(), resource}));
-            }
-            visited.insert(name);
-
-            // Probe the plan-tree idx (public first, then pg_catalog).
-            const components::logical_plan::resolved_type_metadata_t* md = nullptr;
-            for (std::string_view db : {std::string_view{"public"}, std::string_view{"pg_catalog"}}) {
-                md = impl::type_md_for(idx, db, std::string_view(name));
-                if (md)
-                    break;
-            }
-            if (!md)
-                continue; // unknown type — caught by validate_types; skip here
-
-            // Walk this type's definition for further child references.
-            walk_user_type_refs(md->type, [&](std::string_view child) { work.emplace_back(child); });
-        }
-        return make_cursor(resource);
     }
 
 } // namespace services::dispatcher

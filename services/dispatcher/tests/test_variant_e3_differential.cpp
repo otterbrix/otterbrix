@@ -50,9 +50,10 @@ namespace {
                 return c;
             }())
             , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource, scheduler_, wal_config_, log_)) {
-            manager_dispatcher_->sync(std::make_tuple(manager_wal_->address(),
-                                                     manager_disk_->address(),
-                                                     actor_zeta::address_t::empty_address()));
+            manager_dispatcher_->sync(services::dispatcher::manager_dispatcher_t::sync_pack{
+                manager_wal_->address(),
+                manager_disk_->address(),
+                actor_zeta::address_t::empty_address()});
             manager_wal_->sync(std::make_tuple(actor_zeta::address_t(manager_disk_->address()),
                                                manager_dispatcher_->address()));
             manager_disk_->sync(std::make_tuple(manager_wal_->address()));

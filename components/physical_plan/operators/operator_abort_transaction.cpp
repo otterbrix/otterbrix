@@ -2,8 +2,9 @@
 
 #include <components/context/context.hpp>
 #include <components/context/execution_context.hpp>
-#include <components/table/transaction_manager.hpp>
 #include <services/disk/manager_disk.hpp>
+#include <services/dispatcher/dispatcher.hpp>
+#include <services/dispatcher/txn_messages.hpp>
 
 namespace components::operators {
 
@@ -13,33 +14,26 @@ namespace components::operators {
     void operator_abort_transaction_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
 
     actor_zeta::unique_future<void> operator_abort_transaction_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // Snapshot txn_data + swap-appends BEFORE abort() purges the
-        // active map. delete_tables on abort: nothing to revert because
-        // tombstones written under an uncommitted txn_id stay invisible to
-        // readers, so they need no swap-side action.
-        auto* tm = ctx->txn_manager;
-        auto* txn_t = tm ? tm->find_transaction(ctx->session) : nullptr;
-
-        components::table::transaction_data txn_data =
-            txn_t ? txn_t->data() : components::table::transaction_data{0, 0};
+        // Snapshot txn_data + swap-appends and abort in one dispatcher
+        // round-trip. The dispatcher (sole owner of transaction_manager_t)
+        // finds the txn, drains the pg_catalog appends, discards the
+        // delete-tables set and backfill markers (uncommitted tombstones with
+        // delete_id == txn_id are invisible to every reader; abort() makes them
+        // GC-eligible, and backfill targets ride in swap_appends), then calls
+        // abort() — returning everything by value before the active map is
+        // purged. The appends still need revert because their physical row slots
+        // persist until storage_revert_appends.
+        components::table::transaction_data txn_data{0, 0};
         std::vector<components::pg_catalog_append_range_t> swap_appends;
-        std::set<components::catalog::oid_t> swap_deletes_unused;
-        if (txn_t) {
-            // drain_pg_catalog_pending mirrors the COMMIT path. On ABORT we
-            // discard the delete-tables set (uncommitted tombstones with
-            // delete_id == txn_id are invisible to every reader; abort()
-            // makes them GC-eligible). The appends still need revert because
-            // their physical row slots persist until storage_revert_appends.
-            txn_t->drain_pg_catalog_pending(swap_appends, swap_deletes_unused);
-            swap_deletes_unused.clear();
-            // Backfill markers carry no residual state; their target rows are in
-            // swap_appends and get reverted by storage_revert_appends.
-            (void) txn_t->drain_pg_attribute_commit_id_backfills();
-        }
-
-        // abort the transaction in the txn_manager (synchronous).
-        if (tm) {
-            tm->abort(ctx->session);
+        // Null-sender guard (mirrors today's `tm ?`): with no dispatcher to talk
+        // to there is no txn to drain or abort — leave the locals empty.
+        if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
+            auto [_dr, drf] = actor_zeta::send(ctx->current_message_sender,
+                                               &services::dispatcher::manager_dispatcher_t::txn_abort_drain_msg,
+                                               ctx->session);
+            services::dispatcher::txn_abort_drain_t drain = co_await std::move(drf);
+            txn_data = drain.txn;
+            swap_appends = std::move(drain.swap_appends);
         }
 
         // revert any pg_catalog rows appended under this transaction.

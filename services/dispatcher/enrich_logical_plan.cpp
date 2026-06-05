@@ -226,18 +226,8 @@ namespace services::dispatcher {
                 auto* n = q.front();
                 q.pop();
                 switch (n->type()) {
-                    case node_type::catalog_resolve_namespace_t: {
-                        auto* rn = static_cast<node_catalog_resolve_namespace_t*>(n);
-                        if (rn->namespace_oid() != components::catalog::INVALID_OID) {
-                            out.ns_by_dbname[rn->dbname()] = rn->namespace_oid();
-                        }
-                        break;
-                    }
                     case node_type::catalog_resolve_table_t: {
                         auto* rt = static_cast<node_catalog_resolve_table_t*>(n);
-                        if (rt->namespace_oid() != components::catalog::INVALID_OID) {
-                            out.ns_by_dbname[rt->dbname()] = rt->namespace_oid();
-                        }
                         if (rt->table_oid() != components::catalog::INVALID_OID) {
                             std::string key;
                             key.reserve(rt->dbname().size() + 1 + rt->relname().size());
@@ -269,17 +259,6 @@ namespace services::dispatcher {
                         } else {
                             out.referencing_fks_by_oid[md->table_oid] = cr->fks();
                         }
-                        break;
-                    }
-                    case node_type::catalog_resolve_type_t: {
-                        auto* tr = static_cast<node_catalog_resolve_type_t*>(n);
-                        if (!tr->resolved_metadata().has_value())
-                            break;
-                        std::string key;
-                        key.reserve(tr->dbname().size() + 1 + tr->type_name().size());
-                        key.append(tr->dbname()).push_back('|');
-                        key.append(tr->type_name());
-                        out.type_md_by_qname[std::move(key)] = &tr->resolved_metadata().value();
                         break;
                     }
                     default:

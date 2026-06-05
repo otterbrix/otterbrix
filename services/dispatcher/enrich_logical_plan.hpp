@@ -35,14 +35,12 @@ namespace services::dispatcher {
     // (resolved_table_metadata_t living on the resolve node) so enrich can
     // read columns / not-null / default specs through the plan-tree idx.
     struct enrich_resolve_idx_t {
-        // dbname → namespace_oid.
-        std::unordered_map<std::string, components::catalog::oid_t> ns_by_dbname;
         // "dbname|relname" → table_oid.
         std::unordered_map<std::string, components::catalog::oid_t> tbl_oid_by_qname;
         // "dbname|relname" → const resolved_table_metadata_t*. Points into the
         // resolve node's `resolved_metadata()` optional. Pointer stays valid
         // for the lifetime of the plan tree (intrusive_ptr keeps nodes alive
-        // through the dispatcher's coroutine).
+        // through the executor's coroutine).
         std::unordered_map<std::string, const components::logical_plan::resolved_table_metadata_t*> tbl_md_by_qname;
         // table_oid → const resolved_table_metadata_t*. Mirror for oid-keyed
         // table metadata probes.
@@ -55,10 +53,6 @@ namespace services::dispatcher {
             referencing_fks_by_oid;
         std::unordered_map<components::catalog::oid_t, std::vector<std::pair<std::string, std::string>>>
             check_exprs_by_oid;
-        // "dbname|typename" -> const resolved_type_metadata_t*. Mirrors
-        // plan_resolve_index_t::type_md_by_qname for enrich-only consumers
-        // (drop_type_t, create_collection_t column-type resolution).
-        std::unordered_map<std::string, const components::logical_plan::resolved_type_metadata_t*> type_md_by_qname;
     };
 
     // Walks the plan tree and fills catalog metadata fields into DML nodes

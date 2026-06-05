@@ -118,7 +118,8 @@ namespace otterbrix {
         // guards in dispatcher and disk manager skip every WAL round-trip at no cost.
         auto effective_wal_address = config.wal.on ? manager_wal_address : actor_zeta::address_t::empty_address();
 
-        manager_dispatcher_->sync(std::make_tuple(effective_wal_address, manager_disk_address, manager_index_address));
+        manager_dispatcher_->sync(services::dispatcher::manager_dispatcher_t::sync_pack{
+            effective_wal_address, manager_disk_address, manager_index_address});
 
         wal_ptr->sync(std::make_tuple(actor_zeta::address_t(manager_disk_address), manager_dispatcher_->address()));
 

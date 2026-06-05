@@ -15,10 +15,6 @@ namespace components::compute {
     class function_registry_t;
 } // namespace components::compute
 
-namespace components::table {
-    class transaction_manager_t;
-} // namespace components::table
-
 namespace components::pipeline {
 
     class context_t {
@@ -37,17 +33,15 @@ namespace components::pipeline {
         table::transaction_data txn{0, 0};
         core::date::timezone_offset_t session_tz{};
         // VACUUM/MVCC GC threshold: snapshots older than this start_time are
-        // safe to drop. Populated by the executor from txn_manager_t before
-        // each operator invocation; consumed by operator_vacuum_t (and any
-        // future GC operator) to gate cleanup_versions / cleanup_all_versions.
+        // safe to drop. Populated by the executor from the session context
+        // (txn_begin_session_msg) before each operator invocation; consumed by
+        // operator_vacuum_t to gate cleanup_versions / cleanup_all_versions.
+        //
+        // NOTE: there is deliberately NO transaction_manager_t* here. The
+        // dispatcher is the sole txn-state owner; operators that need txn
+        // mutations (begin/commit/abort) send txn_*_msg messages to
+        // current_message_sender (the executor's parent — the dispatcher).
         uint64_t lowest_active_start_time{0};
-        // Transaction manager back-reference for operators that need to
-        // mutate the global txn map (operator_commit_transaction_t /
-        // operator_abort_transaction_t — invoked from manager_dispatcher_t
-        // where the txn_manager_t lives, not from the executor pipeline).
-        // Null whenever the operator does not need it (DML/DDL paths leave it
-        // unset).
-        table::transaction_manager_t* txn_manager{nullptr};
 
         // Aggregated by operators that touch pg_catalog. Drained by
         // execute_sub_plan_ into result_tracking after pipeline runs.

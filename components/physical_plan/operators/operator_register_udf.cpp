@@ -9,7 +9,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -20,16 +19,14 @@ namespace components::operators {
 
     operator_register_udf_t::operator_register_udf_t(std::pmr::memory_resource* resource,
                                                      log_t log,
-                                                     std::shared_ptr<components::compute::function> function,
-                                                     std::size_t executor_count,
-                                                     executor_register_fn_t executor_register_fn)
+                                                     components::compute::function_ptr function,
+                                                     executor_uids_t executor_uids)
         : read_only_operator_t(resource, std::move(log), operator_type::register_udf)
         , function_(std::move(function))
-        , executor_count_(executor_count)
-        , executor_register_fn_(std::move(executor_register_fn)) {}
+        , executor_uids_(std::move(executor_uids)) {}
 
     void operator_register_udf_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
-        // All work is async (executor fan-out + pg_proc writes). Defer to
+        // All work is async (conflict-detection read + pg_proc writes). Defer to
         // await_async_and_resume.
         async_wait();
     }
@@ -63,36 +60,14 @@ namespace components::operators {
             }
         }
 
-        // 2. Fan out to every per-executor function_registry_. Issue ALL sends
-        //    first, then co_await every ack: this overlaps per-executor work
-        //    (parallel, not serial). Awaiting all acks before returning makes
-        //    UDF visibility atomic across executors from the caller's view.
-        std::pmr::vector<actor_zeta::unique_future<std::unique_ptr<executor_register_result_t>>> acks(resource_);
-        acks.reserve(executor_count_);
-        for (std::size_t i = 0; i < executor_count_; ++i) {
-            acks.emplace_back(executor_register_fn_(ctx->session, function_->get_copy(resource_), i));
-        }
-        std::vector<components::compute::function_uid> uids;
-        uids.reserve(executor_count_);
-        bool fanout_failed = false;
-        for (auto& fut : acks) {
-            auto res = co_await std::move(fut);
-            if (fanout_failed) {
-                // Already failed: drain remaining acks (so executor mailbox work
-                // isn't orphaned) but discard results.
-                continue;
-            }
-            if (!res || res->has_error()) {
-                fanout_failed = true;
-                continue;
-            }
-            uids.push_back(res->value());
-        }
-        if (fanout_failed) {
-            output_ = nullptr;
-            mark_executed();
-            co_return;
-        }
+        // 2. Validate the per-executor registration uids the dispatcher
+        //    pre-collected from its fan-out. The dispatcher issues the
+        //    per-executor register_udf sends, co_awaits every ack, drops any
+        //    executor that returned an error, and hands the resulting uids in.
+        //    An empty vector means there was nothing to mirror by uid; a
+        //    non-empty vector must agree on a single, non-invalid uid (the
+        //    "all executors agree" invariant) or the registration is rejected.
+        const auto& uids = executor_uids_;
         if (!uids.empty()) {
             const auto first_uid = uids.front();
             const bool agree = std::all_of(uids.begin(), uids.end(), [first_uid](components::compute::function_uid u) {

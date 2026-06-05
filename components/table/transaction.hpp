@@ -127,7 +127,7 @@ namespace components::table {
         void add_append(int64_t row_start, uint64_t count);
         const std::vector<append_info>& appends() const { return appends_; }
 
-        // Aggregated across execute_plan_impl calls; drained by the commit/abort
+        // Aggregated across executor statements; drained by the commit/abort
         // operators before commit()/abort() to drive storage_publish/revert.
         //
         // THREADING INVARIANT: this transaction_t BODY (these plain containers) is

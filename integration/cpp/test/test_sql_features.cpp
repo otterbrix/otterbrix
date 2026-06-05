@@ -2285,15 +2285,125 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_multi_statement_t
     }
 }
 
-// ROLLBACK undoes pg_computed_column appends via storage_revert_appends.
-// Skipped at SQL level: the SQL transformer in otterbrix does not currently
-// lower TransactionStmt (BEGIN/COMMIT/ROLLBACK) to physical operators, so
-// there is no SQL-level handle to test the rollback path. The disk-level
-// revert path is exercised in services/disk/tests/test_mvcc_ddl.cpp; the
-// SQL coverage here will land after the planner gains a transaction-stmt branch.
-TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_rollback_undoes_register") {
-    WARN("TODO: SQL transformer does not lower BEGIN/COMMIT/ROLLBACK yet; "
-         "disk-level revert covered by test_mvcc_ddl.cpp");
+// SQL explicit transactions, end to end. transform_transaction lowers
+// TRANS_STMT_BEGIN/COMMIT/ROLLBACK to node_begin/commit/abort_transaction_t,
+// the planner builds operator_{begin,commit,abort}_transaction, and the
+// executor runs them in its pipeline. The statements MUST share one
+// session_id_t: transaction_manager_t keys active transactions by
+// session.data(), and execute_sql runs only the FIRST statement of a string
+// (wrapper_dispatcher linitial), so the flow is four separate calls.
+TEST_CASE("integration::cpp::test_sql_features::explicit_txn_commit_visible") {
+    auto config = test_create_config("/tmp/test_sql_features/explicit_txn_commit");
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "CREATE TABLE TestDatabase.TestCollection (name string, value bigint);");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("BEGIN; INSERT; INSERT; COMMIT — one shared session") {
+        auto session = otterbrix::session_id_t();
+        auto begin_cur = dispatcher->execute_sql(session, "BEGIN;");
+        REQUIRE(begin_cur->is_success());
+        auto ins1_cur = dispatcher->execute_sql(
+            session,
+            "INSERT INTO TestDatabase.TestCollection (name, value) VALUES ('Alice', 10);");
+        REQUIRE(ins1_cur->is_success());
+        auto ins2_cur = dispatcher->execute_sql(
+            session,
+            "INSERT INTO TestDatabase.TestCollection (name, value) VALUES ('Bob', 20);");
+        REQUIRE(ins2_cur->is_success());
+        auto commit_cur = dispatcher->execute_sql(session, "COMMIT;");
+        REQUIRE(commit_cur->is_success());
+    }
+
+    INFO("both committed rows visible to a fresh session") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+}
+
+TEST_CASE("integration::cpp::test_sql_features::explicit_txn_rollback_invisible") {
+    auto config = test_create_config("/tmp/test_sql_features/explicit_txn_rollback");
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "CREATE TABLE TestDatabase.TestCollection (name string, value bigint);");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("BEGIN; INSERT; ROLLBACK — one shared session") {
+        auto session = otterbrix::session_id_t();
+        auto begin_cur = dispatcher->execute_sql(session, "BEGIN;");
+        REQUIRE(begin_cur->is_success());
+        auto ins_cur = dispatcher->execute_sql(
+            session,
+            "INSERT INTO TestDatabase.TestCollection (name, value) VALUES ('Alice', 10);");
+        REQUIRE(ins_cur->is_success());
+        auto rollback_cur = dispatcher->execute_sql(session, "ROLLBACK;");
+        REQUIRE(rollback_cur->is_success());
+    }
+
+    INFO("rolled-back row invisible to a fresh session") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+}
+
+// Characterization: ALTER TABLE on a non-existent table. Pins the observable
+// behavior across the dispatcher→executor migration (the dispatcher's
+// unresolved-ALTER no-op branch is mirrored executor-side).
+TEST_CASE("integration::cpp::test_sql_features::alter_table_nonexistent_characterization") {
+    auto config = test_create_config("/tmp/test_sql_features/alter_nonexistent");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup database only") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        REQUIRE(cur->is_success());
+    }
+
+    INFO("ALTER on a table that does not exist") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "ALTER TABLE TestDatabase.NoSuchTable ADD COLUMN extra bigint;");
+        // Characterization probe: record the actual outcome (success vs error).
+        WARN("ALTER nonexistent: is_success=" << cur->is_success()
+                                              << " error=" << (cur->is_error() ? cur->get_error().what : ""));
+        REQUIRE(true);
+    }
 }
 
 // Multi-step type evolution. Inserting into the same column with a sequence

@@ -35,8 +35,6 @@ namespace services::catalog_resolve {
         // Namespace name -> ns_oid (from node_catalog_resolve_namespace_t
         // AND from node_catalog_resolve_table_t::namespace_oid()).
         std::unordered_map<std::string, components::catalog::oid_t> ns_by_dbname;
-        // "dbname|relname" -> namespace_oid (from resolve_table nodes).
-        std::unordered_map<std::string, components::catalog::oid_t> tbl_ns_by_qname;
         // "dbname|relname" -> const resolved_table_metadata_t*. Points into
         // the resolve_table node's resolved_metadata() optional (stamped by
         // operator_resolve_table_t). Validate reads columns/relkind here.
@@ -64,9 +62,8 @@ namespace services::catalog_resolve {
             check_exprs_by_oid;
 
         bool empty() const noexcept {
-            return ns_by_dbname.empty() && tbl_ns_by_qname.empty() && type_oid_by_qname.empty() &&
-                   fn_oid_by_qname.empty() && outgoing_fks_by_oid.empty() && referencing_fks_by_oid.empty() &&
-                   check_exprs_by_oid.empty();
+            return ns_by_dbname.empty() && type_oid_by_qname.empty() && fn_oid_by_qname.empty() &&
+                   outgoing_fks_by_oid.empty() && referencing_fks_by_oid.empty() && check_exprs_by_oid.empty();
         }
     };
 
@@ -98,7 +95,6 @@ namespace services::catalog_resolve {
                         key.reserve(rt->dbname().size() + 1 + rt->relname().size());
                         key.append(rt->dbname()).push_back('|');
                         key.append(rt->relname());
-                        out.tbl_ns_by_qname[key] = rt->namespace_oid();
                         // Stamp table metadata pointer so validate /
                         // dispatcher can read columns + relkind from the
                         // plan-tree idx.

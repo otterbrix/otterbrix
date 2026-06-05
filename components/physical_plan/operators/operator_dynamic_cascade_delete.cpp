@@ -203,6 +203,14 @@ namespace components::operators {
 
         constexpr catalog::oid_t kPgClass = catalog::well_known_oid::pg_class_table;
 
+        // Two-phase pg_class relkind probe: each step's read is keyed by its own
+        // step.objid (plan.steps is fixed here) and only decides whether the oid
+        // gets a storage drop, so no read feeds another iteration's read. Send
+        // every probe first, recording step.objid alongside each future, then
+        // await and apply the relkind filter.
+        std::pmr::vector<actor_zeta::unique_future<std::pmr::vector<std::pmr::vector<types::logical_value_t>>>>
+            relkind_futures(resource_);
+        std::pmr::vector<catalog::oid_t> relkind_oids(resource_);
         for (const auto& step : plan.steps) {
             if (step.classid != catalog::well_known_oid::pg_class_table)
                 continue;
@@ -220,7 +228,11 @@ namespace components::operators {
                                                kPgClass,
                                                std::move(pc_keys),
                                                std::move(pc_vals));
-            auto pc_rows = co_await std::move(pcf);
+            relkind_futures.push_back(std::move(pcf));
+            relkind_oids.push_back(step.objid);
+        }
+        for (std::size_t i = 0; i < relkind_futures.size(); ++i) {
+            auto pc_rows = co_await std::move(relkind_futures[i]);
             if (pc_rows.empty() || pc_rows[0].size() < 4)
                 continue;
             const auto& row = pc_rows[0];
@@ -235,25 +247,30 @@ namespace components::operators {
                 continue;
             }
 
-            pending_storage_drops.push_back({step.objid});
+            pending_storage_drops.push_back({relkind_oids[i]});
         }
 
         // execute the catalog-row deletes in the planned order.
         // Over-deletion is safe: scans that find no matching rows for a
         // given (table, col, oid) tuple are silent no-ops. This matches
         // build_drop_sequence's behaviour in the old dispatcher path.
+        // deletes_for_classid is a pure local helper and plan.steps is fixed
+        // before this loop, so no spec depends on an intervening read; collect
+        // every (table, col, oid) delete into one batched call.
+        std::pmr::vector<services::disk::pg_catalog_delete_spec_t> catalog_specs(resource_);
         for (const auto& step : plan.steps) {
             for (auto& d : deletes_for_classid(resource_, step.classid)) {
-                auto [_d, df] = actor_zeta::send(ctx->disk_address,
-                                                 &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                                 exec_ctx,
-                                                 d.catalog_table_oid,
-                                                 d.oid_col_idx,
-                                                 step.objid);
-                co_await std::move(df);
+                catalog_specs.push_back({d.catalog_table_oid, d.oid_col_idx, step.objid});
                 if (ctx->txn.transaction_id != 0)
                     ctx->pg_catalog_delete_tables.insert(d.catalog_table_oid);
             }
+        }
+        if (!catalog_specs.empty()) {
+            auto [_d, df] = actor_zeta::send(ctx->disk_address,
+                                             &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
+                                             exec_ctx,
+                                             std::move(catalog_specs));
+            co_await std::move(df);
         }
 
         // Drop on-disk storage + index entry per table. Order matters:
@@ -270,6 +287,15 @@ namespace components::operators {
         // txn=0 (auto-commit/bootstrap) records 0, matching catalog-scan rebuild.
         const uint64_t dropped_at = ctx->txn.transaction_id;
         bool any_storage_drop = false;
+        // Two-phase fan-out: send all four messages per storage drop without
+        // awaiting in the loop, then await every future afterwards. The required
+        // intra-target ordering is preserved by same-target mailbox FIFO:
+        // mark_table_dropped is enqueued before unregister_collection on the
+        // manager_index mailbox, and mark_storage_dropped before drop_storage on
+        // the manager_disk mailbox, so each is processed in that order. Awaiting
+        // below is therefore only completion-sync, not ordering.
+        std::pmr::vector<actor_zeta::unique_future<void>> drop_futures(resource_);
+        drop_futures.reserve(pending_storage_drops.size() * 4);
         for (auto& sd : pending_storage_drops) {
             any_storage_drop = true;
             if (ctx->index_address != actor_zeta::address_t::empty_address()) {
@@ -278,24 +304,27 @@ namespace components::operators {
                                                      ctx->session,
                                                      sd.table_oid,
                                                      dropped_at);
-                co_await std::move(mtif);
+                drop_futures.push_back(std::move(mtif));
                 auto [_ui, uif] = actor_zeta::send(ctx->index_address,
                                                    &services::index::manager_index_t::unregister_collection,
                                                    ctx->session,
                                                    sd.table_oid);
-                co_await std::move(uif);
+                drop_futures.push_back(std::move(uif));
             }
             auto [_msd, msdf] = actor_zeta::send(ctx->disk_address,
                                                  &services::disk::manager_disk_t::mark_storage_dropped,
                                                  ctx->session,
                                                  sd.table_oid,
                                                  dropped_at);
-            co_await std::move(msdf);
+            drop_futures.push_back(std::move(msdf));
             auto [_ds, dsf] = actor_zeta::send(ctx->disk_address,
                                                &services::disk::manager_disk_t::drop_storage,
                                                ctx->session,
                                                sd.table_oid);
-            co_await std::move(dsf);
+            drop_futures.push_back(std::move(dsf));
+        }
+        for (auto& f : drop_futures) {
+            co_await std::move(f);
         }
 
         // Flip the dispatcher's selective-broadcast flags so the next horizon

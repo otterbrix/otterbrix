@@ -30,6 +30,14 @@ namespace services::disk {
     using session_id_t = components::session::session_id_t;
     using execution_context_t = components::execution_context_t;
 
+    // One pg_catalog row-delete request for delete_pg_catalog_rows_many: deletes
+    // every row of `table_oid` where column[oid_col_idx] == target_oid.
+    struct pg_catalog_delete_spec_t {
+        components::catalog::oid_t table_oid;
+        std::int64_t oid_col_idx;
+        components::catalog::oid_t target_oid;
+    };
+
     struct disk_contract {
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
@@ -39,7 +47,12 @@ namespace services::disk {
         actor_zeta::unique_future<services::wal::id_t> checkpoint_all(session_id_t session,
                                                                       services::wal::id_t current_wal_id);
         actor_zeta::unique_future<void> vacuum_all(session_id_t session, uint64_t lowest_active_start_time);
-        actor_zeta::unique_future<void> maybe_cleanup(execution_context_t ctx, uint64_t lowest_active_start_time);
+        // Batched GC-threshold check + compact: routes each table_oid to its owning
+        // agent's maybe_cleanup_inner with the shared lowest_active_start_time gate.
+        // operator_commit_transaction sends one call covering all just-touched tables.
+        actor_zeta::unique_future<void> maybe_cleanup_many(execution_context_t ctx,
+                                                           std::pmr::vector<components::catalog::oid_t> table_oids,
+                                                           uint64_t lowest_active_start_time);
 
         // ddl_add_column / ddl_adopt_computing_schema replaced by pipeline operators.
 
@@ -74,15 +87,19 @@ namespace services::disk {
                                                                std::int64_t oid_col_idx,
                                                                components::catalog::oid_t target_oid);
 
-        // patch the pg_attribute row identified by
-        // `attoid` with `commit_id` written into the added_at or dropped_at column
-        // (selected by `kind`). Drained by operator_commit_transaction_t once the
-        // commit_id is allocated; pairs with a physical_update WAL record.
+        // Batched WAL-safe delete: loops the singular delete_pg_catalog_rows logic
+        // per spec, emitting the same WAL records as N singular calls.
         actor_zeta::unique_future<void>
-        update_pg_attribute_commit_id_field(execution_context_t ctx,
-                                            components::catalog::oid_t attoid,
-                                            components::pg_attribute_commit_id_backfill_t::kind_t kind,
-                                            std::uint64_t commit_id);
+        delete_pg_catalog_rows_many(execution_context_t ctx, std::pmr::vector<pg_catalog_delete_spec_t> specs);
+
+        // Patches each backfill's pg_attribute row with the shared `commit_id` written
+        // into the added_at or dropped_at column (selected by the marker's kind).
+        // Drained by operator_commit_transaction_t once the commit_id is allocated;
+        // each backfill pairs with its own physical_update WAL record.
+        actor_zeta::unique_future<void>
+        update_pg_attribute_commit_id_fields(execution_context_t ctx,
+                                             std::pmr::vector<components::pg_attribute_commit_id_backfill_t> backfills,
+                                             std::uint64_t commit_id);
 
         // Pure storage scan: row_ids of committed+txn-visible rows in the table with
         // the given OID where every key_col_names[i] == key_values[i].
@@ -91,6 +108,15 @@ namespace services::disk {
                     components::catalog::oid_t table_oid,
                     std::pmr::vector<std::string> key_col_names,
                     std::pmr::vector<components::types::logical_value_t> key_values);
+
+        // Batched scan_by_key for one table: result[i] = match row_ids for keys[i].
+        // All keys share the same table_oid (and therefore the same owning agent), so
+        // the per-key loop runs intra-agent via a single scan_by_keys_inner message.
+        actor_zeta::unique_future<std::pmr::vector<std::pmr::vector<std::int64_t>>>
+        scan_by_keys(execution_context_t ctx,
+                     components::catalog::oid_t table_oid,
+                     std::pmr::vector<std::string> key_col_names,
+                     std::pmr::vector<std::pmr::vector<components::types::logical_value_t>> keys);
 
         // Pure row-data scan: returns the full column values for every txn-visible row
         // in the table with the given OID where key_col_names[i] == key_values[i].
@@ -206,10 +232,22 @@ namespace services::disk {
                                                              components::catalog::oid_t table_oid,
                                                              uint64_t dropped_at_commit_id);
 
+        // DROP-GC value-space remap. mark_storage_dropped records
+        // dropped_at_commit_id in TXN-ID space (>= 2^62) because the cascade-delete
+        // operator only knows the in-flight txn_id at the time. Once the transaction
+        // commits and a real commit_id is allocated, operator_commit_transaction
+        // sends this so the manager fans out to every agent and rewrites the GC
+        // entry's dropped_at_commit_id from the TXN-ID placeholder to the real
+        // commit_id, putting it in the same value space the on_horizon_advanced
+        // sweep compares against.
+        actor_zeta::unique_future<void> storage_dropped_committed(session_id_t session,
+                                                                  uint64_t txn_id,
+                                                                  uint64_t commit_id);
+
         using dispatch_traits = actor_zeta::dispatch_traits<&disk_contract::flush,
                                                             &disk_contract::checkpoint_all,
                                                             &disk_contract::vacuum_all,
-                                                            &disk_contract::maybe_cleanup,
+                                                            &disk_contract::maybe_cleanup_many,
                                                             // Storage management
                                                             &disk_contract::create_storage,
                                                             &disk_contract::create_storage_with_columns,
@@ -243,12 +281,15 @@ namespace services::disk {
                                                             &disk_contract::allocate_oids_batch,
                                                             &disk_contract::append_pg_catalog_row,
                                                             &disk_contract::delete_pg_catalog_rows,
-                                                            &disk_contract::update_pg_attribute_commit_id_field,
+                                                            &disk_contract::delete_pg_catalog_rows_many,
+                                                            &disk_contract::update_pg_attribute_commit_id_fields,
                                                             &disk_contract::scan_by_key,
+                                                            &disk_contract::scan_by_keys,
                                                             &disk_contract::read_rows_by_key,
                                                             &disk_contract::compact_relkind_g_storage,
                                                             &disk_contract::on_horizon_advanced,
-                                                            &disk_contract::mark_storage_dropped>;
+                                                            &disk_contract::mark_storage_dropped,
+                                                            &disk_contract::storage_dropped_committed>;
 
         disk_contract() = delete;
     };

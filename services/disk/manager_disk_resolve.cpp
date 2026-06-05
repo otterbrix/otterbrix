@@ -695,6 +695,48 @@ namespace services::disk {
         co_return out;
     }
 
+    // Batched scan_by_key for one table_oid. Every key routes to the SAME owning
+    // agent (keyed by table_oid), so the per-key loop runs intra-agent: one
+    // scan_by_keys_inner message carries the whole batch and the agent resolves the
+    // shared key column names to indices once. result[i] corresponds to keys[i].
+    manager_disk_t::unique_future<std::pmr::vector<std::pmr::vector<std::int64_t>>>
+    manager_disk_t::scan_by_keys(execution_context_t ctx,
+                                 components::catalog::oid_t table_oid,
+                                 std::pmr::vector<std::string> key_col_names,
+                                 std::pmr::vector<std::pmr::vector<components::types::logical_value_t>> keys) {
+        std::pmr::vector<std::pmr::vector<std::int64_t>> out(resource());
+        // Empty batch or no key columns: nothing to scan. (Per-key arity / unknown
+        // column is handled agent-side, yielding empty rows in result order.)
+        if (keys.empty() || key_col_names.empty()) {
+            co_return out;
+        }
+        if (agents_.empty()) {
+            for (std::size_t i = 0; i < keys.size(); ++i) {
+                out.emplace_back();
+            }
+            co_return out;
+        }
+        const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
+        auto& agent = agents_[idx];
+        if (agent == nullptr) {
+            for (std::size_t i = 0; i < keys.size(); ++i) {
+                out.emplace_back();
+            }
+            co_return out;
+        }
+
+        auto [scan_ns, scan_fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                               &agent_disk_t::scan_by_keys_inner,
+                                                               table_oid,
+                                                               std::move(key_col_names),
+                                                               std::move(keys),
+                                                               ctx.txn);
+        if (scan_ns) {
+            scheduler_disk_->enqueue(agent.get());
+        }
+        co_return co_await std::move(scan_fut);
+    }
+
     manager_disk_t::unique_future<std::pmr::vector<std::pmr::vector<components::types::logical_value_t>>>
     manager_disk_t::read_rows_by_key(execution_context_t ctx,
                                      components::catalog::oid_t table_oid,

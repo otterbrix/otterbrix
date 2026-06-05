@@ -29,11 +29,6 @@ namespace services::wal {
 
         actor_zeta::unique_future<id_t> current_wal_id(session_id_t session);
 
-        // Returns current wal_id and resets the byte counter if the auto-checkpoint threshold
-        // has been exceeded; returns 0 if no checkpoint is needed. Called by dispatcher after
-        // commit_txn to decide whether to trigger checkpoint_all + truncate_before.
-        actor_zeta::unique_future<id_t> auto_checkpoint_wal_id(session_id_t session);
-
         // database_oid selects the target WAL worker: manager_wal_replicate
         // routes via wal_actors_[database_oid].
         actor_zeta::unique_future<id_t>
@@ -72,7 +67,6 @@ namespace services::wal {
                                                             &wal_contract::commit_txn,
                                                             &wal_contract::truncate_before,
                                                             &wal_contract::current_wal_id,
-                                                            &wal_contract::auto_checkpoint_wal_id,
                                                             &wal_contract::write_physical_insert,
                                                             &wal_contract::write_physical_delete,
                                                             &wal_contract::write_physical_update,

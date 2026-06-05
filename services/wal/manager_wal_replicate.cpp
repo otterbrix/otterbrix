@@ -203,10 +203,6 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::current_wal_id, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::auto_checkpoint_wal_id>: {
-                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::auto_checkpoint_wal_id, msg);
-                break;
-            }
             case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::write_physical_insert>: {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::write_physical_insert, msg);
                 break;
@@ -455,19 +451,6 @@ namespace services::wal {
             }
         }
         co_return max_id;
-    }
-
-    // -----------------------------------------------------------------------
-    // Contract: auto_checkpoint_wal_id
-    // -----------------------------------------------------------------------
-
-    manager_wal_replicate_t::unique_future<wal::id_t>
-    manager_wal_replicate_t::auto_checkpoint_wal_id(session_id_t /*session*/) {
-        if (!needs_auto_checkpoint()) {
-            co_return wal::id_t{0};
-        }
-        reset_auto_checkpoint_bytes();
-        co_return global_id_.load(std::memory_order_relaxed);
     }
 
     // -----------------------------------------------------------------------

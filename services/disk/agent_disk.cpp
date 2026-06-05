@@ -306,6 +306,10 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_scan_segment_inner, msg);
                 break;
             }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::scan_by_keys_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::scan_by_keys_inner, msg);
+                break;
+            }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_types_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_types_inner, msg);
                 break;
@@ -332,6 +336,10 @@ namespace services::disk {
             }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::on_horizon_advanced_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::on_horizon_advanced_inner, msg);
+                break;
+            }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_dropped_committed_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::storage_dropped_committed_inner, msg);
                 break;
             }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::register_dropped_storage_inner>: {
@@ -848,6 +856,79 @@ namespace services::disk {
         co_return std::move(result);
     }
 
+    agent_disk_t::unique_future<std::pmr::vector<std::pmr::vector<std::int64_t>>>
+    agent_disk_t::scan_by_keys_inner(components::catalog::oid_t table_oid,
+                                     std::pmr::vector<std::string> key_col_names,
+                                     std::pmr::vector<std::pmr::vector<components::types::logical_value_t>> keys,
+                                     components::table::transaction_data txn) {
+        // result[i] = row_ids matching keys[i]; one (possibly empty) entry per key,
+        // preserving input order. Name→index resolution runs once for the whole
+        // batch, then each key gets an eq-AND filtered scan.
+        std::pmr::vector<std::pmr::vector<std::int64_t>> result{resource()};
+        result.reserve(keys.size());
+
+        auto it = storages_.find(table_oid);
+        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr ||
+            key_col_names.empty()) {
+            // Not owned / record-only marker / no key columns: one empty row per key.
+            for (std::size_t i = 0; i < keys.size(); ++i) {
+                result.emplace_back();
+            }
+            co_return std::move(result);
+        }
+        auto& entry = it->second;
+
+        // Resolve key column NAMES to storage indices once (same column set for
+        // every key). Any unknown column degrades the whole batch to empty rows.
+        const auto& cols = entry->storage->columns();
+        std::pmr::vector<std::uint64_t> key_col_indices{resource()};
+        key_col_indices.reserve(key_col_names.size());
+        for (const auto& kname : key_col_names) {
+            std::size_t col_idx = cols.size();
+            for (std::size_t ci = 0; ci < cols.size(); ++ci) {
+                if (cols[ci].name() == kname) {
+                    col_idx = ci;
+                    break;
+                }
+            }
+            if (col_idx == cols.size()) {
+                for (std::size_t i = 0; i < keys.size(); ++i) {
+                    result.emplace_back();
+                }
+                co_return std::move(result);
+            }
+            key_col_indices.push_back(static_cast<std::uint64_t>(col_idx));
+        }
+
+        for (auto& key_values : keys) {
+            std::pmr::vector<std::int64_t> row_ids{resource()};
+            // Arity mismatch for this key: leave the row empty (per-key, so one bad
+            // key doesn't void the batch).
+            if (key_values.size() != key_col_indices.size()) {
+                result.emplace_back(std::move(row_ids));
+                continue;
+            }
+            auto filter = std::make_unique<components::table::conjunction_and_filter_t>();
+            for (std::size_t ki = 0; ki < key_col_indices.size(); ++ki) {
+                std::pmr::vector<std::uint64_t> idx_vec{resource()};
+                idx_vec.push_back(key_col_indices[ki]);
+                filter->child_filters.push_back(
+                    std::make_unique<components::table::constant_filter_t>(components::expressions::compare_type::eq,
+                                                                          std::move(key_values[ki]),
+                                                                          std::move(idx_vec)));
+            }
+            std::pmr::vector<components::vector::data_chunk_t> batches{resource()};
+            entry->storage->scan_batched(batches, filter.get(), int64_t{-1}, nullptr, txn);
+            for (auto& chunk : batches) {
+                for (uint64_t i = 0; i < chunk.size(); ++i) {
+                    row_ids.push_back(chunk.row_ids.data<std::int64_t>()[i]);
+                }
+            }
+            result.emplace_back(std::move(row_ids));
+        }
+        co_return std::move(result);
+    }
+
     agent_disk_t::unique_future<std::pmr::vector<components::types::complex_logical_type>>
     agent_disk_t::storage_types_inner(components::catalog::oid_t table_oid) {
         auto it = storages_.find(table_oid);
@@ -1058,7 +1139,15 @@ namespace services::disk {
 
         static constexpr double gc_threshold = 0.3;
         if (static_cast<double>(deleted) / static_cast<double>(total) > gc_threshold) {
-            if (lowest_active_start_time < components::table::TRANSACTION_ID_START) {
+            // The caller passes 0 for lowest_active_start_time while ANY
+            // transaction is still active; skip the compact in that case. This is
+            // a tombstone-timing heuristic only — it avoids reclaiming versions
+            // that a concurrent snapshot might still need. Compact correctness
+            // itself does NOT rest on this gate: compact swaps row_groups_ on
+            // this same agent thread, and the agent mailbox serializes that swap
+            // against every other storage handler, so the gate only delays
+            // reclaim, never guards against a data race.
+            if (lowest_active_start_time == 0) {
                 co_return;
             }
             trace(log_,
@@ -1126,6 +1215,26 @@ namespace services::disk {
             [[maybe_unused]] auto _ = actor_zeta::send(manager_dispatcher_addr_,
                                                        &services::dispatcher::manager_dispatcher_t::on_subscriber_empty,
                                                        DISK_KIND);
+        }
+        co_return;
+    }
+
+    // DROP-GC value-space remap (see header). Rewrites every dropped_storages_ entry
+    // whose dropped_at_commit_id still equals the txn_id placeholder into commit-id
+    // space, so the on_horizon_advanced sweep (which compares against a commit-id
+    // horizon) can eventually reclaim it.
+    agent_disk_t::unique_future<void> agent_disk_t::storage_dropped_committed_inner(uint64_t txn_id,
+                                                                                    uint64_t commit_id) {
+        for (auto& entry : dropped_storages_) {
+            if (entry.dropped_at_commit_id == txn_id) {
+                entry.dropped_at_commit_id = commit_id;
+                trace(log_,
+                      "agent_disk[{}]::storage_dropped_committed_inner: remapped oid {} from txn_id {} to commit_id {}",
+                      pool_idx_,
+                      static_cast<unsigned>(entry.oid),
+                      txn_id,
+                      commit_id);
+            }
         }
         co_return;
     }

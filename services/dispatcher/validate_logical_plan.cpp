@@ -11,7 +11,6 @@
 #include "plan_resolve_index.hpp"
 
 #include <atomic>
-#include <components/catalog/cascade_planner.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/catalog/table_id.hpp>
 #include <components/compute/function.hpp>
@@ -1015,9 +1014,6 @@ namespace services::dispatcher {
         return core::error_t(core::error_code_t::schema_error,
                              std::pmr::string{"type: \'" + alias + "\' is not registered in catalog", resource});
     }
-
-    // walk_user_type_refs lives in components/types/user_type_walk.hpp.
-    // Brought into scope via validate_logical_plan.hpp's using-declaration.
 
     namespace {
         // Reverse-lookup: namespace_oid -> dbname. Linear scan over the small

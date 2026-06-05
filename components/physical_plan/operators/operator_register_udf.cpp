@@ -156,12 +156,21 @@ namespace components::operators {
                                                                    prouid,
                                                                    std::move(proargmatchers),
                                                                    std::move(prorettype));
+            // Two-phase: the pg_proc/pg_depend writes are independent (no
+            // iteration consumes the previous result), so send all rows first
+            // then await in order.
+            std::pmr::vector<actor_zeta::unique_future<components::pg_catalog_append_range_t>> fn_write_futures(
+                resource_);
+            fn_write_futures.reserve(fn_writes.size());
             for (auto& w : fn_writes) {
                 auto [_w, wf] = actor_zeta::send(ctx->disk_address,
                                                  &services::disk::manager_disk_t::append_pg_catalog_row,
                                                  exec_ctx,
                                                  w.table_oid,
                                                  std::move(w.row));
+                fn_write_futures.push_back(std::move(wf));
+            }
+            for (auto& wf : fn_write_futures) {
                 auto rng = co_await std::move(wf);
                 if (rng.count > 0)
                     ctx->pg_catalog_appends.push_back(std::move(rng));

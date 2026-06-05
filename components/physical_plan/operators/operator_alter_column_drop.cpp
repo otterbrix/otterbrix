@@ -143,6 +143,11 @@ namespace components::operators {
             }
         }
 
+        // Collect every dependent-scrub delete across all dep_rows into one
+        // batched call. dep_rows was already awaited above, so no spec here
+        // depends on an intervening read; only the sends are hoisted.
+        std::pmr::vector<services::disk::pg_catalog_delete_spec_t> dep_specs(resource_);
+        dep_specs.reserve(dep_rows.size() * 4);
         for (const auto& dep_row : dep_rows) {
             if (dep_row.size() < 2 || dep_row[0].is_null() || dep_row[1].is_null())
                 continue;
@@ -151,72 +156,32 @@ namespace components::operators {
             if (dep_cls == catalog::well_known_oid::pg_class_table) {
                 // Dependent index: scrub pg_index (by indexrelid=oid_col_idx 0),
                 // pg_depend.objid (idx 1), pg_depend.refobjid (idx 3), pg_class.oid.
-                auto [_i1, i1f] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                                   exec_ctx,
-                                                   pg_idx_oid,
-                                                   std::int64_t{0},
-                                                   dep_oid);
-                co_await std::move(i1f);
-                if (ctx->txn.transaction_id != 0)
+                dep_specs.push_back({pg_idx_oid, std::int64_t{0}, dep_oid});
+                dep_specs.push_back({pg_dep_oid, std::int64_t{1}, dep_oid});
+                dep_specs.push_back({pg_dep_oid, std::int64_t{3}, dep_oid});
+                dep_specs.push_back({pg_class_oid, std::int64_t{0}, dep_oid});
+                if (ctx->txn.transaction_id != 0) {
                     ctx->pg_catalog_delete_tables.insert(pg_idx_oid);
-                auto [_i2, i2f] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                                   exec_ctx,
-                                                   pg_dep_oid,
-                                                   std::int64_t{1},
-                                                   dep_oid);
-                co_await std::move(i2f);
-                if (ctx->txn.transaction_id != 0)
                     ctx->pg_catalog_delete_tables.insert(pg_dep_oid);
-                auto [_i3, i3f] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                                   exec_ctx,
-                                                   pg_dep_oid,
-                                                   std::int64_t{3},
-                                                   dep_oid);
-                co_await std::move(i3f);
-                if (ctx->txn.transaction_id != 0)
-                    ctx->pg_catalog_delete_tables.insert(pg_dep_oid);
-                auto [_i4, i4f] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                                   exec_ctx,
-                                                   pg_class_oid,
-                                                   std::int64_t{0},
-                                                   dep_oid);
-                co_await std::move(i4f);
-                if (ctx->txn.transaction_id != 0)
                     ctx->pg_catalog_delete_tables.insert(pg_class_oid);
+                }
             } else if (dep_cls == catalog::well_known_oid::pg_constraint_table) {
                 // Dependent constraint: scrub pg_constraint + pg_depend rows.
-                auto [_c1, c1f] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                                   exec_ctx,
-                                                   pg_con_oid,
-                                                   std::int64_t{0},
-                                                   dep_oid);
-                co_await std::move(c1f);
-                if (ctx->txn.transaction_id != 0)
+                dep_specs.push_back({pg_con_oid, std::int64_t{0}, dep_oid});
+                dep_specs.push_back({pg_dep_oid, std::int64_t{1}, dep_oid});
+                dep_specs.push_back({pg_dep_oid, std::int64_t{3}, dep_oid});
+                if (ctx->txn.transaction_id != 0) {
                     ctx->pg_catalog_delete_tables.insert(pg_con_oid);
-                auto [_c2, c2f] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                                   exec_ctx,
-                                                   pg_dep_oid,
-                                                   std::int64_t{1},
-                                                   dep_oid);
-                co_await std::move(c2f);
-                if (ctx->txn.transaction_id != 0)
                     ctx->pg_catalog_delete_tables.insert(pg_dep_oid);
-                auto [_c3, c3f] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                                   exec_ctx,
-                                                   pg_dep_oid,
-                                                   std::int64_t{3},
-                                                   dep_oid);
-                co_await std::move(c3f);
-                if (ctx->txn.transaction_id != 0)
-                    ctx->pg_catalog_delete_tables.insert(pg_dep_oid);
+                }
             }
+        }
+        if (!dep_specs.empty()) {
+            auto [_dep, depf] = actor_zeta::send(ctx->disk_address,
+                                                 &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
+                                                 exec_ctx,
+                                                 std::move(dep_specs));
+            co_await std::move(depf);
         }
 
         // soft-delete the column: drop original pg_attribute row,

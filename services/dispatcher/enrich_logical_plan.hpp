@@ -134,8 +134,8 @@ namespace services::catalog_resolve {
     // drop_* nodes no longer carry user-typed dbname/relname; their sibling
     // resolve_namespace / resolve_table nodes inside the wrapping sequence_t
     // do. Extract (db, rel) from the resolve siblings so routing code that
-    // still needs names (qualified_name_t for table_id, collections_ map
-    // keys, etc.) keeps working.
+    // still needs names (qualified_name_t for table_id, catalog-resolve
+    // lookups, etc.) keeps working.
     std::pair<std::string, std::string>
     drop_target_names_from_resolves(const components::logical_plan::node_t* plan_root);
 

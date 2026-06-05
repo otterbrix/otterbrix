@@ -55,14 +55,19 @@ namespace components::pipeline {
         std::vector<pg_attribute_commit_id_backfill_t> pg_attribute_commit_id_backfills;
 
         // DML operators (insert/delete/update) record MVCC swap-info here from
-        // inside await_async_and_resume; the executor's commit-side block drives
-        // storage_publish_commit / storage_publish_delete after txn_manager_->commit.
-        // WAL physical writes happen in the operators; only the commit-side swap
-        // needs this back-channel.
+        // inside await_async_and_resume; the executor lifts these into the
+        // per-statement accumulators that feed txn_accumulate_msg. WAL physical
+        // writes happen in the operators; only the commit-side swap needs this
+        // back-channel.
         int64_t dml_append_row_start{0};
         uint64_t dml_append_row_count{0};
         uint64_t dml_delete_txn_id{0};
         catalog::oid_t dml_table_oid{catalog::INVALID_OID};
+        // Commit back-channel: operator_commit_transaction_t records the
+        // commit_id it drained (txn_commit_drain_msg reply) so the executor's
+        // tail can drive follow-ups that need it (the inline CREATE INDEX
+        // index commit). 0 = no commit ran in this pipeline.
+        uint64_t committed_id{0};
 
         explicit context_t(logical_plan::storage_parameters init_parameters);
         context_t(context_t&& context) noexcept;

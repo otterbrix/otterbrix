@@ -40,7 +40,7 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::flush>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::checkpoint_all>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::vacuum_all>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::maybe_cleanup>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::maybe_cleanup_many>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::create_storage>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::create_storage_with_columns>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::create_storage_disk>,
@@ -69,12 +69,15 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::allocate_oids_batch>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::append_pg_catalog_row>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::delete_pg_catalog_rows>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::update_pg_attribute_commit_id_field>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::delete_pg_catalog_rows_many>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::update_pg_attribute_commit_id_fields>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::scan_by_key>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::scan_by_keys>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::read_rows_by_key>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::compact_relkind_g_storage>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::on_horizon_advanced>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::mark_storage_dropped>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_dropped_committed>,
         };
 
         constexpr bool behavior_covers_all_implements() noexcept {
@@ -351,8 +354,8 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::vacuum_all, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::maybe_cleanup>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::maybe_cleanup, msg);
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::maybe_cleanup_many>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::maybe_cleanup_many, msg);
                 break;
             }
             // Storage management
@@ -472,6 +475,10 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::scan_by_key, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::scan_by_keys>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::scan_by_keys, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::read_rows_by_key>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::read_rows_by_key, msg);
                 break;
@@ -480,8 +487,12 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::delete_pg_catalog_rows, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::update_pg_attribute_commit_id_field>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::update_pg_attribute_commit_id_field, msg);
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::delete_pg_catalog_rows_many>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::delete_pg_catalog_rows_many, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::update_pg_attribute_commit_id_fields>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::update_pg_attribute_commit_id_fields, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::compact_relkind_g_storage>: {
@@ -494,6 +505,10 @@ namespace services::disk {
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::mark_storage_dropped>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::mark_storage_dropped, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_dropped_committed>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_dropped_committed, msg);
                 break;
             }
             default:
@@ -609,6 +624,36 @@ namespace services::disk {
                 scheduler_disk_->enqueue(agents_[idx].get());
             }
             co_await std::move(fut);
+        }
+        co_return;
+    }
+
+    manager_disk_t::unique_future<void>
+    manager_disk_t::storage_dropped_committed(session_id_t /*session*/, uint64_t txn_id, uint64_t commit_id) {
+        // DROP-GC value-space remap. We do not know which agent owns the dropped
+        // entry's oid here (the GC entry is keyed by oid, but the caller only has
+        // the txn_id placeholder), so fan out to EVERY agent and let each rewrite
+        // any of its own dropped_storages_ entries whose dropped_at_commit_id still
+        // equals the TXN-ID placeholder. Mirrors on_horizon_advanced's broadcast.
+        trace(log_,
+              "manager_disk::storage_dropped_committed , txn_id : {} , commit_id : {}",
+              txn_id,
+              commit_id);
+
+        std::pmr::vector<unique_future<void>> agent_futures{resource()};
+        agent_futures.reserve(agents_.size());
+        for (auto& agent_ptr : agents_) {
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent_ptr->address(),
+                                                                  &agent_disk_t::storage_dropped_committed_inner,
+                                                                  txn_id,
+                                                                  commit_id);
+            if (needs_sched) {
+                scheduler_disk_->enqueue(agent_ptr.get());
+            }
+            agent_futures.emplace_back(std::move(fut));
+        }
+        for (auto& f : agent_futures) {
+            co_await std::move(f);
         }
         co_return;
     }

@@ -17,7 +17,7 @@
 #include <services/wal/manager_wal_replicate.hpp>
 
 // Differential test scaffold: same SQL fixture, drive dispatcher::execute_plan
-// and compare cursor + side effects (pg_catalog state, collections_ map).
+// and compare cursor + side effects (pg_catalog state, executor-side storage).
 
 using namespace services;
 using namespace services::wal;

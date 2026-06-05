@@ -7,7 +7,6 @@
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/types/types.hpp>
-#include <components/types/user_type_walk.hpp>
 
 #include <span>
 #include <string_view>

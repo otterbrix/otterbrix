@@ -8,6 +8,10 @@
 #include <services/wal/manager_wal_replicate.hpp>
 #include <services/wal/record.hpp>
 
+#include <cstddef>
+#include <memory>
+#include <vector>
+
 namespace components::operators {
 
     operator_create_index_backfill_t::operator_create_index_backfill_t(
@@ -109,7 +113,7 @@ namespace components::operators {
                     co_await std::move(irf);
                     // insert_rows leaves entries PENDING (tagged with this txn_id);
                     // they become visible only when the executor's post-pipeline
-                    // commit_insert runs, which it does when dml_append_row_count > 0
+                    // commit_inserts runs, which it does when dml_append_row_count > 0
                     // && dml_table_oid is set — so record those here to commit the
                     // backfilled entries alongside the CREATE INDEX txn. The reuse
                     // also re-commits the data rows to this commit_id, harmless
@@ -154,12 +158,31 @@ namespace components::operators {
             // Non-const iteration so rec.physical_data can be moved into the
             // apply_wal_record_for_index message. Replayed entries are tagged
             // with the CREATE INDEX txn_id and stay PENDING until the
-            // post-pipeline commit_insert publishes them with the scan rows.
+            // post-pipeline commit_inserts publishes them with the scan rows.
             // DELETE/UPDATE: the WAL record ships only row_ids, but mark_delete_row
             // needs the original key columns, so we storage_fetch(row_ids) to
             // recover the OLD chunk (O(deleted_rows) reads per iteration). UPDATE
             // is replayed as two messages (NEW-insert + synthesized OLD-delete).
-            for (auto& rec : wal_records) {
+            //
+            // Two-phase within this WAL batch:
+            //   Phase 1 sends every OLD-chunk storage_fetch (DELETE/UPDATE) to the
+            //   disk mailbox without awaiting — the fetches are mutually independent
+            //   (distinct row-id sets) — and also advances max_wal_id_seen.
+            //   Phase 2 awaits them back into a per-record old_chunk slot.
+            //   Phase 3 replays the apply_wal_record_for_index messages in WAL order
+            //   to the SAME manager_index mailbox; FIFO ordering on that single
+            //   mailbox preserves the replay order even though the sends are not
+            //   awaited in the loop, so awaiting (phase 4) is completion-sync only.
+            // A record's OLD-delete apply consumes the OLD chunk fetched for the
+            // SAME record, so the fetch await (phase 2) must complete before the
+            // matching apply send (phase 3) — the phase split guarantees that.
+            std::pmr::vector<std::unique_ptr<components::vector::data_chunk_t>> old_chunks(resource_);
+            old_chunks.resize(wal_records.size());
+            std::pmr::vector<actor_zeta::unique_future<std::unique_ptr<components::vector::data_chunk_t>>>
+                fetch_futures(resource_);
+            std::pmr::vector<std::size_t> fetch_slots(resource_);
+            for (std::size_t r = 0; r < wal_records.size(); ++r) {
+                auto& rec = wal_records[r];
                 if (rec.id > max_wal_id_seen) {
                     max_wal_id_seen = rec.id;
                 }
@@ -179,7 +202,6 @@ namespace components::operators {
                 // run or returns empty (rows physically gone), forward nullptr:
                 // manager_index logs+skips and the convergence guard catches any
                 // persistent divergence next iteration.
-                std::unique_ptr<components::vector::data_chunk_t> old_chunk;
                 const bool needs_old_chunk =
                     (rec.record_type == services::wal::wal_record_type::PHYSICAL_DELETE ||
                      rec.record_type == services::wal::wal_record_type::PHYSICAL_UPDATE) &&
@@ -198,7 +220,28 @@ namespace components::operators {
                                                      rec.table_oid,
                                                      std::move(fetch_ids),
                                                      static_cast<uint64_t>(rec.physical_row_ids.size()));
-                    old_chunk = co_await std::move(ff);
+                    fetch_futures.push_back(std::move(ff));
+                    fetch_slots.push_back(r);
+                }
+            }
+
+            for (std::size_t i = 0; i < fetch_futures.size(); ++i) {
+                old_chunks[fetch_slots[i]] = co_await std::move(fetch_futures[i]);
+            }
+
+            std::pmr::vector<actor_zeta::unique_future<void>> apply_futures(resource_);
+            for (std::size_t r = 0; r < wal_records.size(); ++r) {
+                auto& rec = wal_records[r];
+                if (!rec.is_valid()) {
+                    continue;
+                }
+                if (rec.table_oid != table_oid_) {
+                    continue;
+                }
+                if (rec.record_type != services::wal::wal_record_type::PHYSICAL_INSERT &&
+                    rec.record_type != services::wal::wal_record_type::PHYSICAL_DELETE &&
+                    rec.record_type != services::wal::wal_record_type::PHYSICAL_UPDATE) {
+                    continue;
                 }
 
                 if (rec.record_type == services::wal::wal_record_type::PHYSICAL_INSERT ||
@@ -220,7 +263,7 @@ namespace components::operators {
                                          rec.physical_row_start,
                                          ctx->txn.transaction_id,
                                          rec.session_tz);
-                    co_await std::move(af);
+                    apply_futures.push_back(std::move(af));
                 }
 
                 if (rec.record_type == services::wal::wal_record_type::PHYSICAL_DELETE ||
@@ -240,12 +283,16 @@ namespace components::operators {
                         rec.id,
                         static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_DELETE),
                         std::move(row_ids),
-                        std::move(old_chunk),
+                        std::move(old_chunks[r]),
                         rec.physical_row_start,
                         ctx->txn.transaction_id,
                         rec.session_tz);
-                    co_await std::move(af);
+                    apply_futures.push_back(std::move(af));
                 }
+            }
+
+            for (auto& af : apply_futures) {
+                co_await std::move(af);
             }
 
             // Converged if no record advanced past the watermark. Also guards

@@ -55,58 +55,92 @@ namespace components::operators {
             co_return;
         }
 
+        // Child key column names are the same for every row; hoist them once.
+        std::pmr::vector<std::string> key_cols(resource_);
+        key_cols.reserve(fk_.child_col_names.size());
+        for (const auto& n : fk_.child_col_names) {
+            key_cols.emplace_back(n);
+        }
+
+        // Stage A: build one key per deleted parent row, then a single batched
+        // scan of the child table. per_row_child_ids[row] = referencing child
+        // row_ids for that parent row (empty -> nothing references it).
+        std::pmr::vector<std::pmr::vector<types::logical_value_t>> keys(resource_);
+        keys.reserve(chunk.size());
         for (uint64_t row = 0; row < chunk.size(); ++row) {
             std::pmr::vector<types::logical_value_t> key_values(resource_);
             key_values.reserve(par_indices.size());
             for (auto pidx : par_indices) {
                 key_values.push_back(chunk.value(pidx, row));
             }
+            keys.push_back(std::move(key_values));
+        }
 
-            std::pmr::vector<std::string> key_cols(resource_);
-            key_cols.reserve(fk_.child_col_names.size());
-            for (const auto& n : fk_.child_col_names) {
-                key_cols.emplace_back(n);
-            }
-            auto [_, fut] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::scan_by_key,
-                                             exec_ctx,
-                                             fk_.child_table_oid,
-                                             std::move(key_cols),
-                                             std::move(key_values));
-            auto child_ids = co_await std::move(fut);
-            if (child_ids.empty())
-                continue;
+        auto [_s, sfut] = actor_zeta::send(ctx->disk_address,
+                                           &services::disk::manager_disk_t::scan_by_keys,
+                                           exec_ctx,
+                                           fk_.child_table_oid,
+                                           std::move(key_cols),
+                                           std::move(keys));
+        auto per_row_child_ids = co_await std::move(sfut);
 
-            switch (fk_.del_action) {
-                case 'a': // NO ACTION
-                case 'r': // RESTRICT
-                    set_error(core::error_t{
-                        core::error_code_t::other_error,
-                        std::pmr::string{"FK constraint violated: child rows reference deleted parent row",
-                                         resource_}});
-                    co_return;
-
-                case 'c': { // CASCADE — delete child rows via storage_delete_rows
-                    // txn_id=0 commits the child delete immediately: execute_plan_'s
-                    // storage_publish_delete only covers the parent, so cascade child
-                    // ops aren't tracked there.
-                    execution_context_t del_ctx{ctx->session, {}, {}};
-
-                    components::vector::vector_t row_ids_vec(resource_, types::logical_type::BIGINT, child_ids.size());
-                    for (std::size_t i = 0; i < child_ids.size(); ++i) {
-                        row_ids_vec.data<int64_t>()[i] = child_ids[i];
+        switch (fk_.del_action) {
+            case 'a': // NO ACTION
+            case 'r': // RESTRICT
+                // Any referencing child row blocks the parent delete.
+                for (const auto& child_ids : per_row_child_ids) {
+                    if (!child_ids.empty()) {
+                        set_error(core::error_t{
+                            core::error_code_t::other_error,
+                            std::pmr::string{"FK constraint violated: child rows reference deleted parent row",
+                                             resource_}});
+                        co_return;
                     }
-                    auto [_d, dfut] = actor_zeta::send(ctx->disk_address,
-                                                       &services::disk::manager_disk_t::storage_delete_rows,
-                                                       del_ctx,
-                                                       fk_.child_table_oid,
-                                                       std::move(row_ids_vec),
-                                                       static_cast<uint64_t>(child_ids.size()));
-                    co_await std::move(dfut);
-                    break;
                 }
-                case 'n':   // SET NULL
-                case 'd': { // SET DEFAULT
+                break;
+
+            case 'c': { // CASCADE — delete child rows via storage_delete_rows
+                // Aggregate every referencing child row_id across all parent rows
+                // into one delete. txn_id=0 commits the child delete immediately:
+                // execute_plan_'s storage_publish_delete only covers the parent, so
+                // cascade child ops aren't tracked there.
+                std::pmr::vector<int64_t> all_child_ids(resource_);
+                for (const auto& child_ids : per_row_child_ids) {
+                    for (auto id : child_ids) {
+                        all_child_ids.push_back(id);
+                    }
+                }
+                if (all_child_ids.empty())
+                    break;
+
+                execution_context_t del_ctx{ctx->session, {}, {}};
+                components::vector::vector_t row_ids_vec(resource_, types::logical_type::BIGINT, all_child_ids.size());
+                for (std::size_t i = 0; i < all_child_ids.size(); ++i) {
+                    row_ids_vec.data<int64_t>()[i] = all_child_ids[i];
+                }
+                auto [_d, dfut] = actor_zeta::send(ctx->disk_address,
+                                                   &services::disk::manager_disk_t::storage_delete_rows,
+                                                   del_ctx,
+                                                   fk_.child_table_oid,
+                                                   std::move(row_ids_vec),
+                                                   static_cast<uint64_t>(all_child_ids.size()));
+                co_await std::move(dfut);
+                break;
+            }
+            case 'n':   // SET NULL
+            case 'd': { // SET DEFAULT
+                // Two-phase: fetch every referencing child row first, then update.
+                // Carry each fetch's source row index so the per-row child_ids stay
+                // paired with that row's fetched chunk when building the update.
+                std::pmr::vector<actor_zeta::unique_future<std::unique_ptr<components::vector::data_chunk_t>>>
+                    fetch_futures(resource_);
+                std::pmr::vector<std::size_t> fetch_rows(resource_);
+                fetch_futures.reserve(per_row_child_ids.size());
+                fetch_rows.reserve(per_row_child_ids.size());
+                for (std::size_t row = 0; row < per_row_child_ids.size(); ++row) {
+                    const auto& child_ids = per_row_child_ids[row];
+                    if (child_ids.empty())
+                        continue;
                     components::vector::vector_t fetch_ids(resource_, types::logical_type::BIGINT, child_ids.size());
                     for (std::size_t i = 0; i < child_ids.size(); ++i) {
                         fetch_ids.data<int64_t>()[i] = child_ids[i];
@@ -115,13 +149,23 @@ namespace components::operators {
                                                        &services::disk::manager_disk_t::storage_fetch,
                                                        ctx->session,
                                                        fk_.child_table_oid,
-                                                       fetch_ids,
+                                                       std::move(fetch_ids),
                                                        static_cast<uint64_t>(child_ids.size()));
-                    auto fetched = co_await std::move(ffut);
-                    if (!fetched || fetched->size() == 0)
-                        break;
+                    fetch_futures.push_back(std::move(ffut));
+                    fetch_rows.push_back(row);
+                }
 
-                    const bool is_set_null = (fk_.del_action == 'n');
+                const bool is_set_null = (fk_.del_action == 'n');
+                // Await each fetch, build that row's update from the fetched chunk,
+                // and send all storage_update calls; await them in the final phase.
+                std::pmr::vector<actor_zeta::unique_future<std::pair<int64_t, uint64_t>>> update_futures(resource_);
+                update_futures.reserve(fetch_futures.size());
+                for (std::size_t fi = 0; fi < fetch_futures.size(); ++fi) {
+                    auto fetched = co_await std::move(fetch_futures[fi]);
+                    if (!fetched || fetched->size() == 0)
+                        continue;
+                    const auto& child_ids = per_row_child_ids[fetch_rows[fi]];
+
                     for (std::size_t ci = 0; ci < fk_.child_col_schema_indices.size(); ++ci) {
                         const auto schema_idx = fk_.child_col_schema_indices[ci];
                         if (schema_idx == absent || schema_idx >= fetched->column_count())
@@ -157,12 +201,15 @@ namespace components::operators {
                                                        fk_.child_table_oid,
                                                        std::move(upd_ids),
                                                        std::move(fetched));
-                    co_await std::move(ufut);
-                    break;
+                    update_futures.push_back(std::move(ufut));
                 }
-                default:
-                    break;
+                for (auto& ufut : update_futures) {
+                    co_await std::move(ufut);
+                }
+                break;
             }
+            default:
+                break;
         }
         mark_executed();
     }

@@ -136,11 +136,15 @@ namespace services::dispatcher {
         // for both; implicit DML never sends it).
         unique_future<void> txn_accumulate_msg(components::session::session_id_t session,
                                                txn_accumulate_payload_t payload);
-        // Thin primitives for the executor's implicit-DML commit tail.
-        unique_future<uint64_t> txn_commit_msg(components::session::session_id_t session);
+        // Abort: executor error-path (after its local revert cascade) and the
+        // read-only release tail.
         unique_future<void> txn_abort_msg(components::session::session_id_t session);
-        unique_future<void> txn_publish_msg(uint64_t commit_id);
-        unique_future<uint64_t> txn_lowest_active_msg();
+        // ProcArray publish barrier — sent by operator_commit_transaction_t
+        // AFTER storage_publish_* / index commits / WAL. Returns the
+        // maybe_cleanup gate: 0 when other transactions are still active
+        // (compact suppressed), else the current lowest_active_start_time the
+        // disk agents compare tombstone txn-ids against.
+        unique_future<uint64_t> txn_publish_msg(uint64_t commit_id);
 
         // Selective broadcast: DROP TABLE / DROP INDEX marks the owning
         // subscriber as having dropped resources pending GC; on_subscriber_empty
@@ -159,15 +163,15 @@ namespace services::dispatcher {
                                                             &manager_dispatcher_t::txn_commit_drain_msg,
                                                             &manager_dispatcher_t::txn_abort_drain_msg,
                                                             &manager_dispatcher_t::txn_accumulate_msg,
-                                                            &manager_dispatcher_t::txn_commit_msg,
                                                             &manager_dispatcher_t::txn_abort_msg,
                                                             &manager_dispatcher_t::txn_publish_msg,
-                                                            &manager_dispatcher_t::txn_lowest_active_msg,
                                                             &manager_dispatcher_t::on_drop_resource_marked,
                                                             &manager_dispatcher_t::on_subscriber_empty>;
 
     private:
-        // Reads txn_manager_.lowest_active_start_time(); if it advanced past
+        // Reads txn_manager_.lowest_active_snapshot_horizon() (commit-id value
+        // space — matches the subscribers' dropped_at_commit_id sweep after
+        // the dropped-committed remap); if it advanced past
         // last_broadcast_horizon_, sends on_horizon_advanced(new) to each
         // subscriber whose drop-resource flag is set. Skips the send in the
         // common case (no drops outstanding), avoiding a message burst per commit.

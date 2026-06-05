@@ -55,12 +55,11 @@ namespace services::collection::executor {
         std::vector<components::pg_attribute_commit_id_backfill_t> pg_attribute_commit_id_backfills{};
         std::vector<dml_append_range_t> dml_appends{};
         std::vector<dml_delete_range_t> dml_deletes{};
-        // True when this DML executed under an explicit SQL BEGIN — the
-        // commit/abort tail is skipped (ranges live on transaction_t;
-        // operator_commit_transaction_t publishes them in a batch at COMMIT).
-        bool explicit_txn_no_commit{false};
-        // Session timezone for building execution_context_t in the commit tail.
-        core::date::timezone_offset_t session_tz{};
+        // Commit back-channel lifted from pipeline::context_t::committed_id:
+        // non-zero when this pipeline ran operator_commit_transaction_t (the
+        // CREATE INDEX tail needs the allocated commit_id for its index-only
+        // backfill commit). 0 = no commit ran.
+        uint64_t commit_id{0};
         // Non-empty => a SET TIMEZONE statement persisted this zone name to
         // pg_settings; the dispatcher refreshes its default_tz_cat_ from it.
         // The ONLY post-execute signal the dispatcher consumes besides cursor.
@@ -98,6 +97,8 @@ namespace services::collection::executor {
         std::vector<components::pg_catalog_append_range_t> pg_catalog_appends;
         std::set<components::catalog::oid_t> pg_catalog_delete_tables;
         std::vector<components::pg_attribute_commit_id_backfill_t> pg_attribute_commit_id_backfills;
+        // Commit back-channel (pipeline::context_t::committed_id).
+        uint64_t commit_id{0};
     };
 
     class executor_t final : public actor_zeta::basic_actor<executor_t> {
@@ -159,6 +160,18 @@ namespace services::collection::executor {
                                                            plan_t plan_data,
                                                            components::table::transaction_data txn,
                                                            uint64_t lowest_active_start_time);
+
+        // THE unified commit publisher: builds node_commit_transaction_t
+        // (ddl_mode adds the flush/WAL prefix) and runs it through the same
+        // execute_plan pipeline every statement uses. The operator drains
+        // transaction_t via txn_commit_drain_msg, batch-publishes storage,
+        // commits the index mirrors per table, writes the WAL marker, crosses
+        // the ProcArray barrier (txn_publish_msg) and fans out maybe_cleanup.
+        unique_future<execute_result_t> run_commit_pipeline_(components::session::session_id_t session,
+                                                             components::table::transaction_data txn,
+                                                             core::date::timezone_offset_t session_tz,
+                                                             uint64_t lowest_active_start_time,
+                                                             bool ddl_mode);
 
     private:
         actor_zeta::address_t parent_address_ = actor_zeta::address_t::empty_address();

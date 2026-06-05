@@ -413,7 +413,7 @@ namespace services::disk {
 
         // V4 admin-path enumerators. Bypass the per-name cache (cache is per-(name, ns_oid)
         // keyed; enumeration of "all namespaces" / "all tables in ns" cannot be served by
-        // it). Used by the dispatcher's collections_ rebuild and UDF namespace pick.
+        // it). Used by catalog-resolve enumeration paths and the UDF namespace pick.
         unique_future<std::pmr::vector<std::string>> list_namespaces(execution_context_t ctx);
 
         // Allocate a batch of fresh OIDs from the disk-local oid_gen_. Called by the
@@ -435,21 +435,25 @@ namespace services::disk {
                                                    std::int64_t oid_col_idx,
                                                    components::catalog::oid_t target_oid);
 
-        // Patch the pg_attribute row keyed by `attoid` (col 0): write `commit_id`
-        // into col 10 (added_at_commit_id) when kind==added_at, else col 11
-        // (dropped_at_commit_id). operator_alter_column_{add,drop,rename} insert
+        // Batched delete_pg_catalog_rows: loops the singular inner logic per spec,
+        // emitting the same WAL records as N singular calls.
+        unique_future<void> delete_pg_catalog_rows_many(execution_context_t ctx,
+                                                        std::pmr::vector<pg_catalog_delete_spec_t> specs);
+
+        // Patch each backfill's pg_attribute row keyed by `attoid` (col 0): write the
+        // shared `commit_id` into col 10 (added_at_commit_id) when kind==added_at, else
+        // col 11 (dropped_at_commit_id). operator_alter_column_{add,drop,rename} insert
         // these rows with placeholder 0 (commit_id isn't allocated until commit);
         // operator_commit_transaction_t drains the per-txn backfill markers and
-        // dispatches one call each, after the commit_id is known but BEFORE
+        // dispatches one batched call, after the commit_id is known but BEFORE
         // storage_publish_commits flips MVCC visibility. The rows still carry
-        // insert_id == txn_id, so this is a metadata-only write nobody else can
-        // observe. Emits a physical_update WAL record so replay re-applies the
-        // backfill after the matching physical_insert.
+        // insert_id == txn_id, so each is a metadata-only write nobody else can
+        // observe. Emits one physical_update WAL record per backfill so replay
+        // re-applies each after the matching physical_insert.
         unique_future<void>
-        update_pg_attribute_commit_id_field(execution_context_t ctx,
-                                            components::catalog::oid_t attoid,
-                                            components::pg_attribute_commit_id_backfill_t::kind_t kind,
-                                            std::uint64_t commit_id);
+        update_pg_attribute_commit_id_fields(execution_context_t ctx,
+                                             std::pmr::vector<components::pg_attribute_commit_id_backfill_t> backfills,
+                                             std::uint64_t commit_id);
 
         // Pure storage scan: row_ids of txn-visible rows in the table with `table_oid`
         // where key_col_names[i] == key_values[i] for every i.
@@ -458,6 +462,15 @@ namespace services::disk {
                     components::catalog::oid_t table_oid,
                     std::pmr::vector<std::string> key_col_names,
                     std::pmr::vector<components::types::logical_value_t> key_values);
+
+        // Batched scan_by_key: result[i] = match row_ids for keys[i]. All keys share
+        // `table_oid` (one owning agent), so the per-key loop runs intra-agent via a
+        // single scan_by_keys_inner message.
+        unique_future<std::pmr::vector<std::pmr::vector<std::int64_t>>>
+        scan_by_keys(execution_context_t ctx,
+                     components::catalog::oid_t table_oid,
+                     std::pmr::vector<std::string> key_col_names,
+                     std::pmr::vector<std::pmr::vector<components::types::logical_value_t>> keys);
 
         // Full row-data scan: returns all column values for every txn-visible row
         // where key_col_names[i] == key_values[i].
@@ -518,7 +531,12 @@ namespace services::disk {
 
         unique_future<wal::id_t> checkpoint_all(session_id_t session, wal::id_t current_wal_id);
         unique_future<void> vacuum_all(session_id_t session, uint64_t lowest_active_start_time);
-        unique_future<void> maybe_cleanup(execution_context_t ctx, uint64_t lowest_active_start_time);
+        // Batched GC-threshold check + compact. Routes each table_oid to its owning
+        // agent's maybe_cleanup_inner with the shared lowest_active_start_time gate,
+        // grouped per agent and dispatched two-phase (send all, then await all).
+        unique_future<void> maybe_cleanup_many(execution_context_t ctx,
+                                               std::pmr::vector<components::catalog::oid_t> table_oids,
+                                               uint64_t lowest_active_start_time);
 
         // Event-driven GC subscriber. Manager fans out to every agent; each
         // agent's on_horizon_advanced_inner walks its OWN dropped_storages_ slice,
@@ -545,6 +563,15 @@ namespace services::disk {
         unique_future<void> mark_storage_dropped(session_id_t session,
                                                  components::catalog::oid_t table_oid,
                                                  uint64_t dropped_at_commit_id);
+
+        /// DROP-GC value-space remap. mark_storage_dropped recorded the GC entry's
+        /// dropped_at_commit_id in TXN-ID space (>= 2^62, the only id the cascade
+        /// operator had). After the transaction commits and a real commit_id is
+        /// allocated, operator_commit_transaction sends this; the manager fans out
+        /// storage_dropped_committed_inner(txn_id, commit_id) to EVERY agent so the
+        /// owning slice can rewrite dropped_at_commit_id into commit-id space — the
+        /// value space the on_horizon_advanced sweep horizon is compared against.
+        unique_future<void> storage_dropped_committed(session_id_t session, uint64_t txn_id, uint64_t commit_id);
 
         /// Bootstrap helper — base_spaces wires dispatcher address before
         /// scheduler.start, and the manager fans it out to every agent so
@@ -639,7 +666,7 @@ namespace services::disk {
                                                        &manager_disk_t::flush,
                                                        &manager_disk_t::checkpoint_all,
                                                        &manager_disk_t::vacuum_all,
-                                                       &manager_disk_t::maybe_cleanup,
+                                                       &manager_disk_t::maybe_cleanup_many,
                                                        // Storage management
                                                        &manager_disk_t::create_storage,
                                                        &manager_disk_t::create_storage_with_columns,
@@ -673,14 +700,31 @@ namespace services::disk {
                                                        &manager_disk_t::allocate_oids_batch,
                                                        &manager_disk_t::append_pg_catalog_row,
                                                        &manager_disk_t::delete_pg_catalog_rows,
-                                                       &manager_disk_t::update_pg_attribute_commit_id_field,
+                                                       &manager_disk_t::delete_pg_catalog_rows_many,
+                                                       &manager_disk_t::update_pg_attribute_commit_id_fields,
                                                        &manager_disk_t::scan_by_key,
+                                                       &manager_disk_t::scan_by_keys,
                                                        &manager_disk_t::read_rows_by_key,
                                                        &manager_disk_t::compact_relkind_g_storage,
                                                        &manager_disk_t::on_horizon_advanced,
-                                                       &manager_disk_t::mark_storage_dropped>;
+                                                       &manager_disk_t::mark_storage_dropped,
+                                                       &manager_disk_t::storage_dropped_committed>;
 
     private:
+        // Shared per-item bodies for the singular + batched pg_catalog mutators.
+        // Each is the canonical inner logic (WAL write + direct_*_sync) for a single
+        // request; the public singular handler and the batched handler both co_await
+        // it so the two paths emit identical WAL records. Not mailbox handlers.
+        unique_future<void> delete_pg_catalog_rows_one_(execution_context_t ctx,
+                                                        components::catalog::oid_t table_oid,
+                                                        std::int64_t oid_col_idx,
+                                                        components::catalog::oid_t target_oid);
+        unique_future<void>
+        update_pg_attribute_commit_id_field_one_(execution_context_t ctx,
+                                                 components::catalog::oid_t attoid,
+                                                 components::pg_attribute_commit_id_backfill_t::kind_t kind,
+                                                 std::uint64_t commit_id);
+
         // Disk storage helpers — used only by bootstrap / io / recovery paths
         // inside services/disk/. Not part of the actor's public interface.
         void create_storage_disk_sync(components::catalog::oid_t table_oid,

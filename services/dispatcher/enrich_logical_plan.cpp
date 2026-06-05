@@ -825,18 +825,35 @@ namespace services::dispatcher {
             co_await enrich_plan(resource, root, disk_address, ctx, index_address, collections_ctx, &local_idx);
 
             if (collections_ctx && index_address != actor_zeta::address_t::empty_address()) {
+                // Two-phase: per-table get_indexed_keys + get_indexed_descriptions
+                // are independent across tables, so send both queries for every
+                // table first, then await and consume. collections_ctx fields are
+                // overwritten per table (last table wins, as before), so the
+                // await order must match the send order; awaiting in the same loop
+                // index sequence preserves that.
+                std::pmr::vector<actor_zeta::unique_future<std::pmr::vector<components::index::keys_base_storage_t>>>
+                    keys_futures(resource);
+                std::pmr::vector<
+                    actor_zeta::unique_future<std::pmr::vector<components::index::index_description_t>>>
+                    desc_futures(resource);
                 for (auto tbl_oid : root->table_oid_dependencies()) {
                     if (tbl_oid == components::catalog::INVALID_OID) {
                         continue;
                     }
                     auto [_ik, ikf] =
                         actor_zeta::send(index_address, &index::manager_index_t::get_indexed_keys, ctx.session, tbl_oid);
-                    collections_ctx->indexed_keys = co_await std::move(ikf);
+                    keys_futures.push_back(std::move(ikf));
                     auto [_id, idf] =
                         actor_zeta::send(index_address,
                                          &index::manager_index_t::get_indexed_descriptions,
                                          ctx.session,
                                          tbl_oid);
+                    desc_futures.push_back(std::move(idf));
+                }
+                for (auto& ikf : keys_futures) {
+                    collections_ctx->indexed_keys = co_await std::move(ikf);
+                }
+                for (auto& idf : desc_futures) {
                     collections_ctx->indexed_descriptions = co_await std::move(idf);
                 }
             }

@@ -1,8 +1,11 @@
 #include "test_config.hpp"
 
 #include <catch2/catch.hpp>
+#include <chrono>
 #include <filesystem>
+#include <set>
 #include <sstream>
+#include <thread>
 
 using namespace components::types;
 
@@ -1237,6 +1240,129 @@ TEST_CASE("integration::cpp::test_persistence::disk_drop_table_survives_restart"
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 1);
     }
+}
+
+// Recursive scan for every storage payload file under the disk root. The GC
+// sweep removes table.otbx + sidecars of dropped tables; comparing the scan
+// before/after pins the exact file set the sweep must reclaim.
+static std::set<std::filesystem::path> scan_otbx_files(const std::filesystem::path& disk_root) {
+    std::set<std::filesystem::path> files;
+    std::error_code ec;
+    for (auto it = std::filesystem::recursive_directory_iterator(disk_root, ec);
+         !ec && it != std::filesystem::recursive_directory_iterator();
+         it.increment(ec)) {
+        if (it->is_regular_file(ec) && it->path().filename() == "table.otbx") {
+            files.insert(it->path());
+        }
+    }
+    return files;
+}
+
+TEST_CASE("integration::cpp::test_persistence::disk_drop_gc_removes_storage_files") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_drop_gc");
+    test_clear_directory(config);
+
+    // End-to-end DROP-GC through the unified commit channel. Two nets:
+    //   PRIMARY — drop_storage during the DROP statement removes .otbx +
+    //   sidecars immediately (a surviving file would let WAL replay
+    //   synthesise a phantom storage);
+    //   SECONDARY — mark_storage_dropped parks a tombstone keyed by the
+    //   dropping TXN-ID, the commit operator remaps it to the real commit_id
+    //   (storage_dropped_committed), and the next commit's horizon broadcast
+    //   (on_horizon_advanced, commit-id space) drains the queue. The drain is
+    //   internal state; what this test pins is that the whole chain runs
+    //   without touching any OTHER table's storage.
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+    }
+
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "CREATE TABLE TestDatabase.GcSurvivor (val bigint) "
+                                           "WITH (storage = 'disk');");
+        REQUIRE(cur->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.GcSurvivor (val) VALUES (42);");
+        REQUIRE(cur->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+        REQUIRE(cur->is_success());
+    }
+    const auto baseline_files = scan_otbx_files(config.disk.path);
+
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "CREATE TABLE TestDatabase.GcVictim (name string, count bigint) "
+                                           "WITH (storage = 'disk');");
+        REQUIRE(cur->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        std::stringstream query;
+        query << "INSERT INTO TestDatabase.GcVictim (name, count) VALUES ";
+        for (int i = 0; i < 20; ++i) {
+            query << "('row_" << i << "', " << i << ")" << (i == 19 ? ";" : ", ");
+        }
+        auto cur = dispatcher->execute_sql(session, query.str());
+        REQUIRE(cur->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+        REQUIRE(cur->is_success());
+    }
+
+    // The victim's payload file = exactly what appeared since the baseline.
+    auto with_victim_files = scan_otbx_files(config.disk.path);
+    std::set<std::filesystem::path> victim_files;
+    for (const auto& f : with_victim_files) {
+        if (baseline_files.find(f) == baseline_files.end()) {
+            victim_files.insert(f);
+        }
+    }
+    REQUIRE(victim_files.size() == 1);
+    const auto victim_otbx = *victim_files.begin();
+    REQUIRE(std::filesystem::exists(victim_otbx));
+
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "DROP TABLE TestDatabase.GcVictim;");
+        REQUIRE(cur->is_success());
+    }
+    // PRIMARY net: drop_storage ran inside the DROP statement — the payload
+    // file (and its per-oid directory) must already be gone when the
+    // statement's cursor returns.
+    REQUIRE_FALSE(std::filesystem::exists(victim_otbx));
+    REQUIRE_FALSE(std::filesystem::exists(victim_otbx.parent_path()));
+
+    // SECONDARY net: the next commit advances the published horizon past the
+    // DROP's commit_id; the dispatcher broadcast walks the (remapped)
+    // tombstone queue. Asynchronous fire-and-forget — give it a bounded
+    // window, then pin that it disturbed nothing else.
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.GcSurvivor (val) VALUES (43);");
+        REQUIRE(cur->is_success());
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    // Every baseline file (the survivor's storage + system tables) must be
+    // untouched by both nets.
+    auto after_gc_files = scan_otbx_files(config.disk.path);
+    for (const auto& f : baseline_files) {
+        REQUIRE(after_gc_files.find(f) != after_gc_files.end());
+    }
+    CHECK_FIND_SQL("SELECT * FROM TestDatabase.GcSurvivor;", 2);
 }
 
 TEST_CASE("integration::cpp::test_persistence::disk_add_column_survives_restart") {

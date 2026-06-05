@@ -243,6 +243,20 @@ namespace services::disk {
                                    int64_t start,
                                    uint64_t count);
 
+        // scan_by_keys_inner — batched scan_by_key for one owned table. Resolves the
+        //   key column NAMES to storage indices once, then loops `keys`: per key it
+        //   builds an eq-AND filter over the shared key columns and scans, collecting
+        //   the matching row_ids. result[i] == match row_ids for keys[i]; result has
+        //   one (possibly empty) entry per key. A not-owned OID / unknown column /
+        //   arity mismatch yields a same-length result of empty rows (or empty when
+        //   keys is empty). The whole batch is one mailbox message so name resolution
+        //   happens once and every key scan is serialized against same-oid mutations.
+        unique_future<std::pmr::vector<std::pmr::vector<std::int64_t>>>
+        scan_by_keys_inner(components::catalog::oid_t table_oid,
+                           std::pmr::vector<std::string> key_col_names,
+                           std::pmr::vector<std::pmr::vector<components::types::logical_value_t>> keys,
+                           components::table::transaction_data txn);
+
         // storage_types_inner — schema metadata accessor.
         unique_future<std::pmr::vector<components::types::complex_logical_type>>
         storage_types_inner(components::catalog::oid_t table_oid);
@@ -270,7 +284,10 @@ namespace services::disk {
         unique_future<void> vacuum_inner(session_id_t session, uint64_t lowest_active_start_time);
 
         // maybe_cleanup_inner — single-OID target. If deleted/total > 0.3 and
-        //   lowest_active_start_time is past TRANSACTION_ID_START, runs table.compact().
+        //   lowest_active_start_time != 0 (the caller passes 0 while any
+        //   transaction is active), runs table.compact(). The 0-gate is a
+        //   tombstone-timing heuristic only; compact correctness rests on the
+        //   agent mailbox serializing the row_groups_ swap, not on this gate.
         //   cleanup_versions is intentionally omitted: scan_committed needs intact
         //   version metadata to filter tombstones, which cleanup_versions would strip
         //   before compact rebuilds the row_group.
@@ -283,6 +300,16 @@ namespace services::disk {
         //   once the slice drains (gated on manager_dispatcher_addr_); the dispatcher
         //   idempotently collapses N agent acks into one disk_has_dropped_ flip.
         unique_future<void> on_horizon_advanced_inner(uint64_t new_horizon);
+
+        // storage_dropped_committed_inner — DROP-GC value-space remap. A GC entry
+        //   recorded by register_dropped_storage_inner carries dropped_at_commit_id
+        //   in TXN-ID space (>= 2^62) because the cascade-delete operator only knew
+        //   the in-flight txn_id. on_horizon_advanced_inner compares against a
+        //   commit-id horizon, so the TXN-ID placeholder would never be reclaimed.
+        //   Once the transaction commits, manager_disk fans this out to every agent;
+        //   each rewrites its own dropped_storages_ entries whose dropped_at_commit_id
+        //   equals txn_id to the real commit_id, moving them into commit-id space.
+        unique_future<void> storage_dropped_committed_inner(uint64_t txn_id, uint64_t commit_id);
 
         // Pre-scheduler-start helper: push-back into dropped_storages_ (base_spaces
         // catalog rebuild via register_dropped_storage_sync). Not a mailbox handler.
@@ -332,6 +359,7 @@ namespace services::disk {
                                                             &agent_disk_t::storage_fetch_inner,
                                                             &agent_disk_t::storage_scan_batched_inner,
                                                             &agent_disk_t::storage_scan_segment_inner,
+                                                            &agent_disk_t::scan_by_keys_inner,
                                                             &agent_disk_t::storage_types_inner,
                                                             &agent_disk_t::storage_column_names_inner,
                                                             &agent_disk_t::storage_total_rows_inner,
@@ -339,6 +367,7 @@ namespace services::disk {
                                                             &agent_disk_t::vacuum_inner,
                                                             &agent_disk_t::maybe_cleanup_inner,
                                                             &agent_disk_t::on_horizon_advanced_inner,
+                                                            &agent_disk_t::storage_dropped_committed_inner,
                                                             &agent_disk_t::register_dropped_storage_inner,
                                                             &agent_disk_t::drop_storage_inner,
                                                             &agent_disk_t::drop_column_inner>;

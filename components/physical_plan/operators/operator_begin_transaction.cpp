@@ -19,8 +19,7 @@ namespace components::operators {
         // session's txn explicit. The handler does an idempotent begin_transaction
         // THEN mark_explicit: if DML opened an implicit txn before BEGIN it is
         // reused, and a stray BEGIN inside an open txn must not restart it
-        // (Postgres semantics) — the same behaviour as the former inline
-        // begin_transaction().mark_explicit() touch-point.
+        // (Postgres semantics).
         if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
             auto [_m, mf] = actor_zeta::send(ctx->current_message_sender,
                                              &services::dispatcher::manager_dispatcher_t::txn_mark_explicit_msg,

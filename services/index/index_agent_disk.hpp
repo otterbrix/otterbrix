@@ -17,7 +17,6 @@
 
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
-#include <components/expressions/compare_expression.hpp>
 #include <components/log/log.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/session/session.hpp>
@@ -59,26 +58,17 @@ namespace services::index {
         bool is_dropped() const;
 
         unique_future<void> drop(session_id_t session);
-        unique_future<void> insert(session_id_t session, value_t key, size_t row_id);
         unique_future<void>
         insert_many(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values);
-        unique_future<void> remove(session_id_t session, value_t key, size_t row_id);
         unique_future<void>
         remove_many(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values);
-        unique_future<index_disk_t::result>
-        find(session_id_t session, value_t value, components::expressions::compare_type compare);
-        unique_future<void> force_flush(session_id_t session);
 
         // Synchronous flush — bypasses actor mailbox, safe to call from owning manager
         void force_flush_sync();
 
         using dispatch_traits = actor_zeta::dispatch_traits<&index_agent_disk_t::drop,
-                                                            &index_agent_disk_t::insert,
                                                             &index_agent_disk_t::insert_many,
-                                                            &index_agent_disk_t::remove,
-                                                            &index_agent_disk_t::remove_many,
-                                                            &index_agent_disk_t::find,
-                                                            &index_agent_disk_t::force_flush>;
+                                                            &index_agent_disk_t::remove_many>;
 
         auto make_type() const noexcept -> const char*;
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);

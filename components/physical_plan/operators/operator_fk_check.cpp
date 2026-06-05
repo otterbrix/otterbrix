@@ -39,6 +39,17 @@ namespace components::operators {
         const auto& indices = fk_.child_col_indices;
         const std::size_t absent = std::numeric_limits<std::size_t>::max();
 
+        // Parent key column names are the same for every row; hoist them once.
+        std::pmr::vector<std::string> parent_col_names(resource_);
+        parent_col_names.reserve(fk_.parent_col_names.size());
+        for (const auto& n : fk_.parent_col_names) {
+            parent_col_names.emplace_back(n);
+        }
+
+        // Collect one key per qualifying row in row order; result[i] empty -> violation.
+        std::pmr::vector<std::pmr::vector<types::logical_value_t>> keys(resource_);
+        keys.reserve(chunk.size());
+
         for (uint64_t row = 0; row < chunk.size(); ++row) {
             bool any_null = false;
             bool all_null = true;
@@ -81,19 +92,26 @@ namespace components::operators {
             if (has_absent || key_values.empty())
                 continue;
 
-            std::pmr::vector<std::string> parent_col_names(resource_);
-            parent_col_names.reserve(fk_.parent_col_names.size());
-            for (const auto& n : fk_.parent_col_names) {
-                parent_col_names.emplace_back(n);
-            }
-            auto [_, fut] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::scan_by_key,
-                                             exec_ctx,
-                                             fk_.parent_table_oid,
-                                             std::move(parent_col_names),
-                                             std::move(key_values));
-            auto parent_ids = co_await std::move(fut);
-            if (parent_ids.empty()) {
+            keys.push_back(std::move(key_values));
+        }
+
+        if (keys.empty()) {
+            mark_executed();
+            co_return;
+        }
+
+        // One batched scan verifies every per-row key against the parent table.
+        auto [_, fut] = actor_zeta::send(ctx->disk_address,
+                                         &services::disk::manager_disk_t::scan_by_keys,
+                                         exec_ctx,
+                                         fk_.parent_table_oid,
+                                         std::move(parent_col_names),
+                                         std::move(keys));
+        auto matches = co_await std::move(fut);
+
+        // Any missing parent (empty match list) is a violation.
+        for (std::size_t i = 0; i < matches.size(); ++i) {
+            if (matches[i].empty()) {
                 set_error(core::error_t{
                     core::error_code_t::other_error,
                     std::pmr::string{"FK constraint violated: referenced row not found in parent table", resource_}});

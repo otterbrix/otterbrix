@@ -25,8 +25,8 @@ namespace components::operators {
         // persist until storage_revert_appends.
         components::table::transaction_data txn_data{0, 0};
         std::vector<components::pg_catalog_append_range_t> swap_appends;
-        // Null-sender guard (mirrors today's `tm ?`): with no dispatcher to talk
-        // to there is no txn to drain or abort — leave the locals empty.
+        // Null-sender guard: with no dispatcher to talk to there is no txn to
+        // drain or abort — leave the locals empty.
         if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
             auto [_dr, drf] = actor_zeta::send(ctx->current_message_sender,
                                                &services::dispatcher::manager_dispatcher_t::txn_abort_drain_msg,

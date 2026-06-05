@@ -1,5 +1,6 @@
 #include "transaction_manager.hpp"
 
+#include <limits>
 #include <stdexcept>
 
 namespace components::table {
@@ -111,6 +112,25 @@ namespace components::table {
     bool transaction_manager_t::has_active_transactions() const {
         std::lock_guard guard(lock_);
         return !active_.empty();
+    }
+
+    uint64_t transaction_manager_t::lowest_active_snapshot_horizon() const {
+        std::lock_guard guard(lock_);
+        if (active_.empty()) {
+            return published_horizon_.load(std::memory_order_acquire);
+        }
+        // Oldest commit-id horizon any live snapshot can still read below.
+        // Same value space as commit_id / published_horizon_ — used by the
+        // DROP-GC broadcast so the agents' `dropped_at_commit_id < horizon`
+        // sweep compares like with like.
+        uint64_t lowest = std::numeric_limits<uint64_t>::max();
+        for (const auto& [key, txn] : active_) {
+            const auto h = txn->data().snapshot_horizon;
+            if (h < lowest) {
+                lowest = h;
+            }
+        }
+        return lowest;
     }
 
 } // namespace components::table

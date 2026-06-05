@@ -70,8 +70,6 @@ namespace services::wal {
 
         unique_future<wal::id_t> current_wal_id(session_id_t session);
 
-        unique_future<wal::id_t> auto_checkpoint_wal_id(session_id_t session);
-
         unique_future<wal::id_t> write_physical_insert(session_id_t session,
                                                        components::catalog::oid_t table_oid,
                                                        std::unique_ptr<components::vector::data_chunk_t> data_chunk,
@@ -106,7 +104,6 @@ namespace services::wal {
                                                        &manager_wal_replicate_t::commit_txn,
                                                        &manager_wal_replicate_t::truncate_before,
                                                        &manager_wal_replicate_t::current_wal_id,
-                                                       &manager_wal_replicate_t::auto_checkpoint_wal_id,
                                                        &manager_wal_replicate_t::write_physical_insert,
                                                        &manager_wal_replicate_t::write_physical_delete,
                                                        &manager_wal_replicate_t::write_physical_update,

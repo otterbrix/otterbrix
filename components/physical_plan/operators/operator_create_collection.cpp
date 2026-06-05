@@ -4,6 +4,8 @@
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
 
+#include <vector>
+
 namespace components::operators {
 
     operator_create_collection_t::operator_create_collection_t(std::pmr::memory_resource* resource,
@@ -56,14 +58,21 @@ namespace components::operators {
             co_await std::move(f);
         }
 
-        // Write pg_catalog rows (pg_class, pg_attribute, pg_depend)
+        // Write pg_catalog rows (pg_class, pg_attribute, pg_depend).
+        // Two-phase: every append is independent (no iteration consumes the
+        // previous result), so send all rows first then await in order.
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
+        std::pmr::vector<actor_zeta::unique_future<components::pg_catalog_append_range_t>> append_futures(resource_);
+        append_futures.reserve(catalog_writes_.size());
         for (auto& [tbl_oid, row] : catalog_writes_) {
             auto [_, f] = actor_zeta::send(ctx->disk_address,
                                            &services::disk::manager_disk_t::append_pg_catalog_row,
                                            exec_ctx,
                                            tbl_oid,
                                            std::move(row));
+            append_futures.push_back(std::move(f));
+        }
+        for (auto& f : append_futures) {
             auto rng = co_await std::move(f);
             if (rng.count > 0)
                 ctx->pg_catalog_appends.push_back(std::move(rng));

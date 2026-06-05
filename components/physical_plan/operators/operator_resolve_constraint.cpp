@@ -130,6 +130,12 @@ namespace components::operators {
                         ? std::string{}
                         : std::string(row[catalog::pg_constraint_col::confkey].value<std::string_view>()));
 
+                // Two-phase: the child-attr and parent-attr pg_attribute reads
+                // are independent (both key on a table oid known up front, and
+                // their results feed disjoint fk fields), so send both before
+                // awaiting either. Child is awaited first because the schema-
+                // position logic below consumes it; the parent await is purely
+                // completion-sync after.
                 types::logical_value_t child_lv(resource_, fk.child_table_oid);
                 std::pmr::vector<std::string> attr_c_keys(resource_);
                 attr_c_keys.emplace_back("attrelid");
@@ -141,6 +147,19 @@ namespace components::operators {
                                                          kPgAttribute,
                                                          std::move(attr_c_keys),
                                                          std::move(attr_c_vals));
+
+                types::logical_value_t parent_lv(resource_, fk.parent_table_oid);
+                std::pmr::vector<std::string> attr_p_keys(resource_);
+                attr_p_keys.emplace_back("attrelid");
+                std::pmr::vector<types::logical_value_t> attr_p_vals(resource_);
+                attr_p_vals.emplace_back(parent_lv);
+                auto [_b, fut_attr_p] = actor_zeta::send(ctx->disk_address,
+                                                         &services::disk::manager_disk_t::read_rows_by_key,
+                                                         exec_ctx,
+                                                         kPgAttribute,
+                                                         std::move(attr_p_keys),
+                                                         std::move(attr_p_vals));
+
                 auto child_attr = co_await std::move(fut_attr_c);
                 fk.child_col_names = catalog::attoids_to_names(child_attr, child_attoids);
 
@@ -194,17 +213,6 @@ namespace components::operators {
                     }
                 }
 
-                types::logical_value_t parent_lv(resource_, fk.parent_table_oid);
-                std::pmr::vector<std::string> attr_p_keys(resource_);
-                attr_p_keys.emplace_back("attrelid");
-                std::pmr::vector<types::logical_value_t> attr_p_vals(resource_);
-                attr_p_vals.emplace_back(parent_lv);
-                auto [_b, fut_attr_p] = actor_zeta::send(ctx->disk_address,
-                                                         &services::disk::manager_disk_t::read_rows_by_key,
-                                                         exec_ctx,
-                                                         kPgAttribute,
-                                                         std::move(attr_p_keys),
-                                                         std::move(attr_p_vals));
                 auto parent_attr = co_await std::move(fut_attr_p);
                 fk.parent_col_names = catalog::attoids_to_names(parent_attr, parent_attoids);
 

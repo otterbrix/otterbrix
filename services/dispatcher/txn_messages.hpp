@@ -73,8 +73,7 @@ namespace services::dispatcher {
     // the session's transaction_t. ONE message serves both producers:
     //   explicit-DML statements — all five fields populated as needed;
     //   DDL statements          — base_* empty, pg_catalog_* / backfills carry
-    //                             the catalog swap-info (the former dispatcher
-    //                             merge block).
+    //                             the catalog swap-info.
     // The handler replays accumulate_base_append / accumulate_base_delete /
     // accumulate_pg_catalog_pending / accumulate_pg_attribute_commit_id_backfills
     // on the dispatcher loop thread — the single-owner-thread invariant of

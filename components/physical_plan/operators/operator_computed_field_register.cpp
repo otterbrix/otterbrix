@@ -187,6 +187,14 @@ namespace components::operators {
             // dynamic_schema_re_add_after_drop pins this.
             const std::int64_t new_version = (max_version < 0) ? std::int64_t{0} : (max_version + 1);
 
+            // Two-phase within this column: the pg_computed_column row append and
+            // the (optional) pg_type + pg_class pg_depend appends are mutually
+            // independent (no append consumes another's await result), so send
+            // them all first then await in order. All three target disk_address;
+            // FIFO on that single mailbox preserves their relative order, so
+            // awaiting is completion-sync only. The next loop iteration's reads
+            // do not consume these appends, but its allocate/append chain depends
+            // on that iteration's own reads, so the batch stays per-column.
             auto cc_row = catalog::build_pg_computed_column_row(resource_,
                                                                 table_oid_,
                                                                 attoid,
@@ -195,13 +203,15 @@ namespace components::operators {
                                                                 new_version,
                                                                 /*attrefcount=*/std::int64_t{1},
                                                                 atttypspec);
-            auto [_w, wf] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::append_pg_catalog_row,
-                                             exec_ctx,
-                                             pg_computed_column,
-                                             std::move(cc_row));
-            if (auto rng = co_await std::move(wf); rng.count > 0) {
-                ctx->pg_catalog_appends.push_back(std::move(rng));
+            std::pmr::vector<actor_zeta::unique_future<components::pg_catalog_append_range_t>> append_futures(
+                resource_);
+            {
+                auto [_w, wf] = actor_zeta::send(ctx->disk_address,
+                                                 &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                 exec_ctx,
+                                                 pg_computed_column,
+                                                 std::move(cc_row));
+                append_futures.push_back(std::move(wf));
             }
 
             // Emit pg_depend rows so the dynamic computed-column mirrors
@@ -231,9 +241,7 @@ namespace components::operators {
                                                    exec_ctx,
                                                    pg_depend,
                                                    std::move(dep_row));
-                if (auto rng = co_await std::move(dtf); rng.count > 0) {
-                    ctx->pg_catalog_appends.push_back(std::move(rng));
-                }
+                append_futures.push_back(std::move(dtf));
             }
             {
                 auto dep_row =
@@ -248,7 +256,10 @@ namespace components::operators {
                                                    exec_ctx,
                                                    pg_depend,
                                                    std::move(dep_row));
-                if (auto rng = co_await std::move(dcf); rng.count > 0) {
+                append_futures.push_back(std::move(dcf));
+            }
+            for (auto& af : append_futures) {
+                if (auto rng = co_await std::move(af); rng.count > 0) {
                     ctx->pg_catalog_appends.push_back(std::move(rng));
                 }
             }

@@ -56,10 +56,8 @@ namespace services::dispatcher {
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_commit_drain_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_abort_drain_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_accumulate_msg>,
-            actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_commit_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_abort_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_publish_msg>,
-            actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_lowest_active_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::on_drop_resource_marked>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::on_subscriber_empty>,
         };
@@ -296,20 +294,12 @@ namespace services::dispatcher {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::txn_accumulate_msg, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_commit_msg>: {
-                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::txn_commit_msg, msg);
-                break;
-            }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_abort_msg>: {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::txn_abort_msg, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_publish_msg>: {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::txn_publish_msg, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_lowest_active_msg>: {
-                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::txn_lowest_active_msg, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::on_drop_resource_marked>: {
@@ -346,7 +336,14 @@ namespace services::dispatcher {
     }
 
     void manager_dispatcher_t::try_trigger_cleanup_if_horizon_advanced() noexcept {
-        auto new_lowest = txn_manager_.lowest_active_start_time();
+        // Commit-id value space: the subscribers' sweep compares
+        // dropped_at_commit_id (remapped to the real commit_id by
+        // storage_dropped_committed / table_dropped_committed) against this
+        // horizon, so the broadcast must use the same space — the oldest
+        // snapshot_horizon any live txn can still read below, NOT
+        // lowest_active_start_time (txn start-time space; mixing the two kept
+        // DROP-GC dead: 2^62-range ids never compared < small start-times).
+        auto new_lowest = txn_manager_.lowest_active_snapshot_horizon();
         if (new_lowest > last_broadcast_horizon_) {
             last_broadcast_horizon_ = new_lowest;
             if (disk_has_dropped_ && disk_address_ != actor_zeta::address_t::empty_address()) {
@@ -455,6 +452,14 @@ namespace services::dispatcher {
 
         components::operators::operator_register_udf_t::executor_uids_t executor_uids(resource());
         executor_uids.reserve(executor_addresses_.size());
+        // Two-phase fan-out: send register_udf to every executor first (each
+        // send carries its own deep function copy, so the sends are mutually
+        // independent), then await all the acks. Every future is drained even
+        // after the first error so none is dropped; a single error fails the
+        // whole registration.
+        std::pmr::vector<actor_zeta::unique_future<std::unique_ptr<collection::executor::function_result_t>>>
+            ack_futures(resource());
+        ack_futures.reserve(executor_addresses_.size());
         for (std::size_t i = 0; i < executor_addresses_.size(); ++i) {
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(executor_addresses_[i],
                                                                   &collection::executor::executor_t::register_udf,
@@ -463,13 +468,19 @@ namespace services::dispatcher {
             if (needs_sched && executors_[i]) {
                 scheduler_->enqueue(executors_[i].get());
             }
+            ack_futures.push_back(std::move(fut));
+        }
+        bool fanout_failed = false;
+        for (auto& fut : ack_futures) {
             auto res = co_await std::move(fut);
             if (!res || res->has_error()) {
-                // Hard fail on any executor error — mirrors the former
-                // operator-internal fanout_failed semantics.
-                co_return false;
+                fanout_failed = true;
+                continue;
             }
             executor_uids.push_back(res->value());
+        }
+        if (fanout_failed) {
+            co_return false;
         }
 
         services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
@@ -605,8 +616,7 @@ namespace services::dispatcher {
         trace(log_, "manager_dispatcher_t::txn_commit_drain_msg, session: {}", session.data());
         txn_commit_drain_t out;
         if (auto* txn_t = txn_manager_.find_transaction(session)) {
-            // Snapshot + drain BEFORE commit() purges the active map. Shapes
-            // mirror operator_commit_transaction_t's former local drains: base
+            // Snapshot + drain BEFORE commit() purges the active map: base
             // appends remapped to pg_catalog_append_range_t, base deletes
             // collapsed to a table-oid set (loss-free: every drained range
             // carries the same explicit txn id).
@@ -625,10 +635,9 @@ namespace services::dispatcher {
             }
         }
         // Allocates the commit_id and leaves it in in_flight_commits_ (0 on a
-        // missing txn, mirroring the operator's former null-guard). The
-        // ProcArray publish barrier deliberately does NOT run here — the
-        // caller sends txn_publish_msg AFTER storage_publish_* / WAL, so
-        // concurrent snapshots never observe a half-flipped pg_catalog.
+        // missing txn). The ProcArray publish barrier deliberately does NOT run
+        // here — the caller sends txn_publish_msg AFTER storage_publish_* / WAL,
+        // so concurrent snapshots never observe a half-flipped pg_catalog.
         out.commit_id = txn_manager_.commit(session);
         co_return out;
     }
@@ -639,10 +648,10 @@ namespace services::dispatcher {
         txn_abort_drain_t out;
         if (auto* txn_t = txn_manager_.find_transaction(session)) {
             out.txn = txn_t->data();
-            // Mirror the former operator-side drain: keep the appends (their
-            // physical row slots need storage_revert_appends), discard the
-            // delete-tables (uncommitted tombstones stay invisible) and the
-            // backfill markers (their targets are in the appends).
+            // Keep the appends (their physical row slots need
+            // storage_revert_appends), discard the delete-tables (uncommitted
+            // tombstones stay invisible) and the backfill markers (their
+            // targets are in the appends).
             std::set<components::catalog::oid_t> deletes_discarded;
             txn_t->drain_pg_catalog_pending(out.swap_appends, deletes_discarded);
             auto backfills_discarded = txn_t->drain_pg_attribute_commit_id_backfills();
@@ -660,9 +669,8 @@ namespace services::dispatcher {
                                              txn_accumulate_payload_t payload) {
         trace(log_, "manager_dispatcher_t::txn_accumulate_msg, session: {}", session.data());
         if (auto* txn_t = txn_manager_.find_transaction(session)) {
-            // Replay every accumulate the executor used to perform via the raw
-            // pointer. transaction_t's single-owner-thread invariant is now
-            // structurally enforced: only this loop thread mutates the body.
+            // transaction_t's single-owner-thread invariant is structurally
+            // enforced here: only this loop thread mutates the body.
             for (const auto& app : payload.base_appends) {
                 txn_t->accumulate_base_append(app);
             }
@@ -676,12 +684,6 @@ namespace services::dispatcher {
         co_return;
     }
 
-    manager_dispatcher_t::unique_future<uint64_t>
-    manager_dispatcher_t::txn_commit_msg(components::session::session_id_t session) {
-        trace(log_, "manager_dispatcher_t::txn_commit_msg, session: {}", session.data());
-        co_return txn_manager_.commit(session);
-    }
-
     manager_dispatcher_t::unique_future<void>
     manager_dispatcher_t::txn_abort_msg(components::session::session_id_t session) {
         trace(log_, "manager_dispatcher_t::txn_abort_msg, session: {}", session.data());
@@ -691,19 +693,18 @@ namespace services::dispatcher {
         co_return;
     }
 
-    manager_dispatcher_t::unique_future<void>
+    manager_dispatcher_t::unique_future<uint64_t>
     manager_dispatcher_t::txn_publish_msg(uint64_t commit_id) {
         trace(log_, "manager_dispatcher_t::txn_publish_msg, commit_id: {}", commit_id);
         txn_manager_.publish(commit_id);
         // The committed txn left the active set at commit(); after the publish
         // barrier the DROP-GC horizon broadcast is safe to evaluate.
         try_trigger_cleanup_if_horizon_advanced();
-        co_return;
-    }
-
-    manager_dispatcher_t::unique_future<uint64_t>
-    manager_dispatcher_t::txn_lowest_active_msg() {
-        co_return txn_manager_.lowest_active_start_time();
+        // maybe_cleanup gate for the operator's compact fan-out: suppressed (0)
+        // while other transactions are active — their snapshots may still read
+        // versions a compact would drop. Best-effort heuristic; compact
+        // correctness rests on the disk agent's mailbox serialization.
+        co_return txn_manager_.has_active_transactions() ? 0 : txn_manager_.lowest_active_start_time();
     }
 
 } // namespace services::dispatcher

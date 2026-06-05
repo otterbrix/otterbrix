@@ -210,6 +210,12 @@ namespace components::operators {
                                                    std::move(cc_vals));
                 auto cc_rows = co_await std::move(ccf);
 
+                // Both GC passes below delete by (kPgComputedColumn, col 1=attoid)
+                // and derive their target attoids purely from the already-awaited
+                // cc_rows (no intervening await), so collect every delete into one
+                // batched call issued before the post-GC re-read.
+                std::pmr::vector<services::disk::pg_catalog_delete_spec_t> cc_specs(resource_);
+
                 std::vector<catalog::oid_t> dead_attoids;
                 dead_attoids.reserve(cc_rows.size());
                 for (const auto& row : cc_rows) {
@@ -225,16 +231,7 @@ namespace components::operators {
 
                 for (const auto attoid : dead_attoids) {
                     // attoid is column index 1 in pg_computed_column.
-                    auto [_d, df] = actor_zeta::send(ctx->disk_address,
-                                                     &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                                     cc_ctx,
-                                                     kPgComputedColumn,
-                                                     std::int64_t{1},
-                                                     attoid);
-                    co_await std::move(df);
-                    if (ctx->txn.transaction_id != 0) {
-                        ctx->pg_catalog_delete_tables.insert(kPgComputedColumn);
-                    }
+                    cc_specs.push_back({kPgComputedColumn, std::int64_t{1}, attoid});
                 }
 
                 // version-GC: for each (relid, attname) group, keep only
@@ -268,16 +265,18 @@ namespace components::operators {
                         return a.attversion > b.attversion;
                     });
                     for (std::size_t i = 1; i < rows.size(); ++i) {
-                        auto [_d, df] = actor_zeta::send(ctx->disk_address,
-                                                         &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                                         cc_ctx,
-                                                         kPgComputedColumn,
-                                                         std::int64_t{1},
-                                                         rows[i].attoid);
-                        co_await std::move(df);
-                        if (ctx->txn.transaction_id != 0) {
-                            ctx->pg_catalog_delete_tables.insert(kPgComputedColumn);
-                        }
+                        cc_specs.push_back({kPgComputedColumn, std::int64_t{1}, rows[i].attoid});
+                    }
+                }
+
+                if (!cc_specs.empty()) {
+                    auto [_d, df] = actor_zeta::send(ctx->disk_address,
+                                                     &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
+                                                     cc_ctx,
+                                                     std::move(cc_specs));
+                    co_await std::move(df);
+                    if (ctx->txn.transaction_id != 0) {
+                        ctx->pg_catalog_delete_tables.insert(kPgComputedColumn);
                     }
                 }
 

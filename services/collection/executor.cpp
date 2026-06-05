@@ -7,8 +7,6 @@
 #include <components/planner/planner.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
-#include <services/wal/manager_wal_replicate.hpp>
-#include <services/wal/wal_sync_mode.hpp>
 
 #include <components/logical_plan/forward.hpp>
 #include <components/logical_plan/node_allocate_oids.hpp>
@@ -30,9 +28,8 @@
 #include <components/logical_plan/node_set_timezone.hpp>
 #include <components/logical_plan/param_storage.hpp>
 // The executor only sees the base operator_t: each operator's DML I/O
-// intercept lives in its own await_async_and_resume, not here — except the
-// DDL-commit tail, which reads operator_commit_transaction_t::commit_id().
-#include <components/physical_plan/operators/operator_commit_transaction.hpp>
+// intercept lives in its own await_async_and_resume, not here. The commit
+// pipeline's commit_id comes back via pipeline::context_t::committed_id.
 #include <components/physical_plan_generator/create_plan.hpp>
 #include <core/executor.hpp>
 // catalog-resolve helpers (services::catalog_resolve) let the executor drive
@@ -43,7 +40,6 @@
 #include <services/dispatcher/plan_resolve_index.hpp>
 #include <services/dispatcher/txn_messages.hpp>
 #include <services/dispatcher/validate_logical_plan.hpp>
-#include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/catalog/table_id.hpp>
 #include <components/planner/optimizer.hpp>
@@ -174,9 +170,8 @@ namespace services::collection::executor {
         // With the transformer wrap, logical_plan may be
         // sequence_t(catalog_resolve_*, ..., <consumer>). The limit_t node
         // lives as a child of the consumer, not on the wrapping sequence_t.
-        // Skip the catalog_resolve_* prefix first (it never carries a limit)
-        // resolve prefix), then fall back to iterating the raw children for
-        // non-DML plans.
+        // Skip the catalog_resolve_* prefix first (it never carries a limit),
+        // then fall back to iterating the raw children for non-DML plans.
         auto limit = components::logical_plan::limit_t::unlimit();
         auto* limit_lookup_node = logical_plan.get();
         if (limit_lookup_node && limit_lookup_node->type() == components::logical_plan::node_type::sequence_t) {
@@ -211,21 +206,12 @@ namespace services::collection::executor {
             planner::create_plan(context_storage, function_registry_, logical_plan, limit, &parameters);
 
         if (!plan) {
-            // Surface the error via cursor so execute_plan_full's commit/abort
-            // tail routes through abort. session_tz is propagated so the
-            // tail's revert sends can build execution_context_t without
-            // re-resolving the session tz.
+            // Surface the error via cursor so execute_plan_full's tail routes
+            // through abort.
             co_return execute_result_t{
                 make_cursor(resource(),
                             core::error_t(core::error_code_t::create_physical_plan_error,
-                                          std::pmr::string{"invalid query plan", resource()})),
-                {},
-                {},
-                {},
-                {},
-                {},
-                false,
-                context_storage.session_timezone};
+                                          std::pmr::string{"invalid query plan", resource()}))};
         }
 
         plan->set_as_root();
@@ -236,10 +222,10 @@ namespace services::collection::executor {
         auto result = co_await execute_sub_plan_(session, std::move(plan_data), txn_data, lowest_active_start_time);
 
         // Raw pipeline result. Three cases, distinguished by the vector state
-        // and resolved by execute_plan_full's commit/abort tail:
+        // and resolved by execute_plan_full's accumulate/commit tail:
         //   * non-DML (DDL, SELECT): dml_* empty (pg_catalog_* populated for DDL).
-        //   * DML success: vectors populated; the tail publishes (implicit) or
-        //     accumulates onto transaction_t (explicit).
+        //   * DML success: vectors populated; the tail accumulates them onto
+        //     transaction_t and (autocommit) runs the commit pipeline.
         //   * DML error: dml_appends / pg_catalog_appends still carry the
         //     not-yet-published ranges so the tail's abort cascade reverts them.
         co_return execute_result_t{std::move(result.cursor),
@@ -248,8 +234,7 @@ namespace services::collection::executor {
                                    std::move(result.pg_attribute_commit_id_backfills),
                                    std::move(result.dml_appends),
                                    std::move(result.dml_deletes),
-                                   false,
-                                   context_storage.session_timezone};
+                                   result.commit_id};
     }
 
     executor_t::unique_future<execute_result_t>
@@ -1328,11 +1313,11 @@ namespace services::collection::executor {
                 logical_plan = ddl_planner.create_plan(resource(), std::move(logical_plan), std::move(oid_batch));
             }
         }
-        // Unresolved-ALTER no-op guard, mirroring the former dispatcher branch
-        // 1:1: a plan whose LITERAL root is still alter_table_t after the
-        // rewrites means rewrite_alter_table bailed (table_oid unresolved by
-        // enrich) — return no-op success. Wrapped plans (sequence_t root with
-        // an alter_table_t child) keep today's error path through the pipeline.
+        // Unresolved-ALTER no-op guard: a plan whose LITERAL root is still
+        // alter_table_t after the rewrites means rewrite_alter_table bailed
+        // (table_oid unresolved by enrich) — return no-op success. Wrapped
+        // plans (sequence_t root with an alter_table_t child) keep the error
+        // path through the pipeline.
         if (original_type == node_type::alter_table_t && logical_plan &&
             logical_plan->type() == node_type::alter_table_t) {
             co_return execute_result_t{make_cursor(resource())};
@@ -1350,15 +1335,17 @@ namespace services::collection::executor {
                                                  resolve_txn,
                                                  session_ctx.lowest_active_start_time);
 
-        // ===== DML commit / abort tail =====
-        // Former dispatcher phase, now driven by the executor itself; the only
-        // txn-state touches are the txn_*_msg round-trips to the dispatcher.
+        // ===== DML commit / accumulate tail =====
+        // ONE publish channel for everything: every successful DML statement
+        // parks its ranges on the dispatcher-owned transaction_t
+        // (txn_accumulate_msg), and the publish itself is ALWAYS
+        // operator_commit_transaction_t — run right here for autocommit
+        // (PostgreSQL model: autocommit = implicit COMMIT), or later by the
+        // SQL COMMIT statement for explicit txns. The operator drains, batch-
+        // publishes storage, commits the index mirrors per table, writes the
+        // WAL marker and crosses the ProcArray barrier — in that order.
         if (needs_dml_txn) {
-            if (session_ctx.is_explicit && exec_result.cursor->is_success()) {
-                // Explicit (SQL BEGIN) txn: ship every accumulated range to the
-                // dispatcher-owned transaction_t in ONE message; COMMIT later
-                // drains and publishes them as an atomic batch. Vectors are
-                // moved out so the result crosses the mailbox empty.
+            if (exec_result.cursor->is_success()) {
                 services::dispatcher::txn_accumulate_payload_t payload;
                 payload.base_appends.reserve(exec_result.dml_appends.size());
                 for (const auto& app : exec_result.dml_appends) {
@@ -1374,11 +1361,11 @@ namespace services::collection::executor {
                 payload.pg_catalog_delete_tables = std::move(exec_result.pg_catalog_delete_tables);
                 payload.backfills = std::move(exec_result.pg_attribute_commit_id_backfills);
                 trace(log_,
-                      "executor::execute_plan_full: explicit txn {} — accumulating {} appends, {} deletes "
-                      "(publish deferred to COMMIT)",
+                      "executor::execute_plan_full: txn {} — accumulating {} appends, {} deletes ({})",
                       resolve_txn.transaction_id,
                       payload.base_appends.size(),
-                      payload.base_deletes.size());
+                      payload.base_deletes.size(),
+                      session_ctx.is_explicit ? "publish deferred to COMMIT" : "implicit COMMIT follows");
                 if (!payload.empty()) {
                     auto [_ac, acf] = actor_zeta::send(
                         parent_address_,
@@ -1392,188 +1379,92 @@ namespace services::collection::executor {
                 exec_result.pg_catalog_appends.clear();
                 exec_result.pg_catalog_delete_tables.clear();
                 exec_result.pg_attribute_commit_id_backfills.clear();
-                exec_result.explicit_txn_no_commit = true;
-            } else {
-                // Implicit (auto-commit) DML, or a failed DML statement (the
-                // abort cascade also ends a failed statement's explicit txn,
-                // matching the former dispatcher behavior).
-                bool need_abort = false;
 
-                if (exec_result.cursor->is_success()) {
-                    // Allocate commit_id (dispatcher-side, mailbox round-trip).
-                    auto [_cm, cmf] = actor_zeta::send(
-                        parent_address_,
-                        &services::dispatcher::manager_dispatcher_t::txn_commit_msg,
-                        session);
-                    uint64_t commit_id = co_await std::move(cmf);
-                    core::error_t commit_err = core::error_t::no_error();
-
-                    // Per-range insert publish + index commit_insert.
-                    for (auto& app : exec_result.dml_appends) {
-                        components::execution_context_t pub_ctx{session,
-                                                                resolve_txn,
-                                                                exec_result.session_tz,
-                                                                app.table_oid};
-                        auto [_p, pf] = actor_zeta::send(disk_address_,
-                                                         &services::disk::manager_disk_t::storage_publish_commit,
-                                                         pub_ctx,
-                                                         app.table_oid,
-                                                         commit_id,
-                                                         app.row_start,
-                                                         app.row_count);
-                        co_await std::move(pf);
-
-                        if (index_address_ != actor_zeta::address_t::empty_address()) {
-                            auto [_ci, cif] = actor_zeta::send(index_address_,
-                                                               &services::index::manager_index_t::commit_insert,
-                                                               pub_ctx,
-                                                               app.table_oid,
-                                                               commit_id);
-                            auto ci_result = co_await std::move(cif);
-                            if (ci_result.contains_error()) {
-                                commit_err = std::move(ci_result);
-                                need_abort = true;
-                                break;
-                            }
-                        }
-                    }
-
-                    // Per-range delete publish + index commit_delete.
-                    if (!need_abort) {
-                        for (auto& del : exec_result.dml_deletes) {
-                            components::execution_context_t del_ctx{session,
-                                                                    resolve_txn,
-                                                                    exec_result.session_tz,
-                                                                    del.table_oid};
-                            auto [_pd, cdf] = actor_zeta::send(disk_address_,
-                                                               &services::disk::manager_disk_t::storage_publish_delete,
-                                                               del_ctx,
-                                                               del.table_oid,
-                                                               commit_id);
-                            co_await std::move(cdf);
-
-                            if (index_address_ != actor_zeta::address_t::empty_address()) {
-                                auto [_cd, cdif] = actor_zeta::send(index_address_,
-                                                                    &services::index::manager_index_t::commit_delete,
-                                                                    del_ctx,
-                                                                    del.table_oid,
-                                                                    commit_id);
-                                auto cd_result = co_await std::move(cdif);
-                                if (cd_result.contains_error()) {
-                                    commit_err = std::move(cd_result);
-                                    need_abort = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-
-                    // Batched pg_catalog publish (DML typically empty). Moves the
-                    // vectors out of exec_result — the implicit path NEVER routes
-                    // pg_catalog through txn_accumulate_msg, so nothing is merged
-                    // onto transaction_t (and nothing can double-publish).
-                    if (!need_abort && !exec_result.pg_catalog_appends.empty()) {
-                        components::execution_context_t pgc_ctx{session, resolve_txn, {}};
-                        auto [_pc, pcf] = actor_zeta::send(disk_address_,
-                                                           &services::disk::manager_disk_t::storage_publish_commits,
-                                                           pgc_ctx,
-                                                           commit_id,
-                                                           std::move(exec_result.pg_catalog_appends));
-                        co_await std::move(pcf);
-                    }
-                    if (!need_abort && !exec_result.pg_catalog_delete_tables.empty()) {
-                        components::execution_context_t pgc_ctx{session, resolve_txn, {}};
-                        auto [_pdl, pdf] = actor_zeta::send(disk_address_,
-                                                            &services::disk::manager_disk_t::storage_publish_deletes,
-                                                            pgc_ctx,
-                                                            commit_id,
-                                                            std::move(exec_result.pg_catalog_delete_tables));
-                        co_await std::move(pdf);
-                    }
-
-                    if (need_abort) {
-                        // Flip cursor to error; the abort phase below then fires
-                        // via its (need_abort || cursor->is_error()) guard.
-                        exec_result.cursor = make_cursor(resource(), std::move(commit_err));
-                    } else {
-                        // WAL commit_txn must carry the real commit_id, after the
-                        // storage_publish_* sends and before txn_publish_msg:
-                        // snapshot-aware replay restores published_horizon_ from
-                        // this record's commit_id.
-                        if (wal_address_ != actor_zeta::address_t::empty_address()) {
-                            constexpr auto db_oid = components::catalog::well_known_oid::main_database;
-                            auto [_wc, wcf] = actor_zeta::send(wal_address_,
-                                                               &services::wal::manager_wal_replicate_t::commit_txn,
-                                                               session,
-                                                               resolve_txn.transaction_id,
-                                                               services::wal::wal_sync_mode::FULL,
-                                                               db_oid,
-                                                               commit_id);
-                            co_await std::move(wcf);
-                        }
-                        // ProcArray publish barrier — after this, concurrent
-                        // readers see commit_id as visible. publish() lives ONLY
-                        // behind txn_publish_msg (never inside a drain handler).
-                        auto [_pb, pbf] = actor_zeta::send(
-                            parent_address_,
-                            &services::dispatcher::manager_dispatcher_t::txn_publish_msg,
-                            commit_id);
-                        co_await std::move(pbf);
+                if (!session_ctx.is_explicit) {
+                    // Autocommit: implicit COMMIT through the SAME operator
+                    // pipeline SQL COMMIT uses.
+                    auto commit_result = co_await run_commit_pipeline_(session,
+                                                                       resolve_txn,
+                                                                       session_ctx.session_tz,
+                                                                       session_ctx.lowest_active_start_time,
+                                                                       /*ddl_mode=*/false);
+                    if (commit_result.cursor->is_error()) {
+                        exec_result.cursor = std::move(commit_result.cursor);
                     }
                 }
+            } else {
+                // Failed DML statement: revert this statement's local ranges
+                // and abort the txn (also ends a failed statement's explicit
+                // txn).
+                //
+                // Storage revert: fold every DML append range AND the
+                // pg_catalog append ranges into a SINGLE storage_revert_appends
+                // call. Each range carries its own table_oid (the handler routes
+                // per-range), so one send covers both sets. The ctx table_oid is
+                // unused by storage_revert_appends.
+                std::vector<components::pg_catalog_append_range_t> revert_ranges;
+                revert_ranges.reserve(exec_result.dml_appends.size() + exec_result.pg_catalog_appends.size());
+                for (const auto& app : exec_result.dml_appends) {
+                    revert_ranges.push_back(
+                        components::pg_catalog_append_range_t{app.table_oid, app.row_start, app.row_count});
+                }
+                for (auto& pgc : exec_result.pg_catalog_appends) {
+                    revert_ranges.push_back(std::move(pgc));
+                }
+                exec_result.pg_catalog_appends.clear();
+                if (!revert_ranges.empty()) {
+                    components::execution_context_t pgc_ctx{session, resolve_txn, {}};
+                    auto [_pa, paf] = actor_zeta::send(disk_address_,
+                                                       &services::disk::manager_disk_t::storage_revert_appends,
+                                                       pgc_ctx,
+                                                       std::move(revert_ranges));
+                    co_await std::move(paf);
+                }
 
-                // Abort cascade (disjunction: pipeline error OR commit-phase
-                // index error). Reverts every accumulated range, then aborts
-                // the txn dispatcher-side.
-                if (need_abort || exec_result.cursor->is_error()) {
-                    for (auto& app : exec_result.dml_appends) {
+                // Index revert: revert_insert is keyed per (table_oid, txn_id)
+                // and reverts ALL uncommitted entries for that pair, so it is
+                // idempotent across duplicate table oids — dedup to unique oids
+                // (avoids redundant sends) and fan out two-phase: send every
+                // revert_insert first, then await each.
+                if (index_address_ != actor_zeta::address_t::empty_address()) {
+                    std::pmr::set<components::catalog::oid_t> revert_index_oids{resource()};
+                    for (const auto& app : exec_result.dml_appends) {
+                        revert_index_oids.insert(app.table_oid);
+                    }
+                    std::pmr::vector<actor_zeta::unique_future<void>> revert_index_futures{resource()};
+                    revert_index_futures.reserve(revert_index_oids.size());
+                    for (auto oid : revert_index_oids) {
                         components::execution_context_t abort_ctx{session,
                                                                   resolve_txn,
-                                                                  exec_result.session_tz,
-                                                                  app.table_oid};
-                        auto [_ra, raf] = actor_zeta::send(disk_address_,
-                                                           &services::disk::manager_disk_t::storage_revert_append,
+                                                                  session_ctx.session_tz,
+                                                                  oid};
+                        auto [_ri, rif] = actor_zeta::send(index_address_,
+                                                           &services::index::manager_index_t::revert_insert,
                                                            abort_ctx,
-                                                           app.table_oid,
-                                                           app.row_start,
-                                                           app.row_count);
-                        co_await std::move(raf);
-
-                        if (index_address_ != actor_zeta::address_t::empty_address()) {
-                            auto [_ri, rif] = actor_zeta::send(index_address_,
-                                                               &services::index::manager_index_t::revert_insert,
-                                                               abort_ctx,
-                                                               app.table_oid);
-                            co_await std::move(rif);
-                        }
+                                                           oid);
+                        revert_index_futures.push_back(std::move(rif));
                     }
-
-                    if (!exec_result.pg_catalog_appends.empty()) {
-                        components::execution_context_t pgc_ctx{session, resolve_txn, {}};
-                        auto [_pa, paf] = actor_zeta::send(disk_address_,
-                                                           &services::disk::manager_disk_t::storage_revert_appends,
-                                                           pgc_ctx,
-                                                           std::move(exec_result.pg_catalog_appends));
-                        co_await std::move(paf);
+                    for (auto& rif : revert_index_futures) {
+                        co_await std::move(rif);
                     }
-
-                    auto [_ab, abf] = actor_zeta::send(
-                        parent_address_,
-                        &services::dispatcher::manager_dispatcher_t::txn_abort_msg,
-                        session);
-                    co_await std::move(abf);
                 }
+
+                auto [_ab, abf] = actor_zeta::send(
+                    parent_address_,
+                    &services::dispatcher::manager_dispatcher_t::txn_abort_msg,
+                    session);
+                co_await std::move(abf);
+
                 exec_result.dml_appends.clear();
                 exec_result.dml_deletes.clear();
             }
         }
 
         // ===== DDL commit tail =====
-        // Former dispatcher DDL-commit phase. The accumulated pg_catalog
-        // swap-info rides to the dispatcher's transaction_t first (ONE
-        // accumulate message, base fields empty), then the ddl-commit operator
-        // drains it back via txn_commit_drain_msg and publishes — flush
-        // barrier, WAL, commit and publish in the exact former order.
+        // The accumulated pg_catalog swap-info rides to the dispatcher's
+        // transaction_t first (ONE accumulate message, base fields empty), then
+        // the ddl-commit operator drains it back via txn_commit_drain_msg and
+        // publishes in order: flush barrier, WAL, commit, publish.
         if (needs_ddl_txn && exec_result.cursor->is_success()) {
             if (!exec_result.pg_catalog_appends.empty() || !exec_result.pg_catalog_delete_tables.empty() ||
                 !exec_result.pg_attribute_commit_id_backfills.empty()) {
@@ -1592,75 +1483,44 @@ namespace services::collection::executor {
                 exec_result.pg_attribute_commit_id_backfills.clear();
             }
 
-            // DDL commit through operator_commit_transaction_t in ddl-commit
-            // mode: flush (durability barrier) + wal::commit_txn + commit +
-            // storage_publish_commits/deletes + publish. The CREATE INDEX
-            // backfill commit_insert stays inline below (it depends on plan
-            // structure the operator can't see).
-            std::uint64_t ddl_commit_id = 0;
-            {
-                constexpr auto db_oid = components::catalog::well_known_oid::main_database;
-                auto ddl_commit_node =
-                    boost::intrusive_ptr(new components::logical_plan::node_commit_transaction_t(resource()));
-                ddl_commit_node->set_is_ddl_commit(true);
-                ddl_commit_node->set_txn_id(resolve_txn.transaction_id);
-                ddl_commit_node->set_database_oid(db_oid);
-
-                services::context_storage_t cstor{resource(), log_.clone(), session_ctx.session_tz};
-                components::compute::function_registry_t fn_registry{resource()};
-                auto commit_op = services::planner::create_plan(cstor,
-                                                                fn_registry,
-                                                                ddl_commit_node,
-                                                                components::logical_plan::limit_t::unlimit(),
-                                                                /*params=*/nullptr);
-                if (commit_op) {
-                    commit_op->set_as_root();
-                    components::logical_plan::storage_parameters cparams(resource());
-                    // sender = parent_address_ so the reworked operator reaches
-                    // the dispatcher's txn_commit_drain_msg / txn_publish_msg
-                    // via ctx->current_message_sender.
-                    components::pipeline::context_t pctx{session,
-                                                         address(),
-                                                         parent_address_,
-                                                         &fn_registry,
-                                                         cparams};
-                    pctx.disk_address = disk_address_;
-                    pctx.wal_address = wal_address_;
-                    pctx.txn = resolve_txn;
-                    commit_op->prepare();
-                    commit_op->on_execute(&pctx);
-                    while (!commit_op->is_executed()) {
-                        auto waiting = commit_op->find_waiting_operator();
-                        if (!waiting)
-                            break;
-                        co_await waiting->await_async_and_resume(&pctx);
-                        commit_op->on_execute(&pctx);
-                    }
-                    if (pctx.has_pending_disk_futures()) {
-                        auto futures = pctx.take_pending_disk_futures();
-                        for (auto& f : futures) co_await std::move(f);
-                    }
-                    ddl_commit_id =
-                        static_cast<components::operators::operator_commit_transaction_t*>(commit_op.get())
-                            ->commit_id();
-                }
+            // DDL commit through the SAME commit pipeline DML and SQL COMMIT
+            // use (operator_commit_transaction_t in ddl-commit mode: flush
+            // barrier + WAL(cid=0) prefix + drain + batch publishes + WAL +
+            // publish). dml_appends recorded by the CREATE INDEX backfill are
+            // deliberately NOT accumulated: routing them through the operator
+            // would storage-re-commit already-committed rows (whole-vector
+            // constant_info assert risk); the index-only commit below covers
+            // them via the commit_id back-channel.
+            exec_result.dml_appends.clear();
+            exec_result.dml_deletes.clear();
+            auto commit_result = co_await run_commit_pipeline_(session,
+                                                               resolve_txn,
+                                                               session_ctx.session_tz,
+                                                               session_ctx.lowest_active_start_time,
+                                                               /*ddl_mode=*/true);
+            if (commit_result.cursor->is_error()) {
+                exec_result.cursor = std::move(commit_result.cursor);
             }
-            // Inline CREATE INDEX backfill: drive index commit_insert. The
-            // indexed table oid was captured at rewrite time (the plan tree
-            // was move-consumed by the execute_plan delegate above).
-            if (ddl_commit_id > 0 && original_type == node_type::create_index_t &&
+            // Inline CREATE INDEX backfill index-commit (index ONLY — see
+            // above). The indexed table oid was captured at rewrite time; the
+            // commit_id arrives via the operator's ctx back-channel.
+            if (commit_result.commit_id > 0 && original_type == node_type::create_index_t &&
                 index_address_ != actor_zeta::address_t::empty_address()) {
                 trace(log_,
                       "executor::execute_plan_full: CREATE INDEX backfill commit — oid={}, commit_id={}",
                       static_cast<unsigned>(create_index_table_oid),
-                      ddl_commit_id);
+                      commit_result.commit_id);
                 if (create_index_table_oid != components::catalog::INVALID_OID) {
                     components::execution_context_t swap_ctx{session, resolve_txn, {}};
+                    // The CREATE INDEX path commits exactly one table, so pass
+                    // a one-element oid vector to the batch commit_inserts.
+                    std::pmr::vector<components::catalog::oid_t> commit_oids{resource()};
+                    commit_oids.push_back(create_index_table_oid);
                     auto [_ci, cif] = actor_zeta::send(index_address_,
-                                                       &services::index::manager_index_t::commit_insert,
+                                                       &services::index::manager_index_t::commit_inserts,
                                                        swap_ctx,
-                                                       create_index_table_oid,
-                                                       ddl_commit_id);
+                                                       std::move(commit_oids),
+                                                       commit_result.commit_id);
                     // Today bitcask is assert+abort terminal, so
                     // contains_error() never trips on the CREATE INDEX path.
                     auto ci_result = co_await std::move(cif);
@@ -1671,9 +1531,8 @@ namespace services::collection::executor {
                 }
             }
         }
-        // NOTE deliberately preserved from the former dispatcher flow: a FAILED
-        // DDL statement does NOT abort its txn (it stays orphaned/active) —
-        // fixing that is a separate task, not part of this migration.
+        // Deliberate: a FAILED DDL statement does NOT abort its txn (it stays
+        // orphaned/active); fixing that is a separate task.
 
         // SET TIMEZONE — the operator pipeline persisted the ('TimeZone', name)
         // row to pg_settings. Surface the name so the dispatcher refreshes its
@@ -1941,6 +1800,11 @@ namespace services::collection::executor {
                 result_tracking.dml_deletes.push_back({pipeline_context.dml_table_oid,
                                                        pipeline_context.dml_delete_txn_id});
             }
+            // Commit back-channel: operator_commit_transaction_t recorded the
+            // commit_id it drained.
+            if (pipeline_context.committed_id != 0) {
+                result_tracking.commit_id = pipeline_context.committed_id;
+            }
             pipeline_context.dml_append_row_start = 0;
             pipeline_context.dml_append_row_count = 0;
             pipeline_context.dml_delete_txn_id = 0;
@@ -1952,6 +1816,37 @@ namespace services::collection::executor {
         trace(log_, "executor::execute_sub_plan finished, success: {}", cursor->is_success());
         result_tracking.cursor = std::move(cursor);
         co_return std::move(result_tracking);
+    }
+
+    executor_t::unique_future<execute_result_t>
+    executor_t::run_commit_pipeline_(components::session::session_id_t session,
+                                     components::table::transaction_data txn,
+                                     core::date::timezone_offset_t session_tz,
+                                     uint64_t lowest_active_start_time,
+                                     bool ddl_mode) {
+        // ONE commit publisher for autocommit DML, DDL and SQL COMMIT: the
+        // node lowers to operator_commit_transaction_t, which drains the
+        // dispatcher-owned transaction_t (txn_commit_drain_msg), batch-
+        // publishes storage, commits the index mirrors per table, writes the
+        // WAL marker and crosses the ProcArray barrier (txn_publish_msg).
+        auto commit_node =
+            boost::intrusive_ptr(new components::logical_plan::node_commit_transaction_t(resource()));
+        if (ddl_mode) {
+            // DDL mode prepends the flush durability barrier + WAL(cid=0)
+            // record inside the operator.
+            constexpr auto db_oid = components::catalog::well_known_oid::main_database;
+            commit_node->set_is_ddl_commit(true);
+            commit_node->set_txn_id(txn.transaction_id);
+            commit_node->set_database_oid(db_oid);
+        }
+        components::logical_plan::storage_parameters cparams(resource());
+        services::context_storage_t cstor(resource(), log_.clone(), session_tz);
+        co_return co_await execute_plan(session,
+                                        std::move(commit_node),
+                                        std::move(cparams),
+                                        std::move(cstor),
+                                        txn,
+                                        lowest_active_start_time);
     }
 
 } // namespace services::collection::executor

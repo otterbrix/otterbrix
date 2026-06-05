@@ -52,23 +52,11 @@ namespace services::index {
             case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::drop>:
                 co_await actor_zeta::dispatch(this, &index_agent_disk_t::drop, msg);
                 break;
-            case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::insert>:
-                co_await actor_zeta::dispatch(this, &index_agent_disk_t::insert, msg);
-                break;
             case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::insert_many>:
                 co_await actor_zeta::dispatch(this, &index_agent_disk_t::insert_many, msg);
                 break;
-            case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::remove>:
-                co_await actor_zeta::dispatch(this, &index_agent_disk_t::remove, msg);
-                break;
             case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::remove_many>:
                 co_await actor_zeta::dispatch(this, &index_agent_disk_t::remove_many, msg);
-                break;
-            case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::find>:
-                co_await actor_zeta::dispatch(this, &index_agent_disk_t::find, msg);
-                break;
-            case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::force_flush>:
-                co_await actor_zeta::dispatch(this, &index_agent_disk_t::force_flush, msg);
                 break;
             default:
                 break;
@@ -83,13 +71,6 @@ namespace services::index {
         trace(log_, "index_agent_disk_t::drop, session: {}", session.data());
         index_disk_->drop();
         is_dropped_ = true;
-        co_return;
-    }
-
-    index_agent_disk_t::unique_future<void>
-    index_agent_disk_t::insert(session_id_t session, value_t key, size_t row_id) {
-        trace(log_, "index_agent_disk_t::insert row {}, session: {}", row_id, session.data());
-        index_disk_->insert(key, row_id);
         co_return;
     }
 
@@ -124,13 +105,6 @@ namespace services::index {
     }
 
     index_agent_disk_t::unique_future<void>
-    index_agent_disk_t::remove(session_id_t session, value_t key, size_t row_id) {
-        trace(log_, "index_agent_disk_t::remove row {}, session: {}", row_id, session.data());
-        index_disk_->remove(key, row_id);
-        co_return;
-    }
-
-    index_agent_disk_t::unique_future<void>
     index_agent_disk_t::remove_many(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values) {
         trace(log_, "index_agent_disk_t::remove_many: {}, txn_id: {}, session: {}", values.size(), txn_id, session.data());
         auto* bitcask = dynamic_cast<bitcask_index_disk_t*>(index_disk_.get());
@@ -144,46 +118,6 @@ namespace services::index {
         if (bitcask) {
             bitcask->force_flush();
         }
-        co_return;
-    }
-
-    index_agent_disk_t::unique_future<index_disk_t::result>
-    index_agent_disk_t::find(session_id_t session, value_t value, components::expressions::compare_type compare) {
-        using components::expressions::compare_type;
-
-        trace(log_, "index_agent_disk_t::find, session: {}", session.data());
-        index_disk_t::result res{resource()};
-        switch (compare) {
-            case compare_type::eq:
-                index_disk_->find(value, res);
-                break;
-            case compare_type::ne:
-                index_disk_->lower_bound(value, res);
-                index_disk_->upper_bound(value, res);
-                break;
-            case compare_type::gt:
-                index_disk_->upper_bound(value, res);
-                break;
-            case compare_type::lt:
-                index_disk_->lower_bound(value, res);
-                break;
-            case compare_type::gte:
-                index_disk_->find(value, res);
-                index_disk_->upper_bound(value, res);
-                break;
-            case compare_type::lte:
-                index_disk_->lower_bound(value, res);
-                index_disk_->find(value, res);
-                break;
-            default:
-                break;
-        }
-        co_return res;
-    }
-
-    index_agent_disk_t::unique_future<void> index_agent_disk_t::force_flush(session_id_t session) {
-        trace(log_, "index_agent_disk_t::force_flush, session: {}", session.data());
-        force_flush_sync();
         co_return;
     }
 

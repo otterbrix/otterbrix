@@ -2379,8 +2379,7 @@ TEST_CASE("integration::cpp::test_sql_features::explicit_txn_rollback_invisible"
 }
 
 // Characterization: ALTER TABLE on a non-existent table. Pins the observable
-// behavior across the dispatcher→executor migration (the dispatcher's
-// unresolved-ALTER no-op branch is mirrored executor-side).
+// behavior of the unresolved-ALTER no-op branch.
 TEST_CASE("integration::cpp::test_sql_features::alter_table_nonexistent_characterization") {
     auto config = test_create_config("/tmp/test_sql_features/alter_nonexistent");
     test_clear_directory(config);

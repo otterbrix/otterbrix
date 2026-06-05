@@ -26,7 +26,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_mixed_batch") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -91,7 +91,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_multi_type") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -143,7 +143,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_not_null") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -211,7 +211,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_dml_full_cycle") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -288,7 +288,7 @@ TEST_CASE("integration::cpp::test_persistence::default_application_in_session") 
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -357,7 +357,7 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_consistent_wal_rec
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -411,7 +411,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_not_null_with_defaul
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -491,7 +491,7 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_two_columns_wal") 
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -541,7 +541,7 @@ TEST_CASE("integration::cpp::test_persistence::double_restart") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -618,7 +618,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_basic") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -673,7 +673,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_after_update") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -749,7 +749,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_plus_wal") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -822,7 +822,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_partial_insert") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -891,7 +891,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_not_null_default") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -964,7 +964,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_wal_only_recovery") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -1012,7 +1012,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_double_restart") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -1091,7 +1091,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_dml_full_cycle") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -1168,7 +1168,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_drop_table_survives_restart"
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -1249,7 +1249,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_add_column_survives_restart"
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {
@@ -1338,7 +1338,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_mixed_ops_checkpoint_r
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1419,7 +1419,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_long_keys_survive_chec
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1472,7 +1472,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_massive_checkpoint_cyc
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1521,5 +1521,107 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_massive_checkpoint_cyc
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 1000);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count > 950;", 49);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count < 10;", 10);
+    }
+}
+
+// Restart recovery of an on-disk user index via bootstrap_indexes_sync, over a
+// clean shutdown (base_otterbrix_t dtor CHECKPOINTs, no explicit CHECKPOINT).
+// On restart bootstrap_indexes_sync must re-mint the engine and respawn the
+// disk agent from pg_index alone, so post-restart email lookups stay correct.
+TEST_CASE("integration::cpp::test_persistence::index_recovery_phase4_catalog_driven_bootstrap") {
+    auto config =
+        test_create_config("/tmp/otterbrix/integration/test_persistence/index_recovery_phase4_catalog_driven_bootstrap");
+    test_clear_directory(config);
+
+    INFO("phase 1: create users(id, email) + email index, insert 10 rows, dtor checkpoint") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE TABLE TestDatabase.users (id INT, email TEXT) "
+                                               "WITH (storage = 'disk');");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE INDEX users_email_idx ON TestDatabase.users (email);");
+            REQUIRE(cur->is_success());
+        }
+
+        // Stable emails ("user_0@x" … "user_9@x") so post-restart lookups can
+        // probe both an existing and a missing value unambiguously.
+        {
+            auto session = otterbrix::session_id_t();
+            std::stringstream q;
+            q << "INSERT INTO TestDatabase.users (id, email) VALUES ";
+            for (int i = 0; i < 10; ++i) {
+                q << "(" << i << ", 'user_" << i << "@x')" << (i == 9 ? ";" : ", ");
+            }
+            auto cur = dispatcher->execute_sql(session, q.str());
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 10);
+        }
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.users;", 10);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.users WHERE email = 'user_0@x';", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.users WHERE email = 'user_9@x';", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.users WHERE email = 'missing@x';", 0);
+    }
+
+    INFO("phase 2: restart — bootstrap rewires the email index from pg_index") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        // Structural witness: the disk agent's bitcask dir at
+        // ${disk.path}/${users_oid}/users_email_idx exists, proving bootstrap
+        // respawned it. Walk the oid-keyed dirs (oid >= 16384 = user tables).
+        bool found = false;
+        if (std::filesystem::exists(config.disk.path)) {
+            for (const auto& d : std::filesystem::directory_iterator(config.disk.path)) {
+                if (!d.is_directory())
+                    continue;
+                try {
+                    auto oid = std::stoull(d.path().filename().string());
+                    if (oid < 16384)
+                        continue;
+                } catch (...) {
+                    continue;
+                }
+                auto candidate = d.path() / "users_email_idx";
+                if (std::filesystem::exists(candidate) && std::filesystem::is_directory(candidate)) {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        REQUIRE(found);
+
+        // Functional witness: equality lookups on the indexed column return
+        // correct rows. "Index was used" isn't observable from SQL, so dir
+        // existence + correct results together stand in for it.
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.users;", 10);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.users WHERE email = 'user_0@x';", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.users WHERE email = 'user_5@x';", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.users WHERE email = 'user_9@x';", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.users WHERE email = 'missing@x';", 0);
+
+        // A fresh INSERT + lookup proves the rewired engine takes runtime
+        // writes, not just read-only replay.
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "INSERT INTO TestDatabase.users (id, email) VALUES (10, 'user_10@x');");
+            REQUIRE(cur->is_success());
+        }
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.users;", 11);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.users WHERE email = 'user_10@x';", 1);
     }
 }

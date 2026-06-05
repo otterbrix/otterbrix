@@ -1,8 +1,12 @@
 #include "manager_wal_replicate.hpp"
 
 #include <algorithm>
+#include <cassert>
+#include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <mutex>
+#include <thread>
 
 #include <actor-zeta/spawn.hpp>
 #include <core/executor.hpp>
@@ -67,9 +71,102 @@ namespace services::wal {
             global_id_.store(max_recovered_id, std::memory_order_relaxed);
         }
         trace(log_, "manager_wal_replicate finish");
+
+        // Start the event loop only after all WAL recovery above has completed,
+        // so the loop never races with the (single-threaded) recovery scan.
+        loop_thread_ = std::thread([this] {
+            // in_flight lives on the loop thread for the whole loop lifetime and
+            // owns every in-flight message_ptr and behavior_t.
+            // this->resource() is qualified because the ctor param `resource` shadows the member fn.
+            std::pmr::list<in_flight_entry_t> in_flight(this->resource());
+
+            while (loop_running_.load(std::memory_order_acquire)) {
+                // Drain the lock-free inbox, re-wrapping each raw message* into a message_ptr.
+                actor_zeta::mailbox::message* raw = nullptr;
+                while (inbox_.pop(raw)) {
+                    in_flight.emplace_back();
+                    in_flight.back().pending_msg = actor_zeta::mailbox::message_ptr(raw);
+                }
+
+                bool made_progress = false;
+
+                // Unlike manager_dispatcher_t, all sends here are co_await'ed
+                // inline, so there are no pending_<T>_ containers / poll_pending step.
+
+                // (a) Create a behavior for the next entry that needs one. pending_msg
+                //     STAYS in its slot: the coroutine holds a raw pointer to the
+                //     message across suspension points, so it must outlive the behavior.
+                for (auto& e : in_flight) {
+                    if (e.pending_msg && !e.behavior) {
+                        e.behavior = behavior(e.pending_msg.get());
+                        made_progress = true;
+                        break;
+                    }
+                }
+                if (made_progress) {
+                    continue;
+                }
+
+                // (b) Resume any behavior whose awaited result is ready.
+                {
+                    actor_zeta::detail::coroutine_handle<> cont{};
+                    for (auto& e : in_flight) {
+                        if (e.behavior.is_awaited_ready()) {
+                            cont = e.behavior.take_awaited_continuation();
+                            if (cont) {
+                                break;
+                            }
+                        }
+                    }
+                    if (cont) {
+                        cont.resume();
+                        continue;
+                    }
+                }
+
+                // (c) Erase one done entry per pass (destroying its behavior_t and
+                //     message_ptr on the loop thread). Done = behavior created AND completed.
+                for (auto it = in_flight.begin(); it != in_flight.end();) {
+                    if (it->behavior && it->behavior.done()) {
+                        it = in_flight.erase(it);
+                        made_progress = true;
+                        break;
+                    } else {
+                        ++it;
+                    }
+                }
+                if (made_progress) {
+                    continue;
+                }
+
+                // Idle: wait for an enqueue notify, or a bounded staleness window
+                // to re-check the inbox / behaviors that became ready off-thread.
+                std::unique_lock<std::mutex> lock(mutex_);
+                pump_cv_.wait_for(lock, std::chrono::microseconds(100));
+            }
+            // in_flight (and every message_ptr / behavior_t it owns) is destroyed
+            // here, on the loop thread — never on a sender thread.
+        });
     }
 
-    manager_wal_replicate_t::~manager_wal_replicate_t() { trace(log_, "delete manager_wal_replicate_t"); }
+    manager_wal_replicate_t::~manager_wal_replicate_t() {
+        trace(log_, "delete manager_wal_replicate_t");
+        // Stop the loop and join before tearing down members.
+        loop_running_.store(false, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> guard(mutex_);
+            pump_cv_.notify_one();
+        }
+        if (loop_thread_.joinable()) {
+            loop_thread_.join();
+        }
+        // Drain messages that arrived after the final loop pass so their promise
+        // sides release cleanly.
+        actor_zeta::mailbox::message* raw = nullptr;
+        while (inbox_.pop(raw)) {
+            actor_zeta::mailbox::message_ptr drained(raw);
+        }
+    }
 
     // -----------------------------------------------------------------------
     // Actor infrastructure
@@ -81,19 +178,10 @@ namespace services::wal {
 
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_wal_replicate_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
-        current_behavior_ = behavior(msg.get());
-
-        while (current_behavior_.is_busy()) {
-            if (current_behavior_.is_awaited_ready()) {
-                auto cont = current_behavior_.take_awaited_continuation();
-                if (cont) {
-                    cont.resume();
-                }
-            } else {
-                run_fn_();
-            }
-        }
-
+        // Senders only deliver: hand the raw message to the lock-free inbox and
+        // wake the loop. ALL processing runs on loop_thread_, never here.
+        inbox_.push(msg.release());
+        pump_cv_.notify_one();
         return {false, actor_zeta::detail::enqueue_result::success};
     }
 
@@ -131,6 +219,14 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::write_physical_update, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::register_active_build>: {
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::register_active_build, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::unregister_active_build>: {
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::unregister_active_build, msg);
+                break;
+            }
             default:
                 break;
         }
@@ -145,6 +241,46 @@ namespace services::wal {
         manager_disk_ = std::move(disk_addr);
         manager_dispatcher_ = std::move(dispatcher_addr);
         trace(log_, "manager_wal_replicate::sync done");
+    }
+
+    // Retention guard: active CREATE INDEX build registration. Unlocked — see
+    // the single-threaded assumption documented on the declarations.
+
+    void manager_wal_replicate_t::register_active_build_sync(wal::id_t build_start_wal_position) {
+        active_build_start_positions_.emplace(build_start_wal_position);
+        trace(log_,
+              "manager_wal_replicate::register_active_build_sync wal_id={} active_builds={}",
+              build_start_wal_position,
+              active_build_start_positions_.size());
+    }
+
+    void manager_wal_replicate_t::unregister_active_build_sync(wal::id_t build_start_wal_position) {
+        auto erased = active_build_start_positions_.erase(build_start_wal_position);
+        // Invariant: every unregister matches a prior register; a mismatch is an
+        // operator_create_index lifecycle bug that would silently leak retention.
+        assert(erased == 1 && "unregister_active_build_sync called without matching register");
+        if (erased != 1) {
+            std::abort();
+        }
+        trace(log_,
+              "manager_wal_replicate::unregister_active_build_sync wal_id={} active_builds={}",
+              build_start_wal_position,
+              active_build_start_positions_.size());
+    }
+
+    // Mailbox twins of the _sync helpers (see declarations). The body runs on
+    // the manager's thread, so it may call the sync helper directly.
+
+    manager_wal_replicate_t::unique_future<void>
+    manager_wal_replicate_t::register_active_build(session_id_t /*session*/, wal::id_t build_start_wal_position) {
+        register_active_build_sync(build_start_wal_position);
+        co_return;
+    }
+
+    manager_wal_replicate_t::unique_future<void>
+    manager_wal_replicate_t::unregister_active_build(session_id_t /*session*/, wal::id_t build_start_wal_position) {
+        unregister_active_build_sync(build_start_wal_position);
+        co_return;
     }
 
     // -----------------------------------------------------------------------
@@ -164,7 +300,7 @@ namespace services::wal {
         }
 
         trace(log_, "manager_wal_replicate: spawning worker for database_oid={}", static_cast<unsigned>(database_oid));
-        auto worker = actor_zeta::spawn<wal_worker_t>(resource_, this, log_, config_, database_oid);
+        auto worker = actor_zeta::spawn<wal_worker_t>(resource_, log_, config_, database_oid);
         auto* ptr = worker.get();
         wal_actors_.emplace(database_oid, std::move(worker));
         return ptr;
@@ -207,7 +343,8 @@ namespace services::wal {
     manager_wal_replicate_t::commit_txn(session_id_t session,
                                         uint64_t txn_id,
                                         wal_sync_mode sync_mode,
-                                        components::catalog::oid_t database_oid) {
+                                        components::catalog::oid_t database_oid,
+                                        uint64_t commit_id) {
         if (!enabled_) {
             co_return wal::id_t{0};
         }
@@ -219,13 +356,14 @@ namespace services::wal {
                                                               session,
                                                               txn_id,
                                                               sync_mode,
-                                                              wal_id);
+                                                              wal_id,
+                                                              commit_id);
         if (needs_sched) {
             scheduler_->enqueue(worker);
         }
         auto result = co_await std::move(fut);
         // Track WAL bytes for auto-checkpoint threshold.
-        wal_bytes_since_checkpoint_ = total_wal_bytes();
+        wal_bytes_since_checkpoint_.store(total_wal_bytes(), std::memory_order_relaxed);
         co_return result;
     }
 
@@ -265,6 +403,19 @@ namespace services::wal {
                                                                                           wal::id_t checkpoint_wal_id) {
         if (!enabled_) {
             co_return;
+        }
+
+        // Clamp to min(active_build_start_positions_) so an in-flight CREATE
+        // INDEX backfill catchup still finds its records. Empty => no clamp.
+        if (!active_build_start_positions_.empty()) {
+            auto earliest = *active_build_start_positions_.begin();
+            if (earliest < checkpoint_wal_id) {
+                trace(log_,
+                      "manager_wal_replicate::truncate_before clamped from {} to {} due to active build retention",
+                      checkpoint_wal_id,
+                      earliest);
+                checkpoint_wal_id = earliest;
+            }
         }
 
         // Send to ALL workers.
@@ -333,13 +484,13 @@ namespace services::wal {
                                                    std::unique_ptr<components::vector::data_chunk_t> data_chunk,
                                                    uint64_t row_start,
                                                    uint64_t row_count,
-                                                   uint64_t txn_id) {
+                                                   uint64_t txn_id,
+                                                   components::catalog::oid_t database_oid) {
         if (!enabled_) {
             co_return wal::id_t{0};
         }
 
-        constexpr auto db_oid = components::catalog::well_known_oid::main_database;
-        auto* worker = get_or_create_worker(db_oid);
+        auto* worker = get_or_create_worker(database_oid);
         auto wal_id = next_wal_id();
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(worker->address(),
                                                               &wal_worker_t::write_physical_insert,
@@ -366,13 +517,13 @@ namespace services::wal {
                                                    components::catalog::oid_t table_oid,
                                                    std::pmr::vector<int64_t> row_ids,
                                                    uint64_t count,
-                                                   uint64_t txn_id) {
+                                                   uint64_t txn_id,
+                                                   components::catalog::oid_t database_oid) {
         if (!enabled_) {
             co_return wal::id_t{0};
         }
 
-        constexpr auto db_oid = components::catalog::well_known_oid::main_database;
-        auto* worker = get_or_create_worker(db_oid);
+        auto* worker = get_or_create_worker(database_oid);
         auto wal_id = next_wal_id();
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(worker->address(),
                                                               &wal_worker_t::write_physical_delete,
@@ -399,13 +550,13 @@ namespace services::wal {
                                                    std::pmr::vector<int64_t> row_ids,
                                                    std::unique_ptr<components::vector::data_chunk_t> new_data,
                                                    uint64_t count,
-                                                   uint64_t txn_id) {
+                                                   uint64_t txn_id,
+                                                   components::catalog::oid_t database_oid) {
         if (!enabled_) {
             co_return wal::id_t{0};
         }
 
-        constexpr auto db_oid = components::catalog::well_known_oid::main_database;
-        auto* worker = get_or_create_worker(db_oid);
+        auto* worker = get_or_create_worker(database_oid);
         auto wal_id = next_wal_id();
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(worker->address(),
                                                               &wal_worker_t::write_physical_update,

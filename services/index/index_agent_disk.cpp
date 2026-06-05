@@ -101,6 +101,8 @@ namespace services::index {
             bitcask->apply_txn_inserts(txn_id, values);
             co_return;
         }
+        // bulk_guard_t disengages the bulk-write window on scope exit so a
+        // mid-loop bail-out still closes the bulk mode cleanly.
         struct bulk_guard_t {
             bitcask_index_disk_t* ptr{nullptr};
             ~bulk_guard_t() {
@@ -185,6 +187,8 @@ namespace services::index {
         co_return;
     }
 
+    // Synchronous owner-side entry — called by manager_index_t outside the
+    // actor mailbox.
     void index_agent_disk_t::force_flush_sync() {
         if (index_disk_ && !is_dropped_) {
             index_disk_->force_flush();

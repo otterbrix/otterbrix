@@ -26,7 +26,6 @@ namespace components::table {
         REGULAR = 0,
         COMMITTED_ROWS = 1,
         COMMITTED_ROWS_DISALLOW_UPDATES = 2,
-        COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED = 3,
         LATEST_COMMITTED_ROWS = 4
     };
 

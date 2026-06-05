@@ -30,9 +30,8 @@ namespace components::operators {
     actor_zeta::unique_future<void> operator_vacuum_t::await_async_and_resume(pipeline::context_t* ctx) {
         const std::uint64_t lowest = ctx->lowest_active_start_time;
 
-        // Step 1: vacuum_all — cleanup_versions + compact across every user
-        // storage. The disk manager already iterates its storages_ map, so a
-        // single global call suffices (matches the legacy dispatcher path).
+        // cleanup_versions + compact across every user storage. The disk manager
+        // iterates its own storages_ map, so one global call suffices.
         {
             auto [_v, vf] =
                 actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::vacuum_all, ctx->session, lowest);
@@ -45,7 +44,6 @@ namespace components::operators {
             co_return;
         }
 
-        // Step 2: drop reclaimed index versions globally.
         {
             auto [_cv, cvf] = actor_zeta::send(ctx->index_address,
                                                &services::index::manager_index_t::cleanup_all_versions,
@@ -54,10 +52,8 @@ namespace components::operators {
             co_await std::move(cvf);
         }
 
-        // Step 3: enumerate user relations via pg_class (relkind 'r' or 'g')
-        // and rebuild + repopulate indexes — compact in step 1 invalidates row
-        // positions. pg_class is the authoritative source for user relations;
-        // routing is by table_oid only.
+        // Enumerate user relations via pg_class (relkind 'r'/'g') and rebuild +
+        // repopulate their indexes: the compact pass above invalidated row positions.
         constexpr catalog::oid_t kPgClass = catalog::well_known_oid::pg_class_table;
 
         std::unique_ptr<components::vector::data_chunk_t> pg_class_rows;
@@ -82,8 +78,8 @@ namespace components::operators {
             catalog::oid_t table_oid;
         };
         std::vector<user_table_t> user_tables;
-        // Collect computing-table OIDs in the same pass so step 5 (the
-        // pg_computed_column GC) doesn't have to re-scan pg_class.
+        // Collect computing-table OIDs in the same pass so the later
+        // pg_computed_column GC doesn't have to re-scan pg_class.
         std::vector<catalog::oid_t> computing_table_oids;
 
         for (std::uint64_t i = 0; i < pg_class_rows->size(); ++i) {
@@ -108,10 +104,8 @@ namespace components::operators {
             user_tables.push_back({this_oid});
         }
 
-        // Step 4: for each user table, rebuild its in-memory index then
-        // re-populate from the just-compacted storage. Mirrors the legacy
-        // dispatcher block verbatim, just iterating pg_class instead of
-        // dispatcher.collections_.
+        // For each user table, rebuild its in-memory index and re-populate it
+        // from the just-compacted storage.
         for (auto& tbl : user_tables) {
             {
                 auto [_rb, rbf] = actor_zeta::send(ctx->index_address,
@@ -157,7 +151,7 @@ namespace components::operators {
             co_await std::move(irf);
         }
 
-        // Step 5: GC pg_computed_column rows for relkind='g' tables.
+        // GC pg_computed_column rows for relkind='g' tables.
         //
         // Safety vs. concurrent VACUUM + INSERT: VACUUM uses
         // ctx->lowest_active_start_time as the snapshot horizon. The

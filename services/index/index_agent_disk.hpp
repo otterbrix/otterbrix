@@ -23,6 +23,8 @@
 #include <core/btree/btree.hpp>
 #include <cstdint>
 #include <filesystem>
+#include <memory_resource>
+#include <set>
 
 namespace services::index {
 
@@ -43,6 +45,10 @@ namespace services::index {
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
 
+        // committed_txn_ids: the WAL-replay set of committed transaction ids,
+        // forwarded to the bitcask index txn-log recover gate (M1.1). Fresh,
+        // post-bootstrap agents pass an EMPTY set (a fresh dir has no txn-log to
+        // gate). The btree / disk_hash branches ignore it (no txn log).
         index_agent_disk_t(std::pmr::memory_resource* resource,
                            const path_t& path_db,
                            components::catalog::oid_t table_oid,
@@ -51,7 +57,8 @@ namespace services::index {
                            uint64_t bitcask_flush_threshold,
                            uint64_t bitcask_segment_record_limit,
                            uint64_t btree_flush_threshold,
-                           log_t& log);
+                           log_t& log,
+                           std::pmr::set<std::uint64_t> committed_txn_ids);
         ~index_agent_disk_t();
 
         components::catalog::oid_t table_oid() const { return table_oid_; }

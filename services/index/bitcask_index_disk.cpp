@@ -182,14 +182,16 @@ namespace services::index {
     bitcask_index_disk_t::bitcask_index_disk_t(const path_t& path,
                                                std::pmr::memory_resource* resource,
                                                uint64_t flush_threshold,
-                                               uint64_t segment_record_limit)
+                                               uint64_t segment_record_limit,
+                                               std::pmr::set<std::uint64_t> committed_txn_ids)
         : index_disk_t(flush_threshold)
         , path_(path)
         , hash_index_file_path_(path_ / hash_index_file)
         , resource_(resource)
         , fs_(core::filesystem::local_file_system_t())
         , segment_record_limit_(segment_record_limit)
-        , task_executor_(std::make_unique<bitcask_task_executor_t>()) {
+        , task_executor_(std::make_unique<bitcask_task_executor_t>())
+        , committed_txn_ids_(committed_txn_ids.begin(), committed_txn_ids.end(), resource) {
         initialize_storage();
         // Keep file identity stable for the facade reader: rehash recreates
         // hash_index.bin and can leave other open handles on stale inode.
@@ -212,11 +214,17 @@ namespace services::index {
     bitcask_index_disk_t::create(const path_t& path,
                                   std::pmr::memory_resource* resource,
                                   uint64_t flush_threshold,
-                                  uint64_t segment_record_limit) {
+                                  uint64_t segment_record_limit,
+                                  std::pmr::set<std::uint64_t> committed_txn_ids) {
         // skip_load ctor does no I/O, so we can run load_from_disk() and check
-        // crc_failure_ before open_active_segment().
-        auto instance = std::unique_ptr<bitcask_index_disk_t>(
-            new bitcask_index_disk_t(path, resource, flush_threshold, segment_record_limit, skip_load_tag{}));
+        // crc_failure_ before open_active_segment(). committed_txn_ids is stored
+        // by the skip_load ctor so the recover gate is armed before recovery.
+        auto instance = std::unique_ptr<bitcask_index_disk_t>(new bitcask_index_disk_t(path,
+                                                                                       resource,
+                                                                                       flush_threshold,
+                                                                                       segment_record_limit,
+                                                                                       std::move(committed_txn_ids),
+                                                                                       skip_load_tag{}));
         instance->load_from_disk();
         if (instance->crc_failure_) {
             return core::error_t{core::error_code_t::index_create_fail,
@@ -231,6 +239,7 @@ namespace services::index {
                                                 std::pmr::memory_resource* resource,
                                                 uint64_t flush_threshold,
                                                 uint64_t segment_record_limit,
+                                                std::pmr::set<std::uint64_t> committed_txn_ids,
                                                 skip_load_tag)
         : index_disk_t(flush_threshold)
         , path_(path)
@@ -238,7 +247,8 @@ namespace services::index {
         , resource_(resource)
         , fs_(core::filesystem::local_file_system_t())
         , segment_record_limit_(segment_record_limit)
-        , task_executor_(std::make_unique<bitcask_task_executor_t>()) {
+        , task_executor_(std::make_unique<bitcask_task_executor_t>())
+        , committed_txn_ids_(committed_txn_ids.begin(), committed_txn_ids.end(), resource) {
         initialize_storage();
         hash_index_ = std::make_unique<disk_hash_table_t>(hash_index_file_path_,
                                                           disk_hash_table_t::default_bucket_count,
@@ -602,6 +612,16 @@ namespace services::index {
         txn_log_file_->sync();
     }
 
+    // Replay the index txn log, gated by the WAL committed-txn set (M1.1).
+    //
+    // Invariant: index txn-log frames are fsync'd durable BEFORE the WAL commit
+    // marker is written. A crash inside that window leaves durable index frames
+    // for a transaction whose WAL replay rejects (no COMMIT marker). Replaying
+    // such a frame would resurrect an uncommitted transaction's index entries
+    // (phantom entries). The gate therefore APPLIES a frame only when its txn_id
+    // is in committed_txn_ids_; every frame (applied or skipped) still advances
+    // write_applied_log_offset(frame_end) so the log is consumed monotonically.
+    // There is no txn_id==0 frame class — both writers are guarded txn_id!=0.
     void bitcask_index_disk_t::recover_txn_log_unlocked() {
         const auto log_path = txn_log_file_path();
         if (!std::filesystem::exists(log_path)) {
@@ -647,22 +667,33 @@ namespace services::index {
                 std::abort();
             }
 
-            size_t pos = 0;
-            const auto count = components::index::codec::read_le<uint32_t>(payload, pos);
-            for (uint32_t i = 0; i < count; ++i) {
-                auto key = components::index::codec::read_logical_value(resource_, payload, pos);
-                const auto row_id = static_cast<size_t>(components::index::codec::read_le<uint64_t>(payload, pos));
-                if (header.op_kind == 1) {
-                    insert(key, row_id);
-                } else if (header.op_kind == 2) {
-                    remove(key, row_id);
-                } else {
-                    // -fno-exceptions build: abort instead of throw on I/O failure.
-                    assert(false && "bitcask I/O failure");
-                    std::abort();
-                }
+            // Gate: apply only frames of committed transactions. A frame whose
+            // txn_id never committed (its WAL commit marker did not land) is
+            // skipped to avoid phantom index entries. op_kind is still validated
+            // for every frame so a corrupt log still aborts.
+            const bool committed = committed_txn_ids_.count(header.txn_id) > 0;
+            if (header.op_kind != 1 && header.op_kind != 2) {
+                // -fno-exceptions build: abort instead of throw on I/O failure.
+                assert(false && "bitcask I/O failure");
+                std::abort();
             }
-            force_flush_unlocked();
+            if (committed) {
+                size_t pos = 0;
+                const auto count = components::index::codec::read_le<uint32_t>(payload, pos);
+                for (uint32_t i = 0; i < count; ++i) {
+                    auto key = components::index::codec::read_logical_value(resource_, payload, pos);
+                    const auto row_id =
+                        static_cast<size_t>(components::index::codec::read_le<uint64_t>(payload, pos));
+                    if (header.op_kind == 1) {
+                        insert(key, row_id);
+                    } else {
+                        remove(key, row_id);
+                    }
+                }
+                force_flush_unlocked();
+            }
+            // Every frame — applied or skipped — advances the applied offset so
+            // the log is consumed monotonically and never re-replayed.
             const auto frame_end_offset = static_cast<uint64_t>(in.tellg());
             write_applied_log_offset(frame_end_offset);
         }

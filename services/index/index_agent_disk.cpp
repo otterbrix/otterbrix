@@ -11,14 +11,19 @@ namespace services::index {
                                                       components::logical_plan::index_type type,
                                                       uint64_t bitcask_flush_threshold,
                                                       uint64_t bitcask_segment_record_limit,
-                                                      uint64_t btree_flush_threshold) {
+                                                      uint64_t btree_flush_threshold,
+                                                      std::pmr::set<std::uint64_t> committed_txn_ids) {
             // index_type::hashed → bitcask LSM. Everything else (single / composite /
             // multikey / wildcard) → ordered B+tree.
+            //
+            // Only the bitcask branch owns a txn log, so only it receives the WAL
+            // committed-txn set for the recover gate (M1.1). btree has no txn log.
             if (type == components::logical_plan::index_type::hashed) {
                 return std::make_unique<bitcask_index_disk_t>(path,
                                                               resource,
                                                               bitcask_flush_threshold,
-                                                              bitcask_segment_record_limit);
+                                                              bitcask_segment_record_limit,
+                                                              std::move(committed_txn_ids));
             }
             return std::make_unique<btree_index_disk_t>(path, resource, btree_flush_threshold);
         }
@@ -32,7 +37,8 @@ namespace services::index {
                                            uint64_t bitcask_flush_threshold,
                                            uint64_t bitcask_segment_record_limit,
                                            uint64_t btree_flush_threshold,
-                                           log_t& log)
+                                           log_t& log,
+                                           std::pmr::set<std::uint64_t> committed_txn_ids)
         : actor_zeta::basic_actor<index_agent_disk_t>(resource)
         , log_(log.clone())
         , index_disk_(make_index_disk(path_db / std::to_string(static_cast<unsigned>(table_oid)) / index_name,
@@ -40,7 +46,8 @@ namespace services::index {
                                       type,
                                       bitcask_flush_threshold,
                                       bitcask_segment_record_limit,
-                                      btree_flush_threshold))
+                                      btree_flush_threshold,
+                                      std::move(committed_txn_ids)))
         , table_oid_(table_oid) {
         trace(log_, "index_agent_disk::create {} (table_oid={})", index_name, static_cast<unsigned>(table_oid));
     }

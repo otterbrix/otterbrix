@@ -22,7 +22,8 @@ namespace services::wal {
     // 4. Merge all databases, sort by wal_id ascending.
     // -----------------------------------------------------------------------
 
-    std::vector<record_t> wal_reader_t::read_committed_records(id_t after_wal_id) {
+    std::vector<record_t> wal_reader_t::read_committed_records(id_t after_wal_id,
+                                                               std::set<std::uint64_t>* committed_out) {
         std::vector<record_t> merged;
 
         if (!std::filesystem::exists(config_.path)) {
@@ -38,7 +39,9 @@ namespace services::wal {
             auto db_name = entry.path().filename().string();
             trace(log_, "wal_reader::read_committed_records , scanning database '{}'", db_name);
 
-            auto db_records = read_database_segments(entry.path(), after_wal_id);
+            // committed_out collects the union of committed txn ids across all
+            // databases (read_database_segments inserts this db's ids into it).
+            auto db_records = read_database_segments(entry.path(), after_wal_id, committed_out);
             for (auto& r : db_records) {
                 merged.push_back(std::move(r));
             }
@@ -58,7 +61,9 @@ namespace services::wal {
     // apply the 2-pass committed-transaction filter.
     // -----------------------------------------------------------------------
 
-    std::vector<record_t> wal_reader_t::read_database_segments(const std::filesystem::path& db_dir, id_t after_wal_id) {
+    std::vector<record_t> wal_reader_t::read_database_segments(const std::filesystem::path& db_dir,
+                                                               id_t after_wal_id,
+                                                               std::set<std::uint64_t>* committed_out) {
         // Discover segment files. WAL segments are named wal_<db>_NNNNNN.
         std::vector<std::filesystem::path> segments;
 
@@ -109,6 +114,13 @@ namespace services::wal {
             if (r.is_commit_marker() && r.is_valid()) {
                 committed_txns.insert(r.transaction_id);
             }
+        }
+
+        // Export this database's committed txn ids into the caller's union set.
+        // The filter below is unchanged (still keyed on the local committed_txns)
+        // so the returned records stay byte-identical.
+        if (committed_out != nullptr) {
+            committed_out->insert(committed_txns.begin(), committed_txns.end());
         }
 
         // Pass 2: keep only records belonging to committed transactions.

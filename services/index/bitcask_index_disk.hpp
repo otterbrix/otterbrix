@@ -15,6 +15,7 @@
 #include <functional>
 #include <memory>
 #include <memory_resource>
+#include <set>
 #include <shared_mutex>
 #include <vector>
 
@@ -25,20 +26,28 @@ namespace services::index {
         static constexpr uint64_t default_flush_threshold_{1000};
         static constexpr uint64_t default_segment_record_limit_{10000};
 
+        // committed_txn_ids: WAL-replay set of committed transaction ids. The
+        // txn-log recover gate (M1.1) applies a frame only when its txn_id is in
+        // this set; uncommitted-txn frames are skipped (their WAL commit marker
+        // never landed). A fresh, runtime-created instance passes an EMPTY set —
+        // a fresh dir has no txn-log to gate.
         bitcask_index_disk_t(const path_t& path,
                              std::pmr::memory_resource* resource,
-                             uint64_t flush_threshold = default_flush_threshold_,
-                             uint64_t segment_record_limit = default_segment_record_limit_);
+                             uint64_t flush_threshold,
+                             uint64_t segment_record_limit,
+                             std::pmr::set<std::uint64_t> committed_txn_ids);
         ~bitcask_index_disk_t() override;
 
         // Factory returning the instance, or a core::error_t when on-disk
         // recovery fails (e.g. segment CRC mismatch). Production code MUST use
         // this: the direct ctor below loads from disk and aborts on corruption.
+        // committed_txn_ids carries the same recover-gate meaning as the ctor.
         [[nodiscard]] static core::result_wrapper_t<std::unique_ptr<bitcask_index_disk_t>>
         create(const path_t& path,
                std::pmr::memory_resource* resource,
-               uint64_t flush_threshold = default_flush_threshold_,
-               uint64_t segment_record_limit = default_segment_record_limit_);
+               uint64_t flush_threshold,
+               uint64_t segment_record_limit,
+               std::pmr::set<std::uint64_t> committed_txn_ids);
 
         using entry_t = std::pair<value_t, size_t>;
         using entries_t = std::pmr::vector<entry_t>;
@@ -72,11 +81,13 @@ namespace services::index {
 
         // Skip-load ctor used by create() — performs no disk I/O so the
         // factory can stage load_from_disk() and check crc_failure_ before
-        // running the rest of the recovery pipeline.
+        // running the rest of the recovery pipeline. committed_txn_ids is stored
+        // here so the recover gate is armed when create() later runs recovery.
         bitcask_index_disk_t(const path_t& path,
                              std::pmr::memory_resource* resource,
                              uint64_t flush_threshold,
                              uint64_t segment_record_limit,
+                             std::pmr::set<std::uint64_t> committed_txn_ids,
                              skip_load_tag);
 
         struct segment_info_t {
@@ -130,6 +141,11 @@ namespace services::index {
         bool bulk_mode_{false};
         mutable std::shared_mutex mutex_;
         std::unique_ptr<bitcask_task_executor_t> task_executor_;
+        // WAL-replay committed transaction ids — the recover gate (M1.1) applies
+        // a txn-log frame only when committed_txn_ids_.count(header.txn_id) > 0.
+        // Allocated on resource_ (the resource the class stores). Empty for a
+        // fresh, runtime-created instance (no txn-log to gate).
+        std::pmr::set<std::uint64_t> committed_txn_ids_;
         // Set by load_from_disk when a segment's CRC check fails. The
         // factory checks this flag to convert the failure into a
         // core::error_t; the direct ctor asserts.

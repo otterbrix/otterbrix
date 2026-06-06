@@ -16,6 +16,7 @@
 #include <msgpack.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <services/wal/record.hpp>
+#include <set>
 #include <unordered_map>
 
 namespace {
@@ -670,6 +671,10 @@ namespace services::index {
             // Create disk agent for persistent storage
             if (!path_db_.empty()) {
                 try {
+                    // Runtime DDL path: a fresh index dir with no txn-log to
+                    // gate, so the recover-gate set is EMPTY (correct value, not
+                    // a fallback). Built on resource_ — the resource the agent
+                    // and its bitcask store use.
                     auto agent =
                         actor_zeta::spawn<index_agent_disk_t>(resource_,
                                                               path_db_,
@@ -679,7 +684,8 @@ namespace services::index {
                                                               bitcask_index_disk_t::default_flush_threshold_,
                                                               bitcask_index_disk_t::default_segment_record_limit_,
                                                               btree_index_disk_t::default_flush_threshold_,
-                                                              log_);
+                                                              log_,
+                                                              std::pmr::set<std::uint64_t>(resource_));
 
                     // Link disk agent with in-memory index
                     auto* idx = components::index::search_index(engine, keys);

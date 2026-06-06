@@ -74,7 +74,7 @@ set(${PROJECT_NAME}_SOURCES
         operators/arithmetic_eval.cpp
 )
 
-add_library(otterbrix_${PROJECT_NAME}
+add_library(otterbrix_${PROJECT_NAME} OBJECT
         ${${PROJECT_NAME}_HEADERS}
         ${${PROJECT_NAME}_SOURCES}
 )

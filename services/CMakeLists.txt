@@ -58,6 +58,7 @@ target_link_libraries(
         otterbrix::table
         otterbrix::types
         otterbrix::context
+        otterbrix::physical_plan
         otterbrix::physical_plan_generator
         otterbrix::storage
         otterbrix::catalog

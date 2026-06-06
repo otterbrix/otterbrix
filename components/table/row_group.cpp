@@ -645,6 +645,16 @@ namespace components::table {
         }
     }
 
+    void row_group_t::revert_all_deletes(uint64_t txn_id) {
+        auto vinfo = version_info();
+        if (vinfo) {
+            vinfo->revert_all_deletes(txn_id);
+        }
+        // No current_version_ advance: revert un-marks pending deletes back to
+        // NOT_DELETED_ID, restoring visibility. Unlike commit there is no new
+        // commit_id to publish, so the version watermark stays where it was.
+    }
+
     row_version_manager_t& row_group_t::get_or_create_version_info() {
         auto vinfo = version_info();
         if (vinfo) {

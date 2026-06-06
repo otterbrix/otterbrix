@@ -117,7 +117,7 @@ namespace components::table {
     uint64_t transaction_manager_t::lowest_active_snapshot_horizon() const {
         std::lock_guard guard(lock_);
         if (active_.empty()) {
-            // M2.4/F5 — empty active_ returns published_horizon_, NOT an in-flight
+            // Empty active_ returns published_horizon_, NOT an in-flight
             // commit id. A commit that ALLOCATED a commit_id but has not yet
             // published sits in in_flight_commits_ (commit() inserts it; publish()
             // erases it and only THEN bumps published_horizon_). With active_ empty
@@ -128,7 +128,7 @@ namespace components::table {
             //   * the agents' sweep keeps a tombstone only while
             //     dropped_at == commit_id < horizon;
             //   * horizon only reaches commit_id AFTER this same txn's publish()
-            //     (which is co_awaited AFTER the remap — see F10 below).
+            //     (which is co_awaited AFTER the remap).
             // So during the pre-publish window horizon < commit_id, the sweep's
             // strict `<` fails, and the txn's fresh tombstones survive until its
             // own publish makes the rows visible. No early-reclaim race exists.

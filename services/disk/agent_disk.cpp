@@ -278,6 +278,10 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_publish_deletes_inner, msg);
                 break;
             }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_revert_deletes_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::storage_revert_deletes_inner, msg);
+                break;
+            }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_revert_appends_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_revert_appends_inner, msg);
                 break;
@@ -340,6 +344,10 @@ namespace services::disk {
             }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_dropped_committed_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_dropped_committed_inner, msg);
+                break;
+            }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_drop_aborted_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::storage_drop_aborted_inner, msg);
                 break;
             }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::register_dropped_storage_inner>: {
@@ -661,6 +669,29 @@ namespace services::disk {
                 continue;
             }
             entry->storage->commit_all_deletes(txn_id, commit_id);
+        }
+        co_return;
+    }
+
+    agent_disk_t::unique_future<void>
+    agent_disk_t::storage_revert_deletes_inner(uint64_t txn_id,
+                                               std::pmr::vector<components::catalog::oid_t> tables) {
+        // Abort-path twin of storage_publish_deletes_inner: un-stamp this txn's
+        // pending delete marks back to NOT_DELETED_ID instead of committing them.
+        // txn_id==0 means no real transaction (legacy fast path) — short-circuit.
+        if (txn_id == 0) {
+            co_return;
+        }
+        for (const auto& tbl_oid : tables) {
+            auto it = storages_.find(tbl_oid);
+            if (it == storages_.end()) {
+                continue;
+            }
+            auto& entry = it->second;
+            if (entry == nullptr || entry->storage == nullptr) {
+                continue;
+            }
+            entry->storage->revert_all_deletes(txn_id);
         }
         co_return;
     }
@@ -1243,6 +1274,26 @@ namespace services::disk {
                       static_cast<unsigned>(entry.oid),
                       txn_id,
                       commit_id);
+            }
+        }
+        co_return;
+    }
+
+    // DROP-rollback un-mark (see header). The abort mirror of
+    // storage_dropped_committed_inner: instead of remapping a GC entry's value into
+    // commit-id space, it ERASES every dropped_storages_ entry still carrying the
+    // txn_id placeholder, un-marking the DROP so the still-live .otbx survives.
+    agent_disk_t::unique_future<void> agent_disk_t::storage_drop_aborted_inner(uint64_t txn_id) {
+        for (auto it = dropped_storages_.begin(); it != dropped_storages_.end();) {
+            if (it->dropped_at_commit_id == txn_id) {
+                trace(log_,
+                      "agent_disk[{}]::storage_drop_aborted_inner: un-marked DROP for oid {} (txn_id {})",
+                      pool_idx_,
+                      static_cast<unsigned>(it->oid),
+                      txn_id);
+                it = dropped_storages_.erase(it);
+            } else {
+                ++it;
             }
         }
         co_return;

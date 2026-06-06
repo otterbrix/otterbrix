@@ -45,10 +45,10 @@ namespace {
         return out;
     }
 
-    // Simulate the M1.1 crash window: the durable txn-log frames survive, but
-    // the eagerly-applied segment state and the applied-offset checkpoint do
-    // not. Removing everything except bitcask.txn.log forces the next reopen
-    // to replay the log from offset 0, so the recover gate alone decides which
+    // Simulate the crash window: the durable txn-log frames survive, but the
+    // eagerly-applied segment state and the applied-offset checkpoint do not.
+    // Removing everything except bitcask.txn.log forces the next reopen to
+    // replay the log from offset 0, so the recover gate alone decides which
     // frames are applied.
     void wipe_all_but_txn_log(const std::filesystem::path& path) {
         for (const auto& entry : std::filesystem::directory_iterator(path)) {
@@ -1016,7 +1016,7 @@ TEST_CASE("services::index::bitcask_index_disk::concurrent_insert_remove_find_st
     }
 }
 
-// M1.1 — recover gate. apply_txn_inserts writes a durable txn-log frame AND
+// Recover gate. apply_txn_inserts writes a durable txn-log frame AND
 // eagerly applies the entries to the active segment. wipe_all_but_txn_log
 // reproduces the crash window: only the durable txn-log survives, so the next
 // reopen replays the log from offset 0 and the committed_txn_ids gate alone
@@ -1066,7 +1066,7 @@ TEST_CASE("services::index::bitcask_index_disk::recover_gates_uncommitted_txn_fr
     }
 }
 
-// M1.1 — a skipped frame still advances write_applied_log_offset past its end,
+// A skipped frame still advances write_applied_log_offset past its end,
 // so it is consumed permanently. Even if a later reopen reports the previously
 // uncommitted txn as committed, its frame is never replayed again.
 TEST_CASE("services::index::bitcask_index_disk::recover_skipped_frames_advance_applied_offset") {
@@ -1111,8 +1111,8 @@ TEST_CASE("services::index::bitcask_index_disk::recover_skipped_frames_advance_a
     }
 }
 
-// M1.1 — a fresh runtime instance receives an EMPTY committed set (correct
-// value, not a fallback): with no txn-log to gate, normal insert/find works.
+// A fresh runtime instance receives an EMPTY committed set (correct value, not a
+// fallback): with no txn-log to gate, normal insert/find works.
 TEST_CASE("services::index::bitcask_index_disk::fresh_instance_with_empty_set_works") {
     auto resource = std::pmr::synchronized_pool_resource();
 

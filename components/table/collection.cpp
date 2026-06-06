@@ -282,6 +282,12 @@ namespace components::table {
         }
     }
 
+    void collection_t::revert_all_deletes(uint64_t txn_id) {
+        for (auto& rg : row_groups_->segments()) {
+            rg.revert_all_deletes(txn_id);
+        }
+    }
+
     void collection_t::revert_append(int64_t row_start, uint64_t count) {
         for (auto& rg : row_groups_->segments()) {
             auto rg_end = rg.start + static_cast<int64_t>(rg.count.load());

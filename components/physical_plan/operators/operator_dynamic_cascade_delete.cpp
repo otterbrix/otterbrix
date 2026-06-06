@@ -273,36 +273,40 @@ namespace components::operators {
             co_await std::move(df);
         }
 
-        // Drop on-disk storage + index entry per table. Order matters:
-        //   (a) mark_table_dropped / mark_storage_dropped record (oid, commit_id)
-        //       for the next horizon-advance GC sweep. These MUST precede
-        //       drop_storage: mark_storage_dropped reads the live storages_ entry
-        //       for the .otbx path + sidecars, which drop_storage then erases.
-        //   (b) unregister_collection before drop_storage, so concurrent
-        //       index_address consumers stop referencing the collection before
-        //       the storage actor frees it.
+        // Mark the storage + index entry dropped per table, but DO NOT physically
+        // tear them down here. The mark_table_dropped / mark_storage_dropped
+        // tombstones record (oid, dropped_at) for the next horizon-advance GC
+        // sweep; the actual drop_storage + unregister_collection now fire only at
+        // COMMIT time (operator_commit_transaction, after the txn_publish barrier).
+        //
+        // drop_storage and unregister_collection are deliberately
+        // NOT sent here. A DROP inside a txn must be REVERTIBLE until COMMIT — an
+        // explicit-txn ROLLBACK (operator_abort_transaction → storage_drop_aborted
+        // / table_drop_aborted) un-marks the tombstones and the table survives — so
+        // the backing .otbx and the index engine must still exist at abort time.
+        // And other sessions must keep READING the table until publish, which the
+        // un-removed storage + still-registered collection allow (the tombstone is
+        // GC-invisible until on_horizon_advanced after publish).
+        //
         // dropped_at = txn_id: the real commit_id isn't known yet, but txn_id is a
         // monotone upper bound that the GC predicate (dropped_at < new_horizon)
         // handles correctly once every snapshot older than this DROP has closed.
         // txn=0 (auto-commit/bootstrap) records 0, matching catalog-scan rebuild.
         const uint64_t dropped_at = ctx->txn.transaction_id;
         bool any_storage_drop = false;
-        // Two-phase fan-out: send all four messages per storage drop without
-        // awaiting in the loop, then await every future afterwards. The required
-        // intra-target ordering is preserved by same-target mailbox FIFO:
-        // mark_table_dropped is enqueued before unregister_collection on the
-        // manager_index mailbox, and mark_storage_dropped before drop_storage on
-        // the manager_disk mailbox, so each is processed in that order. Awaiting
-        // below is therefore only completion-sync, not ordering.
+        // Two-phase fan-out: send both mark messages per storage drop without
+        // awaiting in the loop, then await every future afterwards. No
+        // intra-target drop ordering is required (the marks have no ordered
+        // follow-up here; the physical drop_storage / unregister_collection run
+        // at COMMIT), so awaiting below is completion-sync only.
         std::pmr::vector<actor_zeta::unique_future<void>> drop_futures(resource_);
-        drop_futures.reserve(pending_storage_drops.size() * 4);
+        drop_futures.reserve(pending_storage_drops.size() * 2);
         for (auto& sd : pending_storage_drops) {
             any_storage_drop = true;
             // DROP back-channel: record the dropped storage oid for the COMMIT
             // drain's value-space remap (operator_commit_transaction keys the
-            // DROP-GC remap off the ACTUAL drops in the drain). The
-            // mark_table_dropped / mark_storage_dropped / drop_storage sends
-            // below stay EXACTLY as today.
+            // DROP-GC remap AND the post-publish drop_storage/unregister off the
+            // ACTUAL drops in the drain).
             if (ctx->txn.transaction_id != 0) {
                 ctx->dropped_storage_oids.push_back(sd.table_oid);
             }
@@ -313,11 +317,6 @@ namespace components::operators {
                                                      sd.table_oid,
                                                      dropped_at);
                 drop_futures.push_back(std::move(mtif));
-                auto [_ui, uif] = actor_zeta::send(ctx->index_address,
-                                                   &services::index::manager_index_t::unregister_collection,
-                                                   ctx->session,
-                                                   sd.table_oid);
-                drop_futures.push_back(std::move(uif));
             }
             auto [_msd, msdf] = actor_zeta::send(ctx->disk_address,
                                                  &services::disk::manager_disk_t::mark_storage_dropped,
@@ -325,11 +324,6 @@ namespace components::operators {
                                                  sd.table_oid,
                                                  dropped_at);
             drop_futures.push_back(std::move(msdf));
-            auto [_ds, dsf] = actor_zeta::send(ctx->disk_address,
-                                               &services::disk::manager_disk_t::drop_storage,
-                                               ctx->session,
-                                               sd.table_oid);
-            drop_futures.push_back(std::move(dsf));
         }
         for (auto& f : drop_futures) {
             co_await std::move(f);

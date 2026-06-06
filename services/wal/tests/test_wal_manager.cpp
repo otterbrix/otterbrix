@@ -410,25 +410,24 @@ TEST_CASE("wal_manager::sync_addresses") {
 // ===========================================================================
 //  8. auto checkpoint triggers on byte threshold
 //
-//     M1.2 (F2) auto-checkpoint revival. The previously-dead
-//     auto_checkpoint_threshold_bytes config now drives a checkpoint+truncate.
+//     The auto_checkpoint_threshold_bytes config drives a checkpoint+truncate.
 //
 //     This fixture wires NO disk manager (manager_disk_ stays empty_address),
 //     so run_auto_checkpoint takes the no-disk early-return path: checkpoint_all
 //     cannot run, checkpoint_wal_id stays 0, and truncate_before must NOT fire.
 //     The assertions therefore cover:
-//       (a) commit traffic crosses the configured threshold -> the revived byte
+//       (a) commit traffic crosses the configured threshold -> the byte
 //           accounting flips needs_auto_checkpoint() to true (the observable
-//           trigger condition the dead config used to ignore);
+//           trigger condition);
 //       (b) run_auto_checkpoint() with no disk completes and leaves state
 //           consistent: the already-committed WAL records are NOT truncated
 //           (no checkpoint happened, so no truncation is permitted) and the
 //           manager keeps serving commits.
 //
-//     Achieved level: no-disk early-return consistency (per M1.2 test plan).
-//     The full checkpoint_all -> truncate_before chain needs a disk manager
-//     holding a checkpointable DISK storage (checkpoint_all returns 0 unless an
-//     agent actually checkpoints a DISK entry, manager_disk_io.cpp:76-91), which
+//     This covers only the no-disk early-return consistency. The full
+//     checkpoint_all -> truncate_before chain needs a disk manager holding a
+//     checkpointable DISK storage (checkpoint_all returns 0 unless an agent
+//     actually checkpoints a DISK entry, manager_disk_io.cpp:76-91), which
 //     requires the executor create_storage pipeline and is exercised by the
 //     dispatcher/disk integration fixtures, not this WAL-manager unit fixture.
 // ===========================================================================
@@ -448,12 +447,11 @@ TEST_CASE("wal_manager::auto_checkpoint_triggers_on_byte_threshold") {
     auto fut_commit = env.send_commit(1000);
     REQUIRE(await_ready(fut_commit) > 0);
 
-    // (a) The revived trigger CONSUMED the threshold inside commit_txn: it
-    // reset the byte counter and fired the self-sent run_auto_checkpoint, so
-    // by the time the commit future resolves needs_auto_checkpoint() is false
-    // again. A false here together with (b) below IS the evidence the
-    // formerly-dead config now acts (before M1.2 the counter only grew and
-    // nothing ever consumed it).
+    // (a) commit_txn CONSUMES the threshold inline: it resets the byte counter
+    // and fires the self-sent run_auto_checkpoint, so by the time the commit
+    // future resolves needs_auto_checkpoint() is false again. A false here
+    // together with (b) below is the evidence the trigger acted (the counter is
+    // both raised and consumed).
     REQUIRE_FALSE(env.manager_->needs_auto_checkpoint());
 
     // Snapshot the current WAL boundary so the post-checkpoint load below can

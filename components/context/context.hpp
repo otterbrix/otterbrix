@@ -8,6 +8,7 @@
 #include <components/logical_plan/param_storage.hpp>
 #include <components/session/session.hpp>
 #include <components/table/row_version_manager.hpp>
+#include <components/table/transaction.hpp>
 #include <set>
 #include <vector>
 
@@ -71,6 +72,17 @@ namespace components::pipeline {
         // whichever DDL mode lowered the statement). Plain std::vector matching
         // the sibling cross-mailbox value fields above.
         std::vector<catalog::oid_t> dropped_storage_oids;
+        // CREATE back-channel (mirror of dropped_storage_oids): the DDL operators
+        // that bring a storage / index into being record them here —
+        // operator_create_collection / operator_create_matview push the new
+        // storage oid into created_storage_oids, operator_create_index_backfill
+        // pushes {table_oid, name} into created_indexes. The executor lifts both
+        // into execute_result_t and ships them in the txn_accumulate payload so a
+        // CREATE inside an explicit txn is publishable at COMMIT and revertible at
+        // ABORT (ABORT drops the still-uncommitted storage / index). Plain
+        // std::vector matching the sibling cross-mailbox value fields above.
+        std::vector<catalog::oid_t> created_storage_oids;
+        std::vector<components::table::created_index_t> created_indexes;
         // Commit back-channel: operator_commit_transaction_t records the
         // commit_id it drained (txn_commit_drain_msg reply) so the executor's
         // tail can drive follow-ups that need it (the inline CREATE INDEX

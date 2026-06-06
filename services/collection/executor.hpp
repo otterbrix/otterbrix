@@ -17,6 +17,7 @@
 #include <actor-zeta/detail/future.hpp>
 
 #include <components/table/row_version_manager.hpp>
+#include <components/table/transaction.hpp>
 #include <core/date/date_types.hpp>
 #include <services/collection/context_storage.hpp>
 #include <stack>
@@ -59,8 +60,16 @@ namespace services::collection::executor {
         // lifted from pipeline::context_t::dropped_storage_oids. Shipped in the
         // accumulate payload so operator_commit_transaction's DROP-GC remap
         // block keys off the drained drop set rather than the ddl-commit mode
-        // flag (F18). Cleared with the other accumulators by the commit tail.
+        // flag. Cleared with the other accumulators by the commit tail.
         std::vector<components::catalog::oid_t> dropped_storage_oids{};
+        // CREATE counterpart of dropped_storage_oids: the storage oids / indexes
+        // a CREATE TABLE / CREATE INDEX brought into being this statement, lifted
+        // from pipeline::context_t::created_storage_oids / created_indexes.
+        // Shipped in the accumulate payload so COMMIT publishes them and a same-
+        // txn ABORT drops the still-uncommitted artifacts. Cleared with the
+        // other accumulators by the commit/abort tail.
+        std::vector<components::catalog::oid_t> created_storage_oids{};
+        std::vector<components::table::created_index_t> created_indexes{};
         // Commit back-channel lifted from pipeline::context_t::committed_id:
         // non-zero when this pipeline ran operator_commit_transaction_t (the
         // CREATE INDEX tail needs the allocated commit_id for its index-only
@@ -98,8 +107,14 @@ namespace services::collection::executor {
         std::vector<dml_delete_range_t> dml_deletes;
         // Storage oids drained from pipeline::context_t::dropped_storage_oids
         // (a DROP scrubbed their backing files). execute_plan moves these into
-        // execute_result_t for the accumulate tail (F18 drop-tracking).
+        // execute_result_t for the accumulate tail.
         std::vector<components::catalog::oid_t> dropped_storage_oids;
+        // CREATE counterpart: storage oids / indexes drained from
+        // pipeline::context_t::created_storage_oids / created_indexes (a CREATE
+        // brought them into being). execute_plan moves these into
+        // execute_result_t for the accumulate tail.
+        std::vector<components::catalog::oid_t> created_storage_oids;
+        std::vector<components::table::created_index_t> created_indexes;
 
         // pg_catalog swap-info drained from each pipeline::context_t inside
         // execute_sub_plan_. execute_plan moves these into the outer

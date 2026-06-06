@@ -69,11 +69,11 @@ namespace services::index {
         void enqueue_task(std::function<void()> task);
         void set_bulk_mode(bool enabled);
         // M3.5 error channel: the txn-log write path can fail on a file open /
-        // write / sync. Those used to assert+abort; now they surface a
-        // core::error_t so the manager's commit handler can return an
-        // index-side abort instead of taking the whole process down. A clean
-        // success returns core::error_t::no_error(). True logic invariants
-        // (corrupt magic, bad op_kind) stay asserts in the recovery path.
+        // write / sync, and surfaces a core::error_t so the manager's commit
+        // handler can return an index-side abort instead of taking the whole
+        // process down. A clean success returns core::error_t::no_error(). True
+        // logic invariants (corrupt magic, bad op_kind) stay asserts in the
+        // recovery path.
         [[nodiscard]] core::error_t apply_txn_inserts(uint64_t txn_id,
                                                       const std::vector<std::pair<value_t, size_t>>& values);
         [[nodiscard]] core::error_t apply_txn_deletes(uint64_t txn_id,

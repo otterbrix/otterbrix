@@ -23,10 +23,8 @@ namespace components::operators {
     //           + in-memory engine, then re-insert at post-compact ids with
     //           txn_id=0 (committed-for-everyone).
     //      pg_class is the source of truth for the set of user relations.
-    //
-    //      F7: the old path re-inserted under ctx->txn via insert_rows; those
-    //      entries stayed PENDING-invisible because VACUUM never index-commits.
-    //      repopulate_table's txn_id=0 path needs no commit.
+    //      The txn_id=0 re-insert needs no index-commit; entries inserted under a
+    //      real txn id would stay PENDING-invisible (VACUUM never index-commits).
     //
     // Reads pipeline_context.lowest_active_start_time (set by executor from
     // txn_manager_t) — same value the legacy inline path used.

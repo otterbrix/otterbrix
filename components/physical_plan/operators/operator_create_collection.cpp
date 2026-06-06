@@ -50,6 +50,15 @@ namespace components::operators {
             co_await std::move(f);
         }
 
+        // CREATE back-channel: record the storage oid this statement brought into
+        // being so the COMMIT can publish it and a same-txn ABORT can drop it (a
+        // CREATE inside a txn must be revertible until COMMIT). Mirror of the
+        // operator_dynamic_cascade_delete drop back-channel; gated on a non-zero
+        // txn id (autocommit/bootstrap txn 0 publishes inline, never accumulates).
+        if (ctx->txn.transaction_id != 0) {
+            ctx->created_storage_oids.push_back(table_oid_);
+        }
+
         if (ctx->index_address != actor_zeta::address_t::empty_address()) {
             auto [_, f] = actor_zeta::send(ctx->index_address,
                                            &services::index::manager_index_t::register_collection,

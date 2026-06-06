@@ -31,6 +31,16 @@ namespace components::operators {
         std::vector<components::pg_catalog_append_range_t> swap_appends;
         std::set<components::catalog::oid_t> base_append_tables;
         std::set<components::catalog::oid_t> base_delete_tables;
+        // Catalog tables a DROP in this txn stamped delete marks on; un-stamped
+        // by storage_revert_deletes alongside base_delete_tables (see (1) below).
+        std::set<components::catalog::oid_t> pg_catalog_delete_tables;
+        // Rollback teardown inputs: storages/indexes a DROP marked and a
+        // CREATE brought into being in this (now aborting) txn. dropped_* must be
+        // UN-marked (the table survives the rollback); created_* must be
+        // physically removed (they were created mid-txn and never committed).
+        std::vector<components::catalog::oid_t> dropped_storage_oids;
+        std::vector<components::catalog::oid_t> created_storage_oids;
+        std::vector<components::table::created_index_t> created_indexes;
         // Null-sender guard: with no dispatcher to talk to there is no txn to
         // drain or abort — leave the locals empty.
         if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
@@ -42,6 +52,10 @@ namespace components::operators {
             swap_appends = std::move(drain.swap_appends);
             base_append_tables = std::move(drain.base_append_tables);
             base_delete_tables = std::move(drain.base_delete_tables);
+            pg_catalog_delete_tables = std::move(drain.pg_catalog_delete_tables);
+            dropped_storage_oids = std::move(drain.dropped_storage_oids);
+            created_storage_oids = std::move(drain.created_storage_oids);
+            created_indexes = std::move(drain.created_indexes);
         }
 
         // revert any pg_catalog rows appended under this transaction.
@@ -67,7 +81,7 @@ namespace components::operators {
         // each). pg_catalog oids are deliberately excluded by the drain — they have
         // no index engines, so a revert there is a no-op by the engines_ lookup.
         //
-        // F15: base_delete_tables is the DELETE-side mirror of base_append_tables;
+        // base_delete_tables is the DELETE-side mirror of base_append_tables;
         // the abort drain handler in dispatcher.cpp surfaces the unique base-delete
         // table oids precisely so this operator can revert_delete the index DELETE
         // markers an uncommitted DELETE staged (the markers sit outside the MVCC
@@ -94,6 +108,114 @@ namespace components::operators {
             }
             for (auto& rif : revert_index_futures) {
                 co_await std::move(rif);
+            }
+        }
+
+        // ===== Rollback teardown =====
+        // Runs AFTER the pg_catalog-append + index-entry reverts above so the
+        // physical state is consistent before we touch storage/index lifecycle.
+        // Three independent un-do channels for the non-MVCC side effects DDL/DML
+        // staged under this txn:
+        //
+        // (1) Heap delete-mark un-stamp. A DELETE inside this txn stamped delete
+        //     markers (deleter == txn_id) on the base-table heap; a DROP inside
+        //     this txn stamped them on the CATALOG heaps (pg_class, pg_attribute,
+        //     pg_depend, ...). The MVCC tombstones are invisible to readers and
+        //     abort() makes them GC-eligible, BUT the on-heap delete marks
+        //     themselves persist and would block a future re-DELETE of the same
+        //     rows (chunk_vector_info::delete_rows skips an already-marked slot —
+        //     so a rolled-back DROP followed by a fresh DROP of the same table
+        //     would never re-stamp the catalog row, leaving it forever readable).
+        //     storage_revert_deletes un-stamps every mark whose deleter ==
+        //     ctx.txn.transaction_id (the agent inner calls
+        //     data_table_t::revert_all_deletes(txn_id)). Revert BOTH the base and
+        //     the catalog tables: the union is the full set of heaps this txn
+        //     deleted from. pg_catalog tables have no index engines, so they are
+        //     correctly excluded from the index revert above but MUST be included
+        //     here for the heap un-stamp.
+        if (txn_data.transaction_id != 0 &&
+            (!base_delete_tables.empty() || !pg_catalog_delete_tables.empty()) &&
+            ctx->disk_address != actor_zeta::address_t::empty_address()) {
+            std::set<components::catalog::oid_t> revert_set{base_delete_tables.begin(),
+                                                           base_delete_tables.end()};
+            revert_set.insert(pg_catalog_delete_tables.begin(), pg_catalog_delete_tables.end());
+            std::vector<components::catalog::oid_t> revert_delete_tables{revert_set.begin(), revert_set.end()};
+            components::execution_context_t rd_ctx{ctx->session, txn_data, ctx->session_tz};
+            auto [_rd, rdf] = actor_zeta::send(ctx->disk_address,
+                                               &services::disk::manager_disk_t::storage_revert_deletes,
+                                               rd_ctx,
+                                               std::move(revert_delete_tables));
+            co_await std::move(rdf);
+        }
+
+        // (2) DROP rollback un-mark. operator_dynamic_cascade_delete only MARKED
+        //     the dropped storages/indexes (tombstones keyed by txn_id) and left
+        //     them physically intact precisely so this rollback can un-mark them
+        //     and the table survives. storage_drop_aborted (manager_disk) and
+        //     table_drop_aborted (manager_index) ERASE every tombstone whose
+        //     dropped_at == txn_id — ONE send each, txn_id-keyed (NOT per-oid:
+        //     the inner fan-out matches on txn_id across all agents). Gated on a
+        //     non-empty drained set so a txn that ran no DROP pays nothing.
+        if (txn_data.transaction_id != 0 && !dropped_storage_oids.empty()) {
+            if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
+                auto [_sa, saf] = actor_zeta::send(ctx->disk_address,
+                                                   &services::disk::manager_disk_t::storage_drop_aborted,
+                                                   ctx->session,
+                                                   txn_data.transaction_id);
+                co_await std::move(saf);
+            }
+            if (ctx->index_address != actor_zeta::address_t::empty_address()) {
+                auto [_ta, taf] = actor_zeta::send(ctx->index_address,
+                                                   &services::index::manager_index_t::table_drop_aborted,
+                                                   ctx->session,
+                                                   txn_data.transaction_id);
+                co_await std::move(taf);
+            }
+        }
+
+        // (3) CREATE rollback removal. A CREATE INDEX / CREATE TABLE inside this
+        //     txn physically built the index engine / heap storage at plan time
+        //     (the create operators send create_index / create_storage eagerly).
+        //     Since the txn never committed, those artifacts must be PHYSICALLY
+        //     removed (their catalog rows are reverted by the swap_appends revert
+        //     above, but the on-disk storage + index engine are not catalog rows).
+        //     created_indexes drop_index per (table_oid, name); created_storage
+        //     oids unregister_collection THEN drop_storage per oid (index before
+        //     disk so no consumer references a freed collection — co_await the
+        //     unregister before the drop, two-phase per oid pair like the COMMIT
+        //     teardown). drop_index / drop_storage tolerate an unknown target, so
+        //     a CREATE that never fully materialized is safe to tear down.
+        if (txn_data.transaction_id != 0) {
+            if (ctx->index_address != actor_zeta::address_t::empty_address()) {
+                std::pmr::vector<actor_zeta::unique_future<void>> drop_index_futures{resource()};
+                drop_index_futures.reserve(created_indexes.size());
+                for (auto& idx : created_indexes) {
+                    auto [_di, dif] = actor_zeta::send(ctx->index_address,
+                                                       &services::index::manager_index_t::drop_index,
+                                                       ctx->session,
+                                                       idx.table_oid,
+                                                       services::index::index_name_t(idx.name.c_str()));
+                    drop_index_futures.push_back(std::move(dif));
+                }
+                for (auto& f : drop_index_futures) {
+                    co_await std::move(f);
+                }
+            }
+            for (auto oid : created_storage_oids) {
+                if (ctx->index_address != actor_zeta::address_t::empty_address()) {
+                    auto [_u, uf] = actor_zeta::send(ctx->index_address,
+                                                     &services::index::manager_index_t::unregister_collection,
+                                                     ctx->session,
+                                                     oid);
+                    co_await std::move(uf);
+                }
+                if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
+                    auto [_d, df] = actor_zeta::send(ctx->disk_address,
+                                                     &services::disk::manager_disk_t::drop_storage,
+                                                     ctx->session,
+                                                     oid);
+                    co_await std::move(df);
+                }
             }
         }
 

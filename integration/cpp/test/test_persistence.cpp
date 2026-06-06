@@ -1365,6 +1365,134 @@ TEST_CASE("integration::cpp::test_persistence::disk_drop_gc_removes_storage_file
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.GcSurvivor;", 2);
 }
 
+// A DROP TABLE inside an explicit transaction must be fully revertible until
+// COMMIT.
+//   - Same txn: the pg_class row delete is MVCC-visible to the dropping session
+//     (self-write), so SELECT from the table in that SAME session no longer
+//     resolves -> error cursor.
+//   - The storage drop (drop_storage / unregister_collection) is DEFERRED to the
+//     post-publish commit tail rather than run during the DROP plan. So on
+//     ROLLBACK the catalog delete is reverted, the storage was never dropped,
+//     and a fresh session sees the table alive with every row — and its
+//     table.otbx payload file is still on disk, untouched.
+//   - Only after COMMIT does the deferred drop run: the table disappears from
+//     the catalog and its storage payload file is reclaimed.
+// Statements share one session_id_t (active txns are keyed by session.data()).
+TEST_CASE("integration::cpp::test_persistence::drop_rollback") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/drop_rollback");
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    std::set<std::filesystem::path> baseline_files;
+    INFO("setup: DISK table with rows, checkpointed so its payload file exists") {
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+        }
+        // Snapshot the .otbx files that exist BEFORE DropVictim — these are the
+        // system / catalog tables, which a single-table DROP must NEVER remove.
+        // The DropVictim-specific file is then the delta against this baseline,
+        // isolating the assertions to the dropped table's own storage (a DROP of
+        // one user table cannot reclaim the shared catalog heaps).
+        baseline_files = scan_otbx_files(config.disk.path);
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE TABLE TestDatabase.DropVictim (name string, count bigint) "
+                                               "WITH (storage = 'disk');");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.DropVictim (name, count) VALUES "
+                                               "('alice', 10), ('bob', 20), ('charlie', 30);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CHECKPOINT;")->is_success());
+        }
+    }
+
+    // The DropVictim payload file is the delta over the pre-CREATE baseline: only
+    // these files belong to the dropped table and must disappear at COMMIT.
+    std::set<std::filesystem::path> victim_files;
+    for (const auto& f : scan_otbx_files(config.disk.path)) {
+        if (baseline_files.find(f) == baseline_files.end()) {
+            victim_files.insert(f);
+        }
+    }
+    REQUIRE_FALSE(victim_files.empty());
+
+    INFO("BEGIN; DROP TABLE; same-session SELECT fails to resolve; ROLLBACK — one shared session") {
+        auto session = otterbrix::session_id_t();
+        auto begin_cur = dispatcher->execute_sql(session, "BEGIN;");
+        REQUIRE(begin_cur->is_success());
+
+        auto drop_cur = dispatcher->execute_sql(session, "DROP TABLE TestDatabase.DropVictim;");
+        REQUIRE(drop_cur->is_success());
+
+        // Same txn: the catalog delete is visible to this session (self-write),
+        // so the table no longer resolves for the dropping session.
+        auto sel_cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.DropVictim;");
+        REQUIRE(sel_cur->is_error());
+
+        auto rollback_cur = dispatcher->execute_sql(session, "ROLLBACK;");
+        REQUIRE(rollback_cur->is_success());
+    }
+
+    INFO("after ROLLBACK: a fresh session sees the table alive with all rows") {
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.DropVictim;", 3);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.DropVictim WHERE count = 20;", 1);
+    }
+
+    INFO("after ROLLBACK: the storage payload file was never dropped") {
+        // The deferred drop_storage only runs at COMMIT; an aborted DROP must
+        // leave the DropVictim payload file intact (and the catalog files too).
+        auto after_rollback_files = scan_otbx_files(config.disk.path);
+        for (const auto& f : victim_files) {
+            REQUIRE(std::filesystem::exists(f));
+            REQUIRE(after_rollback_files.find(f) != after_rollback_files.end());
+        }
+        for (const auto& f : baseline_files) {
+            REQUIRE(std::filesystem::exists(f));
+        }
+    }
+
+    INFO("BEGIN; DROP TABLE; COMMIT — the deferred drop runs at commit time") {
+        auto session = otterbrix::session_id_t();
+        auto begin_cur = dispatcher->execute_sql(session, "BEGIN;");
+        REQUIRE(begin_cur->is_success());
+
+        auto drop_cur = dispatcher->execute_sql(session, "DROP TABLE TestDatabase.DropVictim;");
+        REQUIRE(drop_cur->is_success());
+
+        auto commit_cur = dispatcher->execute_sql(session, "COMMIT;");
+        REQUIRE(commit_cur->is_success());
+    }
+
+    INFO("after COMMIT: the table is gone and its storage payload file is removed") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.DropVictim;");
+            REQUIRE(cur->is_error());
+        }
+        // The committed DROP's deferred drop_storage reclaimed the DropVictim
+        // payload file (and its per-oid directory). The shared catalog files
+        // (baseline) must survive — a single-table DROP never touches them.
+        for (const auto& f : victim_files) {
+            REQUIRE_FALSE(std::filesystem::exists(f));
+            REQUIRE_FALSE(std::filesystem::exists(f.parent_path()));
+        }
+        for (const auto& f : baseline_files) {
+            REQUIRE(std::filesystem::exists(f));
+        }
+    }
+}
+
 TEST_CASE("integration::cpp::test_persistence::disk_add_column_survives_restart") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_add_column");
     test_clear_directory(config);
@@ -1825,14 +1953,14 @@ TEST_CASE("integration::cpp::test_persistence::set_timezone_survives_restart") {
     }
 }
 
-// M2.1 / M1.1 interplay: an indexed disk table whose rows are DELETE'd > 30% in
-// a committed txn, then CHECKPOINT'd, must survive a restart with index-path
-// queries still exact. Commit-path compaction is GATED for indexed tables
-// (M2.3 tables_without_indexes), so the commit itself does NOT shift ids — but
-// the result set must already be correct (deleted rows invisible via the live
-// index). The CHECKPOINT repopulates the on-disk index against compacted ids,
-// and on restart bootstrap repopulate (txn_id=0) + the M1.1 replay gate must
-// reconstruct a consistent, visible index.
+// An indexed disk table whose rows are DELETE'd > 30% in a committed txn, then
+// CHECKPOINT'd, must survive a restart with index-path queries still exact.
+// Commit-path compaction is GATED for indexed tables (tables_without_indexes),
+// so the commit itself does NOT shift ids — but the result set must already be
+// correct (deleted rows invisible via the live index). The CHECKPOINT
+// repopulates the on-disk index against compacted ids, and on restart bootstrap
+// repopulate (txn_id=0) + the replay gate must reconstruct a consistent, visible
+// index.
 TEST_CASE("integration::cpp::test_persistence::indexed_table_compact_survives_restart") {
     auto config =
         test_create_config("/tmp/otterbrix/integration/test_persistence/indexed_table_compact_survives_restart");

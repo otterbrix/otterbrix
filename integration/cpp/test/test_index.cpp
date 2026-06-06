@@ -413,11 +413,11 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
     }
 }
 
-// M2.1 regression: the CHECKPOINT compact path shifts storage_row ids of an
-// indexed disk table within a SINGLE running session (no restart). Before the
-// repopulate-on-compact fix, the on-disk index still held the pre-compact ids
-// (btree duplicate-growth / disk_hash wrong-row F8), so a same-session index
-// lookup after the checkpoint returned stale or wrong rows. The clear-then-
+// The CHECKPOINT compact path shifts storage_row ids of an indexed disk table
+// within a SINGLE running session (no restart). Without a
+// repopulate-on-compact, the on-disk index still holds the pre-compact ids
+// (btree duplicate-growth / disk_hash wrong-row), so a same-session index
+// lookup after the checkpoint returns stale or wrong rows. The clear-then-
 // repopulate (txn_id=0) handler must rebuild the index against the compacted
 // ids so equality lookups stay exact with no restart in between.
 TEST_CASE("integration::cpp::test_index::checkpoint_then_index_scan_same_session") {
@@ -483,11 +483,11 @@ TEST_CASE("integration::cpp::test_index::checkpoint_then_index_scan_same_session
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 24;", 0);
 }
 
-// M2.1 regression for F7: VACUUM rebuilds the index. The old path re-inserted
-// rows under ctx->txn, so the rebuilt entries landed in the PENDING bucket of a
-// transaction that VACUUM never index-commits — invisible to every reader, so
-// index-path SELECTs returned 0. The fix routes VACUUM's rebuild through the
-// repopulate path (txn_id=0, committed-for-everyone), so post-VACUUM lookups
+// VACUUM rebuilds the index. Entries inserted under a real txn id stay
+// PENDING-invisible unless that txn index-commits, and VACUUM never
+// index-commits, so a rebuild under ctx->txn would be invisible to every reader
+// (index-path SELECTs returning 0). VACUUM's rebuild must go through the
+// repopulate path (txn_id=0, committed-for-everyone) so post-VACUUM lookups
 // return the correct surviving rows.
 TEST_CASE("integration::cpp::test_index::vacuum_rebuild_visible") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_index/vacuum_rebuild_visible");
@@ -542,7 +542,7 @@ TEST_CASE("integration::cpp::test_index::vacuum_rebuild_visible") {
     }
 
     // After VACUUM the rebuilt index must be VISIBLE: surviving values return
-    // their rows (returned 0 before the F7 fix).
+    // their rows.
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 33);
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 1;", 1);
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 49;", 1);

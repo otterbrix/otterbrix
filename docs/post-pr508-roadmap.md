@@ -1,9 +1,16 @@
 # Post-PR #508 roadmap: durability, index coherence, transaction semantics, performance
 
-Status: planned. Scope: everything surfaced by the multi-agent review of PR #508
-(34 confirmed/plausible findings) plus previously deferred items that did NOT go
-into that PR. Five review findings are fixed in a separate pending PR #508
-follow-up commit (see "Pending follow-up track" below) and are out of scope here.
+Status: IMPLEMENTED on this branch. M1 (601a672b, 7b1ce270), M2 (607c04d1),
+M3.1 (a577855f, superseded by M3.2 which lifts the ban), M3.3/M3.4/M3.5 +
+M4 P1/P4/P5/P6/P8 + the M1.3/M2.4 analyses (02032d7a), M3.2 transactional DDL
+(final commit). M4-P3 closed by measurement: the per-autocommit commit-node
+planner pass is negligible (single-operator plan; the measured INSERT-SELECT
+delta is commit execution, i.e. actor round-trips). M4-P7 (Q6 watchdog
+removal) SKIPPED — blocked on an upstream actor-zeta fix. M2 phase 2b kept
+gated (same measurement). Scope was: everything surfaced by the multi-agent
+review of PR #508 (34 confirmed/plausible findings) plus previously deferred
+items. The five "pending follow-up track" findings below were fixed in
+d656fe87.
 
 Ordering decision: **M1 Durability → M2 Index coherence → M3 Semantics → M4 Perf**.
 

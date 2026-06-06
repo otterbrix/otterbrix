@@ -156,6 +156,14 @@ namespace services::index {
         // equals txn_id to commit_id, moving it into commit-id space.
         unique_future<void> table_dropped_committed(session_id_t session, uint64_t txn_id, uint64_t commit_id);
 
+        // DROP-rollback un-mark — the abort mirror of table_dropped_committed.
+        // mark_table_dropped recorded dropped_table_agents_[oid] in TXN-ID space
+        // (>= 2^62). If the transaction ABORTS instead of committing, the table must
+        // remain indexed, so operator_abort_transaction sends this; the manager ERASES
+        // every dropped_table_agents_ entry whose value == txn_id, un-marking the DROP
+        // so on_horizon_advanced never reaps the engine.
+        unique_future<void> table_drop_aborted(session_id_t session, uint64_t txn_id);
+
         // CREATE INDEX catchup: operator_create_index_backfill calls this per
         // matching WAL record to apply a PHYSICAL_{INSERT,DELETE,UPDATE} effect
         // to the build's in-memory index_engine_t (driving engine_->insert_row /
@@ -199,6 +207,7 @@ namespace services::index {
                                                             &index_contract::on_horizon_advanced,
                                                             &index_contract::mark_table_dropped,
                                                             &index_contract::table_dropped_committed,
+                                                            &index_contract::table_drop_aborted,
                                                             &index_contract::apply_wal_record_for_index>;
 
         index_contract() = delete;

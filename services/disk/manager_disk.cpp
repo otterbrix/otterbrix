@@ -60,6 +60,7 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_publish_commits>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_publish_deletes>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_revert_appends>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_revert_deletes>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_namespace>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_table>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_type>,
@@ -78,6 +79,7 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::on_horizon_advanced>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::mark_storage_dropped>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_dropped_committed>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_drop_aborted>,
         };
 
         constexpr bool behavior_covers_all_implements() noexcept {
@@ -438,6 +440,10 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_revert_appends, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_revert_deletes>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_revert_deletes, msg);
+                break;
+            }
             // resolve + invalidation pull
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_namespace>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::resolve_namespace, msg);
@@ -509,6 +515,10 @@ namespace services::disk {
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_dropped_committed>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_dropped_committed, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_drop_aborted>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_drop_aborted, msg);
                 break;
             }
             default:
@@ -647,6 +657,33 @@ namespace services::disk {
                                                                   &agent_disk_t::storage_dropped_committed_inner,
                                                                   txn_id,
                                                                   commit_id);
+            if (needs_sched) {
+                scheduler_disk_->enqueue(agent_ptr.get());
+            }
+            agent_futures.emplace_back(std::move(fut));
+        }
+        for (auto& f : agent_futures) {
+            co_await std::move(f);
+        }
+        co_return;
+    }
+
+    manager_disk_t::unique_future<void>
+    manager_disk_t::storage_drop_aborted(session_id_t /*session*/, uint64_t txn_id) {
+        // DROP-rollback un-mark — the abort mirror of storage_dropped_committed. The GC
+        // entry is keyed by oid but the caller only has the txn_id placeholder, so fan
+        // out to EVERY agent and let each ERASE any of its own dropped_storages_ entries
+        // whose dropped_at_commit_id still equals the TXN-ID placeholder. Erasing (not
+        // remapping) un-marks the DROP so the still-live .otbx is never reclaimed.
+        // Mirrors on_horizon_advanced's / storage_dropped_committed's broadcast.
+        trace(log_, "manager_disk::storage_drop_aborted , txn_id : {}", txn_id);
+
+        std::pmr::vector<unique_future<void>> agent_futures{resource()};
+        agent_futures.reserve(agents_.size());
+        for (auto& agent_ptr : agents_) {
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent_ptr->address(),
+                                                                  &agent_disk_t::storage_drop_aborted_inner,
+                                                                  txn_id);
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent_ptr.get());
             }

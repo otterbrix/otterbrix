@@ -189,6 +189,12 @@ namespace services::disk {
                                                           uint64_t commit_id,
                                                           std::pmr::vector<components::catalog::oid_t> tables);
 
+        // storage_revert_deletes_inner — MVCC delete abort. Iterates `tables`
+        //   and calls revert_all_deletes(txn_id) per owned twin, un-stamping
+        //   this txn's pending delete marks back to NOT_DELETED_ID.
+        unique_future<void> storage_revert_deletes_inner(uint64_t txn_id,
+                                                         std::pmr::vector<components::catalog::oid_t> tables);
+
         // Abort-path + completion handlers (revert / update / delete / fetch).
         // Not-owned OIDs no-op (or return null for fetch).
 
@@ -312,6 +318,16 @@ namespace services::disk {
         //   equals txn_id to the real commit_id, moving them into commit-id space.
         unique_future<void> storage_dropped_committed_inner(uint64_t txn_id, uint64_t commit_id);
 
+        // storage_drop_aborted_inner — DROP-rollback un-mark. The abort mirror of
+        //   storage_dropped_committed_inner: instead of remapping a GC entry's
+        //   dropped_at_commit_id into commit-id space, it ERASES every
+        //   dropped_storages_ entry whose dropped_at_commit_id == txn_id. A DROP
+        //   TABLE inside a transaction records its GC entry in TXN-ID space via
+        //   register_dropped_storage_inner; if the transaction ABORTS the table must
+        //   survive, so manager_disk fans this out to every agent and each removes
+        //   the matching entries so on_horizon_advanced never reclaims the live .otbx.
+        unique_future<void> storage_drop_aborted_inner(uint64_t txn_id);
+
         // Pre-scheduler-start helper: push-back into dropped_storages_ (base_spaces
         // catalog rebuild via register_dropped_storage_sync). Not a mailbox handler.
         void register_dropped_storage_inner_sync(components::catalog::oid_t oid,
@@ -353,6 +369,7 @@ namespace services::disk {
                                                             &agent_disk_t::storage_append_inner,
                                                             &agent_disk_t::storage_publish_commits_inner,
                                                             &agent_disk_t::storage_publish_deletes_inner,
+                                                            &agent_disk_t::storage_revert_deletes_inner,
                                                             &agent_disk_t::storage_revert_appends_inner,
                                                             &agent_disk_t::storage_revert_append_inner,
                                                             &agent_disk_t::storage_update_inner,
@@ -369,6 +386,7 @@ namespace services::disk {
                                                             &agent_disk_t::maybe_cleanup_inner,
                                                             &agent_disk_t::on_horizon_advanced_inner,
                                                             &agent_disk_t::storage_dropped_committed_inner,
+                                                            &agent_disk_t::storage_drop_aborted_inner,
                                                             &agent_disk_t::register_dropped_storage_inner,
                                                             &agent_disk_t::drop_storage_inner,
                                                             &agent_disk_t::drop_column_inner>;

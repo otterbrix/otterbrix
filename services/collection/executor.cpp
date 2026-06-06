@@ -235,6 +235,8 @@ namespace services::collection::executor {
                                    std::move(result.dml_appends),
                                    std::move(result.dml_deletes),
                                    std::move(result.dropped_storage_oids),
+                                   std::move(result.created_storage_oids),
+                                   std::move(result.created_indexes),
                                    result.commit_id};
     }
 
@@ -995,27 +997,13 @@ namespace services::collection::executor {
             co_return execute_result_t{std::move(error)};
         }
 
-        // M3.1 (F11): forbid DDL inside an explicit transaction block. PG-like
-        // interim rule until full transactional DDL (M3.2) lands. This MUST run
-        // before the rewrite block below: the DDL rewrites call allocate_oids,
-        // which bumps the persistent OID counter on disk — an irreversible side
-        // effect that the error path cannot undo. needs_ddl_txn is the exact
-        // same predicate the unified DDL commit tail keys off (create/drop/alter/
-        // index/view/sequence/type/macro/database/matview/constraint), so the
-        // pre-check and the tail can never disagree about what counts as DDL.
-        //
-        // The explicit txn stays ACTIVE and untouched here — no abort. The user's
-        // prior DML in this transaction is still pending; they can COMMIT or
-        // ROLLBACK it themselves. We only reject the DDL statement.
-        if (session_ctx.is_explicit && needs_ddl_txn) {
-            trace(log_,
-                  "executor::execute_plan_full: DDL rejected inside explicit txn, session: {}",
-                  session.data());
-            co_return execute_result_t{make_cursor(
-                resource(),
-                core::error_t{core::error_code_t::other_error,
-                              std::pmr::string{"DDL is not allowed inside a transaction block", resource()}})};
-        }
+        // A DDL statement inside an explicit BEGIN..COMMIT accumulates its catalog
+        // rows + created/dropped artifacts onto the session's transaction_t (just
+        // like DML) and DEFERS its publish to the SQL COMMIT. Same-txn visibility
+        // of the new catalog rows is the MVCC self-write rule (catalog rows carry
+        // insert_id == transaction_id, visible to their own txn). The deferral is
+        // gated in the DDL commit tail below: run_commit_pipeline_ runs only when
+        // !session_ctx.is_explicit; accumulate stays unconditional.
 
         // CREATE INDEX: indexed table oid captured at rewrite time (the plan
         // tree is move-consumed by the execute_plan delegate before the
@@ -1405,10 +1393,13 @@ namespace services::collection::executor {
                 payload.pg_catalog_appends = std::move(exec_result.pg_catalog_appends);
                 payload.pg_catalog_delete_tables = std::move(exec_result.pg_catalog_delete_tables);
                 payload.backfills = std::move(exec_result.pg_attribute_commit_id_backfills);
-                // DROP storage-scrub oids (empty on the DML/SET-TZ/VACUUM path —
-                // none of these tear down a storage — but shipped for symmetry
-                // with the DDL tail; payload.empty() already accounts for it).
+                // DROP storage-scrub oids and CREATE storage/index oids (all
+                // empty on the DML/SET-TZ/VACUUM path — none of these tears down
+                // or brings up a storage/index — but shipped for symmetry with
+                // the DDL tail; payload.empty() already accounts for them).
                 payload.dropped_storage_oids = std::move(exec_result.dropped_storage_oids);
+                payload.created_storage_oids = std::move(exec_result.created_storage_oids);
+                payload.created_indexes = std::move(exec_result.created_indexes);
                 trace(log_,
                       "executor::execute_plan_full: txn {} — accumulating {} appends, {} deletes ({})",
                       resolve_txn.transaction_id,
@@ -1429,6 +1420,8 @@ namespace services::collection::executor {
                 exec_result.pg_catalog_delete_tables.clear();
                 exec_result.pg_attribute_commit_id_backfills.clear();
                 exec_result.dropped_storage_oids.clear();
+                exec_result.created_storage_oids.clear();
+                exec_result.created_indexes.clear();
 
                 if (!session_ctx.is_explicit) {
                     // Autocommit: implicit COMMIT through the SAME operator
@@ -1476,9 +1469,9 @@ namespace services::collection::executor {
                 // and clear ALL uncommitted entries of that kind for the pair, so
                 // they are idempotent across duplicate oids — dedup each side.
                 //   revert_insert  ← PENDING index INSERT entries (dml_appends).
-                //   revert_delete  ← PENDING index DELETE markers (F15): an
-                //     aborted DELETE left tombstones in the pending bucket that
-                //     never reached disk; clear them per unique base dml_delete oid.
+                //   revert_delete  ← PENDING index DELETE markers: an aborted
+                //     DELETE left tombstones in the pending bucket that never
+                //     reached disk; clear them per unique base dml_delete oid.
                 if (index_address_ != actor_zeta::address_t::empty_address()) {
                     std::pmr::set<components::catalog::oid_t> revert_insert_oids{resource()};
                     for (const auto& app : exec_result.dml_appends) {
@@ -1539,10 +1532,9 @@ namespace services::collection::executor {
             // commit drains pg_catalog_appends back from transaction_t, so on a
             // commit (or inline index-commit) failure exec_result no longer
             // holds it — capture it here so the failure path can issue exactly
-            // one storage_revert_appends for the pg_index row. The pg_class /
-            // pg_depend rows ride the same undo via the catalog drop in
-            // drop_index's catalog scrub is NOT involved here; only the pg_index
-            // row gates index visibility, matching the scoped revert in M3.4.
+            // one storage_revert_appends for the pg_index row. Only the pg_index
+            // row gates index visibility, so the scoped revert touches it alone;
+            // the leftover pg_class / pg_depend rows are left to GC.
             components::pg_catalog_append_range_t create_index_pg_index_range{};
             bool has_create_index_pg_index_range = false;
             if (original_type == node_type::create_index_t) {
@@ -1557,14 +1549,22 @@ namespace services::collection::executor {
             }
 
             if (!exec_result.pg_catalog_appends.empty() || !exec_result.pg_catalog_delete_tables.empty() ||
-                !exec_result.pg_attribute_commit_id_backfills.empty() || !exec_result.dropped_storage_oids.empty()) {
+                !exec_result.pg_attribute_commit_id_backfills.empty() || !exec_result.dropped_storage_oids.empty() ||
+                !exec_result.created_storage_oids.empty() || !exec_result.created_indexes.empty()) {
                 services::dispatcher::txn_accumulate_payload_t payload;
                 payload.pg_catalog_appends = std::move(exec_result.pg_catalog_appends);
                 payload.pg_catalog_delete_tables = std::move(exec_result.pg_catalog_delete_tables);
                 payload.backfills = std::move(exec_result.pg_attribute_commit_id_backfills);
                 // DROP storage-scrub oids: the commit operator's DROP-GC remap
-                // keys off this drained set (F18), independent of ddl-commit mode.
+                // keys off this drained set, independent of ddl-commit mode.
                 payload.dropped_storage_oids = std::move(exec_result.dropped_storage_oids);
+                // CREATE storage/index oids: parked on transaction_t so an
+                // explicit-txn COMMIT publishes them and an explicit-txn ABORT
+                // drops the still-uncommitted artifacts. The autocommit path below
+                // publishes them inline via run_commit_pipeline_, so the
+                // accumulate is just the transit step in both modes.
+                payload.created_storage_oids = std::move(exec_result.created_storage_oids);
+                payload.created_indexes = std::move(exec_result.created_indexes);
                 auto [_ac, acf] = actor_zeta::send(
                     parent_address_,
                     &services::dispatcher::manager_dispatcher_t::txn_accumulate_msg,
@@ -1575,6 +1575,8 @@ namespace services::collection::executor {
                 exec_result.pg_catalog_delete_tables.clear();
                 exec_result.pg_attribute_commit_id_backfills.clear();
                 exec_result.dropped_storage_oids.clear();
+                exec_result.created_storage_oids.clear();
+                exec_result.created_indexes.clear();
             }
 
             // DDL commit through the SAME commit pipeline DML and SQL COMMIT
@@ -1588,7 +1590,7 @@ namespace services::collection::executor {
             exec_result.dml_appends.clear();
             exec_result.dml_deletes.clear();
 
-            // CREATE INDEX failure undo (F14). Reverts the pg_index row append
+            // CREATE INDEX failure undo. Reverts the pg_index row append
             // (gates index visibility) and tears down the engine+agent via
             // manager_index_t::drop_index. Invoked from BOTH the commit failure
             // and the inline index-commit failure below — a single closure keeps
@@ -1626,56 +1628,79 @@ namespace services::collection::executor {
                 co_return;
             };
 
-            auto commit_result = co_await run_commit_pipeline_(session,
-                                                               resolve_txn,
-                                                               session_ctx.session_tz,
-                                                               session_ctx.lowest_active_start_time,
-                                                               /*ddl_mode=*/true);
-            if (commit_result.cursor->is_error()) {
-                exec_result.cursor = std::move(commit_result.cursor);
-                // A CREATE INDEX whose commit failed never published the
-                // pg_index row nor brought up a usable engine — undo both.
-                if (original_type == node_type::create_index_t) {
-                    co_await undo_create_index(this, create_index_table_oid, create_index_name);
-                }
-            }
-            // Inline CREATE INDEX backfill index-commit (index ONLY — see
-            // above). The indexed table oid was captured at rewrite time; the
-            // commit_id arrives via the operator's ctx back-channel.
-            if (commit_result.commit_id > 0 && original_type == node_type::create_index_t &&
-                index_address_ != actor_zeta::address_t::empty_address()) {
-                trace(log_,
-                      "executor::execute_plan_full: CREATE INDEX backfill commit — oid={}, commit_id={}",
-                      static_cast<unsigned>(create_index_table_oid),
-                      commit_result.commit_id);
-                if (create_index_table_oid != components::catalog::INVALID_OID) {
-                    components::execution_context_t swap_ctx{session, resolve_txn, {}};
-                    // The CREATE INDEX path commits exactly one table, so pass
-                    // a one-element oid vector to the batch commit_inserts.
-                    std::pmr::vector<components::catalog::oid_t> commit_oids{resource()};
-                    commit_oids.push_back(create_index_table_oid);
-                    auto [_ci, cif] = actor_zeta::send(index_address_,
-                                                       &services::index::manager_index_t::commit_inserts,
-                                                       swap_ctx,
-                                                       std::move(commit_oids),
-                                                       commit_result.commit_id);
-                    // With the M3.5 error channel, a bitcask write failure here
-                    // arrives AFTER the storage commit already published the
-                    // pg_index row. Revert the pg_index row and drop the engine+
-                    // agent so no half-built index lingers (replaces the TODO).
-                    auto ci_result = co_await std::move(cif);
-                    if (ci_result.contains_error()) {
-                        exec_result.cursor = make_cursor(resource(), ci_result);
+            // DDL inside an explicit BEGIN..COMMIT DEFERS its publish to the
+            // SQL COMMIT — accumulate above already parked the catalog rows +
+            // created/dropped artifacts on transaction_t, and the COMMIT
+            // statement's own operator_commit_transaction_t (run when the user
+            // issues COMMIT) publishes the catalog rows. Running run_commit_pipeline_
+            // here would publish mid-txn (a partial commit, and other sessions
+            // would see the new catalog rows before COMMIT). So gate the whole
+            // commit block on !is_explicit; accumulate stays unconditional (above).
+            //
+            // The inline CREATE INDEX index-commit below is AUTOCOMMIT-ONLY by two
+            // independent guards: this !is_explicit guard, and commit_result.commit_id
+            // (0 for a deferred txn — no commit ran in this pipeline). For an
+            // explicit-txn CREATE INDEX the backfilled index entries stay PENDING
+            // (tagged with the txn_id) — the SQL COMMIT operator does NOT yet flip
+            // them (its commit_inserts keys off the drained base_appends, which are
+            // empty for CREATE INDEX), so explicit-txn CREATE INDEX visibility at
+            // COMMIT is a deferred follow-up. The created_index IS parked on
+            // transaction_t regardless, so an explicit-txn ABORT drops the
+            // half-built index via operator_abort_transaction.
+            if (!session_ctx.is_explicit) {
+                auto commit_result = co_await run_commit_pipeline_(session,
+                                                                   resolve_txn,
+                                                                   session_ctx.session_tz,
+                                                                   session_ctx.lowest_active_start_time,
+                                                                   /*ddl_mode=*/true);
+                if (commit_result.cursor->is_error()) {
+                    exec_result.cursor = std::move(commit_result.cursor);
+                    // A CREATE INDEX whose commit failed never published the
+                    // pg_index row nor brought up a usable engine — undo both.
+                    if (original_type == node_type::create_index_t) {
                         co_await undo_create_index(this, create_index_table_oid, create_index_name);
+                    }
+                }
+                // Inline CREATE INDEX backfill index-commit (index ONLY — see
+                // above). The indexed table oid was captured at rewrite time; the
+                // commit_id arrives via the operator's ctx back-channel.
+                // commit_result.commit_id is 0 in deferred (explicit) mode, so
+                // this block is naturally autocommit-only even inside this guard.
+                if (commit_result.commit_id > 0 && original_type == node_type::create_index_t &&
+                    index_address_ != actor_zeta::address_t::empty_address()) {
+                    trace(log_,
+                          "executor::execute_plan_full: CREATE INDEX backfill commit — oid={}, commit_id={}",
+                          static_cast<unsigned>(create_index_table_oid),
+                          commit_result.commit_id);
+                    if (create_index_table_oid != components::catalog::INVALID_OID) {
+                        components::execution_context_t swap_ctx{session, resolve_txn, {}};
+                        // The CREATE INDEX path commits exactly one table, so pass
+                        // a one-element oid vector to the batch commit_inserts.
+                        std::pmr::vector<components::catalog::oid_t> commit_oids{resource()};
+                        commit_oids.push_back(create_index_table_oid);
+                        auto [_ci, cif] = actor_zeta::send(index_address_,
+                                                           &services::index::manager_index_t::commit_inserts,
+                                                           swap_ctx,
+                                                           std::move(commit_oids),
+                                                           commit_result.commit_id);
+                        // A bitcask write failure here arrives AFTER the storage
+                        // commit already published the pg_index row. Revert the
+                        // pg_index row and drop the engine+agent so no half-built
+                        // index lingers.
+                        auto ci_result = co_await std::move(cif);
+                        if (ci_result.contains_error()) {
+                            exec_result.cursor = make_cursor(resource(), ci_result);
+                            co_await undo_create_index(this, create_index_table_oid, create_index_name);
+                        }
                     }
                 }
             }
         } else if (needs_ddl_txn && exec_result.cursor->is_error()) {
-            // ===== DDL failure branch (M3.4 / F13) =====
-            // A failed DDL statement used to leave its txn orphaned/active,
-            // pinning lowest_active forever. Mirror the failed-DML revert path:
-            // revert the catalog (and CREATE INDEX backfill) appends, revert the
-            // pending index inserts/deletes, then abort the txn.
+            // ===== DDL failure branch =====
+            // A failed DDL statement must not leave its txn orphaned/active
+            // (that would pin lowest_active forever). Mirror the failed-DML revert
+            // path: revert the catalog (and CREATE INDEX backfill) appends, revert
+            // the pending index inserts/deletes, then abort the txn.
             //
             // Verified boundary: the FAILING fragment's own appends never reach
             // exec_result — the operator failed before execute_sub_plan_'s lift,
@@ -2026,11 +2051,26 @@ namespace services::collection::executor {
             // every storage whose backing files they tore down. Accumulate (not
             // overwrite) so a multi-table DROP keeps every dropped oid; the
             // accumulate tail ships them in txn_accumulate_payload_t so the
-            // commit operator's DROP-GC remap keys off the drained set (F18).
+            // commit operator's DROP-GC remap keys off the drained set.
             for (auto oid : pipeline_context.dropped_storage_oids) {
                 result_tracking.dropped_storage_oids.push_back(oid);
             }
             pipeline_context.dropped_storage_oids.clear();
+            // Lift the CREATE back-channel: operator_create_collection /
+            // operator_create_matview record each new storage oid, and
+            // operator_create_index_backfill each new {table_oid, name}.
+            // Accumulate (not overwrite) so a multi-statement DDL sequence keeps
+            // every created artifact; the accumulate tail ships them in
+            // txn_accumulate_payload_t so COMMIT publishes them and ABORT drops
+            // the still-uncommitted ones. Mirror of the dropped_storage_oids lift.
+            for (auto oid : pipeline_context.created_storage_oids) {
+                result_tracking.created_storage_oids.push_back(oid);
+            }
+            pipeline_context.created_storage_oids.clear();
+            for (auto& index : pipeline_context.created_indexes) {
+                result_tracking.created_indexes.push_back(std::move(index));
+            }
+            pipeline_context.created_indexes.clear();
             // Commit back-channel: operator_commit_transaction_t recorded the
             // commit_id it drained.
             if (pipeline_context.committed_id != 0) {

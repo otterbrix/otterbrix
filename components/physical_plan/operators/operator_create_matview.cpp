@@ -56,6 +56,13 @@ namespace components::operators {
             co_await std::move(f);
         }
 
+        // CREATE back-channel: record the matview's heap storage oid so COMMIT
+        // publishes it and a same-txn ABORT drops it (mirror of the
+        // operator_create_collection back-channel; same non-zero-txn gate).
+        if (ctx->txn.transaction_id != 0) {
+            ctx->created_storage_oids.push_back(mv_oid_);
+        }
+
         if (ctx->index_address != actor_zeta::address_t::empty_address()) {
             auto [_, f] = actor_zeta::send(ctx->index_address,
                                            &services::index::manager_index_t::register_collection,

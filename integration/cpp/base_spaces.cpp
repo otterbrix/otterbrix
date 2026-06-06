@@ -164,7 +164,7 @@ namespace otterbrix {
             disk_ptr->sync(services::disk::manager_disk_t::disk_sync_pack_t{effective_wal_address});
         }
 
-        manager_index_->sync(std::make_tuple(manager_disk_address));
+        manager_index_->sync(services::index::index_sync_pack_t{manager_disk_address});
 
         // Replay physical WAL records directly to storage (before schedulers start). Group
         // by oid: system-table (oid < FIRST_USER_OID) records are replayed first

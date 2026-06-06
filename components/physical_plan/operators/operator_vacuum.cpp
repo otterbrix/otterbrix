@@ -108,13 +108,10 @@ namespace components::operators {
         // storage via repopulate_table (clears the on-disk index backing + the
         // in-memory engine internally, then re-inserts at post-compact ids).
         //
-        // F7 fix: the previous path did rebuild_indexes + insert_rows under
-        // ctx->txn. insert_rows tags new entries with ctx->txn's id, so without
-        // an index-side commit they stay PENDING-invisible — VACUUM never
-        // commits the index, so post-VACUUM index_scans saw an empty index.
-        // repopulate_table re-inserts with txn_id=0 (committed-for-everyone),
-        // the path that needs no commit. The separate rebuild_indexes call is
-        // dropped: repopulate_table's internal clear subsumes it.
+        // repopulate_table re-inserts with txn_id=0 (committed-for-everyone), the
+        // path that needs no commit. Entries inserted under a real txn id stay
+        // PENDING-invisible unless that txn index-commits, and VACUUM never
+        // index-commits — so the txn_id=0 path is required here.
         for (auto& tbl : user_tables) {
             std::uint64_t total = 0;
             {

@@ -344,7 +344,7 @@ namespace services::dispatcher {
         // lowest_active_start_time (txn start-time space; mixing the two kept
         // DROP-GC dead: 2^62-range ids never compared < small start-times).
         //
-        // M2.4/F10 — remap-before-broadcast ordering proof. For the committing
+        // Remap-before-broadcast ordering proof. For the committing
         // txn the broadcast here can only carry a horizon that reclaims its own
         // tombstones AFTER its DROP-GC remap has stamped them, never before:
         //   1. operator_commit_transaction runs the storage/table dropped-committed
@@ -665,6 +665,10 @@ namespace services::dispatcher {
             // Drained out so the commit operator's GC-remap can stamp these with
             // commit_id; non-empty here (NOT is_ddl_commit_) triggers that block.
             out.dropped_storage_oids = txn_t->drain_dropped_storages();
+            // CREATE side, symmetric with the DROP drain above: the commit
+            // operator publishes these storage oids / indexes at COMMIT.
+            out.created_storage_oids = txn_t->drain_created_storages();
+            out.created_indexes = txn_t->drain_created_indexes();
         }
         // Allocates the commit_id and leaves it in in_flight_commits_ (0 on a
         // missing txn). The ProcArray publish barrier deliberately does NOT run
@@ -681,11 +685,16 @@ namespace services::dispatcher {
         if (auto* txn_t = txn_manager_.find_transaction(session)) {
             out.txn = txn_t->data();
             // Keep the appends (their physical row slots need
-            // storage_revert_appends), discard the delete-tables (uncommitted
-            // tombstones stay invisible) and the backfill markers (their
-            // targets are in the appends).
-            std::set<components::catalog::oid_t> deletes_discarded;
-            txn_t->drain_pg_catalog_pending(out.swap_appends, deletes_discarded);
+            // storage_revert_appends). KEEP the pg_catalog delete-tables too: a
+            // DROP inside this txn stamped delete marks on catalog heaps
+            // (delete_id == txn_id). Those marks are invisible to readers (aborted
+            // txn id), but they PERSIST on the heap and would block a future
+            // re-DELETE of the same catalog row (chunk_vector_info::delete_rows
+            // skips an already-marked slot). The abort operator un-stamps them via
+            // storage_revert_deletes, mirroring the base-table delete revert.
+            // The backfill markers are still discarded (their targets are in the
+            // appends, reverted by storage_revert_appends).
+            txn_t->drain_pg_catalog_pending(out.swap_appends, out.pg_catalog_delete_tables);
             auto backfills_discarded = txn_t->drain_pg_attribute_commit_id_backfills();
             (void) backfills_discarded;
             // Drain the parked base appends only to collect the UNIQUE table
@@ -698,7 +707,7 @@ namespace services::dispatcher {
             // DELETE ranges are collected the same way: only their UNIQUE table
             // oids matter, so the abort operator can fan out
             // manager_index_t::revert_delete per oid to clear this txn's PENDING
-            // in-memory index DELETE markers (F15 parity with executor.cpp's
+            // in-memory index DELETE markers (parity with executor.cpp's
             // failed-DML revert_delete). The ranges themselves are still dropped:
             // uncommitted tombstones (delete_id == txn_id) are invisible to every
             // reader and VACUUM reclaims them; only the index markers, which sit
@@ -711,10 +720,15 @@ namespace services::dispatcher {
             for (const auto& d : drained_deletes) {
                 out.base_delete_tables.insert(d.table_oid);
             }
-            // Drain the DROP-retired storage oids too. Informational today:
-            // Wave-2 will un-stamp them on abort; for now they ride out for
-            // symmetry with the commit drain and to clear the accumulator.
+            // Drain the DROP-retired storage oids too. Informational today: the
+            // abort operator does not yet un-stamp them on abort; for now they ride
+            // out for symmetry with the commit drain and to clear the accumulator.
             out.dropped_storage_oids = txn_t->drain_dropped_storages();
+            // Drain the CREATE-brought storage oids / indexes so the abort
+            // operator can drop the still-uncommitted artifacts — symmetric with
+            // the commit drain and the DROP drain above.
+            out.created_storage_oids = txn_t->drain_created_storages();
+            out.created_indexes = txn_t->drain_created_indexes();
         }
         txn_manager_.abort(session);
         // Aborting removes the txn from the active set, so the lowest-active
@@ -741,6 +755,12 @@ namespace services::dispatcher {
             txn_t->accumulate_pg_attribute_commit_id_backfills(std::move(payload.backfills));
             for (auto oid : payload.dropped_storage_oids) {
                 txn_t->accumulate_dropped_storage(oid);
+            }
+            for (auto oid : payload.created_storage_oids) {
+                txn_t->accumulate_created_storage(oid);
+            }
+            for (auto& index : payload.created_indexes) {
+                txn_t->accumulate_created_index(std::move(index));
             }
         }
         co_return;
@@ -772,9 +792,9 @@ namespace services::dispatcher {
         // 1 only when no OTHER txn is active (their snapshots could still read
         // versions a compact would drop); 0 otherwise. agent_disk
         // maybe_cleanup_inner only ever tests this against ==0, so a bare boolean
-        // is sufficient — passing the old lowest_active_start_time mixed the two
-        // value spaces for no benefit. Best-effort heuristic; compact correctness
-        // rests on the disk agent's mailbox serialization, not this gate.
+        // is sufficient — a start-time value here would mix the two value spaces
+        // for no benefit. Best-effort heuristic; compact correctness rests on the
+        // disk agent's mailbox serialization, not this gate.
         co_return txn_manager_.has_active_transactions() ? uint64_t{0} : uint64_t{1};
     }
 

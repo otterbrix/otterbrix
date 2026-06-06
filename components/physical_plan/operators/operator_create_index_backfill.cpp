@@ -64,6 +64,17 @@ namespace components::operators {
             co_return;
         }
 
+        // CREATE back-channel: record the index this statement brought into being
+        // (owning table oid + name) so the COMMIT publishes it and a same-txn
+        // ABORT drops the still-uncommitted index (operator_abort_transaction
+        // fans manager_index_t::drop_index per drained created_index). Mirror of
+        // the operator_create_collection storage back-channel; gated on a
+        // non-zero txn id (autocommit/bootstrap txn 0 commits the index inline).
+        if (ctx->txn.transaction_id != 0) {
+            ctx->created_indexes.push_back(
+                components::table::created_index_t{table_oid_, std::string{index_name_}});
+        }
+
         // WAL retention guard: register build_start_wal_position so a concurrent
         // checkpoint+truncate cannot drop records the catchup loop still needs.
         // Routed via mailbox (sync inter-actor calls are forbidden inside the

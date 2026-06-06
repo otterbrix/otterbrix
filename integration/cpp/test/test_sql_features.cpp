@@ -2378,71 +2378,78 @@ TEST_CASE("integration::cpp::test_sql_features::explicit_txn_rollback_invisible"
     }
 }
 
-// M3.1 (F11): DDL inside an explicit transaction block is rejected with an
-// error instead of silently committing the whole transaction. The rejected DDL
-// leaves the txn ACTIVE — prior DML in the same txn is untouched, so a following
-// INSERT still succeeds and a ROLLBACK then discards everything. Statements
-// share one session_id_t (transaction_manager_t keys active txns by
+// DDL inside an explicit transaction block is fully transactional: CREATE TABLE
+// inside BEGIN accumulates its catalog rows into the open txn and DEFERS
+// publish/commit to the SQL COMMIT, rather than rejecting the statement or
+// eagerly committing the whole transaction. The new catalog rows are visible to
+// the SAME txn through the
+// MVCC self-write rule (row_version_manager self-write), so an INSERT into the
+// just-created table and a SELECT back both succeed in the same session before
+// COMMIT — while fresh sessions see nothing until COMMIT publishes. A ROLLBACK
+// must discard the whole unit (table + its rows), leaving no trace.
+//
+// Statements share one session_id_t (transaction_manager_t keys active txns by
 // session.data()); execute_sql runs only the first statement of a string, so
-// each step is a separate call. Verification runs on fresh sessions.
-TEST_CASE("integration::cpp::test_sql_features::ddl_inside_explicit_txn_rejected") {
+// each step is a separate call.
+TEST_CASE("integration::cpp::test_sql_features::ddl_inside_explicit_txn_transactional") {
     auto config = test_create_config("/tmp/test_sql_features/ddl_inside_explicit_txn");
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
     INFO("setup") {
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
-        }
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher
-                        ->execute_sql(session,
-                                      "CREATE TABLE TestDatabase.TestCollection (name string, value bigint);")
-                        ->is_success());
-        }
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
     }
 
-    INFO("BEGIN; CREATE TABLE -> error; INSERT still works; ROLLBACK — one shared session") {
+    INFO("BEGIN; CREATE TABLE t2; INSERT t2; SELECT t2 (self-write visible); COMMIT — one shared session") {
         auto session = otterbrix::session_id_t();
         auto begin_cur = dispatcher->execute_sql(session, "BEGIN;");
         REQUIRE(begin_cur->is_success());
 
-        // CREATE TABLE inside the explicit txn must be rejected with the
-        // M3.1 message — and must NOT abort the surrounding transaction.
-        auto ddl_cur =
-            dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.t2 (id bigint);");
-        REQUIRE(ddl_cur->is_error());
-        REQUIRE(ddl_cur->get_error().what == "DDL is not allowed inside a transaction block");
+        // CREATE TABLE inside the explicit txn now SUCCEEDS: it accumulates the
+        // catalog rows and defers publish to COMMIT.
+        auto ddl_cur = dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.t2 (id bigint);");
+        REQUIRE(ddl_cur->is_success());
 
-        // The txn is still alive: a DML statement in the same session succeeds.
-        auto ins_cur = dispatcher->execute_sql(
-            session,
-            "INSERT INTO TestDatabase.TestCollection (name, value) VALUES ('Alice', 10);");
+        // Same txn: the new table's catalog rows are MVCC-visible to this txn
+        // (self-write), so an INSERT into it resolves and succeeds.
+        auto ins_cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.t2 (id) VALUES (1), (2), (3);");
         REQUIRE(ins_cur->is_success());
+        REQUIRE(ins_cur->size() == 3);
 
-        // CREATE INDEX inside the same explicit txn is rejected identically.
-        auto idx_cur = dispatcher->execute_sql(
-            session, "CREATE INDEX idx_value ON TestDatabase.TestCollection (value);");
-        REQUIRE(idx_cur->is_error());
-        REQUIRE(idx_cur->get_error().what == "DDL is not allowed inside a transaction block");
+        // Same session, before COMMIT: the just-inserted rows of the
+        // just-created table are visible (self-write read-your-own-writes).
+        auto sel_cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.t2;");
+        REQUIRE(sel_cur->is_success());
+        REQUIRE(sel_cur->size() == 3);
+
+        auto commit_cur = dispatcher->execute_sql(session, "COMMIT;");
+        REQUIRE(commit_cur->is_success());
+    }
+
+    INFO("after COMMIT: a fresh session sees t2 and all its rows") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.t2;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+
+    INFO("BEGIN; CREATE TABLE t3; ROLLBACK — the created table is discarded") {
+        auto session = otterbrix::session_id_t();
+        auto begin_cur = dispatcher->execute_sql(session, "BEGIN;");
+        REQUIRE(begin_cur->is_success());
+
+        auto ddl_cur = dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.t3 (id bigint);");
+        REQUIRE(ddl_cur->is_success());
 
         auto rollback_cur = dispatcher->execute_sql(session, "ROLLBACK;");
         REQUIRE(rollback_cur->is_success());
     }
 
-    INFO("after ROLLBACK: the INSERT's rows are absent (txn discarded)") {
+    INFO("after ROLLBACK: a fresh session finds t3 was never created") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
-        REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 0);
-    }
-
-    INFO("after ROLLBACK: t2 was never created (rejected DDL had no effect)") {
-        auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.t2;");
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.t3;");
         REQUIRE(cur->is_error());
     }
 }
@@ -3865,7 +3872,7 @@ TEST_CASE("integration::cpp::test_sql_features::vacuum_after_alter_keeps_working
     }
 }
 
-// M3.3 (F12): a bare COMMIT with no open transaction must be a no-op — it must
+// A bare COMMIT with no open transaction must be a no-op — it must
 // NOT allocate a commit_id nor advance the GC horizon (txn_commit_drain_msg
 // aborts instead of committing when the found txn has !has_accumulated(); a
 // missing txn never allocates either). Observable at SQL level only as: the
@@ -3947,14 +3954,14 @@ TEST_CASE("integration::cpp::test_sql_features::bare_commit_is_noop") {
     }
 }
 
-// F15 / M3.4: ROLLBACK after a DELETE must leave the secondary index clean.
-// The aborted DELETE parks PENDING index DELETE markers; before the fix those
-// markers lingered after ROLLBACK (the aborted-revert path drove only
-// dml_appends through revert_insert, never the pending index DELETE bucket via
-// revert_delete), so an index-path SELECT could under-report rows. After the
-// fix the index path must still return ALL original rows. BEGIN/DELETE/ROLLBACK
-// share one session_id_t; verification runs on fresh sessions through the index
-// path (equality on the indexed 'count' column).
+// ROLLBACK after a DELETE must leave the secondary index clean. The aborted
+// DELETE parks PENDING index DELETE markers; the aborted-revert path must drive
+// both the dml_appends through revert_insert AND the pending index DELETE bucket
+// through revert_delete, otherwise those markers linger after ROLLBACK and an
+// index-path SELECT under-reports rows. The index path must still return ALL
+// original rows. BEGIN/DELETE/ROLLBACK share one session_id_t; verification runs
+// on fresh sessions through the index path (equality on the indexed 'count'
+// column).
 TEST_CASE("integration::cpp::test_sql_features::rollback_after_delete_keeps_index_clean") {
     auto config = test_create_config("/tmp/test_sql_features/rollback_after_delete_index");
     test_clear_directory(config);
@@ -4051,6 +4058,12 @@ TEST_CASE("integration::cpp::test_sql_features::rollback_after_delete_keeps_inde
 
     INFO("index still functional for a subsequent autocommit DELETE") {
         {
+            // Re-DELETE one of the rows that was deleted-then-rolled-back. The
+            // storage delete-revert (revert_all_deletes(txn_id)) un-stamps the
+            // aborted DELETE's heap slots, so the slot is NO LONGER stamped with
+            // the aborted txn_id; chunk_vector_info::delete_rows sees an
+            // undeleted slot and the re-DELETE is a real heap delete (one row),
+            // not a no-op.
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count = 20;");
             REQUIRE(cur->is_success());
@@ -4062,20 +4075,35 @@ TEST_CASE("integration::cpp::test_sql_features::rollback_after_delete_keeps_inde
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 0);
         }
-        // NOTE: the full-scan count after this autocommit DELETE is intentionally
-        // not asserted here. This wave delivers the INDEX-side rollback cleanup
-        // (manager_index_t::revert_delete, exercised above). The STORAGE-side
-        // delete-revert-on-abort is still unimplemented: chunk_vector_info has
-        // commit_all_deletes(txn_id, commit_id) but no revert_all_deletes(txn_id),
-        // so an aborted DELETE leaves the heap slot stamped with the aborted
-        // txn_id (invisible to reads via MVCC, but chunk_vector_info::delete_rows
-        // skips an already-stamped slot), making the row re-delete a heap no-op.
-        // That storage delete-revert channel is roadmap M3.2 (long-term undo
-        // channels), outside this wave.
+        {
+            // The storage delete-revert makes the full-scan count exact: the
+            // four rolled-back rows minus the one just re-deleted leaves three.
+            // (Without the revert the aborted DELETE leaves heap slots stamped
+            // with the aborted txn_id, the autocommit DELETE is a heap no-op, and
+            // the full scan sees a stale count.)
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+        }
+        {
+            // The other rolled-back row (count = 30) is also a live, re-deletable
+            // heap slot — re-deleting it really removes it.
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count = 30;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2);
+        }
     }
 }
 
-// M3.4 DDL-fail characterization. Today every CREATE INDEX validation failure
+// DDL-fail characterization. Today every CREATE INDEX validation failure
 // is PRE-pipeline: CREATE INDEX on a non-existent column is rejected in
 // validate_schema (validate_logical_plan.cpp, node_create_index_t case →
 // validate_key), which runs in the executor BEFORE the destructive rewrite
@@ -4166,13 +4194,13 @@ TEST_CASE("integration::cpp::test_sql_features::ddl_failure_pre_pipeline_charact
     }
 }
 
-// M3.5 reorder smoke. The commit pipeline moves the per-table index
-// commit_inserts/commit_deletes BEFORE the storage_publish_* block (so an
-// index-commit error aborts cleanly before anything is published). This guards
-// that the reorder preserved post-commit index visibility: an autocommit INSERT
-// of a batch into an indexed table must be immediately visible via the index
-// path on a fresh session. Existing index+commit tests cover the broader path;
-// this is the targeted visibility guard.
+// The commit pipeline runs the per-table index commit_inserts/commit_deletes
+// BEFORE the storage_publish_* block, so an index-commit error aborts cleanly
+// before anything is published. This guards post-commit index visibility under
+// that ordering: an autocommit INSERT of a batch into an indexed table must be
+// immediately visible via the index path on a fresh session. Existing
+// index+commit tests cover the broader path; this is the targeted visibility
+// guard.
 TEST_CASE("integration::cpp::test_sql_features::indexed_insert_commit_visible_after_reorder") {
     auto config = test_create_config("/tmp/test_sql_features/indexed_insert_commit_visible");
     test_clear_directory(config);

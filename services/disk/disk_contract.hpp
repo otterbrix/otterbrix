@@ -219,6 +219,14 @@ namespace services::disk {
         actor_zeta::unique_future<void>
         storage_revert_appends(execution_context_t ctx, std::vector<components::pg_catalog_append_range_t> ranges);
 
+        // MVCC delete-revert (abort path). The mirror of storage_publish_deletes:
+        // instead of stamping this txn's pending delete marks with a commit_id, the
+        // owning agent un-stamps them back to NOT_DELETED_ID via
+        // data_table_t::revert_all_deletes(ctx.txn.transaction_id), restoring row
+        // visibility for an aborted DELETE. Routed per owning agent by oid.
+        actor_zeta::unique_future<void>
+        storage_revert_deletes(execution_context_t ctx, std::vector<components::catalog::oid_t> tables);
+
         // Event-driven GC subscriber. Walks per-agent dropped_storages_
         // slices and physically removes entries whose
         // dropped_at_commit_id < new_horizon.
@@ -244,6 +252,15 @@ namespace services::disk {
         actor_zeta::unique_future<void> storage_dropped_committed(session_id_t session,
                                                                   uint64_t txn_id,
                                                                   uint64_t commit_id);
+
+        // DROP-rollback un-mark. The mirror of storage_dropped_committed for the
+        // abort path: a DROP TABLE inside a transaction records its GC entry with
+        // dropped_at_commit_id in TXN-ID space via mark_storage_dropped, but if the
+        // transaction ABORTS the table must survive. operator_abort_transaction sends
+        // this so the manager fans out to every agent, and each agent ERASES (not
+        // remaps) its own dropped_storages_ entries whose dropped_at_commit_id == txn_id,
+        // un-marking the DROP so on_horizon_advanced never reclaims the still-live .otbx.
+        actor_zeta::unique_future<void> storage_drop_aborted(session_id_t session, uint64_t txn_id);
 
         using dispatch_traits = actor_zeta::dispatch_traits<&disk_contract::flush,
                                                             &disk_contract::checkpoint_all,
@@ -272,6 +289,7 @@ namespace services::disk {
                                                             &disk_contract::storage_publish_commits,
                                                             &disk_contract::storage_publish_deletes,
                                                             &disk_contract::storage_revert_appends,
+                                                            &disk_contract::storage_revert_deletes,
                                                             // resolve + invalidation pull
                                                             &disk_contract::resolve_namespace,
                                                             &disk_contract::resolve_table,
@@ -290,7 +308,8 @@ namespace services::disk {
                                                             &disk_contract::compact_relkind_g_storage,
                                                             &disk_contract::on_horizon_advanced,
                                                             &disk_contract::mark_storage_dropped,
-                                                            &disk_contract::storage_dropped_committed>;
+                                                            &disk_contract::storage_dropped_committed,
+                                                            &disk_contract::storage_drop_aborted>;
 
         disk_contract() = delete;
     };

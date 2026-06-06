@@ -48,7 +48,7 @@ namespace components::operators {
                 // marker carries, so no real-cid DDL record is needed afterwards.
                 // The commit_id on the marker only feeds the replay-horizon
                 // max-scan, which a 0 here simply does not advance.
-                // F4: this cid=0 record is replay-safe BECAUSE replay decides
+                // This cid=0 record is replay-safe BECAUSE replay decides
                 // visibility by transaction_id, not by the recorded cid. The
                 // invariant is therefore a constraint on any FUTURE replay change:
                 // if replay ever starts gating on the marker's cid, this 0 would
@@ -197,7 +197,7 @@ namespace components::operators {
                                                                             base_delete_tables.end(),
                                                                             resource_};
 
-        // M3.5: per-table index commits run BEFORE the storage publishes. Reason:
+        // Per-table index commits run BEFORE the storage publishes. Reason:
         // an index-commit IO failure must be able to abort the whole commit with
         // NOTHING reader-visible. commit_inserts / commit_deletes flip every
         // touched table's index entries from PENDING to the real commit_id; on
@@ -253,7 +253,7 @@ namespace components::operators {
         // Flip MVCC state on the pg_catalog rows AND the base-table DML ranges
         // drained above: one publish_commits / publish_deletes per category
         // covers every table touched between BEGIN and COMMIT.
-        // F3: this in-memory MVCC flip happens BEFORE the WAL commit marker, yet
+        // This in-memory MVCC flip happens BEFORE the WAL commit marker, yet
         // is crash-safe — durability of the flip comes from the WAL physical
         // records (already written by the DML operators) plus checkpoint, NOT from
         // this in-memory publish. A crash before the WAL commit marker discards
@@ -331,6 +331,45 @@ namespace components::operators {
             compact_gate = co_await std::move(pf);
         }
 
+        // Commit-time physical DROP. operator_dynamic_cascade_delete only
+        // MARKED the dropped storages/indexes (tombstones) at plan time and left
+        // them physically intact so the DROP stayed revertible until COMMIT and
+        // other sessions kept reading the table. Now that the txn is published —
+        // the ProcArray barrier above has flipped every reader's snapshot past
+        // this commit — physically tear them down. Per drained dropped oid:
+        // unregister_collection (manager_index) THEN drop_storage (manager_disk),
+        // in THAT order so no index consumer references a collection whose backing
+        // storage the disk actor is about to free. The two sends target distinct
+        // mailboxes, so FIFO gives no cross-mailbox ordering — we co_await the
+        // unregister BEFORE sending the drop to enforce index-before-disk per oid
+        // (two-phase per oid pair, acceptable: the pairs are independent so the
+        // serial per-pair await is the simplest correct shape). The DROP-GC remap
+        // (storage_dropped_committed / table_dropped_committed, above) already
+        // stamped the tombstones with commit_id so on_horizon_advanced reclaims
+        // any residue; this block does the eager removal of the now-committed drop.
+        // Gated on commit_id_ > 0 (mirrors the publish barrier / DROP-GC remap):
+        // a DROP makes has_accumulated() true, so a txn with drops always gets a
+        // real commit_id — but if commit_id_ is 0 (the empty-COMMIT abort, or a
+        // missing txn) nothing committed, so nothing may be physically removed.
+        if (commit_id_ > 0) {
+            for (auto oid : dropped_storage_oids) {
+                if (ctx->index_address != actor_zeta::address_t::empty_address()) {
+                    auto [_u, uf] = actor_zeta::send(ctx->index_address,
+                                                     &services::index::manager_index_t::unregister_collection,
+                                                     ctx->session,
+                                                     oid);
+                    co_await std::move(uf);
+                }
+                if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
+                    auto [_d, df] = actor_zeta::send(ctx->disk_address,
+                                                     &services::disk::manager_disk_t::drop_storage,
+                                                     ctx->session,
+                                                     oid);
+                    co_await std::move(df);
+                }
+            }
+        }
+
         // MVCC-compact fan-out. For every UNIQUE base-table oid touched by this
         // txn (appends ∪ deletes), nudge the disk manager to compact dead row
         // versions now that the commit is published. compact_gate == 0 means
@@ -338,7 +377,7 @@ namespace components::operators {
         // tombstone-timing heuristic, compact CORRECTNESS rests on agent-mailbox
         // serialization, not on this gate.
         //
-        // P1: gated on !base_delete_table_oids.empty(). A commit with deletes is
+        // Gated on !base_delete_table_oids.empty(). A commit with deletes is
         // the ONLY way this txn could push a table past the compact's 30%
         // dead-rows threshold. Proof: dead = total − committed-live. An
         // append-only commit adds rows that all commit live (committed appends are

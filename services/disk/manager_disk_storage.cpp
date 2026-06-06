@@ -634,6 +634,47 @@ namespace services::disk {
         co_return;
     }
 
+    manager_disk_t::unique_future<void>
+    manager_disk_t::storage_revert_deletes(execution_context_t ctx, std::vector<catalog::oid_t> tables) {
+        // Abort-path mirror of storage_publish_deletes: same partition-by-agent
+        // fanout, but the agent inner un-stamps this txn's pending delete marks
+        // back to NOT_DELETED_ID (revert_all_deletes) instead of stamping a commit_id.
+        const auto txn_id = ctx.txn.transaction_id;
+        if (txn_id == 0)
+            co_return;
+
+        if (!agents_.empty()) {
+            std::pmr::vector<std::pmr::vector<catalog::oid_t>> per_agent{resource()};
+            per_agent.reserve(agents_.size());
+            for (std::size_t i = 0; i < agents_.size(); ++i) {
+                per_agent.emplace_back();
+            }
+            for (const auto& tbl_oid : tables) {
+                const std::size_t pool_idx = pool_idx_for_oid(tbl_oid, agents_.size());
+                per_agent[pool_idx].push_back(tbl_oid);
+            }
+            std::pmr::vector<unique_future<void>> agent_futures{resource()};
+            agent_futures.reserve(per_agent.size());
+            for (std::size_t i = 0; i < per_agent.size(); ++i) {
+                if (per_agent[i].empty())
+                    continue;
+                auto& agent = agents_[i];
+                auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                                       &agent_disk_t::storage_revert_deletes_inner,
+                                                                       txn_id,
+                                                                       std::move(per_agent[i]));
+                if (needs_sched) {
+                    scheduler_disk_->enqueue(agent.get());
+                }
+                agent_futures.emplace_back(std::move(fut));
+            }
+            for (auto& f : agent_futures) {
+                co_await std::move(f);
+            }
+        }
+        co_return;
+    }
+
     auto manager_disk_t::agent() -> actor_zeta::address_t { return agents_[0]->address(); }
 
 } //namespace services::disk

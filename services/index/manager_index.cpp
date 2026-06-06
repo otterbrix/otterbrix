@@ -306,6 +306,10 @@ namespace services::index {
                 co_await actor_zeta::dispatch(this, &manager_index_t::table_dropped_committed, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::table_drop_aborted>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::table_drop_aborted, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_index_t, &manager_index_t::apply_wal_record_for_index>: {
                 co_await actor_zeta::dispatch(this, &manager_index_t::apply_wal_record_for_index, msg);
                 break;
@@ -324,8 +328,8 @@ namespace services::index {
                             pending_void_.end());
     }
 
-    void manager_index_t::sync(address_pack pack) {
-        disk_address_ = std::get<0>(pack);
+    void manager_index_t::sync(index_sync_pack_t pack) {
+        disk_address_ = pack.disk;
         trace(log_, "manager_index_t::sync: disk_address set");
     }
 
@@ -363,6 +367,29 @@ namespace services::index {
         for (auto& kv : dropped_table_agents_) {
             if (kv.second == txn_id) {
                 kv.second = commit_id;
+            }
+        }
+        co_return;
+    }
+
+    manager_index_t::unique_future<void>
+    manager_index_t::table_drop_aborted(session_id_t /*session*/, uint64_t txn_id) {
+        // DROP-rollback un-mark — the abort mirror of table_dropped_committed.
+        // mark_table_dropped_sync stored the entry's value in TXN-ID space (>= 2^62),
+        // the only id the cascade-delete operator had. If the transaction ABORTS the
+        // table must stay indexed, so ERASE (not remap) every dropped_table_agents_
+        // entry whose value still equals txn_id, un-marking the DROP so
+        // on_horizon_advanced never reaps the engine.
+        trace(log_, "manager_index_t::table_drop_aborted , txn_id : {}", txn_id);
+        for (auto it = dropped_table_agents_.begin(); it != dropped_table_agents_.end();) {
+            if (it->second == txn_id) {
+                trace(log_,
+                      "manager_index_t::table_drop_aborted: un-marked DROP for oid {} (txn_id {})",
+                      static_cast<unsigned>(it->first),
+                      txn_id);
+                it = dropped_table_agents_.erase(it);
+            } else {
+                ++it;
             }
         }
         co_return;

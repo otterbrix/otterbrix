@@ -32,12 +32,19 @@ namespace services::index {
     // pg_catalog.pg_index now; this constant is kept as a comment so anyone reading
     // legacy data dirs can still recognize the filename.
 
+    // Bootstrap address bundle for sync() (plain named struct — no std::tuple,
+    // mirrors services::wal::wal_sync_pack_t and manager_disk_t::disk_sync_pack_t).
+    // Namespace-scope (not nested) so callers/tests use
+    // services::index::index_sync_pack_t. Carries manager_disk_t's address so the
+    // index manager can address it after spawn (scan_segment index population).
+    struct index_sync_pack_t {
+        actor_zeta::address_t disk = actor_zeta::address_t::empty_address();
+    };
+
     class manager_index_t final : public actor_zeta::actor::actor_mixin<manager_index_t> {
     public:
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
-
-        using address_pack = std::tuple<actor_zeta::address_t>;
 
         manager_index_t(
             std::pmr::memory_resource* resource,
@@ -70,7 +77,7 @@ namespace services::index {
         requires(actor_zeta::type_traits::is_unique_future_v<ReturnType>) [[nodiscard]] ReturnType
             enqueue_impl(actor_zeta::actor::address_t sender, actor_zeta::mailbox::message_id cmd, Args&&... args);
 
-        void sync(address_pack pack);
+        void sync(index_sync_pack_t pack);
 
         // Single-threaded callers only (NOT a mailbox handler): catalog-scan
         // rebuild and, internally, the mark_table_dropped handler.
@@ -87,6 +94,14 @@ namespace services::index {
         // transaction commits, this rewrites every entry whose value equals txn_id to
         // the real commit_id so on_horizon_advanced can eventually reclaim it.
         unique_future<void> table_dropped_committed(session_id_t session, uint64_t txn_id, uint64_t commit_id);
+
+        // DROP-rollback un-mark (see index_contract) — the abort mirror of
+        // table_dropped_committed. mark_table_dropped[_sync] recorded
+        // dropped_table_agents_[oid] in TXN-ID space (>= 2^62); if the transaction
+        // ABORTS the table must stay indexed, so this ERASES every
+        // dropped_table_agents_ entry whose value equals txn_id, un-marking the DROP
+        // so on_horizon_advanced never reaps the engine.
+        unique_future<void> table_drop_aborted(session_id_t session, uint64_t txn_id);
 
         // Wired by base_spaces before scheduler.start. Used to send the
         // on_subscriber_empty ack once dropped_table_agents_ empties.
@@ -269,6 +284,7 @@ namespace services::index {
                                                        &manager_index_t::on_horizon_advanced,
                                                        &manager_index_t::mark_table_dropped,
                                                        &manager_index_t::table_dropped_committed,
+                                                       &manager_index_t::table_drop_aborted,
                                                        &manager_index_t::apply_wal_record_for_index>;
 
     private:

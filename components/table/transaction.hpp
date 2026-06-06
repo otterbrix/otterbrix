@@ -25,6 +25,16 @@ namespace components::table {
         uint64_t txn_id;
     };
 
+    // An index a CREATE INDEX in this txn brought into being, identified by the
+    // owning table oid + index name. Parked until COMMIT publishes it / ABORT
+    // un-marks it (the rollback path drops the still-uncommitted index). Mirrors
+    // dml_delete_range_t's shape — a plain value struct that crosses no mailbox
+    // itself but rides the txn accumulate/drain payloads.
+    struct created_index_t {
+        components::catalog::oid_t table_oid;
+        std::string name;
+    };
+
     class transaction_t {
     public:
         // resource is REQUIRED, not defaulted: the per-txn pmr containers allocate
@@ -122,14 +132,36 @@ namespace components::table {
 
         // Storage oids whose backing files a DROP TABLE / DROP INDEX in this txn
         // retired. Parked until COMMIT so the GC-remap (operator_commit_transaction)
-        // can stamp them with the real commit_id; ABORT drains them too (Wave-2
-        // unmark — informational for now). Mirrors the accumulate/drain pairs above.
+        // can stamp them with the real commit_id; ABORT drains them too. Mirrors
+        // the accumulate/drain pairs above.
         void accumulate_dropped_storage(components::catalog::oid_t oid) {
             dropped_storage_oids_.push_back(oid);
         }
         std::vector<components::catalog::oid_t> drain_dropped_storages() {
             std::vector<components::catalog::oid_t> out(std::move(dropped_storage_oids_));
             dropped_storage_oids_.clear();
+            return out;
+        }
+
+        // Storage oids whose backing files a CREATE TABLE / CREATE INDEX in this
+        // txn brought into being, and the indexes those statements created.
+        // Parked until COMMIT publishes them; ABORT drains them to drop the
+        // still-uncommitted storage / index (a CREATE inside a txn must be
+        // revertible until COMMIT). Mirror the dropped_storage_oids_ pair above.
+        void accumulate_created_storage(components::catalog::oid_t oid) {
+            created_storage_oids_.push_back(oid);
+        }
+        std::vector<components::catalog::oid_t> drain_created_storages() {
+            std::vector<components::catalog::oid_t> out(std::move(created_storage_oids_));
+            created_storage_oids_.clear();
+            return out;
+        }
+        void accumulate_created_index(created_index_t index) {
+            created_indexes_.push_back(std::move(index));
+        }
+        std::vector<created_index_t> drain_created_indexes() {
+            std::vector<created_index_t> out(std::move(created_indexes_));
+            created_indexes_.clear();
             return out;
         }
 
@@ -141,7 +173,8 @@ namespace components::table {
         bool has_accumulated() const {
             return !pending_base_appends_.empty() || !pending_base_deletes_.empty() ||
                    !pg_catalog_appends.empty() || !pg_catalog_delete_tables.empty() ||
-                   !pg_attribute_commit_id_backfills.empty() || !dropped_storage_oids_.empty();
+                   !pg_attribute_commit_id_backfills.empty() || !dropped_storage_oids_.empty() ||
+                   !created_storage_oids_.empty() || !created_indexes_.empty();
         }
 
         struct append_info {
@@ -193,6 +226,13 @@ namespace components::table {
         // no mailbox itself, but matches the catalog-oid sibling accumulators and
         // is drained into txn_commit_drain_t / txn_abort_drain_t (plain std too).
         std::vector<components::catalog::oid_t> dropped_storage_oids_;
+
+        // Storage oids / indexes brought into being by CREATE in this txn; plain
+        // std (sibling style to dropped_storage_oids_). Drained into
+        // txn_commit_drain_t / txn_abort_drain_t so COMMIT publishes them and
+        // ABORT drops the still-uncommitted artifacts.
+        std::vector<components::catalog::oid_t> created_storage_oids_;
+        std::vector<created_index_t> created_indexes_;
     };
 
 } // namespace components::table

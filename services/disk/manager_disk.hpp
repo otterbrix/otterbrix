@@ -233,8 +233,8 @@ namespace services::disk {
         using unique_future = actor_zeta::unique_future<T>;
 
         // Bootstrap address bundle for sync() (plain named struct — no std::tuple,
-        // mirrors services::wal::wal_sync_pack_t from M1.2). Carries the WAL
-        // manager's address so the disk manager can address it after spawn.
+        // mirrors services::wal::wal_sync_pack_t). Carries the WAL manager's address
+        // so the disk manager can address it after spawn.
         struct disk_sync_pack_t {
             actor_zeta::address_t wal = actor_zeta::address_t::empty_address();
         };
@@ -579,6 +579,15 @@ namespace services::disk {
         /// value space the on_horizon_advanced sweep horizon is compared against.
         unique_future<void> storage_dropped_committed(session_id_t session, uint64_t txn_id, uint64_t commit_id);
 
+        /// DROP-rollback un-mark — the abort mirror of storage_dropped_committed.
+        /// mark_storage_dropped recorded the GC entry's dropped_at_commit_id in TXN-ID
+        /// space (>= 2^62). If the transaction ABORTS instead of committing, the table
+        /// must remain live, so operator_abort_transaction sends this; the manager fans
+        /// out storage_drop_aborted_inner(txn_id) to EVERY agent so the owning slice can
+        /// ERASE its dropped_storages_ entries whose dropped_at_commit_id == txn_id,
+        /// un-marking the DROP so on_horizon_advanced never removes the .otbx.
+        unique_future<void> storage_drop_aborted(session_id_t session, uint64_t txn_id);
+
         /// Bootstrap helper — base_spaces wires dispatcher address before
         /// scheduler.start, and the manager fans it out to every agent so
         /// per-slice on_horizon_advanced_inner can fire
@@ -668,6 +677,9 @@ namespace services::disk {
         unique_future<void> storage_revert_appends(execution_context_t ctx,
                                                    std::vector<components::pg_catalog_append_range_t> ranges);
 
+        unique_future<void> storage_revert_deletes(execution_context_t ctx,
+                                                   std::vector<components::catalog::oid_t> tables);
+
         using dispatch_traits = actor_zeta::implements<disk_contract,
                                                        &manager_disk_t::flush,
                                                        &manager_disk_t::checkpoint_all,
@@ -696,6 +708,7 @@ namespace services::disk {
                                                        &manager_disk_t::storage_publish_commits,
                                                        &manager_disk_t::storage_publish_deletes,
                                                        &manager_disk_t::storage_revert_appends,
+                                                       &manager_disk_t::storage_revert_deletes,
                                                        // resolve + invalidation pull
                                                        &manager_disk_t::resolve_namespace,
                                                        &manager_disk_t::resolve_table,
@@ -714,7 +727,8 @@ namespace services::disk {
                                                        &manager_disk_t::compact_relkind_g_storage,
                                                        &manager_disk_t::on_horizon_advanced,
                                                        &manager_disk_t::mark_storage_dropped,
-                                                       &manager_disk_t::storage_dropped_committed>;
+                                                       &manager_disk_t::storage_dropped_committed,
+                                                       &manager_disk_t::storage_drop_aborted>;
 
     private:
         // Shared per-item bodies for the singular + batched pg_catalog mutators.

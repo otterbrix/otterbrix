@@ -104,17 +104,18 @@ namespace components::operators {
             user_tables.push_back({this_oid});
         }
 
-        // For each user table, rebuild its in-memory index and re-populate it
-        // from the just-compacted storage.
+        // For each user table, re-populate its index from the just-compacted
+        // storage via repopulate_table (clears the on-disk index backing + the
+        // in-memory engine internally, then re-inserts at post-compact ids).
+        //
+        // F7 fix: the previous path did rebuild_indexes + insert_rows under
+        // ctx->txn. insert_rows tags new entries with ctx->txn's id, so without
+        // an index-side commit they stay PENDING-invisible — VACUUM never
+        // commits the index, so post-VACUUM index_scans saw an empty index.
+        // repopulate_table re-inserts with txn_id=0 (committed-for-everyone),
+        // the path that needs no commit. The separate rebuild_indexes call is
+        // dropped: repopulate_table's internal clear subsumes it.
         for (auto& tbl : user_tables) {
-            {
-                auto [_rb, rbf] = actor_zeta::send(ctx->index_address,
-                                                   &services::index::manager_index_t::rebuild_indexes,
-                                                   ctx->session,
-                                                   tbl.table_oid);
-                co_await std::move(rbf);
-            }
-
             std::uint64_t total = 0;
             {
                 auto [_tr, trf] = actor_zeta::send(ctx->disk_address,
@@ -123,9 +124,10 @@ namespace components::operators {
                                                    tbl.table_oid);
                 total = co_await std::move(trf);
             }
-            if (total == 0)
-                continue;
 
+            // total==0 (table emptied by compact) still repopulates: the clear
+            // step inside repopulate_table wipes stale index entries.
+            // storage_scan_segment returns an empty chunk for count==0.
             std::unique_ptr<components::vector::data_chunk_t> scan_data;
             {
                 auto [_ss, ssf] = actor_zeta::send(ctx->disk_address,
@@ -136,19 +138,15 @@ namespace components::operators {
                                                    total);
                 scan_data = co_await std::move(ssf);
             }
-            if (!scan_data)
-                continue;
 
-            const auto count = scan_data->size();
-            components::execution_context_t ix_ctx{ctx->session, ctx->txn, ctx->session_tz, tbl.table_oid};
-            auto [_ir, irf] = actor_zeta::send(ctx->index_address,
-                                               &services::index::manager_index_t::insert_rows,
-                                               ix_ctx,
+            auto [_rp, rpf] = actor_zeta::send(ctx->index_address,
+                                               &services::index::manager_index_t::repopulate_table,
+                                               ctx->session,
                                                tbl.table_oid,
                                                std::move(scan_data),
-                                               std::uint64_t{0},
-                                               count);
-            co_await std::move(irf);
+                                               total,
+                                               ctx->session_tz);
+            co_await std::move(rpf);
         }
 
         // GC pg_computed_column rows for relkind='g' tables.

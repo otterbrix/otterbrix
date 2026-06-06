@@ -1824,3 +1824,92 @@ TEST_CASE("integration::cpp::test_persistence::set_timezone_survives_restart") {
         }
     }
 }
+
+// M2.1 / M1.1 interplay: an indexed disk table whose rows are DELETE'd > 30% in
+// a committed txn, then CHECKPOINT'd, must survive a restart with index-path
+// queries still exact. Commit-path compaction is GATED for indexed tables
+// (M2.3 tables_without_indexes), so the commit itself does NOT shift ids — but
+// the result set must already be correct (deleted rows invisible via the live
+// index). The CHECKPOINT repopulates the on-disk index against compacted ids,
+// and on restart bootstrap repopulate (txn_id=0) + the M1.1 replay gate must
+// reconstruct a consistent, visible index.
+TEST_CASE("integration::cpp::test_persistence::indexed_table_compact_survives_restart") {
+    auto config =
+        test_create_config("/tmp/otterbrix/integration/test_persistence/indexed_table_compact_survives_restart");
+    test_clear_directory(config);
+
+    INFO("phase 1: disk table + index, insert, delete >30%, commit, checkpoint") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
+                                               "WITH (storage = 'disk');");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur =
+                dispatcher->execute_sql(session, "CREATE INDEX idx_count ON TestDatabase.TestCollection (count);");
+            REQUIRE(cur->is_success());
+        }
+
+        // INSERT 100 rows, count = 0..99, inside an explicit txn that commits.
+        {
+            auto session = otterbrix::session_id_t();
+            std::stringstream q;
+            q << "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
+            for (int i = 0; i < 100; ++i) {
+                q << "('row_" << i << "', " << i << ")" << (i == 99 ? ";" : ", ");
+            }
+            auto cur = dispatcher->execute_sql(session, q.str());
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 100);
+        }
+
+        // DELETE > 30% (count < 40 → 40 rows) in a committed statement; the
+        // commit-path compact is gated for this indexed table, but the live
+        // index must already hide the deleted rows.
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count < 40;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 40);
+        }
+
+        // Correct results even though commit-path compact is gated.
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 60);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 0);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 39;", 0);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 40;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 99;", 1);
+
+        // CHECKPOINT compacts ids and repopulates the on-disk index.
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("phase 2: restart — bootstrap repopulate keeps index-path queries exact") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 60);
+        // Deleted values stay gone through the rebuilt index.
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 0);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 39;", 0);
+        // Surviving values resolve to exactly their one row (no stale id hit).
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 40;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 70;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 99;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count >= 40;", 60);
+    }
+}

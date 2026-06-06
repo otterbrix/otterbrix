@@ -65,6 +65,12 @@ namespace services::index {
         bool is_dropped() const;
 
         unique_future<void> drop(session_id_t session);
+        // Wipe the agent's stored index data while keeping the agent alive and
+        // writable (bitcask: segments + hash + txn-log + applied-offset
+        // sidecar; btree: tree contents/file). NOT the terminal drop. Used by
+        // the runtime repopulate path: txn_id==0 re-inserts then take the
+        // direct (non-txn-log) write path.
+        unique_future<void> clear(session_id_t session);
         unique_future<void>
         insert_many(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values);
         unique_future<void>
@@ -74,6 +80,7 @@ namespace services::index {
         void force_flush_sync();
 
         using dispatch_traits = actor_zeta::dispatch_traits<&index_agent_disk_t::drop,
+                                                            &index_agent_disk_t::clear,
                                                             &index_agent_disk_t::insert_many,
                                                             &index_agent_disk_t::remove_many>;
 

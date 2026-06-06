@@ -972,6 +972,65 @@ namespace services::index {
         }
     }
 
+    void bitcask_index_disk_t::clear() {
+        // Wipe all stored data IN PLACE, keeping the instance alive and
+        // writable (re-initialized empty). Unlike drop(), the directory and a
+        // fresh active segment survive so the subsequent txn_id==0 re-inserts
+        // (direct, non-txn-log path) repopulate cleanly. Mirrors the ctor's
+        // construction sequence on a wiped directory.
+        //
+        // Drain the background merge executor first: a queued
+        // merge_immutable_segments() would otherwise race the wipe by reading
+        // segments we are about to remove.
+        if (task_executor_) {
+            task_executor_->stop();
+        }
+
+        std::unique_lock lock(mutex_);
+
+        // Close every open handle before unlinking so stale inodes are not held.
+        file_.reset();
+        txn_log_file_.reset();
+        hash_index_.reset();
+
+        // Remove all on-disk bitcask artifacts: data segments, the CURRENT
+        // pointer, the txn log and its applied-offset sidecar, and the shared
+        // hash_index.bin (the buckets the engine-side disk_hash facade reads).
+        // std::error_code overloads — no exceptions on a -fno-exceptions build.
+        for (const auto& segment : collect_segments()) {
+            remove_file(fs_, segment.path);
+        }
+        {
+            std::error_code ec;
+            std::filesystem::remove(current_segment_path(path_), ec);
+        }
+        remove_file(fs_, txn_log_file_path());
+        remove_file(fs_, txn_applied_file_path());
+        remove_file(fs_, hash_index_file_path_);
+
+        // Reset all in-memory cursors to the fresh-directory state.
+        reset_flush_state();
+        next_timestamp_ = 0;
+        next_segment_id_.store(1);
+        active_segment_id_ = 0;
+        active_segment_records_ = 0;
+        active_data_file_path_.clear();
+        bulk_mode_ = false;
+
+        // Recreate the backing exactly as the ctor does, but over the now-empty
+        // directory. A fresh executor replaces the stopped one.
+        task_executor_ = std::make_unique<bitcask_task_executor_t>();
+        initialize_storage();
+        hash_index_ = std::make_unique<disk_hash_table_t>(hash_index_file_path_,
+                                                          disk_hash_table_t::default_bucket_count,
+                                                          false,
+                                                          resource_);
+        load_from_disk();
+        open_active_segment();
+        // committed_txn_ids_ is intentionally left as-is: the txn log it gated
+        // is gone, and txn_id==0 re-inserts take the direct path (no gate).
+    }
+
     void bitcask_index_disk_t::drop() {
         if (task_executor_) {
             task_executor_->stop();

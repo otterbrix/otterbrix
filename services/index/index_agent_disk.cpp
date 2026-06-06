@@ -59,6 +59,9 @@ namespace services::index {
             case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::drop>:
                 co_await actor_zeta::dispatch(this, &index_agent_disk_t::drop, msg);
                 break;
+            case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::clear>:
+                co_await actor_zeta::dispatch(this, &index_agent_disk_t::clear, msg);
+                break;
             case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::insert_many>:
                 co_await actor_zeta::dispatch(this, &index_agent_disk_t::insert_many, msg);
                 break;
@@ -78,6 +81,17 @@ namespace services::index {
         trace(log_, "index_agent_disk_t::drop, session: {}", session.data());
         index_disk_->drop();
         is_dropped_ = true;
+        co_return;
+    }
+
+    index_agent_disk_t::unique_future<void> index_agent_disk_t::clear(session_id_t session) {
+        // Wipe stored data in place; the agent stays alive and writable so the
+        // repopulate path can re-insert with txn_id==0 right after. A dropped
+        // agent has no backing — clearing it would be a use-after-free, so skip.
+        trace(log_, "index_agent_disk_t::clear, session: {}", session.data());
+        if (!is_dropped_) {
+            index_disk_->clear();
+        }
         co_return;
     }
 

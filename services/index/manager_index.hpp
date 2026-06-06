@@ -162,7 +162,19 @@ namespace services::index {
                        uint64_t commit_id);
         unique_future<void> revert_insert(execution_context_t ctx, components::catalog::oid_t table_oid);
         unique_future<void> cleanup_all_versions(session_id_t session, uint64_t lowest_active);
-        unique_future<void> rebuild_indexes(session_id_t session, components::catalog::oid_t table_oid);
+
+        // Runtime index rebuild driver (see index_contract). Returns the oids
+        // whose engine holds >= 1 index, EXCLUDING oids in dropped_table_agents_.
+        unique_future<std::pmr::vector<components::catalog::oid_t>> all_indexed_oids(session_id_t session);
+
+        // Repopulate one table's indexes from a post-compact storage chunk: disk
+        // agent clear() fan-out, in-memory engine clear, then txn_id=0 re-insert
+        // of every row (storage_row = i). See index_contract for details.
+        unique_future<void> repopulate_table(session_id_t session,
+                                             components::catalog::oid_t table_oid,
+                                             std::unique_ptr<components::vector::data_chunk_t> chunk,
+                                             uint64_t row_count,
+                                             core::date::timezone_offset_t session_tz);
 
         // DDL: index management
         unique_future<uint32_t> create_index(session_id_t session,
@@ -239,7 +251,8 @@ namespace services::index {
                                                        &manager_index_t::commit_deletes,
                                                        &manager_index_t::revert_insert,
                                                        &manager_index_t::cleanup_all_versions,
-                                                       &manager_index_t::rebuild_indexes,
+                                                       &manager_index_t::all_indexed_oids,
+                                                       &manager_index_t::repopulate_table,
                                                        &manager_index_t::create_index,
                                                        &manager_index_t::drop_index,
                                                        &manager_index_t::search,

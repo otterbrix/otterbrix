@@ -66,7 +66,24 @@ namespace services::index {
                        uint64_t commit_id);
         unique_future<void> revert_insert(execution_context_t ctx, components::catalog::oid_t table_oid);
         unique_future<void> cleanup_all_versions(session_id_t session, uint64_t lowest_active);
-        unique_future<void> rebuild_indexes(session_id_t session, components::catalog::oid_t table_oid);
+        // Runtime index rebuild driver (the vacuum/checkpoint repopulate path). Returns the oids whose engine holds >= 1
+        // index, EXCLUDING oids mid-GC (present in dropped_table_agents_). The
+        // vacuum operator enumerates these and repopulate_table's each from the
+        // just-compacted storage.
+        unique_future<std::pmr::vector<components::catalog::oid_t>> all_indexed_oids(session_id_t session);
+
+        // Repopulate one table's indexes from a post-compact storage chunk.
+        // (a) clears each disk-backed index's on-disk backing via the agent
+        //     clear() fan-out (covers btree duplicate-growth and disk_hash
+        //     wrong-row), (b) clears the in-memory engine, (c) re-inserts every
+        //     row with storage_row = i (0-based post-compact ids) under
+        //     txn_id=0 (committed-for-everyone, no commit needed). row_count==0
+        //     is valid: clear still runs, nothing re-inserted.
+        unique_future<void> repopulate_table(session_id_t session,
+                                             components::catalog::oid_t table_oid,
+                                             std::unique_ptr<components::vector::data_chunk_t> chunk,
+                                             uint64_t row_count,
+                                             core::date::timezone_offset_t session_tz);
 
         // DDL: index management
         unique_future<uint32_t> create_index(session_id_t session,
@@ -167,7 +184,8 @@ namespace services::index {
                                                             &index_contract::commit_deletes,
                                                             &index_contract::revert_insert,
                                                             &index_contract::cleanup_all_versions,
-                                                            &index_contract::rebuild_indexes,
+                                                            &index_contract::all_indexed_oids,
+                                                            &index_contract::repopulate_table,
                                                             &index_contract::create_index,
                                                             &index_contract::drop_index,
                                                             &index_contract::search,

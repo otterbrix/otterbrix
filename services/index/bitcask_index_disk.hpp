@@ -63,6 +63,7 @@ namespace services::index {
         result upper_bound(const value_t& value) const override;
 
         void drop() override;
+        void clear() override;
         void force_flush() override;
         void load_entries(entries_t& entries) const;
         void enqueue_task(std::function<void()> task);

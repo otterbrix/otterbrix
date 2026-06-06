@@ -63,6 +63,14 @@ namespace components::pipeline {
         uint64_t dml_append_row_count{0};
         uint64_t dml_delete_txn_id{0};
         catalog::oid_t dml_table_oid{catalog::INVALID_OID};
+        // DROP back-channel: operator_dynamic_cascade_delete_t records each
+        // storage oid it dropped (alongside the mark_storage_dropped send). The
+        // executor lifts these into execute_result_t.dropped_storage_oids and
+        // ships them in the txn_accumulate payload so COMMIT's drain can drive
+        // the DROP-GC value-space remap off the ACTUAL drops (decoupled from
+        // whichever DDL mode lowered the statement). Plain std::vector matching
+        // the sibling cross-mailbox value fields above.
+        std::vector<catalog::oid_t> dropped_storage_oids;
         // Commit back-channel: operator_commit_transaction_t records the
         // commit_id it drained (txn_commit_drain_msg reply) so the executor's
         // tail can drive follow-ups that need it (the inline CREATE INDEX

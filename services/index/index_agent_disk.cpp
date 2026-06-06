@@ -95,13 +95,14 @@ namespace services::index {
         co_return;
     }
 
-    index_agent_disk_t::unique_future<void>
+    index_agent_disk_t::unique_future<core::error_t>
     index_agent_disk_t::insert_many(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values) {
         trace(log_, "index_agent_disk_t::insert_many: {}, txn_id: {}, session: {}", values.size(), txn_id, session.data());
         auto* bitcask = dynamic_cast<bitcask_index_disk_t*>(index_disk_.get());
         if (bitcask && txn_id != 0) {
-            bitcask->apply_txn_inserts(txn_id, values);
-            co_return;
+            // M3.5: the only recoverable-failure branch — propagate the bitcask
+            // txn-log IO error straight back to commit_inserts.
+            co_return bitcask->apply_txn_inserts(txn_id, values);
         }
         // bulk_guard_t disengages the bulk-write window on scope exit so a
         // mid-loop bail-out still closes the bulk mode cleanly.
@@ -116,30 +117,33 @@ namespace services::index {
         if (bitcask) {
             bitcask->set_bulk_mode(true);
         }
+        // btree / txn_id==0 direct path stays assert+abort terminal: there is no
+        // recoverable failure to surface, so a clean run returns no_error().
         for (const auto& [key, row_id] : values) {
             index_disk_->insert(key, row_id);
         }
         if (bitcask) {
             bitcask->force_flush();
         }
-        co_return;
+        co_return core::error_t::no_error();
     }
 
-    index_agent_disk_t::unique_future<void>
+    index_agent_disk_t::unique_future<core::error_t>
     index_agent_disk_t::remove_many(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values) {
         trace(log_, "index_agent_disk_t::remove_many: {}, txn_id: {}, session: {}", values.size(), txn_id, session.data());
         auto* bitcask = dynamic_cast<bitcask_index_disk_t*>(index_disk_.get());
         if (bitcask && txn_id != 0) {
-            bitcask->apply_txn_deletes(txn_id, values);
-            co_return;
+            // M3.5: propagate the bitcask txn-log IO error to commit_deletes.
+            co_return bitcask->apply_txn_deletes(txn_id, values);
         }
+        // btree / txn_id==0 direct path stays assert+abort terminal.
         for (const auto& [key, row_id] : values) {
             index_disk_->remove(key, row_id);
         }
         if (bitcask) {
             bitcask->force_flush();
         }
-        co_return;
+        co_return core::error_t::no_error();
     }
 
     // Synchronous owner-side entry — called by manager_index_t outside the

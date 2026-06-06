@@ -8,7 +8,10 @@
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
+#include <algorithm>
+#include <iterator>
 #include <set>
+#include <vector>
 
 namespace components::operators {
 
@@ -45,6 +48,12 @@ namespace components::operators {
                 // marker carries, so no real-cid DDL record is needed afterwards.
                 // The commit_id on the marker only feeds the replay-horizon
                 // max-scan, which a 0 here simply does not advance.
+                // F4: this cid=0 record is replay-safe BECAUSE replay decides
+                // visibility by transaction_id, not by the recorded cid. The
+                // invariant is therefore a constraint on any FUTURE replay change:
+                // if replay ever starts gating on the marker's cid, this 0 would
+                // silently hide the DDL — such a change must first stop emitting
+                // cid=0 here.
                 auto [_c, cf] = actor_zeta::send(ctx->wal_address,
                                                  &services::wal::manager_wal_replicate_t::commit_txn,
                                                  ctx->session,
@@ -71,14 +80,21 @@ namespace components::operators {
         std::set<components::catalog::oid_t> swap_deletes;
         // backfill markers (added by operator_alter_column_{add,drop,rename}
         // and accumulated onto transaction_t by the executor's explicit-txn
-        // branch). Patched after commit_id_ is allocated below. pmr-backed so it
-        // moves straight into the batched update_pg_attribute_commit_id_fields.
-        std::pmr::vector<components::pg_attribute_commit_id_backfill_t> swap_backfills{resource_};
+        // branch). Patched after commit_id_ is allocated below. Plain std to
+        // match the cross-mailbox drain field (txn_commit_drain_t.swap_backfills);
+        // moved straight into the batched update_pg_attribute_commit_id_fields.
+        std::vector<components::pg_attribute_commit_id_backfill_t> swap_backfills;
         // Explicit-txn base-table DML ranges parked by the executor commit phase.
         // Batched into storage_publish_* alongside the pg_catalog ranges, all
         // BEFORE the ProcArray publish() barrier so readers see an atomic flip.
         std::vector<components::pg_catalog_append_range_t> base_appends;
         std::set<components::catalog::oid_t> base_delete_tables;
+        // Storage oids actually dropped by this txn's DDL (recorded by
+        // operator_dynamic_cascade_delete into the pipeline ctx, lifted into the
+        // accumulate payload and parked on transaction_t). Drives the DROP-GC
+        // value-space remap below, keyed off ACTUAL drops rather than the lower
+        // mode flag.
+        std::vector<components::catalog::oid_t> dropped_storage_oids;
         // Null-sender guard: with no dispatcher to talk to there is no txn to
         // drain — leave commit_id_ = 0 and skip.
         if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
@@ -89,10 +105,10 @@ namespace components::operators {
             txn_data = drain.txn;
             swap_appends = std::move(drain.swap_appends);
             swap_deletes = std::move(drain.swap_deletes);
-            // drain carries a std::vector; copy into the pmr-backed local.
-            swap_backfills.assign(drain.swap_backfills.begin(), drain.swap_backfills.end());
+            swap_backfills = std::move(drain.swap_backfills);
             base_appends = std::move(drain.base_appends);
             base_delete_tables = std::move(drain.base_delete_tables);
+            dropped_storage_oids = std::move(drain.dropped_storage_oids);
             commit_id_ = drain.commit_id;
         }
 
@@ -104,10 +120,13 @@ namespace components::operators {
         // tombstone keyed by transaction_id at DROP time; the horizon-advance GC
         // compares against commit_id, so the tombstone must be remapped from
         // txn-id space into commit-id space once the real commit_id is known.
-        // Fire-and-forget no-op message pair, kept cheap so even zero-entry DDLs
-        // pay only two trivial sends. Placed right after the drain so commit_id_
-        // is final.
-        if (is_ddl_commit_ && txn_data.transaction_id != 0 && commit_id_ > 0) {
+        // Triggered off the ACTUAL drops carried in the drain
+        // (dropped_storage_oids, recorded by operator_dynamic_cascade_delete) —
+        // decoupled from is_ddl_commit_, i.e. from which mode lowered the
+        // statement: a txn that ran no DROP has an empty vector and pays nothing,
+        // and a DROP that arrived through any lowering path remaps correctly.
+        // Placed right after the drain so commit_id_ is final.
+        if (!dropped_storage_oids.empty() && txn_data.transaction_id != 0 && commit_id_ > 0) {
             if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
                 auto [_sd, sdf] = actor_zeta::send(ctx->disk_address,
                                                    &services::disk::manager_disk_t::storage_dropped_committed,
@@ -139,10 +158,16 @@ namespace components::operators {
             components::execution_context_t backfill_ctx{ctx->session, txn_data, {}};
             // Log the marker count before the move empties the vector.
             const auto backfill_count = swap_backfills.size();
+            // The disk handler takes a pmr vector; materialize one (operator
+            // resource_) from the plain-std drain local at the send site.
+            std::pmr::vector<components::pg_attribute_commit_id_backfill_t> backfill_markers{
+                std::make_move_iterator(swap_backfills.begin()),
+                std::make_move_iterator(swap_backfills.end()),
+                resource_};
             auto [_b, bf] = actor_zeta::send(ctx->disk_address,
                                              &services::disk::manager_disk_t::update_pg_attribute_commit_id_fields,
                                              backfill_ctx,
-                                             std::move(swap_backfills),
+                                             std::move(backfill_markers),
                                              commit_id_);
             co_await std::move(bf);
             trace(log_,
@@ -153,22 +178,89 @@ namespace components::operators {
                   commit_id_);
         }
 
-        // Capture the UNIQUE base-table oids touched by appends / deletes BEFORE
-        // the storage_publish_* block moves base_appends / base_delete_tables
-        // out. These drive the per-table index commits and the MVCC-compact
-        // fan-out further down, both of which run after the storage publishes.
-        // pmr-backed, resource from the operator (resource_).
-        std::pmr::set<components::catalog::oid_t> base_append_oids{resource_};
+        // Materialize the UNIQUE base-table oids touched by appends / deletes
+        // ONCE, here, before any consumer. base_appends / base_delete_tables are
+        // moved out by the storage_publish_* block further down, so these unique
+        // sets must be captured first. They serve THREE consumers — the per-table
+        // index commits, the storage publishes, and the MVCC-compact fan-out —
+        // each of which builds its own per-send pmr-vector copy (the sends move
+        // their argument, these masters stay intact). Single dedup pass via a
+        // std::pmr::set; resource from the operator (resource_).
+        std::pmr::set<components::catalog::oid_t> append_oid_set{resource_};
         for (const auto& r : base_appends) {
-            base_append_oids.insert(r.table_oid);
+            append_oid_set.insert(r.table_oid);
         }
-        std::pmr::set<components::catalog::oid_t> base_delete_table_oids{base_delete_tables.begin(),
-                                                                         base_delete_tables.end(),
+        std::pmr::vector<components::catalog::oid_t> base_append_oids{append_oid_set.begin(),
+                                                                      append_oid_set.end(),
+                                                                      resource_};
+        std::pmr::vector<components::catalog::oid_t> base_delete_table_oids{base_delete_tables.begin(),
+                                                                            base_delete_tables.end(),
+                                                                            resource_};
+
+        // M3.5: per-table index commits run BEFORE the storage publishes. Reason:
+        // an index-commit IO failure must be able to abort the whole commit with
+        // NOTHING reader-visible. commit_inserts / commit_deletes flip every
+        // touched table's index entries from PENDING to the real commit_id; on
+        // error we set_error + co_return BEFORE any storage_publish_* / WAL marker
+        // runs — so the rows stay txn-pending (insert_id == transaction_id),
+        // invisible to every snapshot; the WAL commit marker is never written, so
+        // replay drops the physicals; only the already-allocated commit_id stays
+        // in the dispatcher's in_flight_commits_ unpublished. That is a KNOWN
+        // leak: under pure MVCC there is no undo, so an aborted-after-allocation
+        // commit_id can never be reclaimed; it is bounded by process lifetime and
+        // accepted as the no-undo tradeoff. base_append_oids / base_delete_table_oids
+        // are the masters; copy into per-send pmr-vectors so the masters survive
+        // for the publish + compact consumers below.
+        if (ctx->index_address != actor_zeta::address_t::empty_address() &&
+            txn_data.transaction_id != 0 && commit_id_ > 0) {
+            if (!base_append_oids.empty()) {
+                std::pmr::vector<components::catalog::oid_t> append_oids{base_append_oids.begin(),
+                                                                        base_append_oids.end(),
+                                                                        resource_};
+                auto [_ic, icf] = actor_zeta::send(ctx->index_address,
+                                                   &services::index::manager_index_t::commit_inserts,
+                                                   components::execution_context_t{ctx->session, txn_data, ctx->session_tz},
+                                                   std::move(append_oids),
+                                                   commit_id_);
+                core::error_t result = co_await std::move(icf);
+                if (result.contains_error()) {
+                    // Clean abort: nothing published yet (this block runs before
+                    // storage_publish_* and the WAL marker). Rows stay txn-pending
+                    // and invisible; replay drops them; the commit_id leaks in
+                    // in_flight_commits_ (no-undo-under-MVCC tradeoff, see above).
+                    set_error(std::move(result));
+                    co_return;
+                }
+            }
+            if (!base_delete_table_oids.empty()) {
+                std::pmr::vector<components::catalog::oid_t> delete_oids{base_delete_table_oids.begin(),
+                                                                         base_delete_table_oids.end(),
                                                                          resource_};
+                auto [_dc, dcf] = actor_zeta::send(ctx->index_address,
+                                                   &services::index::manager_index_t::commit_deletes,
+                                                   components::execution_context_t{ctx->session, txn_data, ctx->session_tz},
+                                                   std::move(delete_oids),
+                                                   commit_id_);
+                core::error_t result = co_await std::move(dcf);
+                if (result.contains_error()) {
+                    // Clean abort BEFORE any publish — see commit_inserts note above.
+                    set_error(std::move(result));
+                    co_return;
+                }
+            }
+        }
 
         // Flip MVCC state on the pg_catalog rows AND the base-table DML ranges
         // drained above: one publish_commits / publish_deletes per category
         // covers every table touched between BEGIN and COMMIT.
+        // F3: this in-memory MVCC flip happens BEFORE the WAL commit marker, yet
+        // is crash-safe — durability of the flip comes from the WAL physical
+        // records (already written by the DML operators) plus checkpoint, NOT from
+        // this in-memory publish. A crash before the WAL commit marker discards
+        // the flip and the txn TOGETHER: replay sees no commit marker, so it never
+        // re-publishes these ranges and the rows stay txn-pending (dropped). The
+        // marker is the single durable commit point; this flip is purely the
+        // in-process reader-visibility step.
         if (txn_data.transaction_id != 0 && commit_id_ > 0 &&
             ctx->disk_address != actor_zeta::address_t::empty_address()) {
             components::execution_context_t swap_ctx{ctx->session, txn_data, {}};
@@ -203,54 +295,6 @@ namespace components::operators {
                                                    commit_id_,
                                                    std::move(base_delete_tables));
                 co_await std::move(bdf);
-            }
-        }
-
-        // Per-table index commits. base_appends / base_delete_tables were
-        // consumed (moved) by storage_publish_* above, so we drive these from the
-        // base_append_oids / base_delete_table_oids unique-oid sets captured just
-        // BEFORE the storage publish block. One batched commit_inserts /
-        // commit_deletes flips every touched table's index entries from PENDING to
-        // the real commit_id. Sets are already sorted+unique, so a flat
-        // pmr-vector copy preserves that.
-        if (ctx->index_address != actor_zeta::address_t::empty_address() &&
-            txn_data.transaction_id != 0 && commit_id_ > 0) {
-            std::pmr::vector<components::catalog::oid_t> append_oids{base_append_oids.begin(),
-                                                                    base_append_oids.end(),
-                                                                    resource_};
-            std::pmr::vector<components::catalog::oid_t> delete_oids{base_delete_table_oids.begin(),
-                                                                     base_delete_table_oids.end(),
-                                                                     resource_};
-            if (!append_oids.empty()) {
-                auto [_ic, icf] = actor_zeta::send(ctx->index_address,
-                                                   &services::index::manager_index_t::commit_inserts,
-                                                   components::execution_context_t{ctx->session, txn_data, ctx->session_tz},
-                                                   std::move(append_oids),
-                                                   commit_id_);
-                core::error_t result = co_await std::move(icf);
-                if (result.contains_error()) {
-                    // Latent until index commits stop being assert+abort terminal:
-                    // commit_inserts currently only ever returns no_error(), so this
-                    // branch is unreachable today. Once the bitcask write path can
-                    // surface a real error, returning WITHOUT mark_executed makes
-                    // execute_sub_plan_ surface an error cursor.
-                    set_error(std::move(result));
-                    co_return;
-                }
-            }
-            if (!delete_oids.empty()) {
-                auto [_dc, dcf] = actor_zeta::send(ctx->index_address,
-                                                   &services::index::manager_index_t::commit_deletes,
-                                                   components::execution_context_t{ctx->session, txn_data, ctx->session_tz},
-                                                   std::move(delete_oids),
-                                                   commit_id_);
-                core::error_t result = co_await std::move(dcf);
-                if (result.contains_error()) {
-                    // Latent until index commits stop being assert+abort terminal
-                    // (see commit_inserts note above).
-                    set_error(std::move(result));
-                    co_return;
-                }
             }
         }
 
@@ -293,15 +337,28 @@ namespace components::operators {
         // active txns still exist → agents skip the compact; it is a best-effort
         // tombstone-timing heuristic, compact CORRECTNESS rests on agent-mailbox
         // serialization, not on this gate.
-        if (ctx->disk_address != actor_zeta::address_t::empty_address() && commit_id_ > 0) {
-            std::pmr::vector<components::catalog::oid_t> compact_oids{base_append_oids.begin(),
-                                                                      base_append_oids.end(),
-                                                                      resource_};
-            for (const auto& oid : base_delete_table_oids) {
-                if (base_append_oids.find(oid) == base_append_oids.end()) {
-                    compact_oids.push_back(oid);
-                }
-            }
+        //
+        // P1: gated on !base_delete_table_oids.empty(). A commit with deletes is
+        // the ONLY way this txn could push a table past the compact's 30%
+        // dead-rows threshold. Proof: dead = total − committed-live. An
+        // append-only commit adds rows that all commit live (committed appends are
+        // visible, never dead) and reverts aborted appends physically — so it
+        // produces ZERO dead rows and dead/total can only fall, never rise. Only a
+        // committed DELETE turns a previously-live row dead. So when there are no
+        // base deletes, no table can newly cross the threshold and the entire
+        // fan-out (tables_without_indexes + maybe_cleanup_many) is provably a
+        // no-op worth skipping outright.
+        if (ctx->disk_address != actor_zeta::address_t::empty_address() && commit_id_ > 0 &&
+            !base_delete_table_oids.empty()) {
+            // Compact set = appends ∪ deletes. Both masters are sorted+unique
+            // pmr-vectors; merge them, dropping the duplicates that appear in both.
+            std::pmr::vector<components::catalog::oid_t> compact_oids{resource_};
+            compact_oids.reserve(base_append_oids.size() + base_delete_table_oids.size());
+            std::set_union(base_append_oids.begin(),
+                           base_append_oids.end(),
+                           base_delete_table_oids.begin(),
+                           base_delete_table_oids.end(),
+                           std::back_inserter(compact_oids));
             // Index gate: compact() rebuilds the row_group, shifting row
             // positions — the in-memory index engines hold POSITIONAL row refs,
             // so compacting an indexed table mid-session silently breaks every

@@ -900,11 +900,20 @@ namespace services::disk {
             key_col_indices.push_back(static_cast<std::uint64_t>(col_idx));
         }
 
+        // `keys` is a by-value sink: every path consumes its per-key values by MOVE
+        // (no copy of a logical_value_t anywhere). The two branches are symmetric on
+        // value handling — the arity-mismatch path moves the whole `key_values` row
+        // out (into the discarded `bad_key`), the matching path moves each element
+        // into its constant_filter_t — so neither branch copies and both leave the
+        // source row empty afterwards.
         for (auto& key_values : keys) {
             std::pmr::vector<std::int64_t> row_ids{resource()};
             // Arity mismatch for this key: leave the row empty (per-key, so one bad
-            // key doesn't void the batch).
+            // key doesn't void the batch). Move the row out to match the consume
+            // semantics of the matching path below.
             if (key_values.size() != key_col_indices.size()) {
+                auto bad_key = std::move(key_values);
+                (void) bad_key;
                 result.emplace_back(std::move(row_ids));
                 continue;
             }
@@ -1109,7 +1118,7 @@ namespace services::disk {
     }
 
     agent_disk_t::unique_future<void> agent_disk_t::maybe_cleanup_inner(components::catalog::oid_t table_oid,
-                                                                         uint64_t lowest_active_start_time) {
+                                                                         uint64_t compact_gate) {
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
             trace(log_,
@@ -1139,15 +1148,15 @@ namespace services::disk {
 
         static constexpr double gc_threshold = 0.3;
         if (static_cast<double>(deleted) / static_cast<double>(total) > gc_threshold) {
-            // The caller passes 0 for lowest_active_start_time while ANY
-            // transaction is still active; skip the compact in that case. This is
-            // a tombstone-timing heuristic only — it avoids reclaiming versions
-            // that a concurrent snapshot might still need. Compact correctness
-            // itself does NOT rest on this gate: compact swaps row_groups_ on
-            // this same agent thread, and the agent mailbox serializes that swap
-            // against every other storage handler, so the gate only delays
-            // reclaim, never guards against a data race.
-            if (lowest_active_start_time == 0) {
+            // compact_gate is a boolean 0/1 gate, NOT a horizon value: the dispatcher
+            // returns 1 only when no other txn is active. 0 means another txn is still
+            // active; skip the compact in that case. This is a tombstone-timing
+            // heuristic only — it avoids reclaiming versions that a concurrent snapshot
+            // might still need. Compact correctness itself does NOT rest on this gate:
+            // compact swaps row_groups_ on this same agent thread, and the agent
+            // mailbox serializes that swap against every other storage handler, so the
+            // gate only delays reclaim, never guards against a data race.
+            if (compact_gate == 0) {
                 co_return;
             }
             trace(log_,

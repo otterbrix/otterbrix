@@ -57,7 +57,7 @@ namespace {
             manager_wal_->sync(services::wal::wal_sync_pack_t{actor_zeta::address_t(manager_disk_->address()),
                                                               manager_dispatcher_->address(),
                                                               actor_zeta::address_t::empty_address()});
-            manager_disk_->sync(std::make_tuple(manager_wal_->address()));
+            manager_disk_->sync(services::disk::manager_disk_t::disk_sync_pack_t{manager_wal_->address()});
 
             manager_disk_->bootstrap_system_tables_sync();
         }

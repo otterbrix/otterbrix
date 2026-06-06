@@ -65,6 +65,7 @@ namespace services::index {
                        std::pmr::vector<components::catalog::oid_t> table_oids,
                        uint64_t commit_id);
         unique_future<void> revert_insert(execution_context_t ctx, components::catalog::oid_t table_oid);
+        unique_future<void> revert_delete(execution_context_t ctx, components::catalog::oid_t table_oid);
         unique_future<void> cleanup_all_versions(session_id_t session, uint64_t lowest_active);
         // Runtime index rebuild driver (the vacuum/checkpoint repopulate path). Returns the oids whose engine holds >= 1
         // index, EXCLUDING oids mid-GC (present in dropped_table_agents_). The
@@ -183,6 +184,7 @@ namespace services::index {
                                                             &index_contract::commit_inserts,
                                                             &index_contract::commit_deletes,
                                                             &index_contract::revert_insert,
+                                                            &index_contract::revert_delete,
                                                             &index_contract::cleanup_all_versions,
                                                             &index_contract::all_indexed_oids,
                                                             &index_contract::repopulate_table,

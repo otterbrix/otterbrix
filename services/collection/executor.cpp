@@ -234,6 +234,7 @@ namespace services::collection::executor {
                                    std::move(result.pg_attribute_commit_id_backfills),
                                    std::move(result.dml_appends),
                                    std::move(result.dml_deletes),
+                                   std::move(result.dropped_storage_oids),
                                    result.commit_id};
     }
 
@@ -1018,8 +1019,14 @@ namespace services::collection::executor {
 
         // CREATE INDEX: indexed table oid captured at rewrite time (the plan
         // tree is move-consumed by the execute_plan delegate before the
-        // backfill-commit tail runs).
+        // backfill-commit tail runs). The pg_index row oid (== the allocated
+        // index oid) and the index name are captured alongside so the CREATE
+        // INDEX failure path can revert the pg_index append range and drop the
+        // engine+agent (manager_index_t::drop_index) without re-probing the
+        // consumed plan tree.
         components::catalog::oid_t create_index_table_oid = components::catalog::INVALID_OID;
+        components::catalog::oid_t create_index_pg_index_oid = components::catalog::INVALID_OID;
+        std::pmr::string create_index_name{resource()};
 
         // Destructive rewrites. post_validate_optimize / enrich_plan /
         // planner.create_plan are NOT idempotent — in particular create_plan
@@ -1264,13 +1271,19 @@ namespace services::collection::executor {
                 // Capture the indexed table oid NOW for the post-pipeline
                 // backfill commit_insert: logical_plan is move-consumed by the
                 // execute_plan delegate below, so the tail cannot probe the
-                // plan tree anymore.
+                // plan tree anymore. The trailing create_index_t (the last
+                // child of the rewritten sequence_t) also carries the pg_index
+                // row oid (set by rewrite_create_index via set_index_oid) and
+                // the index name — both needed by the CREATE INDEX failure path.
                 if (auto* eff = services::catalog_resolve::effective_root_node(logical_plan.get());
                     eff && !eff->children().empty()) {
                     auto* back = eff->children().back().get();
                     if (back && back->type() == node_type::create_index_t) {
-                        create_index_table_oid =
-                            static_cast<const components::logical_plan::node_create_index_t*>(back)->table_oid();
+                        const auto* ci =
+                            static_cast<const components::logical_plan::node_create_index_t*>(back);
+                        create_index_table_oid = ci->table_oid();
+                        create_index_pg_index_oid = ci->index_oid();
+                        create_index_name.assign(ci->name().c_str(), ci->name().size());
                     }
                 }
             }
@@ -1392,6 +1405,10 @@ namespace services::collection::executor {
                 payload.pg_catalog_appends = std::move(exec_result.pg_catalog_appends);
                 payload.pg_catalog_delete_tables = std::move(exec_result.pg_catalog_delete_tables);
                 payload.backfills = std::move(exec_result.pg_attribute_commit_id_backfills);
+                // DROP storage-scrub oids (empty on the DML/SET-TZ/VACUUM path —
+                // none of these tear down a storage — but shipped for symmetry
+                // with the DDL tail; payload.empty() already accounts for it).
+                payload.dropped_storage_oids = std::move(exec_result.dropped_storage_oids);
                 trace(log_,
                       "executor::execute_plan_full: txn {} — accumulating {} appends, {} deletes ({})",
                       resolve_txn.transaction_id,
@@ -1411,6 +1428,7 @@ namespace services::collection::executor {
                 exec_result.pg_catalog_appends.clear();
                 exec_result.pg_catalog_delete_tables.clear();
                 exec_result.pg_attribute_commit_id_backfills.clear();
+                exec_result.dropped_storage_oids.clear();
 
                 if (!session_ctx.is_explicit) {
                     // Autocommit: implicit COMMIT through the SAME operator
@@ -1453,19 +1471,26 @@ namespace services::collection::executor {
                     co_await std::move(paf);
                 }
 
-                // Index revert: revert_insert is keyed per (table_oid, txn_id)
-                // and reverts ALL uncommitted entries for that pair, so it is
-                // idempotent across duplicate table oids — dedup to unique oids
-                // (avoids redundant sends) and fan out two-phase: send every
-                // revert_insert first, then await each.
+                // Index revert, two-phase (send-all then await-all). Both
+                // revert_insert and revert_delete are keyed per (table_oid, txn)
+                // and clear ALL uncommitted entries of that kind for the pair, so
+                // they are idempotent across duplicate oids — dedup each side.
+                //   revert_insert  ← PENDING index INSERT entries (dml_appends).
+                //   revert_delete  ← PENDING index DELETE markers (F15): an
+                //     aborted DELETE left tombstones in the pending bucket that
+                //     never reached disk; clear them per unique base dml_delete oid.
                 if (index_address_ != actor_zeta::address_t::empty_address()) {
-                    std::pmr::set<components::catalog::oid_t> revert_index_oids{resource()};
+                    std::pmr::set<components::catalog::oid_t> revert_insert_oids{resource()};
                     for (const auto& app : exec_result.dml_appends) {
-                        revert_index_oids.insert(app.table_oid);
+                        revert_insert_oids.insert(app.table_oid);
+                    }
+                    std::pmr::set<components::catalog::oid_t> revert_delete_oids{resource()};
+                    for (const auto& del : exec_result.dml_deletes) {
+                        revert_delete_oids.insert(del.table_oid);
                     }
                     std::pmr::vector<actor_zeta::unique_future<void>> revert_index_futures{resource()};
-                    revert_index_futures.reserve(revert_index_oids.size());
-                    for (auto oid : revert_index_oids) {
+                    revert_index_futures.reserve(revert_insert_oids.size() + revert_delete_oids.size());
+                    for (auto oid : revert_insert_oids) {
                         components::execution_context_t abort_ctx{session,
                                                                   resolve_txn,
                                                                   session_ctx.session_tz,
@@ -1475,6 +1500,17 @@ namespace services::collection::executor {
                                                            abort_ctx,
                                                            oid);
                         revert_index_futures.push_back(std::move(rif));
+                    }
+                    for (auto oid : revert_delete_oids) {
+                        components::execution_context_t abort_ctx{session,
+                                                                  resolve_txn,
+                                                                  session_ctx.session_tz,
+                                                                  oid};
+                        auto [_rd, rdf] = actor_zeta::send(index_address_,
+                                                           &services::index::manager_index_t::revert_delete,
+                                                           abort_ctx,
+                                                           oid);
+                        revert_index_futures.push_back(std::move(rdf));
                     }
                     for (auto& rif : revert_index_futures) {
                         co_await std::move(rif);
@@ -1498,12 +1534,37 @@ namespace services::collection::executor {
         // the ddl-commit operator drains it back via txn_commit_drain_msg and
         // publishes in order: flush barrier, WAL, commit, publish.
         if (needs_ddl_txn && exec_result.cursor->is_success()) {
+            // CREATE INDEX failure-undo prep: snapshot the pg_index row's append
+            // range BEFORE it is moved into the accumulate payload below. The
+            // commit drains pg_catalog_appends back from transaction_t, so on a
+            // commit (or inline index-commit) failure exec_result no longer
+            // holds it — capture it here so the failure path can issue exactly
+            // one storage_revert_appends for the pg_index row. The pg_class /
+            // pg_depend rows ride the same undo via the catalog drop in
+            // drop_index's catalog scrub is NOT involved here; only the pg_index
+            // row gates index visibility, matching the scoped revert in M3.4.
+            components::pg_catalog_append_range_t create_index_pg_index_range{};
+            bool has_create_index_pg_index_range = false;
+            if (original_type == node_type::create_index_t) {
+                constexpr auto pg_index_oid = components::catalog::well_known_oid::pg_index_table;
+                for (const auto& app : exec_result.pg_catalog_appends) {
+                    if (app.table_oid == pg_index_oid) {
+                        create_index_pg_index_range = app;
+                        has_create_index_pg_index_range = true;
+                        break;
+                    }
+                }
+            }
+
             if (!exec_result.pg_catalog_appends.empty() || !exec_result.pg_catalog_delete_tables.empty() ||
-                !exec_result.pg_attribute_commit_id_backfills.empty()) {
+                !exec_result.pg_attribute_commit_id_backfills.empty() || !exec_result.dropped_storage_oids.empty()) {
                 services::dispatcher::txn_accumulate_payload_t payload;
                 payload.pg_catalog_appends = std::move(exec_result.pg_catalog_appends);
                 payload.pg_catalog_delete_tables = std::move(exec_result.pg_catalog_delete_tables);
                 payload.backfills = std::move(exec_result.pg_attribute_commit_id_backfills);
+                // DROP storage-scrub oids: the commit operator's DROP-GC remap
+                // keys off this drained set (F18), independent of ddl-commit mode.
+                payload.dropped_storage_oids = std::move(exec_result.dropped_storage_oids);
                 auto [_ac, acf] = actor_zeta::send(
                     parent_address_,
                     &services::dispatcher::manager_dispatcher_t::txn_accumulate_msg,
@@ -1513,6 +1574,7 @@ namespace services::collection::executor {
                 exec_result.pg_catalog_appends.clear();
                 exec_result.pg_catalog_delete_tables.clear();
                 exec_result.pg_attribute_commit_id_backfills.clear();
+                exec_result.dropped_storage_oids.clear();
             }
 
             // DDL commit through the SAME commit pipeline DML and SQL COMMIT
@@ -1525,6 +1587,45 @@ namespace services::collection::executor {
             // them via the commit_id back-channel.
             exec_result.dml_appends.clear();
             exec_result.dml_deletes.clear();
+
+            // CREATE INDEX failure undo (F14). Reverts the pg_index row append
+            // (gates index visibility) and tears down the engine+agent via
+            // manager_index_t::drop_index. Invoked from BOTH the commit failure
+            // and the inline index-commit failure below — a single closure keeps
+            // the two paths identical. drop_index tolerates an unknown engine,
+            // so it is safe even when the backfill never reached the engine. The
+            // pg_index range was snapshotted before the accumulate move above;
+            // the leftover pg_class / pg_depend rows are left to GC (they no
+            // longer reference a valid index once indisvalid stays false).
+            auto undo_create_index =
+                [this, session, resolve_txn, &create_index_pg_index_range, &has_create_index_pg_index_range](
+                    executor_t* self,
+                    components::catalog::oid_t table_oid,
+                    std::pmr::string index_name) -> executor_t::unique_future<void> {
+                (void)self;
+                if (has_create_index_pg_index_range &&
+                    disk_address_ != actor_zeta::address_t::empty_address()) {
+                    std::vector<components::pg_catalog_append_range_t> revert_ranges;
+                    revert_ranges.push_back(create_index_pg_index_range);
+                    components::execution_context_t rv_ctx{session, resolve_txn, {}};
+                    auto [_rv, rvf] = actor_zeta::send(disk_address_,
+                                                       &services::disk::manager_disk_t::storage_revert_appends,
+                                                       rv_ctx,
+                                                       std::move(revert_ranges));
+                    co_await std::move(rvf);
+                }
+                if (table_oid != components::catalog::INVALID_OID &&
+                    index_address_ != actor_zeta::address_t::empty_address()) {
+                    auto [_di, dif] = actor_zeta::send(index_address_,
+                                                       &services::index::manager_index_t::drop_index,
+                                                       session,
+                                                       table_oid,
+                                                       services::index::index_name_t(index_name.c_str()));
+                    co_await std::move(dif);
+                }
+                co_return;
+            };
+
             auto commit_result = co_await run_commit_pipeline_(session,
                                                                resolve_txn,
                                                                session_ctx.session_tz,
@@ -1532,6 +1633,11 @@ namespace services::collection::executor {
                                                                /*ddl_mode=*/true);
             if (commit_result.cursor->is_error()) {
                 exec_result.cursor = std::move(commit_result.cursor);
+                // A CREATE INDEX whose commit failed never published the
+                // pg_index row nor brought up a usable engine — undo both.
+                if (original_type == node_type::create_index_t) {
+                    co_await undo_create_index(this, create_index_table_oid, create_index_name);
+                }
             }
             // Inline CREATE INDEX backfill index-commit (index ONLY — see
             // above). The indexed table oid was captured at rewrite time; the
@@ -1553,18 +1659,101 @@ namespace services::collection::executor {
                                                        swap_ctx,
                                                        std::move(commit_oids),
                                                        commit_result.commit_id);
-                    // Today bitcask is assert+abort terminal, so
-                    // contains_error() never trips on the CREATE INDEX path.
+                    // With the M3.5 error channel, a bitcask write failure here
+                    // arrives AFTER the storage commit already published the
+                    // pg_index row. Revert the pg_index row and drop the engine+
+                    // agent so no half-built index lingers (replaces the TODO).
                     auto ci_result = co_await std::move(cif);
                     if (ci_result.contains_error()) {
-                        // TODO: index-side abort path for CREATE INDEX
-                        // failure (revert pg_index row, drop disk agent).
+                        exec_result.cursor = make_cursor(resource(), ci_result);
+                        co_await undo_create_index(this, create_index_table_oid, create_index_name);
                     }
                 }
             }
+        } else if (needs_ddl_txn && exec_result.cursor->is_error()) {
+            // ===== DDL failure branch (M3.4 / F13) =====
+            // A failed DDL statement used to leave its txn orphaned/active,
+            // pinning lowest_active forever. Mirror the failed-DML revert path:
+            // revert the catalog (and CREATE INDEX backfill) appends, revert the
+            // pending index inserts/deletes, then abort the txn.
+            //
+            // Verified boundary: the FAILING fragment's own appends never reach
+            // exec_result — the operator failed before execute_sub_plan_'s lift,
+            // so only EARLIER-completed fragments carry ranges here. Those are
+            // exactly the ones that need reverting.
+            trace(log_,
+                  "executor::execute_plan_full: DDL failed — reverting txn {}, session: {}",
+                  resolve_txn.transaction_id,
+                  session.data());
+
+            // Storage revert: one storage_revert_appends folds every catalog
+            // append AND any CREATE INDEX backfill dml_append into a single send
+            // (each range carries its own table_oid; the handler routes per-range).
+            std::vector<components::pg_catalog_append_range_t> revert_ranges;
+            revert_ranges.reserve(exec_result.dml_appends.size() + exec_result.pg_catalog_appends.size());
+            for (const auto& app : exec_result.dml_appends) {
+                revert_ranges.push_back(
+                    components::pg_catalog_append_range_t{app.table_oid, app.row_start, app.row_count});
+            }
+            for (auto& pgc : exec_result.pg_catalog_appends) {
+                revert_ranges.push_back(std::move(pgc));
+            }
+            exec_result.pg_catalog_appends.clear();
+            if (!revert_ranges.empty() && disk_address_ != actor_zeta::address_t::empty_address()) {
+                components::execution_context_t pgc_ctx{session, resolve_txn, {}};
+                auto [_pa, paf] = actor_zeta::send(disk_address_,
+                                                   &services::disk::manager_disk_t::storage_revert_appends,
+                                                   pgc_ctx,
+                                                   std::move(revert_ranges));
+                co_await std::move(paf);
+            }
+
+            // Index revert, two-phase (send-all then await-all), deduped to
+            // unique oids. revert_insert clears the PENDING index INSERT bucket
+            // for (table_oid, txn); revert_delete clears the PENDING index DELETE
+            // bucket (nothing reached disk pre-commit). The insert oids come from
+            // the backfill dml_appends; the delete oids from base dml_deletes
+            // (the only oids that actually carry pending index deletes).
+            if (index_address_ != actor_zeta::address_t::empty_address()) {
+                std::pmr::set<components::catalog::oid_t> revert_insert_oids{resource()};
+                for (const auto& app : exec_result.dml_appends) {
+                    revert_insert_oids.insert(app.table_oid);
+                }
+                std::pmr::set<components::catalog::oid_t> revert_delete_oids{resource()};
+                for (const auto& del : exec_result.dml_deletes) {
+                    revert_delete_oids.insert(del.table_oid);
+                }
+                std::pmr::vector<actor_zeta::unique_future<void>> revert_index_futures{resource()};
+                revert_index_futures.reserve(revert_insert_oids.size() + revert_delete_oids.size());
+                for (auto oid : revert_insert_oids) {
+                    components::execution_context_t abort_ctx{session, resolve_txn, session_ctx.session_tz, oid};
+                    auto [_ri, rif] = actor_zeta::send(index_address_,
+                                                       &services::index::manager_index_t::revert_insert,
+                                                       abort_ctx,
+                                                       oid);
+                    revert_index_futures.push_back(std::move(rif));
+                }
+                for (auto oid : revert_delete_oids) {
+                    components::execution_context_t abort_ctx{session, resolve_txn, session_ctx.session_tz, oid};
+                    auto [_rd, rdf] = actor_zeta::send(index_address_,
+                                                       &services::index::manager_index_t::revert_delete,
+                                                       abort_ctx,
+                                                       oid);
+                    revert_index_futures.push_back(std::move(rdf));
+                }
+                for (auto& f : revert_index_futures) {
+                    co_await std::move(f);
+                }
+            }
+
+            exec_result.dml_appends.clear();
+            exec_result.dml_deletes.clear();
+
+            auto [_ab, abf] = actor_zeta::send(parent_address_,
+                                               &services::dispatcher::manager_dispatcher_t::txn_abort_msg,
+                                               session);
+            co_await std::move(abf);
         }
-        // Deliberate: a FAILED DDL statement does NOT abort its txn (it stays
-        // orphaned/active); fixing that is a separate task.
 
         // SET TIMEZONE — the operator pipeline persisted the ('TimeZone', name)
         // row to pg_settings. Surface the name so the dispatcher refreshes its
@@ -1833,6 +2022,15 @@ namespace services::collection::executor {
                 result_tracking.dml_deletes.push_back({pipeline_context.dml_table_oid,
                                                        pipeline_context.dml_delete_txn_id});
             }
+            // Lift the DROP storage-scrub oids: cascade-delete operators record
+            // every storage whose backing files they tore down. Accumulate (not
+            // overwrite) so a multi-table DROP keeps every dropped oid; the
+            // accumulate tail ships them in txn_accumulate_payload_t so the
+            // commit operator's DROP-GC remap keys off the drained set (F18).
+            for (auto oid : pipeline_context.dropped_storage_oids) {
+                result_tracking.dropped_storage_oids.push_back(oid);
+            }
+            pipeline_context.dropped_storage_oids.clear();
             // Commit back-channel: operator_commit_transaction_t recorded the
             // commit_id it drained.
             if (pipeline_context.committed_id != 0) {

@@ -49,7 +49,7 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
                                                           manager_dispatcher_->address(),
                                                           actor_zeta::address_t::empty_address()});
         // Pass WAL address — disk's append_pg_catalog_row sends physical_insert to it.
-        manager_disk_->sync(std::make_tuple(manager_wal_->address()));
+        manager_disk_->sync(services::disk::manager_disk_t::disk_sync_pack_t{manager_wal_->address()});
 
         // Bootstrap pg_catalog system tables so the disk-side catalog has tables to scan.
         manager_disk_->bootstrap_system_tables_sync();

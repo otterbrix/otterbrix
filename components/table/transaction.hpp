@@ -120,6 +120,30 @@ namespace components::table {
             return out;
         }
 
+        // Storage oids whose backing files a DROP TABLE / DROP INDEX in this txn
+        // retired. Parked until COMMIT so the GC-remap (operator_commit_transaction)
+        // can stamp them with the real commit_id; ABORT drains them too (Wave-2
+        // unmark — informational for now). Mirrors the accumulate/drain pairs above.
+        void accumulate_dropped_storage(components::catalog::oid_t oid) {
+            dropped_storage_oids_.push_back(oid);
+        }
+        std::vector<components::catalog::oid_t> drain_dropped_storages() {
+            std::vector<components::catalog::oid_t> out(std::move(dropped_storage_oids_));
+            dropped_storage_oids_.clear();
+            return out;
+        }
+
+        // True when ANY accumulator parked by this txn is non-empty: pending base
+        // appends/deletes, pg_catalog appends/delete-tables, backfills, or dropped
+        // storage oids. The commit-drain handler reads it to ABORT an empty COMMIT
+        // (a bare COMMIT, a read-only explicit txn, or zero-row DML) instead of
+        // allocating a commit_id and advancing the horizon for a no-op.
+        bool has_accumulated() const {
+            return !pending_base_appends_.empty() || !pending_base_deletes_.empty() ||
+                   !pg_catalog_appends.empty() || !pg_catalog_delete_tables.empty() ||
+                   !pg_attribute_commit_id_backfills.empty() || !dropped_storage_oids_.empty();
+        }
+
         struct append_info {
             int64_t row_start;
             uint64_t count;
@@ -164,6 +188,11 @@ namespace components::table {
         // atomic publish batch; implicit txns never touch them.
         std::pmr::vector<dml_append_range_t> pending_base_appends_;
         std::pmr::vector<dml_delete_range_t> pending_base_deletes_;
+
+        // Storage oids retired by DROP in this txn; plain std::vector — it crosses
+        // no mailbox itself, but matches the catalog-oid sibling accumulators and
+        // is drained into txn_commit_drain_t / txn_abort_drain_t (plain std too).
+        std::vector<components::catalog::oid_t> dropped_storage_oids_;
     };
 
 } // namespace components::table

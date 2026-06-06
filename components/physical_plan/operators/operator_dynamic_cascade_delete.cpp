@@ -298,6 +298,14 @@ namespace components::operators {
         drop_futures.reserve(pending_storage_drops.size() * 4);
         for (auto& sd : pending_storage_drops) {
             any_storage_drop = true;
+            // DROP back-channel: record the dropped storage oid for the COMMIT
+            // drain's value-space remap (operator_commit_transaction keys the
+            // DROP-GC remap off the ACTUAL drops in the drain). The
+            // mark_table_dropped / mark_storage_dropped / drop_storage sends
+            // below stay EXACTLY as today.
+            if (ctx->txn.transaction_id != 0) {
+                ctx->dropped_storage_oids.push_back(sd.table_oid);
+            }
             if (ctx->index_address != actor_zeta::address_t::empty_address()) {
                 auto [_mti, mtif] = actor_zeta::send(ctx->index_address,
                                                      &services::index::manager_index_t::mark_table_dropped,

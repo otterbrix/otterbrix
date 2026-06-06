@@ -68,8 +68,16 @@ namespace services::index {
         void load_entries(entries_t& entries) const;
         void enqueue_task(std::function<void()> task);
         void set_bulk_mode(bool enabled);
-        void apply_txn_inserts(uint64_t txn_id, const std::vector<std::pair<value_t, size_t>>& values);
-        void apply_txn_deletes(uint64_t txn_id, const std::vector<std::pair<value_t, size_t>>& values);
+        // M3.5 error channel: the txn-log write path can fail on a file open /
+        // write / sync. Those used to assert+abort; now they surface a
+        // core::error_t so the manager's commit handler can return an
+        // index-side abort instead of taking the whole process down. A clean
+        // success returns core::error_t::no_error(). True logic invariants
+        // (corrupt magic, bad op_kind) stay asserts in the recovery path.
+        [[nodiscard]] core::error_t apply_txn_inserts(uint64_t txn_id,
+                                                      const std::vector<std::pair<value_t, size_t>>& values);
+        [[nodiscard]] core::error_t apply_txn_deletes(uint64_t txn_id,
+                                                      const std::vector<std::pair<value_t, size_t>>& values);
 
     private:
         enum class record_kind_t : uint8_t
@@ -115,14 +123,22 @@ namespace services::index {
         void erase_all_refs_for_key(std::string_view key_bytes);
         void append_snapshot(const value_t& key, const row_ids_t& rows);
         void append_tombstone(const value_t& key);
-        void append_txn_record_unlocked(uint64_t txn_id,
-                                        uint8_t op_kind,
-                                        const std::vector<std::pair<value_t, size_t>>& values);
+        // M3.5: returns no_error() on a clean append, an index_create_fail
+        // error if the txn-log file cannot be opened (the only recoverable IO
+        // failure on this path; write/sync surface through the file handle).
+        [[nodiscard]] core::error_t append_txn_record_unlocked(uint64_t txn_id,
+                                                               uint8_t op_kind,
+                                                               const std::vector<std::pair<value_t, size_t>>& values);
         void recover_txn_log_unlocked();
         std::filesystem::path txn_log_file_path() const;
         std::filesystem::path txn_applied_file_path() const;
         uint64_t read_applied_log_offset() const;
-        void write_applied_log_offset(uint64_t offset) const;
+        // M3.5: returns no_error() once the applied-offset sidecar is durably
+        // rewritten, an index_create_fail error if the temp file cannot be
+        // opened or flushed. The ctor-time recovery path treats a failure here
+        // as terminal (no error channel mid-construction); apply_txn_* surface
+        // it as the index-side abort.
+        [[nodiscard]] core::error_t write_applied_log_offset(uint64_t offset) const;
         void flush_if_needed();
         void force_flush_unlocked();
 

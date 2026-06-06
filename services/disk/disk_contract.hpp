@@ -48,11 +48,12 @@ namespace services::disk {
                                                                       services::wal::id_t current_wal_id);
         actor_zeta::unique_future<void> vacuum_all(session_id_t session, uint64_t lowest_active_start_time);
         // Batched GC-threshold check + compact: routes each table_oid to its owning
-        // agent's maybe_cleanup_inner with the shared lowest_active_start_time gate.
+        // agent's maybe_cleanup_inner with the shared compact_gate (a boolean 0/1
+        // gate, NOT a horizon value — 1 = no other active txn).
         // operator_commit_transaction sends one call covering all just-touched tables.
         actor_zeta::unique_future<void> maybe_cleanup_many(execution_context_t ctx,
                                                            std::pmr::vector<components::catalog::oid_t> table_oids,
-                                                           uint64_t lowest_active_start_time);
+                                                           uint64_t compact_gate);
 
         // ddl_add_column / ddl_adopt_computing_schema replaced by pipeline operators.
 

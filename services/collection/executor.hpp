@@ -55,6 +55,12 @@ namespace services::collection::executor {
         std::vector<components::pg_attribute_commit_id_backfill_t> pg_attribute_commit_id_backfills{};
         std::vector<dml_append_range_t> dml_appends{};
         std::vector<dml_delete_range_t> dml_deletes{};
+        // Storage oids whose backing files a DROP scrubbed this statement,
+        // lifted from pipeline::context_t::dropped_storage_oids. Shipped in the
+        // accumulate payload so operator_commit_transaction's DROP-GC remap
+        // block keys off the drained drop set rather than the ddl-commit mode
+        // flag (F18). Cleared with the other accumulators by the commit tail.
+        std::vector<components::catalog::oid_t> dropped_storage_oids{};
         // Commit back-channel lifted from pipeline::context_t::committed_id:
         // non-zero when this pipeline ran operator_commit_transaction_t (the
         // CREATE INDEX tail needs the allocated commit_id for its index-only
@@ -90,6 +96,10 @@ namespace services::collection::executor {
         // Accumulating vectors (FK cascade correctness — see dml_append_range_t).
         std::vector<dml_append_range_t> dml_appends;
         std::vector<dml_delete_range_t> dml_deletes;
+        // Storage oids drained from pipeline::context_t::dropped_storage_oids
+        // (a DROP scrubbed their backing files). execute_plan moves these into
+        // execute_result_t for the accumulate tail (F18 drop-tracking).
+        std::vector<components::catalog::oid_t> dropped_storage_oids;
 
         // pg_catalog swap-info drained from each pipeline::context_t inside
         // execute_sub_plan_. execute_plan moves these into the outer

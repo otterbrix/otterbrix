@@ -826,7 +826,7 @@ TEST_CASE("services::index::bitcask_index_disk::txn_log_recovery_replays_committ
         std::vector<std::pair<logical_value_t, size_t>> inserts;
         inserts.emplace_back(logical_value_t(&resource, 1001l), 11);
         inserts.emplace_back(logical_value_t(&resource, 1002l), 22);
-        index.apply_txn_inserts(5001, inserts);
+        REQUIRE(!index.apply_txn_inserts(5001, inserts).contains_error());
     }
 
     {
@@ -850,7 +850,7 @@ TEST_CASE("services::index::bitcask_index_disk::txn_log_applied_checkpoint_preve
         auto index = make_test_index(path, &resource);
         std::vector<std::pair<logical_value_t, size_t>> inserts;
         inserts.emplace_back(logical_value_t(&resource, 2001l), 77);
-        index.apply_txn_inserts(6001, inserts);
+        REQUIRE(!index.apply_txn_inserts(6001, inserts).contains_error());
     }
 
     {
@@ -873,11 +873,12 @@ TEST_CASE("services::index::bitcask_index_disk::txn_log_recovery_is_order_indepe
         auto index = make_test_index(path, &resource);
         std::vector<std::pair<logical_value_t, size_t>> first;
         first.emplace_back(logical_value_t(&resource, 3001l), 1);
-        index.apply_txn_inserts(9002, first);
+        REQUIRE(!index.apply_txn_inserts(9002, first).contains_error());
 
         std::vector<std::pair<logical_value_t, size_t>> second;
         second.emplace_back(logical_value_t(&resource, 3002l), 2);
-        index.apply_txn_inserts(9001, second); // lower txn_id, committed later
+        // lower txn_id, committed later
+        REQUIRE(!index.apply_txn_inserts(9001, second).contains_error());
     }
 
     {
@@ -1036,12 +1037,12 @@ TEST_CASE("services::index::bitcask_index_disk::recover_gates_uncommitted_txn_fr
         std::vector<std::pair<logical_value_t, size_t>> a_inserts;
         a_inserts.emplace_back(logical_value_t(&resource, 4001l), 41);
         a_inserts.emplace_back(logical_value_t(&resource, 4002l), 42);
-        index.apply_txn_inserts(txn_a, a_inserts);
+        REQUIRE(!index.apply_txn_inserts(txn_a, a_inserts).contains_error());
 
         std::vector<std::pair<logical_value_t, size_t>> b_inserts;
         b_inserts.emplace_back(logical_value_t(&resource, 5001l), 51);
         b_inserts.emplace_back(logical_value_t(&resource, 5002l), 52);
-        index.apply_txn_inserts(txn_b, b_inserts);
+        REQUIRE(!index.apply_txn_inserts(txn_b, b_inserts).contains_error());
     }
 
     // Crash window: keep only the durable txn-log; drop the eagerly-applied
@@ -1083,11 +1084,11 @@ TEST_CASE("services::index::bitcask_index_disk::recover_skipped_frames_advance_a
 
         std::vector<std::pair<logical_value_t, size_t>> a_inserts;
         a_inserts.emplace_back(logical_value_t(&resource, 6001l), 61);
-        index.apply_txn_inserts(txn_a, a_inserts);
+        REQUIRE(!index.apply_txn_inserts(txn_a, a_inserts).contains_error());
 
         std::vector<std::pair<logical_value_t, size_t>> b_inserts;
         b_inserts.emplace_back(logical_value_t(&resource, 7001l), 71);
-        index.apply_txn_inserts(txn_b, b_inserts);
+        REQUIRE(!index.apply_txn_inserts(txn_b, b_inserts).contains_error());
     }
 
     wipe_all_but_txn_log(path);

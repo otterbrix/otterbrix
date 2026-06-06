@@ -343,6 +343,22 @@ namespace services::dispatcher {
         // snapshot_horizon any live txn can still read below, NOT
         // lowest_active_start_time (txn start-time space; mixing the two kept
         // DROP-GC dead: 2^62-range ids never compared < small start-times).
+        //
+        // M2.4/F10 — remap-before-broadcast ordering proof. For the committing
+        // txn the broadcast here can only carry a horizon that reclaims its own
+        // tombstones AFTER its DROP-GC remap has stamped them, never before:
+        //   1. operator_commit_transaction runs the storage/table dropped-committed
+        //      remap by sending it to the disk/index managers PRE-publish and
+        //      co_awaiting the result — the remap has LANDED before the operator
+        //      proceeds.
+        //   2. ONLY THEN does the operator send txn_publish_msg, whose handler
+        //      calls publish() (advancing published_horizon_ to this commit_id)
+        //      and then this function, enqueuing on_horizon_advanced to the SAME
+        //      subscriber addresses.
+        // Because (1)'s remap message and (2)'s broadcast target the same
+        // subscriber mailbox, same-mailbox FIFO ordering per subscriber guarantees
+        // the remap is dequeued first. The sweep therefore always sees the
+        // commit_id-stamped tombstones before the horizon that would reclaim them.
         auto new_lowest = txn_manager_.lowest_active_snapshot_horizon();
         if (new_lowest > last_broadcast_horizon_) {
             last_broadcast_horizon_ = new_lowest;
@@ -616,6 +632,19 @@ namespace services::dispatcher {
         trace(log_, "manager_dispatcher_t::txn_commit_drain_msg, session: {}", session.data());
         txn_commit_drain_t out;
         if (auto* txn_t = txn_manager_.find_transaction(session)) {
+            if (!txn_t->has_accumulated()) {
+                // Empty COMMIT — a bare COMMIT, a read-only explicit txn, or
+                // zero-row DML accumulated nothing. Aborting is the MVCC-equivalent
+                // end: an empty commit must NOT allocate a commit_id nor advance
+                // the horizon (no rows to make visible, no tombstones to GC). out
+                // stays default — commit_id 0, every drain field empty — so the
+                // caller skips publish() and storage_publish_* entirely.
+                txn_manager_.abort(session);
+                // Ending the txn frees its snapshot horizon — let the DROP-GC
+                // broadcast fire (parity with the abort-drain / abort handlers).
+                try_trigger_cleanup_if_horizon_advanced();
+                co_return out;
+            }
             // Snapshot + drain BEFORE commit() purges the active map: base
             // appends remapped to pg_catalog_append_range_t, base deletes
             // collapsed to a table-oid set (loss-free: every drained range
@@ -633,6 +662,9 @@ namespace services::dispatcher {
             for (const auto& d : drained_deletes) {
                 out.base_delete_tables.insert(d.table_oid);
             }
+            // Drained out so the commit operator's GC-remap can stamp these with
+            // commit_id; non-empty here (NOT is_ddl_commit_) triggers that block.
+            out.dropped_storage_oids = txn_t->drain_dropped_storages();
         }
         // Allocates the commit_id and leaves it in in_flight_commits_ (0 on a
         // missing txn). The ProcArray publish barrier deliberately does NOT run
@@ -662,15 +694,27 @@ namespace services::dispatcher {
             // in-memory index entries (parity with executor.cpp's failed-DML
             // revert). The ranges themselves are discarded — their physical row
             // slots ride in the pg_catalog/base storage_revert path, and the
-            // index revert keys per (table_oid, txn_id), not per range. Base
-            // deletes are dropped here too (PENDING index DELETE markers are the
-            // separate M3.4/F15 task).
+            // index revert keys per (table_oid, txn_id), not per range. The base
+            // DELETE ranges are collected the same way: only their UNIQUE table
+            // oids matter, so the abort operator can fan out
+            // manager_index_t::revert_delete per oid to clear this txn's PENDING
+            // in-memory index DELETE markers (F15 parity with executor.cpp's
+            // failed-DML revert_delete). The ranges themselves are still dropped:
+            // uncommitted tombstones (delete_id == txn_id) are invisible to every
+            // reader and VACUUM reclaims them; only the index markers, which sit
+            // outside the MVCC visibility filter, need the explicit revert.
             auto drained_appends = txn_t->drain_base_appends();
             for (const auto& r : drained_appends) {
                 out.base_append_tables.insert(r.table_oid);
             }
-            auto base_deletes_discarded = txn_t->drain_base_deletes();
-            (void) base_deletes_discarded;
+            auto drained_deletes = txn_t->drain_base_deletes();
+            for (const auto& d : drained_deletes) {
+                out.base_delete_tables.insert(d.table_oid);
+            }
+            // Drain the DROP-retired storage oids too. Informational today:
+            // Wave-2 will un-stamp them on abort; for now they ride out for
+            // symmetry with the commit drain and to clear the accumulator.
+            out.dropped_storage_oids = txn_t->drain_dropped_storages();
         }
         txn_manager_.abort(session);
         // Aborting removes the txn from the active set, so the lowest-active
@@ -695,6 +739,9 @@ namespace services::dispatcher {
             txn_t->accumulate_pg_catalog_pending(std::move(payload.pg_catalog_appends),
                                                  std::move(payload.pg_catalog_delete_tables));
             txn_t->accumulate_pg_attribute_commit_id_backfills(std::move(payload.backfills));
+            for (auto oid : payload.dropped_storage_oids) {
+                txn_t->accumulate_dropped_storage(oid);
+            }
         }
         co_return;
     }
@@ -715,11 +762,20 @@ namespace services::dispatcher {
         // The committed txn left the active set at commit(); after the publish
         // barrier the DROP-GC horizon broadcast is safe to evaluate.
         try_trigger_cleanup_if_horizon_advanced();
-        // maybe_cleanup gate for the operator's compact fan-out: suppressed (0)
-        // while other transactions are active — their snapshots may still read
-        // versions a compact would drop. Best-effort heuristic; compact
-        // correctness rests on the disk agent's mailbox serialization.
-        co_return txn_manager_.has_active_transactions() ? 0 : txn_manager_.lowest_active_start_time();
+        // Return value lives in the COMPACT-GATE space — a plain boolean (1 = go,
+        // 0 = suppress), NOT the commit-id-space GC horizon. Two distinct spaces:
+        //   * commit-id-space GC horizon: lowest_active_snapshot_horizon(), the
+        //     value broadcast by try_trigger_cleanup_if_horizon_advanced above;
+        //     it bounds which tombstones the DROP/version sweep may reclaim.
+        //   * compact-gate boolean (THIS value): whether the commit operator's
+        //     maybe_cleanup fan-out may run a compact at all.
+        // 1 only when no OTHER txn is active (their snapshots could still read
+        // versions a compact would drop); 0 otherwise. agent_disk
+        // maybe_cleanup_inner only ever tests this against ==0, so a bare boolean
+        // is sufficient — passing the old lowest_active_start_time mixed the two
+        // value spaces for no benefit. Best-effort heuristic; compact correctness
+        // rests on the disk agent's mailbox serialization, not this gate.
+        co_return txn_manager_.has_active_transactions() ? uint64_t{0} : uint64_t{1};
     }
 
 } // namespace services::dispatcher

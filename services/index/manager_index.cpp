@@ -254,6 +254,10 @@ namespace services::index {
                 co_await actor_zeta::dispatch(this, &manager_index_t::revert_insert, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::revert_delete>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::revert_delete, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_index_t, &manager_index_t::cleanup_all_versions>: {
                 co_await actor_zeta::dispatch(this, &manager_index_t::cleanup_all_versions, msg);
                 break;
@@ -882,7 +886,11 @@ namespace services::index {
         // send all insert_many messages with no intervening co_await, then await
         // the collected futures and only then flip the in-memory engines. Engines
         // with no entry in engines_ are skipped silently.
-        std::pmr::vector<unique_future<void>> futures(resource_);
+        //
+        // M3.5: each insert_many now resolves to a core::error_t. We keep the
+        // send-all-then-await-all shape — every future is still drained so none
+        // is dropped — but record the FIRST contains_error() seen and return it.
+        std::pmr::vector<unique_future<core::error_t>> futures(resource_);
         // Oids whose pending entries were actually fanned out, in batch order.
         // We record OIDS, not engine pointers: every co_await below suspends this
         // single-threaded loop, during which unregister_collection or
@@ -939,15 +947,23 @@ namespace services::index {
         }
 
         // Await every disk batch across all oids before flipping any engine.
+        // Drain ALL futures even after the first error so no future is dropped;
+        // keep the first error to return (the batch-wide first-error contract).
+        core::error_t first_error = core::error_t::no_error();
         for (auto& f : futures) {
-            co_await std::move(f);
+            auto err = co_await std::move(f);
+            if (err.contains_error() && !first_error.contains_error()) {
+                first_error = std::move(err);
+            }
         }
 
         // Re-lookup each oid: the awaits above suspended the loop, so an engine
         // recorded before the fan-out may have been erased meanwhile (see the
         // suspension-window note where oids_to_flip is declared). Flip only the
         // engines that still exist. The in-memory flip is otherwise unconditional:
-        // a disk-agent failure would already have aborted via the bitcask assert.
+        // a disk-agent IO failure surfaced through first_error but the engines
+        // were already mutated in-memory by the DML pass, so the flip keeps the
+        // in-memory MVCC state consistent with what the caller will publish/abort.
         for (auto oid : oids_to_flip) {
             auto it = engines_.find(oid);
             if (it == engines_.end())
@@ -959,9 +975,9 @@ namespace services::index {
             }
         }
 
-        // First contains_error() wins; the bitcask path is assert+abort terminal
-        // so today this is always no_error().
-        co_return core::error_t::no_error();
+        // First contains_error() across the whole batch wins; no_error() if every
+        // disk batch succeeded.
+        co_return first_error;
     }
 
     manager_index_t::unique_future<core::error_t>
@@ -977,7 +993,10 @@ namespace services::index {
         // suspend this single-threaded loop, and unregister_collection /
         // on_horizon_advanced may erase an engine while suspended. We re-lookup
         // per oid after the awaits and skip any engine that vanished.
-        std::pmr::vector<unique_future<void>> futures(resource_);
+        //
+        // M3.5: each remove_many resolves to a core::error_t; first error wins,
+        // every future is still drained (see commit_inserts).
+        std::pmr::vector<unique_future<core::error_t>> futures(resource_);
         std::pmr::vector<components::catalog::oid_t> oids_to_flip(resource_);
         oids_to_flip.reserve(table_oids.size());
 
@@ -1022,8 +1041,13 @@ namespace services::index {
             oids_to_flip.emplace_back(table_oid);
         }
 
+        // Drain every future even past the first error; keep the first to return.
+        core::error_t first_error = core::error_t::no_error();
         for (auto& f : futures) {
-            co_await std::move(f);
+            auto err = co_await std::move(f);
+            if (err.contains_error() && !first_error.contains_error()) {
+                first_error = std::move(err);
+            }
         }
 
         // Re-lookup each oid after the awaits; flip only engines that still
@@ -1039,7 +1063,7 @@ namespace services::index {
             }
         }
 
-        co_return core::error_t::no_error();
+        co_return first_error;
     }
 
     manager_index_t::unique_future<void> manager_index_t::revert_insert(execution_context_t ctx,
@@ -1051,6 +1075,19 @@ namespace services::index {
 
         it->second->revert_insert(txn_id);
         // No disk action — uncommitted entries never went to disk
+
+        co_return;
+    }
+
+    manager_index_t::unique_future<void> manager_index_t::revert_delete(execution_context_t ctx,
+                                                                        components::catalog::oid_t table_oid) {
+        auto txn_id = ctx.txn.transaction_id;
+        auto it = engines_.find(table_oid);
+        if (it == engines_.end())
+            co_return;
+
+        it->second->revert_delete(txn_id);
+        // No disk action — aborted delete markers never reached disk
 
         co_return;
     }

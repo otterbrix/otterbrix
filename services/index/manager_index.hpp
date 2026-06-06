@@ -161,6 +161,10 @@ namespace services::index {
                        std::pmr::vector<components::catalog::oid_t> table_oids,
                        uint64_t commit_id);
         unique_future<void> revert_insert(execution_context_t ctx, components::catalog::oid_t table_oid);
+        // Engine-level pending-delete clear: discards this txn's mark_delete
+        // entries from every index of the table's engine (the abort mirror of
+        // revert_insert; aborted DELETE markers never reach disk, so no disk fan-out).
+        unique_future<void> revert_delete(execution_context_t ctx, components::catalog::oid_t table_oid);
         unique_future<void> cleanup_all_versions(session_id_t session, uint64_t lowest_active);
 
         // Runtime index rebuild driver (see index_contract). Returns the oids
@@ -250,6 +254,7 @@ namespace services::index {
                                                        &manager_index_t::commit_inserts,
                                                        &manager_index_t::commit_deletes,
                                                        &manager_index_t::revert_insert,
+                                                       &manager_index_t::revert_delete,
                                                        &manager_index_t::cleanup_all_versions,
                                                        &manager_index_t::all_indexed_oids,
                                                        &manager_index_t::repopulate_table,

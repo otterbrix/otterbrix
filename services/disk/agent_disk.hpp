@@ -284,15 +284,16 @@ namespace services::disk {
         unique_future<void> vacuum_inner(session_id_t session, uint64_t lowest_active_start_time);
 
         // maybe_cleanup_inner — single-OID target. If deleted/total > 0.3 and
-        //   lowest_active_start_time != 0 (the caller passes 0 while any
-        //   transaction is active), runs table.compact(). The 0-gate is a
-        //   tombstone-timing heuristic only; compact correctness rests on the
-        //   agent mailbox serializing the row_groups_ swap, not on this gate.
-        //   cleanup_versions is intentionally omitted: scan_committed needs intact
-        //   version metadata to filter tombstones, which cleanup_versions would strip
-        //   before compact rebuilds the row_group.
-        unique_future<void> maybe_cleanup_inner(components::catalog::oid_t table_oid,
-                                                 uint64_t lowest_active_start_time);
+        //   compact_gate != 0, runs table.compact(). compact_gate is a boolean 0/1
+        //   gate (NOT a horizon value): the dispatcher's txn_publish_msg returns 1
+        //   when no other txn is active and 0 otherwise, and the caller forwards that
+        //   verbatim. So compact_gate==0 means "another txn is still active, defer
+        //   reclaim". The gate is a tombstone-timing heuristic only; compact
+        //   correctness rests on the agent mailbox serializing the row_groups_ swap,
+        //   not on this gate. cleanup_versions is intentionally omitted: scan_committed
+        //   needs intact version metadata to filter tombstones, which cleanup_versions
+        //   would strip before compact rebuilds the row_group.
+        unique_future<void> maybe_cleanup_inner(components::catalog::oid_t table_oid, uint64_t compact_gate);
 
         // on_horizon_advanced_inner — sweeps dropped_storages_, removing entries whose
         //   dropped_at_commit_id < new_horizon. Exceptions FORBIDDEN: std::error_code

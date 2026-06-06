@@ -1756,36 +1756,51 @@ namespace services::dispatcher {
                                     if (sub_expr->group() == expression_group::scalar) {
                                         auto* sub_scalar = reinterpret_cast<scalar_expression_t*>(sub_expr.get());
                                         core::error_t resolve_error = core::error_t::no_error();
-                                        std::function<complex_logical_type(param_storage&)> resolve_arith_type;
-                                        resolve_arith_type = [&](param_storage& p) -> complex_logical_type {
-                                            if (std::holds_alternative<components::expressions::key_t>(p)) {
-                                                auto& k = std::get<components::expressions::key_t>(p);
-                                                auto f = impl::find_types(resource, k, incoming_schema);
-                                                if (!f.has_error()) {
-                                                    return f.value().front().type;
-                                                }
-                                                if (f.has_error()) {
-                                                    resolve_error = f.error();
-                                                }
-                                                assert(false);
-                                                return complex_logical_type(logical_type::INVALID);
-                                            } else if (std::holds_alternative<core::parameter_id_t>(p)) {
-                                                return parameters.parameters.at(std::get<core::parameter_id_t>(p))
-                                                    .type();
-                                            } else {
-                                                auto& inner = std::get<expression_ptr>(p);
-                                                if (inner->group() == expression_group::scalar) {
-                                                    auto* s = reinterpret_cast<scalar_expression_t*>(inner.get());
-                                                    if (s->params().size() >= 2) {
-                                                        auto lt = resolve_arith_type(s->params()[0]);
-                                                        auto rt = resolve_arith_type(s->params()[1]);
-                                                        return complex_logical_type(promote_type(lt.type(), rt.type()));
+                                        // Recursive arithmetic-type resolver. A plain lambda cannot name
+                                        // itself for the recursion, so this is a local functor struct
+                                        // (rule 14 forbids std::function): operator() recurses via (*this).
+                                        // References to the surrounding context are held as members.
+                                        struct arith_type_resolver {
+                                            std::pmr::memory_resource* resource;
+                                            const named_schema& incoming_schema;
+                                            const decltype(parameters)& parameters;
+                                            core::error_t& resolve_error;
+
+                                            complex_logical_type operator()(param_storage& p) const {
+                                                if (std::holds_alternative<components::expressions::key_t>(p)) {
+                                                    auto& k = std::get<components::expressions::key_t>(p);
+                                                    auto f = impl::find_types(resource, k, incoming_schema);
+                                                    if (!f.has_error()) {
+                                                        return f.value().front().type;
                                                     }
+                                                    if (f.has_error()) {
+                                                        resolve_error = f.error();
+                                                    }
+                                                    assert(false);
+                                                    return complex_logical_type(logical_type::INVALID);
+                                                } else if (std::holds_alternative<core::parameter_id_t>(p)) {
+                                                    return parameters.parameters.at(std::get<core::parameter_id_t>(p))
+                                                        .type();
+                                                } else {
+                                                    auto& inner = std::get<expression_ptr>(p);
+                                                    if (inner->group() == expression_group::scalar) {
+                                                        auto* s = reinterpret_cast<scalar_expression_t*>(inner.get());
+                                                        if (s->params().size() >= 2) {
+                                                            auto lt = (*this)(s->params()[0]);
+                                                            auto rt = (*this)(s->params()[1]);
+                                                            return complex_logical_type(
+                                                                promote_type(lt.type(), rt.type()));
+                                                        }
+                                                    }
+                                                    assert(false);
+                                                    return complex_logical_type(logical_type::INVALID);
                                                 }
-                                                assert(false);
-                                                return complex_logical_type(logical_type::INVALID);
                                             }
                                         };
+                                        arith_type_resolver resolve_arith_type{resource,
+                                                                               incoming_schema,
+                                                                               parameters,
+                                                                               resolve_error};
                                         // CASE WHEN inside an aggregate (e.g. SUM(CASE WHEN cond THEN a ELSE b END)).
                                         // case_expr params layout (per transform_select_case_expr): pairs of
                                         // [cond, result, cond, result, ..., default]. We take the type of the

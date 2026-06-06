@@ -232,7 +232,12 @@ namespace services::disk {
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
 
-        using address_pack = std::tuple<actor_zeta::address_t>;
+        // Bootstrap address bundle for sync() (plain named struct — no std::tuple,
+        // mirrors services::wal::wal_sync_pack_t from M1.2). Carries the WAL
+        // manager's address so the disk manager can address it after spawn.
+        struct disk_sync_pack_t {
+            actor_zeta::address_t wal = actor_zeta::address_t::empty_address();
+        };
 
         struct in_flight_entry_t {
             actor_zeta::mailbox::message_ptr pending_msg{};
@@ -525,18 +530,19 @@ namespace services::disk {
         requires(actor_zeta::type_traits::is_unique_future_v<ReturnType>) [[nodiscard]] ReturnType
             enqueue_impl(actor_zeta::actor::address_t sender, actor_zeta::mailbox::message_id cmd, Args&&... args);
 
-        void sync(address_pack pack);
+        void sync(disk_sync_pack_t pack);
 
         unique_future<void> flush(session_id_t session, wal::id_t wal_id);
 
         unique_future<wal::id_t> checkpoint_all(session_id_t session, wal::id_t current_wal_id);
         unique_future<void> vacuum_all(session_id_t session, uint64_t lowest_active_start_time);
         // Batched GC-threshold check + compact. Routes each table_oid to its owning
-        // agent's maybe_cleanup_inner with the shared lowest_active_start_time gate,
-        // grouped per agent and dispatched two-phase (send all, then await all).
+        // agent's maybe_cleanup_inner with the shared compact_gate (a boolean 0/1
+        // gate, NOT a horizon value — 1 = no other active txn), grouped per agent and
+        // dispatched two-phase (send all, then await all).
         unique_future<void> maybe_cleanup_many(execution_context_t ctx,
                                                std::pmr::vector<components::catalog::oid_t> table_oids,
-                                               uint64_t lowest_active_start_time);
+                                               uint64_t compact_gate);
 
         // Event-driven GC subscriber. Manager fans out to every agent; each
         // agent's on_horizon_advanced_inner walks its OWN dropped_storages_ slice,

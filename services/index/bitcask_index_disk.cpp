@@ -546,32 +546,33 @@ namespace services::index {
         return in.fail() ? 0 : offset;
     }
 
-    void bitcask_index_disk_t::write_applied_log_offset(uint64_t offset) const {
+    core::error_t bitcask_index_disk_t::write_applied_log_offset(uint64_t offset) const {
         const auto applied_path = txn_applied_file_path();
         const auto temp_path = applied_path.string() + ".tmp";
         {
             std::ofstream out(temp_path, std::ios::trunc);
             if (!out.good()) {
-                // -fno-exceptions build: abort instead of throw on I/O failure.
-                assert(false && "bitcask I/O failure");
-                std::abort();
+                // M3.5: a failed sidecar open is a recoverable IO failure now —
+                // surface it instead of aborting the process.
+                return core::error_t{core::error_code_t::index_create_fail,
+                                     std::pmr::string{"bitcask: applied-offset sidecar open failed", resource_}};
             }
             out << offset;
             out.flush();
             if (!out.good()) {
-                // -fno-exceptions build: abort instead of throw on I/O failure.
-                assert(false && "bitcask I/O failure");
-                std::abort();
+                return core::error_t{core::error_code_t::index_create_fail,
+                                     std::pmr::string{"bitcask: applied-offset sidecar flush failed", resource_}};
             }
         }
         std::error_code ec;
         std::filesystem::remove(applied_path, ec);
         std::filesystem::rename(temp_path, applied_path);
+        return core::error_t::no_error();
     }
 
-    void bitcask_index_disk_t::append_txn_record_unlocked(uint64_t txn_id,
-                                                           uint8_t op_kind,
-                                                           const std::vector<std::pair<value_t, size_t>>& values) {
+    core::error_t bitcask_index_disk_t::append_txn_record_unlocked(uint64_t txn_id,
+                                                                   uint8_t op_kind,
+                                                                   const std::vector<std::pair<value_t, size_t>>& values) {
         std::pmr::string payload(resource_);
         components::index::codec::append_le<uint32_t>(payload, static_cast<uint32_t>(values.size()));
         for (const auto& [key, row_id] : values) {
@@ -599,9 +600,9 @@ namespace services::index {
                                       file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                                       file_lock_type::NO_LOCK);
             if (!txn_log_file_) {
-                // -fno-exceptions build: abort instead of throw on I/O failure.
-                assert(false && "bitcask I/O failure");
-                std::abort();
+                // M3.5: recoverable IO failure — surface, do not abort.
+                return core::error_t{core::error_code_t::index_create_fail,
+                                     std::pmr::string{"bitcask: txn-log open failed", resource_}};
             }
         }
         txn_log_file_->seek(txn_log_file_->file_size());
@@ -610,6 +611,7 @@ namespace services::index {
             txn_log_file_->write(payload.data(), payload.size());
         }
         txn_log_file_->sync();
+        return core::error_t::no_error();
     }
 
     // Replay the index txn log, gated by the WAL committed-txn set (M1.1).
@@ -693,24 +695,40 @@ namespace services::index {
                 force_flush_unlocked();
             }
             // Every frame — applied or skipped — advances the applied offset so
-            // the log is consumed monotonically and never re-replayed.
+            // the log is consumed monotonically and never re-replayed. This
+            // runs only inside ctor/factory recovery, which has no error
+            // channel: a sidecar IO failure mid-construction is terminal, so
+            // bind the result and abort on it rather than silently continuing
+            // (which would re-replay the frame on the next open).
             const auto frame_end_offset = static_cast<uint64_t>(in.tellg());
-            write_applied_log_offset(frame_end_offset);
+            const auto offset_err = write_applied_log_offset(frame_end_offset);
+            if (offset_err.contains_error()) {
+                // -fno-exceptions build: abort instead of throw on I/O failure.
+                assert(false && "bitcask I/O failure: applied-offset write during recovery");
+                std::abort();
+            }
         }
     }
 
-    void bitcask_index_disk_t::apply_txn_inserts(uint64_t txn_id, const std::vector<std::pair<value_t, size_t>>& values) {
+    core::error_t bitcask_index_disk_t::apply_txn_inserts(uint64_t txn_id,
+                                                          const std::vector<std::pair<value_t, size_t>>& values) {
         std::unique_lock lock(mutex_);
-        append_txn_record_unlocked(txn_id, 1, values);
+        // M3.5: a txn-log append/open/sidecar IO failure is recoverable — return
+        // it so the manager turns it into an index-side abort. The durable index
+        // frame is written BEFORE the data segments are touched, so bailing here
+        // leaves the data segments untouched and the frame is re-evaluated by the
+        // recover gate on the next open (gated on the WAL commit marker).
+        if (auto err = append_txn_record_unlocked(txn_id, 1, values); err.contains_error()) {
+            return err;
+        }
         if (!txn_log_file_) {
             txn_log_file_ = open_file(fs_,
                                       txn_log_file_path(),
                                       file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                                       file_lock_type::NO_LOCK);
             if (!txn_log_file_) {
-                // -fno-exceptions build: abort instead of throw on I/O failure.
-                assert(false && "bitcask I/O failure");
-                std::abort();
+                return core::error_t{core::error_code_t::index_create_fail,
+                                     std::pmr::string{"bitcask: txn-log open failed (inserts)", resource_}};
             }
         }
         const auto applied_offset = txn_log_file_->file_size();
@@ -724,21 +742,25 @@ namespace services::index {
             mark_operation_dirty();
         }
         force_flush_unlocked();
-        write_applied_log_offset(applied_offset);
+        return write_applied_log_offset(applied_offset);
     }
 
-    void bitcask_index_disk_t::apply_txn_deletes(uint64_t txn_id, const std::vector<std::pair<value_t, size_t>>& values) {
+    core::error_t bitcask_index_disk_t::apply_txn_deletes(uint64_t txn_id,
+                                                          const std::vector<std::pair<value_t, size_t>>& values) {
         std::unique_lock lock(mutex_);
-        append_txn_record_unlocked(txn_id, 2, values);
+        // M3.5: mirror of apply_txn_inserts — IO failure becomes a returned error
+        // rather than a process abort. Same frame-before-segments ordering.
+        if (auto err = append_txn_record_unlocked(txn_id, 2, values); err.contains_error()) {
+            return err;
+        }
         if (!txn_log_file_) {
             txn_log_file_ = open_file(fs_,
                                       txn_log_file_path(),
                                       file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                                       file_lock_type::NO_LOCK);
             if (!txn_log_file_) {
-                // -fno-exceptions build: abort instead of throw on I/O failure.
-                assert(false && "bitcask I/O failure");
-                std::abort();
+                return core::error_t{core::error_code_t::index_create_fail,
+                                     std::pmr::string{"bitcask: txn-log open failed (deletes)", resource_}};
             }
         }
         const auto applied_offset = txn_log_file_->file_size();
@@ -760,7 +782,7 @@ namespace services::index {
             mark_operation_dirty();
         }
         force_flush_unlocked();
-        write_applied_log_offset(applied_offset);
+        return write_applied_log_offset(applied_offset);
     }
 
     void bitcask_index_disk_t::insert(const value_t& key, size_t value) {

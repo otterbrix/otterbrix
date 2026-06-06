@@ -68,7 +68,7 @@ namespace {
             wal->sync(services::wal::wal_sync_pack_t{actor_zeta::address_t(disk->address()),
                                                      actor_zeta::address_t::empty_address(),
                                                      actor_zeta::address_t::empty_address()});
-            disk->sync(std::make_tuple(wal->address()));
+            disk->sync(services::disk::manager_disk_t::disk_sync_pack_t{wal->address()});
             disk->bootstrap_system_tables_sync();
         }
         ~fixture() {

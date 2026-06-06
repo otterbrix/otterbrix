@@ -1,11 +1,16 @@
 #pragma once
 
-// Write-path methods return unique_future<void> because the underlying
-// bitcask_index_disk_t / btree_index_disk_t methods are assert+abort terminal:
-// there is no recoverable failure to surface. (Contrast manager_index_t
-// commit_insert/commit_delete, which return core::error_t.)
+// drop / clear stay unique_future<void> (no recoverable failure on those
+// paths). insert_many / remove_many return unique_future<core::error_t> (M3.5):
+// the bitcask txn-log write path can fail on a file open / write / sync, and
+// that error is now surfaced rather than aborting the process. The btree /
+// non-txn (txn_id==0) branches are still assert+abort terminal and return
+// no_error(). manager_index_t commit_inserts/commit_deletes co_await these and
+// fold the first error into their returned core::error_t.
 
 #include "index_disk.hpp"
+
+#include <core/result_wrapper.hpp>
 
 #include <actor-zeta.hpp>
 #include <actor-zeta/actor/actor_mixin.hpp>
@@ -71,9 +76,9 @@ namespace services::index {
         // the runtime repopulate path: txn_id==0 re-inserts then take the
         // direct (non-txn-log) write path.
         unique_future<void> clear(session_id_t session);
-        unique_future<void>
+        unique_future<core::error_t>
         insert_many(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values);
-        unique_future<void>
+        unique_future<core::error_t>
         remove_many(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values);
 
         // Synchronous flush — bypasses actor mailbox, safe to call from owning manager

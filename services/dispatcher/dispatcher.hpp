@@ -140,10 +140,12 @@ namespace services::dispatcher {
         // read-only release tail.
         unique_future<void> txn_abort_msg(components::session::session_id_t session);
         // ProcArray publish barrier — sent by operator_commit_transaction_t
-        // AFTER storage_publish_* / index commits / WAL. Returns the
-        // maybe_cleanup gate: 0 when other transactions are still active
-        // (compact suppressed), else the current lowest_active_start_time the
-        // disk agents compare tombstone txn-ids against.
+        // AFTER storage_publish_* / index commits / WAL. Returns the COMPACT-GATE
+        // boolean (compact-gate space, NOT the commit-id-space GC horizon that
+        // the on_horizon_advanced broadcast carries): 1 = the maybe_cleanup
+        // fan-out may run a compact (no other txn active), 0 = suppress (another
+        // txn's snapshot may still read versions a compact would drop). agent_disk
+        // maybe_cleanup_inner only compares this ==0, so a bare 0/1 suffices.
         unique_future<uint64_t> txn_publish_msg(uint64_t commit_id);
 
         // Selective broadcast: DROP TABLE / DROP INDEX marks the owning

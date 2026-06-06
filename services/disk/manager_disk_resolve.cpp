@@ -705,23 +705,32 @@ namespace services::disk {
                                  std::pmr::vector<std::string> key_col_names,
                                  std::pmr::vector<std::pmr::vector<components::types::logical_value_t>> keys) {
         std::pmr::vector<std::pmr::vector<std::int64_t>> out(resource());
-        // Empty batch or no key columns: nothing to scan. (Per-key arity / unknown
-        // column is handled agent-side, yielding empty rows in result order.)
-        if (keys.empty() || key_col_names.empty()) {
-            co_return out;
-        }
-        if (agents_.empty()) {
+        // INVARIANT: result.size() == keys.size() on EVERY path — one (possibly
+        // empty) row per input key, in input order, so result[i] always maps to
+        // keys[i]. Consumers (operator_fk_check / operator_fk_cascade) index
+        // result[i] positionally and treat an empty row as "no parent match", so a
+        // short outer vector would silently skip checks. No-key-columns, no-agents
+        // and null-agent paths therefore still emit keys.size() empty rows rather
+        // than a 0-size vector. (Per-key arity / unknown column is handled
+        // agent-side, also yielding empty rows in result order.) keys.empty()
+        // collapses to an empty result, which is keys.size()==0 — still the invariant.
+        auto fill_empty_rows = [&]() {
             for (std::size_t i = 0; i < keys.size(); ++i) {
                 out.emplace_back();
             }
+        };
+        if (keys.empty() || key_col_names.empty()) {
+            fill_empty_rows();
+            co_return out;
+        }
+        if (agents_.empty()) {
+            fill_empty_rows();
             co_return out;
         }
         const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
         auto& agent = agents_[idx];
         if (agent == nullptr) {
-            for (std::size_t i = 0; i < keys.size(); ++i) {
-                out.emplace_back();
-            }
+            fill_empty_rows();
             co_return out;
         }
 

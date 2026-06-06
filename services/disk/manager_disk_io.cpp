@@ -6,10 +6,7 @@ namespace services::disk {
     namespace catalog = components::catalog;
     using namespace detail;
 
-    void manager_disk_t::sync(address_pack pack) {
-        constexpr static int manager_wal = 0;
-        manager_wal_ = std::get<manager_wal>(pack);
-    }
+    void manager_disk_t::sync(disk_sync_pack_t pack) { manager_wal_ = pack.wal; }
 
     void manager_disk_t::create_agent(int count_agents) {
         // Roles align with pool_idx_for_oid: slot 0 = CATALOG (pg_* system
@@ -124,7 +121,7 @@ namespace services::disk {
     manager_disk_t::unique_future<void>
     manager_disk_t::maybe_cleanup_many(execution_context_t /*ctx*/,
                                        std::pmr::vector<components::catalog::oid_t> table_oids,
-                                       uint64_t lowest_active_start_time) {
+                                       uint64_t compact_gate) {
         // Each table_oid routes to its owning agent's maybe_cleanup_inner so the
         // threshold check + compact (row_group rebuild) is mailbox-serialized with
         // every same-oid access. Running it manager-side via a storage_entry_sync
@@ -149,7 +146,7 @@ namespace services::disk {
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
                                                                    &agent_disk_t::maybe_cleanup_inner,
                                                                    table_oid,
-                                                                   lowest_active_start_time);
+                                                                   compact_gate);
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }

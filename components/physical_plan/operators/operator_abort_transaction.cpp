@@ -30,6 +30,7 @@ namespace components::operators {
         components::table::transaction_data txn_data{0, 0};
         std::vector<components::pg_catalog_append_range_t> swap_appends;
         std::set<components::catalog::oid_t> base_append_tables;
+        std::set<components::catalog::oid_t> base_delete_tables;
         // Null-sender guard: with no dispatcher to talk to there is no txn to
         // drain or abort — leave the locals empty.
         if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
@@ -40,6 +41,7 @@ namespace components::operators {
             txn_data = drain.txn;
             swap_appends = std::move(drain.swap_appends);
             base_append_tables = std::move(drain.base_append_tables);
+            base_delete_tables = std::move(drain.base_delete_tables);
         }
 
         // revert any pg_catalog rows appended under this transaction.
@@ -54,20 +56,26 @@ namespace components::operators {
         }
 
         // Index revert: drop this txn's PENDING in-memory index entries for every
-        // base table it appended to — parity with executor.cpp's failed-DML path,
-        // which an explicit SQL ROLLBACK must match (without it the aborted txn's
-        // PENDING index entries linger forever). revert_insert is keyed per
-        // (table_oid, txn_id) and reverts ALL uncommitted entries for that pair,
-        // so it is idempotent across duplicate table oids; base_append_tables is
-        // already a unique set. Fan out two-phase (send every revert_insert first,
-        // then await each). pg_catalog oids are deliberately excluded — they have
+        // base table it appended to AND clear the PENDING index DELETE markers for
+        // every base table it deleted from — parity with executor.cpp's failed-DML
+        // path, which an explicit SQL ROLLBACK must match (without it the aborted
+        // txn's PENDING index entries/markers linger forever). revert_insert and
+        // revert_delete are each keyed per (table_oid, txn_id) and revert ALL
+        // uncommitted entries for that pair, so they are idempotent across
+        // duplicate table oids; base_append_tables/base_delete_tables are already
+        // unique sets. Fan out two-phase (send every revert first, then await
+        // each). pg_catalog oids are deliberately excluded by the drain — they have
         // no index engines, so a revert there is a no-op by the engines_ lookup.
-        // PENDING index DELETE markers from base deletes are the separate
-        // M3.4/F15 task and are not handled here.
-        if (txn_data.transaction_id != 0 && !base_append_tables.empty() &&
-            ctx->index_address != actor_zeta::address_t::empty_address()) {
+        //
+        // F15: base_delete_tables is the DELETE-side mirror of base_append_tables;
+        // the abort drain handler in dispatcher.cpp surfaces the unique base-delete
+        // table oids precisely so this operator can revert_delete the index DELETE
+        // markers an uncommitted DELETE staged (the markers sit outside the MVCC
+        // visibility filter, so unlike the tombstones they need an explicit revert).
+        if (txn_data.transaction_id != 0 && ctx->index_address != actor_zeta::address_t::empty_address() &&
+            (!base_append_tables.empty() || !base_delete_tables.empty())) {
             std::pmr::vector<actor_zeta::unique_future<void>> revert_index_futures{resource()};
-            revert_index_futures.reserve(base_append_tables.size());
+            revert_index_futures.reserve(base_append_tables.size() + base_delete_tables.size());
             for (auto oid : base_append_tables) {
                 components::execution_context_t abort_ctx{ctx->session, txn_data, ctx->session_tz, oid};
                 auto [_ri, rif] = actor_zeta::send(ctx->index_address,
@@ -75,6 +83,14 @@ namespace components::operators {
                                                    abort_ctx,
                                                    oid);
                 revert_index_futures.push_back(std::move(rif));
+            }
+            for (auto oid : base_delete_tables) {
+                components::execution_context_t abort_ctx{ctx->session, txn_data, ctx->session_tz, oid};
+                auto [_rd, rdf] = actor_zeta::send(ctx->index_address,
+                                                   &services::index::manager_index_t::revert_delete,
+                                                   abort_ctx,
+                                                   oid);
+                revert_index_futures.push_back(std::move(rdf));
             }
             for (auto& rif : revert_index_futures) {
                 co_await std::move(rif);

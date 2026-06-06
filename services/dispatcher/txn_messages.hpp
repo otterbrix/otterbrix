@@ -57,6 +57,10 @@ namespace services::dispatcher {
         std::vector<components::pg_attribute_commit_id_backfill_t> swap_backfills{};
         std::vector<components::pg_catalog_append_range_t> base_appends{};
         std::set<components::catalog::oid_t> base_delete_tables{};
+        // Storage oids retired by DROP in this txn, drained out so the commit
+        // operator's GC-remap can stamp them with commit_id. Non-empty here is
+        // the trigger for that remap block (NOT the is_ddl_commit_ flag).
+        std::vector<components::catalog::oid_t> dropped_storage_oids{};
     };
 
     // Result of txn_abort_drain_msg: txn_data snapshot + the pg_catalog appends
@@ -74,10 +78,25 @@ namespace services::dispatcher {
     // tables are deliberately absent — they have no index engines, so a
     // revert_insert on a pg_catalog oid is a no-op by manager_index_t's engines_
     // lookup; reverting only base oids is both correct and minimal.
+    //
+    // base_delete_tables mirrors base_append_tables for the DELETE side: the
+    // UNIQUE base-table oids the txn accumulated DELETE ranges for. The abort
+    // operator fans out manager_index_t::revert_delete per oid to clear the
+    // PENDING in-memory index DELETE markers an uncommitted DELETE staged (F15
+    // parity with executor.cpp's failed-DML revert, which an explicit SQL
+    // ROLLBACK must match). The delete RANGES themselves are still discarded on
+    // abort — uncommitted tombstones (delete_id == txn_id) are invisible to every
+    // reader and VACUUM reclaims them; only the index markers need an explicit
+    // revert because they are not gated by the MVCC visibility filter.
     struct txn_abort_drain_t {
         components::table::transaction_data txn{0, 0};
         std::vector<components::pg_catalog_append_range_t> swap_appends{};
         std::set<components::catalog::oid_t> base_append_tables{};
+        std::set<components::catalog::oid_t> base_delete_tables{};
+        // Storage oids retired by DROP in this (now aborting) txn. Drained for
+        // Wave-2 unmark — informational today: the abort operator does not yet
+        // un-stamp them, so they ride out for symmetry with the commit drain.
+        std::vector<components::catalog::oid_t> dropped_storage_oids{};
     };
 
     // Payload of txn_accumulate_msg: every range an executor statement parks on
@@ -97,10 +116,14 @@ namespace services::dispatcher {
         std::vector<components::pg_catalog_append_range_t> pg_catalog_appends{};
         std::set<components::catalog::oid_t> pg_catalog_delete_tables{};
         std::vector<components::pg_attribute_commit_id_backfill_t> backfills{};
+        // Storage oids a DROP TABLE / DROP INDEX statement in this txn retired;
+        // the handler forwards them to transaction_t::accumulate_dropped_storage
+        // so COMMIT can stamp them with the commit_id for the GC-remap.
+        std::vector<components::catalog::oid_t> dropped_storage_oids{};
 
         bool empty() const noexcept {
             return base_appends.empty() && base_deletes.empty() && pg_catalog_appends.empty() &&
-                   pg_catalog_delete_tables.empty() && backfills.empty();
+                   pg_catalog_delete_tables.empty() && backfills.empty() && dropped_storage_oids.empty();
         }
     };
 

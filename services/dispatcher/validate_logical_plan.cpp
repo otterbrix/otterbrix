@@ -1763,7 +1763,10 @@ namespace services::dispatcher {
                                         struct arith_type_resolver {
                                             std::pmr::memory_resource* resource;
                                             const named_schema& incoming_schema;
-                                            const decltype(parameters)& parameters;
+                                            // Named params (not `parameters`): reusing the enclosing
+                                            // function parameter's name inside the class changes its
+                                            // meaning mid-scope — ill-formed under GCC.
+                                            const components::logical_plan::storage_parameters& params;
                                             core::error_t& resolve_error;
 
                                             complex_logical_type operator()(param_storage& p) const {
@@ -1779,7 +1782,7 @@ namespace services::dispatcher {
                                                     assert(false);
                                                     return complex_logical_type(logical_type::INVALID);
                                                 } else if (std::holds_alternative<core::parameter_id_t>(p)) {
-                                                    return parameters.parameters.at(std::get<core::parameter_id_t>(p))
+                                                    return params.parameters.at(std::get<core::parameter_id_t>(p))
                                                         .type();
                                                 } else {
                                                     auto& inner = std::get<expression_ptr>(p);

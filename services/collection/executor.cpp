@@ -1007,13 +1007,12 @@ namespace services::collection::executor {
 
         // CREATE INDEX: indexed table oid captured at rewrite time (the plan
         // tree is move-consumed by the execute_plan delegate before the
-        // backfill-commit tail runs). The pg_index row oid (== the allocated
-        // index oid) and the index name are captured alongside so the CREATE
-        // INDEX failure path can revert the pg_index append range and drop the
-        // engine+agent (manager_index_t::drop_index) without re-probing the
-        // consumed plan tree.
+        // backfill-commit tail runs). The index name is captured alongside so
+        // the CREATE INDEX failure path can drop the engine+agent
+        // (manager_index_t::drop_index) without re-probing the consumed plan
+        // tree; the pg_index row itself is reverted via the statement's
+        // pg_catalog append ranges.
         components::catalog::oid_t create_index_table_oid = components::catalog::INVALID_OID;
-        components::catalog::oid_t create_index_pg_index_oid = components::catalog::INVALID_OID;
         std::pmr::string create_index_name{resource()};
 
         // Destructive rewrites. post_validate_optimize / enrich_plan /
@@ -1270,7 +1269,6 @@ namespace services::collection::executor {
                         const auto* ci =
                             static_cast<const components::logical_plan::node_create_index_t*>(back);
                         create_index_table_oid = ci->table_oid();
-                        create_index_pg_index_oid = ci->index_oid();
                         create_index_name.assign(ci->name().c_str(), ci->name().size());
                     }
                 }

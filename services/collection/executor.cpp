@@ -994,6 +994,28 @@ namespace services::collection::executor {
             co_return execute_result_t{std::move(error)};
         }
 
+        // M3.1 (F11): forbid DDL inside an explicit transaction block. PG-like
+        // interim rule until full transactional DDL (M3.2) lands. This MUST run
+        // before the rewrite block below: the DDL rewrites call allocate_oids,
+        // which bumps the persistent OID counter on disk — an irreversible side
+        // effect that the error path cannot undo. needs_ddl_txn is the exact
+        // same predicate the unified DDL commit tail keys off (create/drop/alter/
+        // index/view/sequence/type/macro/database/matview/constraint), so the
+        // pre-check and the tail can never disagree about what counts as DDL.
+        //
+        // The explicit txn stays ACTIVE and untouched here — no abort. The user's
+        // prior DML in this transaction is still pending; they can COMMIT or
+        // ROLLBACK it themselves. We only reject the DDL statement.
+        if (session_ctx.is_explicit && needs_ddl_txn) {
+            trace(log_,
+                  "executor::execute_plan_full: DDL rejected inside explicit txn, session: {}",
+                  session.data());
+            co_return execute_result_t{make_cursor(
+                resource(),
+                core::error_t{core::error_code_t::other_error,
+                              std::pmr::string{"DDL is not allowed inside a transaction block", resource()}})};
+        }
+
         // CREATE INDEX: indexed table oid captured at rewrite time (the plan
         // tree is move-consumed by the execute_plan delegate before the
         // backfill-commit tail runs).

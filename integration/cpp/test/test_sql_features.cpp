@@ -2378,6 +2378,75 @@ TEST_CASE("integration::cpp::test_sql_features::explicit_txn_rollback_invisible"
     }
 }
 
+// M3.1 (F11): DDL inside an explicit transaction block is rejected with an
+// error instead of silently committing the whole transaction. The rejected DDL
+// leaves the txn ACTIVE — prior DML in the same txn is untouched, so a following
+// INSERT still succeeds and a ROLLBACK then discards everything. Statements
+// share one session_id_t (transaction_manager_t keys active txns by
+// session.data()); execute_sql runs only the first statement of a string, so
+// each step is a separate call. Verification runs on fresh sessions.
+TEST_CASE("integration::cpp::test_sql_features::ddl_inside_explicit_txn_rejected") {
+    auto config = test_create_config("/tmp/test_sql_features/ddl_inside_explicit_txn");
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup") {
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher
+                        ->execute_sql(session,
+                                      "CREATE TABLE TestDatabase.TestCollection (name string, value bigint);")
+                        ->is_success());
+        }
+    }
+
+    INFO("BEGIN; CREATE TABLE -> error; INSERT still works; ROLLBACK — one shared session") {
+        auto session = otterbrix::session_id_t();
+        auto begin_cur = dispatcher->execute_sql(session, "BEGIN;");
+        REQUIRE(begin_cur->is_success());
+
+        // CREATE TABLE inside the explicit txn must be rejected with the
+        // M3.1 message — and must NOT abort the surrounding transaction.
+        auto ddl_cur =
+            dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.t2 (id bigint);");
+        REQUIRE(ddl_cur->is_error());
+        REQUIRE(ddl_cur->get_error().what == "DDL is not allowed inside a transaction block");
+
+        // The txn is still alive: a DML statement in the same session succeeds.
+        auto ins_cur = dispatcher->execute_sql(
+            session,
+            "INSERT INTO TestDatabase.TestCollection (name, value) VALUES ('Alice', 10);");
+        REQUIRE(ins_cur->is_success());
+
+        // CREATE INDEX inside the same explicit txn is rejected identically.
+        auto idx_cur = dispatcher->execute_sql(
+            session, "CREATE INDEX idx_value ON TestDatabase.TestCollection (value);");
+        REQUIRE(idx_cur->is_error());
+        REQUIRE(idx_cur->get_error().what == "DDL is not allowed inside a transaction block");
+
+        auto rollback_cur = dispatcher->execute_sql(session, "ROLLBACK;");
+        REQUIRE(rollback_cur->is_success());
+    }
+
+    INFO("after ROLLBACK: the INSERT's rows are absent (txn discarded)") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+
+    INFO("after ROLLBACK: t2 was never created (rejected DDL had no effect)") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.t2;");
+        REQUIRE(cur->is_error());
+    }
+}
+
 // Characterization: ALTER TABLE on a non-existent table. Pins the observable
 // behavior of the unresolved-ALTER no-op branch.
 TEST_CASE("integration::cpp::test_sql_features::alter_table_nonexistent_characterization") {

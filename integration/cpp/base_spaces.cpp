@@ -130,7 +130,8 @@ namespace otterbrix {
         manager_dispatcher_->sync(services::dispatcher::manager_dispatcher_t::sync_pack{
             effective_wal_address, manager_disk_address, manager_index_address});
 
-        wal_ptr->sync(std::make_tuple(actor_zeta::address_t(manager_disk_address), manager_dispatcher_->address()));
+        wal_ptr->sync(services::wal::wal_sync_pack_t{
+            actor_zeta::address_t(manager_disk_address), manager_dispatcher_->address(), manager_index_address});
 
         // Publish the dispatcher address into manager_disk / manager_index so the
         // GC-ack path (manager_disk → dispatcher → manager_wal truncate) has a

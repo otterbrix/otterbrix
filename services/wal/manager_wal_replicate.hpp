@@ -25,14 +25,25 @@
 #include <set>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 namespace services::wal {
+
+    // Bootstrap address bundle for manager_wal_replicate_t::sync (plain named
+    // struct — no std::tuple). Mirrors services::dispatcher::manager_dispatcher_t::
+    // sync_pack. disk and index feed the auto-checkpoint orchestration (flush
+    // indexes -> checkpoint -> truncate); dispatcher is the GC-ack destination.
+    // Namespace-scope (not nested) so callers/tests use services::wal::wal_sync_pack_t.
+    struct wal_sync_pack_t {
+        actor_zeta::address_t disk = actor_zeta::address_t::empty_address();
+        actor_zeta::address_t dispatcher = actor_zeta::address_t::empty_address();
+        actor_zeta::address_t index = actor_zeta::address_t::empty_address();
+    };
 
     class manager_wal_replicate_t final : public actor_zeta::actor::actor_mixin<manager_wal_replicate_t> {
     public:
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
-        using address_pack = std::tuple<actor_zeta::address_t, actor_zeta::address_t>;
         using session_id_t = components::session::session_id_t;
 
         // Public so observability/tests can inspect. The event loop owns the
@@ -53,7 +64,7 @@ namespace services::wal {
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
         std::pair<bool, actor_zeta::detail::enqueue_result> enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
-        void sync(address_pack pack);
+        void sync(wal_sync_pack_t pack);
 
         // Contract handlers.
         unique_future<std::vector<record_t>> load(session_id_t session, wal::id_t wal_id);
@@ -69,6 +80,13 @@ namespace services::wal {
         unique_future<void> truncate_before(session_id_t session, wal::id_t checkpoint_wal_id);
 
         unique_future<wal::id_t> current_wal_id(session_id_t session);
+
+        // Auto-checkpoint orchestration. commit_txn self-sends this when WAL
+        // growth trips the threshold; it flushes indexes, checkpoints storage,
+        // and truncates the WAL below the checkpoint id. Fire-and-forget so the
+        // committer never waits on the checkpoint. See the .cpp for the full
+        // M1.1 truncation/replay-gate invariant.
+        unique_future<void> run_auto_checkpoint(session_id_t session);
 
         unique_future<wal::id_t> write_physical_insert(session_id_t session,
                                                        components::catalog::oid_t table_oid,
@@ -104,6 +122,7 @@ namespace services::wal {
                                                        &manager_wal_replicate_t::commit_txn,
                                                        &manager_wal_replicate_t::truncate_before,
                                                        &manager_wal_replicate_t::current_wal_id,
+                                                       &manager_wal_replicate_t::run_auto_checkpoint,
                                                        &manager_wal_replicate_t::write_physical_insert,
                                                        &manager_wal_replicate_t::write_physical_delete,
                                                        &manager_wal_replicate_t::write_physical_update,
@@ -154,6 +173,13 @@ namespace services::wal {
 
         actor_zeta::address_t manager_disk_;
         actor_zeta::address_t manager_dispatcher_;
+        actor_zeta::address_t manager_index_;
+
+        // Dedup guard for the auto-checkpoint path. Single-actor private state
+        // mutated only on loop_thread_ (commit_txn sets it, run_auto_checkpoint
+        // clears it) — no atomic needed. Prevents a burst of threshold-tripping
+        // commits from stacking concurrent checkpoints.
+        bool auto_checkpoint_in_flight_{false};
 
         std::unordered_map<components::catalog::oid_t, wal_worker_ptr> wal_actors_;
 
@@ -161,6 +187,13 @@ namespace services::wal {
         // INDEX backfill. truncate_before clamps to min(this set) so concurrent
         // catchup never misses a truncated record. Empty => no clamp.
         std::pmr::set<wal::id_t> active_build_start_positions_{resource_};
+
+        // Parks the fire-and-forget future of the commit_txn -> run_auto_checkpoint
+        // self-send. The loop drains ready entries (poll_auto_checkpoint_). Mirrors
+        // manager_dispatcher_t::pending_void_; dropping would be memory-safe too,
+        // but parking keeps the [[nodiscard]] future observable on the loop thread.
+        std::pmr::vector<unique_future<void>> pending_auto_checkpoint_{resource_};
+        void poll_auto_checkpoint_();
 
         // Event loop runs on its own thread. Senders only deliver into inbox_;
         // ALL message processing (behavior creation, coroutine resume, cleanup)

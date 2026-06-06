@@ -61,7 +61,9 @@ namespace {
             , wal(actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&resource, scheduler, wal_config, log))
             , disk(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
             std::filesystem::create_directories(dir);
-            wal->sync(std::make_tuple(actor_zeta::address_t(disk->address()), actor_zeta::address_t::empty_address()));
+            wal->sync(services::wal::wal_sync_pack_t{actor_zeta::address_t(disk->address()),
+                                                     actor_zeta::address_t::empty_address(),
+                                                     actor_zeta::address_t::empty_address()});
             disk->sync(std::make_tuple(wal->address()));
             if (bootstrap) {
                 disk->bootstrap_system_tables_sync();

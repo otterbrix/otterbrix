@@ -77,7 +77,13 @@ static const std::filesystem::path base_mgr_path = "/tmp/otterbrix_test_wal_mana
 // the manager creates a single worker on demand.
 // ---------------------------------------------------------------------------
 struct test_wal_manager {
-    test_wal_manager(const std::filesystem::path& path, bool wal_enabled = true)
+    // auto_checkpoint_threshold_bytes=0 keeps the config default (auto-checkpoint
+    // effectively disabled for the unit tests that do not exercise it). A non-zero
+    // value lets the auto-checkpoint TEST_CASE trip the threshold with a single
+    // commit.
+    test_wal_manager(const std::filesystem::path& path,
+                     bool wal_enabled = true,
+                     std::uintmax_t auto_checkpoint_threshold_bytes = 0)
         : path_(path)
         , resource_()
         , log_(initialization_logger("python", "/tmp/docker_logs/"))
@@ -85,12 +91,17 @@ struct test_wal_manager {
         , config_([&]() {
             configuration::config_wal c(path);
             c.on = wal_enabled;
+            if (auto_checkpoint_threshold_bytes > 0) {
+                c.auto_checkpoint_threshold_bytes = auto_checkpoint_threshold_bytes;
+            }
             return c;
         }())
         , manager_(actor_zeta::spawn<manager_wal_replicate_t>(&resource_, scheduler_.get(), config_, log_)) {
         std::filesystem::remove_all(path_);
         std::filesystem::create_directories(path_);
-        manager_->sync(std::make_tuple(actor_zeta::address_t::empty_address(), actor_zeta::address_t::empty_address()));
+        manager_->sync(wal_sync_pack_t{actor_zeta::address_t::empty_address(),
+                                       actor_zeta::address_t::empty_address(),
+                                       actor_zeta::address_t::empty_address()});
         scheduler_->start();
     }
 
@@ -155,6 +166,13 @@ struct test_wal_manager {
                                                      &manager_wal_replicate_t::truncate_before,
                                                      session_id_t::generate_uid(),
                                                      checkpoint_id);
+        return std::move(fut);
+    }
+
+    actor_zeta::unique_future<void> send_run_auto_checkpoint() {
+        auto [ns, fut] = actor_zeta::otterbrix::send(address(),
+                                                     &manager_wal_replicate_t::run_auto_checkpoint,
+                                                     session_id_t::generate_uid());
         return std::move(fut);
     }
 
@@ -377,8 +395,9 @@ TEST_CASE("wal_manager::sync_addresses") {
     // The constructor already called sync() with empty addresses.
     // Call it again with different empty addresses to confirm idempotency.
     if (env.manager_) {
-        REQUIRE_NOTHROW(env.manager_->sync(
-            std::make_tuple(actor_zeta::address_t::empty_address(), actor_zeta::address_t::empty_address())));
+        REQUIRE_NOTHROW(env.manager_->sync(wal_sync_pack_t{actor_zeta::address_t::empty_address(),
+                                                           actor_zeta::address_t::empty_address(),
+                                                           actor_zeta::address_t::empty_address()}));
     }
 
     // The manager should still be functional after re-sync.
@@ -386,4 +405,84 @@ TEST_CASE("wal_manager::sync_addresses") {
     REQUIRE(fut_id.valid());
     auto wal_id = await_ready(fut_id);
     REQUIRE(wal_id > 0);
+}
+
+// ===========================================================================
+//  8. auto checkpoint triggers on byte threshold
+//
+//     M1.2 (F2) auto-checkpoint revival. The previously-dead
+//     auto_checkpoint_threshold_bytes config now drives a checkpoint+truncate.
+//
+//     This fixture wires NO disk manager (manager_disk_ stays empty_address),
+//     so run_auto_checkpoint takes the no-disk early-return path: checkpoint_all
+//     cannot run, checkpoint_wal_id stays 0, and truncate_before must NOT fire.
+//     The assertions therefore cover:
+//       (a) commit traffic crosses the configured threshold -> the revived byte
+//           accounting flips needs_auto_checkpoint() to true (the observable
+//           trigger condition the dead config used to ignore);
+//       (b) run_auto_checkpoint() with no disk completes and leaves state
+//           consistent: the already-committed WAL records are NOT truncated
+//           (no checkpoint happened, so no truncation is permitted) and the
+//           manager keeps serving commits.
+//
+//     Achieved level: no-disk early-return consistency (per M1.2 test plan).
+//     The full checkpoint_all -> truncate_before chain needs a disk manager
+//     holding a checkpointable DISK storage (checkpoint_all returns 0 unless an
+//     agent actually checkpoints a DISK entry, manager_disk_io.cpp:76-91), which
+//     requires the executor create_storage pipeline and is exercised by the
+//     dispatcher/disk integration fixtures, not this WAL-manager unit fixture.
+// ===========================================================================
+TEST_CASE("wal_manager::auto_checkpoint_triggers_on_byte_threshold") {
+    // Tiny threshold so a single commit's WAL bytes cross it.
+    test_wal_manager env(base_mgr_path / "auto_ckpt",
+                         /*wal_enabled=*/true,
+                         /*auto_checkpoint_threshold_bytes=*/1);
+
+    // Threshold not yet crossed: nothing written.
+    REQUIRE_FALSE(env.manager_->needs_auto_checkpoint());
+
+    // Drive commit traffic. commit_txn updates wal_bytes_since_checkpoint_ to the
+    // total WAL directory size, so any committed record trips the 1-byte threshold.
+    auto fut_ins = env.send_insert(kTestTableOidA, /*txn_id=*/1000, /*row_count=*/8);
+    REQUIRE(await_ready(fut_ins) > 0);
+    auto fut_commit = env.send_commit(1000);
+    REQUIRE(await_ready(fut_commit) > 0);
+
+    // (a) The revived trigger CONSUMED the threshold inside commit_txn: it
+    // reset the byte counter and fired the self-sent run_auto_checkpoint, so
+    // by the time the commit future resolves needs_auto_checkpoint() is false
+    // again. A false here together with (b) below IS the evidence the
+    // formerly-dead config now acts (before M1.2 the counter only grew and
+    // nothing ever consumed it).
+    REQUIRE_FALSE(env.manager_->needs_auto_checkpoint());
+
+    // Snapshot the current WAL boundary so the post-checkpoint load below can
+    // confirm the committed records are still present (i.e. not truncated).
+    auto fut_cur = env.send_current_wal_id();
+    auto cur_id = await_ready(fut_cur);
+    REQUIRE(cur_id > 0);
+
+    // (b) Drive the orchestration once more explicitly. With no disk manager
+    // wired it must take the early-return path without crashing.
+    auto fut_ckpt = env.send_run_auto_checkpoint();
+    await_ready(fut_ckpt);
+
+    // No disk -> no checkpoint -> truncate_before must not have fired: the
+    // previously-committed PHYSICAL_INSERT record is still loadable.
+    auto fut_records = env.send_load(0);
+    auto records = await_ready(fut_records);
+    bool found = false;
+    for (const auto& r : records) {
+        if (r.record_type == wal_record_type::PHYSICAL_INSERT && r.transaction_id == 1000) {
+            found = true;
+            REQUIRE(r.table_oid == kTestTableOidA);
+        }
+    }
+    REQUIRE(found);
+
+    // The manager stays functional after the no-disk auto-checkpoint round-trip.
+    auto fut_ins2 = env.send_insert(kTestTableOidB, /*txn_id=*/1001, /*row_count=*/4);
+    REQUIRE(await_ready(fut_ins2) > 0);
+    auto fut_commit2 = env.send_commit(1001);
+    REQUIRE(await_ready(fut_commit2) > 0);
 }

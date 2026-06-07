@@ -220,7 +220,6 @@ namespace components::table {
             auto dict = dictionary(segment, handle);
             auto base_data = reinterpret_cast<int32_t*>(baseptr + DICTIONARY_HEADER_SIZE);
             auto result_data = result.data<std::string_view>();
-
             auto dict_offset = base_data[row_id];
             uint32_t string_length;
             if (row_id == 0) {

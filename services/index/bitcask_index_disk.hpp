@@ -7,6 +7,7 @@
 #include <components/types/logical_value.hpp>
 #include <core/file/file_handle.hpp>
 #include <core/file/local_file_system.hpp>
+#include <core/result_wrapper.hpp>
 
 #include <atomic>
 #include <cstdint>
@@ -29,6 +30,15 @@ namespace services::index {
                              uint64_t flush_threshold = default_flush_threshold_,
                              uint64_t segment_record_limit = default_segment_record_limit_);
         ~bitcask_index_disk_t() override;
+
+        // Factory returning the instance, or a core::error_t when on-disk
+        // recovery fails (e.g. segment CRC mismatch). Production code MUST use
+        // this: the direct ctor below loads from disk and aborts on corruption.
+        [[nodiscard]] static core::result_wrapper_t<std::unique_ptr<bitcask_index_disk_t>>
+        create(const path_t& path,
+               std::pmr::memory_resource* resource,
+               uint64_t flush_threshold = default_flush_threshold_,
+               uint64_t segment_record_limit = default_segment_record_limit_);
 
         using entry_t = std::pair<value_t, size_t>;
         using entries_t = std::pmr::vector<entry_t>;
@@ -57,6 +67,17 @@ namespace services::index {
             value = 1,
             tombstone = 2
         };
+
+        struct skip_load_tag {};
+
+        // Skip-load ctor used by create() — performs no disk I/O so the
+        // factory can stage load_from_disk() and check crc_failure_ before
+        // running the rest of the recovery pipeline.
+        bitcask_index_disk_t(const path_t& path,
+                             std::pmr::memory_resource* resource,
+                             uint64_t flush_threshold,
+                             uint64_t segment_record_limit,
+                             skip_load_tag);
 
         struct segment_info_t {
             uint64_t id{0};
@@ -109,6 +130,10 @@ namespace services::index {
         bool bulk_mode_{false};
         mutable std::shared_mutex mutex_;
         std::unique_ptr<bitcask_task_executor_t> task_executor_;
+        // Set by load_from_disk when a segment's CRC check fails. The
+        // factory checks this flag to convert the failure into a
+        // core::error_t; the direct ctor asserts.
+        bool crc_failure_{false};
     };
 
 } // namespace services::index

@@ -16,19 +16,12 @@
 
 #include <filesystem>
 #include <limits>
+#include <thread>
 #include <unistd.h>
 
-// Phase-5 persistence tests (catalog-migration-to-postgresql-style.md §9, §14 lines
-// 2746–2757). These cover the doc's named persistence cases that aren't already
-// represented in integration/cpp/test/test_clean_break_startup.cpp:
-//   test_type_persistence_across_restart
-//   test_function_persistence
-//   test_constraint_persistence
-//   test_pg_class_lists_all_objects
-//   test_oid_persistence              (Phase-0 §14, OID survives checkpoint→load)
-//   test_oid_no_reuse_after_drop      (Phase-0 §14, dropped OIDs leave gaps)
-// The remaining doc-named tests (sequence/view/macro/index/load_sequence/catalog_otbx_not_needed)
-// are already covered there with different names; aliasing is task #7.
+// Disk-level persistence cases not covered by
+// integration/cpp/test/test_clean_break_startup.cpp (types, functions,
+// constraints, pg_class listing, OID survival, OID no-reuse-after-drop).
 
 using namespace services::disk;
 namespace catalog = components::catalog;
@@ -58,9 +51,12 @@ namespace {
                 return c;
             }())
             , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
-            manager->set_run_fn([this] { scheduler->run(10000); });
         }
         ~fresh_disk() {
+            // Destroy the manager first: its dtor joins the internal loop thread,
+            // which may still enqueue children onto the scheduler. Only then is it
+            // safe to stop/delete the scheduler.
+            manager.reset();
             scheduler->stop();
             delete scheduler;
         }
@@ -72,8 +68,12 @@ namespace {
         template<typename Fn, typename... Args>
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::forward<Args>(args)...);
-            scheduler->run(10000);
-            return std::move(future).get();
+            for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
+                scheduler->run(1000);
+                std::this_thread::yield();
+            }
+            REQUIRE(future.is_ready());
+            return std::move(future).take_ready();
         }
 
         void checkpoint() {
@@ -81,8 +81,12 @@ namespace {
                                                        &manager_disk_t::checkpoint_all,
                                                        session_id_t{},
                                                        services::wal::id_t{0});
-            scheduler->run(10000);
-            (void) std::move(cf).get();
+            for (int i = 0; i < 100000 && !cf.is_ready(); ++i) {
+                scheduler->run(1000);
+                std::this_thread::yield();
+            }
+            REQUIRE(cf.is_ready());
+            (void) std::move(cf).take_ready();
         }
     };
 } // namespace
@@ -205,10 +209,9 @@ TEST_CASE("services::disk::persistence::test_constraint_persistence") {
     std::filesystem::remove_all(dir);
 }
 
-// 5. test_oid_persistence: OIDs allocated to a table (and its columns) before
-// checkpoint resolve to the same OIDs after restart. Validates Phase-0 design
-// rule "OIDs are immutable after assignment" (catalog-migration-to-postgresql-style.md §4)
-// across the full disk round-trip.
+// OIDs allocated to a table (and its columns) before checkpoint resolve to the
+// same OIDs after restart — the "OIDs are immutable after assignment" rule,
+// validated across a full disk round-trip.
 TEST_CASE("services::disk::persistence::test_oid_persistence") {
     auto dir = persist_dir() + "/oid_persist";
     std::filesystem::remove_all(dir);
@@ -253,12 +256,11 @@ TEST_CASE("services::disk::persistence::test_oid_persistence") {
     std::filesystem::remove_all(dir);
 }
 
-// 6. test_oid_no_reuse_after_drop: a dropped OID is never handed out again. After
-// restart, restore_oid_generator_sync seeds the counter to max(persisted OIDs)+1
-// — but persisted OIDs include the dropped table's siblings, so even though the
-// row is gone, the counter has already advanced past it (the OID generator never
-// recycles). Validates "OIDs are never reused after DROP (gaps are acceptable)"
-// (catalog-migration-to-postgresql-style.md §4 design rule 2).
+// A dropped OID is never handed out again. After restart,
+// restore_oid_generator_sync seeds the counter to max(persisted OIDs)+1; the
+// dropped table's siblings are still persisted, so the counter has already
+// advanced past the dropped OID and never recycles it. Gaps are acceptable,
+// reuse is not.
 TEST_CASE("services::disk::persistence::test_oid_no_reuse_after_drop") {
     auto dir = persist_dir() + "/oid_no_reuse";
     std::filesystem::remove_all(dir);

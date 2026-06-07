@@ -1,7 +1,10 @@
 #include "operator_alter_column_drop.hpp"
 
+#include "alter_validators.hpp"
+
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/ddl_metadata_builder.hpp>
+#include <components/catalog/alter_column_validators.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
 #include <services/disk/manager_disk.hpp>
@@ -43,10 +46,9 @@ namespace components::operators {
         constexpr catalog::oid_t pg_class_oid = catalog::well_known_oid::pg_class_table;
         constexpr catalog::oid_t pg_con_oid = catalog::well_known_oid::pg_constraint_table;
 
-        // Step 1 — read the live pg_attribute row by attoid (keyed single-row
-        // lookup). attoid_ was pre-stamped by enrich_logical_plan from the
-        // resolved column metadata; if INVALID we simply no-op (matches the
-        // legacy "column not found" behavior of the prior attname scan).
+        // Keyed single-row read of the live pg_attribute row. attoid_ was
+        // pre-stamped by enrich_logical_plan; INVALID means "column not found",
+        // so no-op.
         if (attoid_ == catalog::INVALID_OID) {
             mark_executed();
             co_return;
@@ -88,13 +90,12 @@ namespace components::operators {
             break;
         }
         if (attoid == catalog::INVALID_OID) {
-            // Row not found (or already dropped). No-op, no error — matches the
-            // legacy ddl.cpp behavior which simply `break`-ed out of the switch.
+            // Row not found or already dropped: no-op, no error.
             mark_executed();
             co_return;
         }
 
-        // Step 2 — read pg_depend for refclassid=pg_attribute, refobjid=attoid.
+        // read pg_depend for refclassid=pg_attribute, refobjid=attoid.
         components::types::logical_value_t att_cls_lv(resource_, catalog::well_known_oid::pg_attribute_table);
         components::types::logical_value_t att_oid_lv(resource_, attoid);
         std::pmr::vector<std::string> pd_keys(resource_);
@@ -111,12 +112,29 @@ namespace components::operators {
                                            std::move(pd_vals));
         auto dep_rows = co_await std::move(pdf);
 
-        // Step 3 — for RESTRICT, abort if any non-internal dep exists. For CASCADE,
+        // ABORT-on-error gate: validate dependents BEFORE the first mutating
+        // delete/append below, so a rejected DROP leaves the catalog untouched.
+        std::pmr::vector<std::pair<int, catalog::oid_t>> dependents{resource_};
+        dependents.reserve(dep_rows.size());
+        for (const auto& dep_row : dep_rows) {
+            if (dep_row.size() < 2 || dep_row[0].is_null() || dep_row[1].is_null())
+                continue;
+            const auto dep_cls = static_cast<catalog::oid_t>(dep_row[0].value<std::uint32_t>());
+            const auto dep_oid = static_cast<catalog::oid_t>(dep_row[1].value<std::uint32_t>());
+            dependents.emplace_back(static_cast<int>(dep_cls), dep_oid);
+        }
+        auto ec_cascade =
+            components::catalog::alter_column_validators::validate_cascade_dependencies(resource_, dependents);
+        if (ec_cascade.contains_error()) {
+            set_error(std::move(ec_cascade));
+            mark_executed();
+            co_return;
+        }
+
+        // for RESTRICT, abort if any non-internal dep exists. For CASCADE,
         // drop each dependent object.
         if (behavior_ == catalog::drop_behavior_t::restrict_) {
-            for (const auto& dep_row : dep_rows) {
-                if (dep_row.size() < 2 || dep_row[0].is_null() || dep_row[1].is_null())
-                    continue;
+            if (!dependents.empty()) {
                 set_error(
                     core::error_t{core::error_code_t::other_error,
                                   std::pmr::string{"DROP COLUMN RESTRICT: column has dependent objects", resource_}});
@@ -201,7 +219,7 @@ namespace components::operators {
             }
         }
 
-        // Step 4 — soft-delete the column: drop original pg_attribute row,
+        // soft-delete the column: drop original pg_attribute row,
         // then append a tombstone with attisdropped=true. The tombstone keeps
         // attnum so existing rows on disk that reference this slot remain
         // self-describing for MVCC visibility.
@@ -215,6 +233,10 @@ namespace components::operators {
         if (ctx->txn.transaction_id != 0)
             ctx->pg_catalog_delete_tables.insert(pg_attr_oid);
 
+        // dropped_at_commit_id is placeholder-0; a backfill marker (below) patches
+        // it post-commit, since the commit_id isn't allocated until COMMIT
+        // (see pg_catalog_swap.hpp). The tombstone's MVCC insert_id is still the
+        // executing txn_id.
         auto tombstone = catalog::build_pg_attribute_row(resource_,
                                                          attoid,
                                                          table_oid_,
@@ -225,17 +247,18 @@ namespace components::operators {
                                                          att_has_default,
                                                          /*is_dropped=*/true,
                                                          att_typspec,
-                                                         att_defspec);
+                                                         att_defspec,
+                                                         /*added_at_commit_id=*/0,
+                                                         /*dropped_at_commit_id=*/0);
         auto [_w, wf] = actor_zeta::send(ctx->disk_address,
                                          &services::disk::manager_disk_t::append_pg_catalog_row,
                                          exec_ctx,
                                          pg_attr_oid,
                                          std::move(tombstone));
         auto rng = co_await std::move(wf);
-        // The original pg_attribute row is already deleted above (delete_pg_catalog_rows).
-        // If the tombstone append silently produced 0 rows, the column is left in a
-        // half-applied state — invisible to resolve_table but with no MVCC marker for
-        // recovery. Surface this as a hard error rather than letting mark_executed() lie.
+        // The live row is already deleted above. A 0-row tombstone append leaves
+        // the column half-applied (invisible to resolve_table, no MVCC marker for
+        // recovery), so surface a hard error instead of letting mark_executed() lie.
         if (rng.count == 0) {
             std::string msg = "operator_alter_column_drop: tombstone append produced no rows for attoid ";
             msg += std::to_string(attoid);
@@ -244,6 +267,12 @@ namespace components::operators {
             co_return;
         }
         ctx->pg_catalog_appends.push_back(std::move(rng));
+        // Backfill dropped_at_commit_id on the tombstone, keyed by attoid (same
+        // attoid as the live row — identity-preserving tombstone).
+        ctx->pg_attribute_commit_id_backfills.push_back(
+            components::pg_attribute_commit_id_backfill_t{
+                attoid,
+                components::pg_attribute_commit_id_backfill_t::kind_t::dropped_at});
 
         // Note: drop_column on a relkind='g' (computing) table is routed to
         // operator_computed_field_unregister_t in planner.cpp::rewrite_alter_table,

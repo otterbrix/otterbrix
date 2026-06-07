@@ -85,6 +85,9 @@ namespace components::operators {
 
         // 3. WAL physical_insert (synchronous; flush is fire-and-forget).
         if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
+            // database_oid selects the WAL worker. Hardcoded to main_database
+            // until catalog_resolve_database_t populates ctx->database_oid.
+            constexpr auto db_oid = components::catalog::well_known_oid::main_database;
             auto [_w, wf] = actor_zeta::send(ctx->wal_address,
                                              &services::wal::manager_wal_replicate_t::write_physical_insert,
                                              ctx->session,
@@ -92,7 +95,8 @@ namespace components::operators {
                                              std::move(wal_data),
                                              static_cast<uint64_t>(start_row),
                                              actual_count,
-                                             ctx->txn.transaction_id);
+                                             ctx->txn.transaction_id,
+                                             db_oid);
             auto wal_id = co_await std::move(wf);
             auto [_d, df] =
                 actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::flush, ctx->session, wal_id);

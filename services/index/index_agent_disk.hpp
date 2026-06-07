@@ -1,5 +1,10 @@
 #pragma once
 
+// Write-path methods return unique_future<void> because the underlying
+// bitcask_index_disk_t / btree_index_disk_t methods are assert+abort terminal:
+// there is no recoverable failure to surface. (Contrast manager_index_t
+// commit_insert/commit_delete, which return core::error_t.)
+
 #include "index_disk.hpp"
 
 #include <actor-zeta.hpp>
@@ -24,6 +29,12 @@ namespace services::index {
 
     using index_name_t = std::string;
 
+    // Owns its bitcask + btree state exclusively; callers reach it only via
+    // mailbox sends to its address (no shared mutable state across the actor
+    // boundary).
+    //
+    // No DROP TABLE GC handler here: on-disk index files sit alongside table
+    // files and are unlinked by manager_disk_t's on_horizon_advanced sweep.
     class index_agent_disk_t final : public actor_zeta::basic_actor<index_agent_disk_t> {
         using path_t = std::filesystem::path;
         using session_id_t = ::components::session::session_id_t;

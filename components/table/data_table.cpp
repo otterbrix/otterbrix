@@ -3,6 +3,7 @@
 #include <components/table/storage/partial_block_manager.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/vector_operations.hpp>
+#include <cstdlib>
 #include <unordered_set>
 
 #include "row_group.hpp"
@@ -158,7 +159,7 @@ namespace components::table {
             auto scan_types = copy_types();
             vector::data_chunk_t chunk(resource_, scan_types, vector::DEFAULT_VECTOR_CAPACITY);
             while (true) {
-                state.table_state.scan_committed(chunk, table_scan_type::COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED);
+                state.table_state.scan(chunk);
                 if (chunk.size() == 0) {
                     break;
                 }
@@ -175,13 +176,6 @@ namespace components::table {
     }
 
     void data_table_t::scan(vector::data_chunk_t& result, table_scan_state& state) { state.table_state.scan(result); }
-
-    void data_table_t::scan_committed(vector::data_chunk_t& result, table_scan_state& state) {
-        // Route through committed_version_operator (COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED)
-        // so resolve_* paths drop tombstoned rows. COMMITTED_ROWS skips the visibility filter
-        // entirely and would still see deleted entries.
-        state.table_state.scan_committed(result, table_scan_type::COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED);
-    }
 
     void data_table_t::scan_batched(const std::pmr::vector<types::complex_logical_type>& types,
                                     const std::vector<size_t>* projected_cols,
@@ -214,16 +208,22 @@ namespace components::table {
 
     void data_table_t::append_lock(table_append_state& state) {
         state.append_lock = std::unique_lock(append_lock_);
+        // Concurrent DDL altered the table. abort() rather than throw: under
+        // -fno-exceptions a throw inside an actor-zeta coroutine is silently
+        // swallowed (UB). TODO: return core::error_t for a graceful txn abort.
+        assert(is_root_ && "Transaction conflict: adding entries to a table that has been altered!");
         if (!is_root_) {
-            throw std::logic_error("Transaction conflict: adding entries to a table that has been altered!");
+            std::abort();
         }
         state.row_start = static_cast<int64_t>(row_groups_->total_rows());
         state.current_row = state.row_start;
     }
 
     void data_table_t::initialize_append(table_append_state& state) {
+        assert(state.append_lock &&
+               "data_table_t::append_lock should be called before data_table_t::initialize_append");
         if (!state.append_lock) {
-            throw std::logic_error("data_table_t::append_lock should be called before data_table_t::initialize_append");
+            std::abort();
         }
         row_groups_->initialize_append(state);
     }
@@ -437,8 +437,12 @@ namespace components::table {
             return;
         }
 
+        // Concurrent DDL altered the table. abort() rather than throw: under
+        // -fno-exceptions a throw inside an actor-zeta coroutine is silently
+        // swallowed (UB). TODO: return core::error_t for a graceful txn abort.
+        assert(is_root_ && "Transaction conflict: cannot update a table that has been altered!");
         if (!is_root_) {
-            throw std::logic_error("Transaction conflict: cannot update a table that has been altered!");
+            std::abort();
         }
 
         updates.flatten();

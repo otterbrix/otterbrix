@@ -14,10 +14,10 @@
 #include "disk_test_helpers.hpp"
 
 #include <filesystem>
+#include <thread>
 #include <unistd.h>
 
-// D4 lazy-loading tests (catalog-migration-to-postgresql-style.md §3 lines 323–434).
-// Verify that after bootstrap only the 10 pg_catalog.* system tables are loaded,
+// Lazy-loading: after bootstrap only the 10 pg_catalog.* system tables are loaded,
 // user tables stay out of storages_ until explicitly accessed, and DDL on unloaded
 // user tables modifies only system catalog rows (pg_class / pg_attribute) without
 // requiring the user storage to be present.
@@ -53,10 +53,13 @@ namespace {
             , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
             cleanup();
             std::filesystem::create_directories(d4_dir());
-            manager->set_run_fn([this] { scheduler->run(10000); });
             manager->bootstrap_system_tables_sync();
         }
         ~fixture() {
+            // Destroy the manager first: its dtor joins the internal loop thread,
+            // which may still enqueue children onto the scheduler. Only then is it
+            // safe to stop/delete the scheduler.
+            manager.reset();
             scheduler->stop();
             delete scheduler;
             cleanup();
@@ -65,8 +68,12 @@ namespace {
         template<typename Fn, typename... Args>
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::forward<Args>(args)...);
-            scheduler->run(10000);
-            return std::move(future).get();
+            for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
+                scheduler->run(1000);
+                std::this_thread::yield();
+            }
+            REQUIRE(future.is_ready());
+            return std::move(future).take_ready();
         }
 
         components::execution_context_t ctx() {

@@ -214,7 +214,7 @@ extern "C" cursor_ptr create_database(otterbrix_ptr ptr, string_view_t database_
         pod_space = convert_otterbrix(ptr);
         auto session = otterbrix::session_id_t();
         std::string database = string_view_to_string(database_name);
-        auto cursor = pod_space->space->dispatcher()->create_database(session, database);
+        auto cursor = pod_space->space->dispatcher()->execute_sql(session, "CREATE DATABASE " + database + ";");
         return store_cursor(std::move(cursor));
     } catch (const std::exception& ex) {
         return exception_cursor(pod_space, ex);

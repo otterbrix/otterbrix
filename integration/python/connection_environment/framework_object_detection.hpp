@@ -9,6 +9,7 @@ namespace otterbrix {
     public:
         static NumpyObjectType GetNumpyObjectType(const py::object &object);
         static bool IsPandasDataframe(const py::object &object);
+        static bool IsPolarsDataframe(const py::object &object);
     };
 
 } // namespace otterbrix

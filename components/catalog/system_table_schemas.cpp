@@ -42,10 +42,9 @@
 //                                              pg_constraint, not pg_index. Index implementation
 //                                              picker not exposed via SQL DDL yet.
 //   pg_database   — added                     : full hierarchy database → namespace → relation.
-//                                              10th system table beyond the doc's 9.
+//                                              10th system table beyond PG's 9.
 //
-// Reconcile via docs/catalog-migration-to-postgresql-style.md (intentional deltas) — do
-// not "fix" these to match the doc literally without considering the implementation cost.
+// These deltas are intentional; do not revert them to plain PostgreSQL shapes.
 
 namespace components::catalog {
 
@@ -110,6 +109,13 @@ namespace components::catalog {
             // (pg_attrdef-equivalent inlined into pg_attribute). Empty when
             // atthasdefault=false.
             c.emplace_back("attdefspec", str_col(), false);
+            // MVCC column versioning. added_at_commit_id = ADD COLUMN's commit_id;
+            // dropped_at_commit_id = DROP COLUMN's commit_id (0 = still alive).
+            // Snapshot sees column iff added_at_commit_id <= snapshot.horizon
+            // AND (dropped_at_commit_id == 0 OR dropped_at_commit_id > snapshot).
+            // attisdropped tombstone is set in lockstep with dropped_at_commit_id > 0.
+            c.emplace_back("added_at_commit_id", i64_col(), true);   // 10
+            c.emplace_back("dropped_at_commit_id", i64_col(), true); // 11
             return c;
         }
 
@@ -141,8 +147,8 @@ namespace components::catalog {
             // proargmatchers: encoded per-arg type matcher kinds + parameters. Format is
             // pipe-separated per arg: "e:N" exact (N=numeric logical_type id), "n" numeric,
             // "i" integer, "f" floating, "a:N1,N2,..." any_of, "t" always_true. Empty when
-            // no matcher info was persisted (legacy rows / placeholder UDFs). #152 — replaces
-            // std::function-based matchers with a serializable tagged kind.
+            // no matcher info was persisted (legacy rows / placeholder UDFs). Serializable
+            // tagged-kind form so matchers survive a catalog roundtrip.
             c.emplace_back("proargmatchers", str_col(), false);
             // prorettype: encoded output_type list. Format is comma-separated: "f:N" fixed
             // (N=logical_type id), "s:N" same_type_at_index N. Empty falls back to

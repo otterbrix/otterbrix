@@ -74,6 +74,16 @@ namespace services::disk {
                                                                std::int64_t oid_col_idx,
                                                                components::catalog::oid_t target_oid);
 
+        // patch the pg_attribute row identified by
+        // `attoid` with `commit_id` written into the added_at or dropped_at column
+        // (selected by `kind`). Drained by operator_commit_transaction_t once the
+        // commit_id is allocated; pairs with a physical_update WAL record.
+        actor_zeta::unique_future<void>
+        update_pg_attribute_commit_id_field(execution_context_t ctx,
+                                            components::catalog::oid_t attoid,
+                                            components::pg_attribute_commit_id_backfill_t::kind_t kind,
+                                            std::uint64_t commit_id);
+
         // Pure storage scan: row_ids of committed+txn-visible rows in the table with
         // the given OID where every key_col_names[i] == key_values[i].
         actor_zeta::unique_future<std::pmr::vector<std::int64_t>>
@@ -159,7 +169,7 @@ namespace services::disk {
                                                                 uint64_t count);
 
         // MVCC commit/revert
-        actor_zeta::unique_future<void> storage_commit_append(execution_context_t ctx,
+        actor_zeta::unique_future<void> storage_publish_commit(execution_context_t ctx,
                                                               components::catalog::oid_t table_oid,
                                                               uint64_t commit_id,
                                                               int64_t row_start,
@@ -169,18 +179,32 @@ namespace services::disk {
                                                               int64_t row_start,
                                                               uint64_t count);
         actor_zeta::unique_future<void>
-        storage_commit_delete(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id);
+        storage_publish_delete(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id);
 
         // Batched MVCC swap. Each range carries its own table_oid.
         actor_zeta::unique_future<void>
-        storage_commit_appends(execution_context_t ctx,
+        storage_publish_commits(execution_context_t ctx,
                                uint64_t commit_id,
                                std::vector<components::pg_catalog_append_range_t> ranges);
-        actor_zeta::unique_future<void> storage_commit_deletes(execution_context_t ctx,
+        actor_zeta::unique_future<void> storage_publish_deletes(execution_context_t ctx,
                                                                uint64_t commit_id,
                                                                std::set<components::catalog::oid_t> tables);
         actor_zeta::unique_future<void>
         storage_revert_appends(execution_context_t ctx, std::vector<components::pg_catalog_append_range_t> ranges);
+
+        // Event-driven GC subscriber. Walks per-agent dropped_storages_
+        // slices and physically removes entries whose
+        // dropped_at_commit_id < new_horizon.
+        actor_zeta::unique_future<void> on_horizon_advanced(uint64_t new_horizon);
+
+        // Runtime DROP TABLE path — operator_dynamic_cascade_delete sends this
+        // from inside the executor actor so the manager_disk side records a
+        // pending GC entry (path + sidecars derived from the live storages_
+        // map) before the file is removed by drop_storage. Pair with
+        // manager_dispatcher_t::on_drop_resource_marked(DISK_KIND).
+        actor_zeta::unique_future<void> mark_storage_dropped(session_id_t session,
+                                                             components::catalog::oid_t table_oid,
+                                                             uint64_t dropped_at_commit_id);
 
         using dispatch_traits = actor_zeta::dispatch_traits<&disk_contract::flush,
                                                             &disk_contract::checkpoint_all,
@@ -203,11 +227,11 @@ namespace services::disk {
                                                             &disk_contract::storage_update,
                                                             &disk_contract::storage_delete_rows,
                                                             // MVCC commit/revert
-                                                            &disk_contract::storage_commit_append,
+                                                            &disk_contract::storage_publish_commit,
                                                             &disk_contract::storage_revert_append,
-                                                            &disk_contract::storage_commit_delete,
-                                                            &disk_contract::storage_commit_appends,
-                                                            &disk_contract::storage_commit_deletes,
+                                                            &disk_contract::storage_publish_delete,
+                                                            &disk_contract::storage_publish_commits,
+                                                            &disk_contract::storage_publish_deletes,
                                                             &disk_contract::storage_revert_appends,
                                                             // resolve + invalidation pull
                                                             &disk_contract::resolve_namespace,
@@ -219,9 +243,12 @@ namespace services::disk {
                                                             &disk_contract::allocate_oids_batch,
                                                             &disk_contract::append_pg_catalog_row,
                                                             &disk_contract::delete_pg_catalog_rows,
+                                                            &disk_contract::update_pg_attribute_commit_id_field,
                                                             &disk_contract::scan_by_key,
                                                             &disk_contract::read_rows_by_key,
-                                                            &disk_contract::compact_relkind_g_storage>;
+                                                            &disk_contract::compact_relkind_g_storage,
+                                                            &disk_contract::on_horizon_advanced,
+                                                            &disk_contract::mark_storage_dropped>;
 
         disk_contract() = delete;
     };

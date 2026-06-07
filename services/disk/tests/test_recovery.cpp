@@ -12,17 +12,15 @@
 #include <services/wal/manager_wal_replicate.hpp>
 
 #include <filesystem>
+#include <thread>
 #include <unistd.h>
 
-// Recovery (3 tests) — covers docs/catalog-migration-to-postgresql-style.md §14
-// "Recovery (3 tests)":
-//   - test_recovery_system_wal_before_user — system DDL replayed first on restart, before
-//     anyone touches user storages.
-//   - test_recovery_ring_buffer_empty — fresh process: no events have been pushed, the
-//     ring buffer reports zero latest_version and an empty since(0); dispatchers see this
-//     as "first contact, do a full resolve".
-//   - test_recovery_ddl_then_dml — a DDL row written through append_pg_catalog_row goes
-//     through WAL + storage; after a fixture restart the row is visible via load.
+// Recovery tests:
+//   - system DDL replays first on restart, before any user storage is touched;
+//   - on a fresh process the event ring buffer reports zero latest_version and
+//     empty since(0), which dispatchers read as "first contact, full resolve";
+//   - a DDL row written via append_pg_catalog_row survives a restart and is
+//     visible via load.
 
 using namespace services::disk;
 using namespace components::catalog;
@@ -63,8 +61,6 @@ namespace {
             , wal(actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&resource, scheduler, wal_config, log))
             , disk(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
             std::filesystem::create_directories(dir);
-            wal->set_run_fn([this] { scheduler->run(10000); });
-            disk->set_run_fn([this] { scheduler->run(10000); });
             wal->sync(std::make_tuple(actor_zeta::address_t(disk->address()), actor_zeta::address_t::empty_address()));
             disk->sync(std::make_tuple(wal->address()));
             if (bootstrap) {
@@ -72,6 +68,11 @@ namespace {
             }
         }
         ~recovery_fixture() {
+            // Destroy the managers first: each dtor joins its internal loop thread,
+            // which may still enqueue children onto the scheduler. Only then is it
+            // safe to stop/delete the scheduler.
+            disk.reset();
+            wal.reset();
             scheduler->stop();
             delete scheduler;
         }
@@ -79,8 +80,12 @@ namespace {
         template<typename Fn, typename... Args>
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(disk->address(), fn, std::forward<Args>(args)...);
-            scheduler->run(10000);
-            return std::move(future).get();
+            for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
+                scheduler->run(1000);
+                std::this_thread::yield();
+            }
+            REQUIRE(future.is_ready());
+            return std::move(future).take_ready();
         }
 
         components::execution_context_t ctx() {
@@ -174,10 +179,10 @@ TEST_CASE("test_recovery_ddl_then_dml") {
     cleanup_dir(dir);
 }
 
-// 4. test_recovery_orphaned_uncommitted_ddl — DDL rows written under a non-zero txn_id
-//    but never committed (storage_commit_appends not called, simulating a crash) must
-//    be invisible after manager restart, because rebuild_lookup_indexes uses inline_scan →
-//    scan_committed which filters any row whose txn_id has not been flipped to a commit_id.
+// DDL rows written under a non-zero txn_id but never committed (no
+// storage_publish_commits — a simulated crash) must be invisible after restart:
+// rebuild_lookup_indexes scans via scan_committed, which filters any row whose
+// txn_id was never flipped to a commit_id.
 TEST_CASE("test_recovery_orphaned_uncommitted_ddl") {
     auto dir = recovery_test_dir() + "/orphaned_ddl";
     cleanup_dir(dir);
@@ -185,7 +190,7 @@ TEST_CASE("test_recovery_orphaned_uncommitted_ddl") {
     {
         recovery_fixture fx(dir);
         // Use txn_id=1 so append_pg_catalog_row writes the pg_namespace row under a
-        // non-zero txn (not immediately visible). Without storage_commit_appends the
+        // non-zero txn (not immediately visible). Without storage_publish_commits the
         // flip from txn_id to commit_id never happens.
         components::execution_context_t uncommitted_ctx{session_id_t{}, components::table::transaction_data{1, 0}, {}};
         auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
@@ -195,7 +200,7 @@ TEST_CASE("test_recovery_orphaned_uncommitted_ddl") {
             components::catalog::build_create_namespace_writes(&fx.resource, std::string("orphaned_ns"), ns_oid);
         for (auto& w : writes)
             fx.invoke(&manager_disk_t::append_pg_catalog_row, uncommitted_ctx, w.table_oid, std::move(w.row));
-        // Intentionally omit storage_commit_appends — simulates crash before commit.
+        // Intentionally omit storage_publish_commits — simulates crash before commit.
     }
 
     {

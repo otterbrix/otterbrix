@@ -133,9 +133,9 @@ TEST_CASE("wal_binary::encode_decode_commit") {
     std::pmr::monotonic_buffer_resource resource(1024 * 64);
 
     buffer_t buffer(&resource);
-    encode_commit(buffer, /*last_crc32=*/0, /*wal_id=*/4, /*txn_id=*/103);
+    encode_commit(buffer, /*last_crc32=*/0, /*wal_id=*/4, /*txn_id=*/103, /*commit_id=*/0);
 
-    REQUIRE(buffer.size() == 29);
+    REQUIRE(buffer.size() == 37);
 
     auto record = decode_record(buffer, &resource);
     REQUIRE(record.is_valid());

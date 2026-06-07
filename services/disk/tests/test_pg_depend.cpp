@@ -14,6 +14,7 @@
 #include <services/disk/manager_disk.hpp>
 
 #include <filesystem>
+#include <thread>
 #include <unistd.h>
 
 // pg_depend cascade tests. Each ddl_create_* writes a pg_depend row; each ddl_drop_*
@@ -49,10 +50,13 @@ namespace {
             , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
             cleanup();
             std::filesystem::create_directories(dep_dir());
-            manager->set_run_fn([this] { scheduler->run(10000); });
             manager->bootstrap_system_tables_sync();
         }
         ~fixture() {
+            // Destroy the manager first: its dtor joins the internal loop thread,
+            // which may still enqueue children onto the scheduler. Only then is it
+            // safe to stop/delete the scheduler.
+            manager.reset();
             scheduler->stop();
             delete scheduler;
             cleanup();
@@ -61,8 +65,12 @@ namespace {
         template<typename Fn, typename... Args>
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::forward<Args>(args)...);
-            scheduler->run(10000);
-            return std::move(future).get();
+            for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
+                scheduler->run(1000);
+                std::this_thread::yield();
+            }
+            REQUIRE(future.is_ready());
+            return std::move(future).take_ready();
         }
 
         components::execution_context_t ctx() {
@@ -177,7 +185,7 @@ TEST_CASE("services::disk::pg_depend::drop_type_restrict_no_deps") {
                   std::int64_t{3},
                   type_oid);
         std::set<catalog::oid_t> deletes_local{pg_type, pg_dep};
-        fx.invoke(&manager_disk_t::storage_commit_deletes,
+        fx.invoke(&manager_disk_t::storage_publish_deletes,
                   disk_test_helpers::txn_ctx(),
                   std::uint64_t{1000},
                   std::move(deletes_local));

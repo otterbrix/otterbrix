@@ -42,7 +42,7 @@ template<bool on_wal, bool on_disk>
 void init_collection(const collection_name_t& collection_name) {
     auto* dispatcher = test_spaces<on_wal, on_disk>::get().dispatcher();
     auto session = otterbrix::session_id_t();
-    dispatcher->create_database(session, database_name);
+    dispatcher->execute_sql(session, "CREATE DATABASE " + std::string(database_name) + ";");
     dispatcher->execute_sql(session,
         fmt::format("CREATE TABLE {}.{}(count bigint, count_str string, count_double double, "
                     "count_bool bool, count_array ubigint[5], count_decimal decimal(15,7));",

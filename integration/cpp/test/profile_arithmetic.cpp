@@ -31,7 +31,7 @@ int main() {
     // Setup
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->create_database(s, database_name);
+        dispatcher->execute_sql(s, "CREATE DATABASE " + database_name + ";");
     }
     {
         auto s = otterbrix::session_id_t();

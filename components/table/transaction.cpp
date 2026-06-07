@@ -2,10 +2,16 @@
 
 namespace components::table {
 
-    transaction_t::transaction_t(uint64_t transaction_id, uint64_t start_time, session::session_id_t session)
+    transaction_t::transaction_t(uint64_t transaction_id,
+                                 uint64_t start_time,
+                                 session::session_id_t session,
+                                 std::pmr::memory_resource* resource)
         : session_(session)
         , transaction_id_(transaction_id)
-        , start_time_(start_time) {}
+        , start_time_(start_time)
+        , in_flight_snapshot_(resource)
+        , pending_base_appends_(resource)
+        , pending_base_deletes_(resource) {}
 
     void transaction_t::set_commit_id(uint64_t id) { commit_id_ = id; }
 

@@ -87,9 +87,9 @@ namespace components::operators {
                     co_return;
 
                 case 'c': { // CASCADE — delete child rows via storage_delete_rows
-                    // Use txn_id=0 so the delete is committed immediately. The parent
-                    // DELETE tracks its own commit; cascade child ops are not tracked by
-                    // execute_plan_'s storage_commit_delete, which only covers the parent.
+                    // txn_id=0 commits the child delete immediately: execute_plan_'s
+                    // storage_publish_delete only covers the parent, so cascade child
+                    // ops aren't tracked there.
                     execution_context_t del_ctx{ctx->session, {}, {}};
 
                     components::vector::vector_t row_ids_vec(resource_, types::logical_type::BIGINT, child_ids.size());

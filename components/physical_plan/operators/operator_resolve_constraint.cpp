@@ -57,9 +57,8 @@ namespace components::operators {
             co_return;
         }
 
-        // Read target table_oid from the sibling resolve_table node. Pass 1
-        // guarantees that the resolve_table operator ran first and stamped
-        // resolved_metadata() on the node.
+        // table_oid comes from the sibling resolve_table node; the pipeline
+        // guarantees resolve_table ran first and stamped resolved_metadata().
         const auto& md_opt = target_node_->target()->resolved_metadata();
         if (!md_opt.has_value() || md_opt->table_oid == catalog::INVALID_OID) {
             mark_executed();
@@ -75,7 +74,7 @@ namespace components::operators {
         std::vector<catalog::fk_info_t> fks;
         std::vector<std::pair<std::string, std::string>> check_exprs;
 
-        // Step 1: scan pg_constraint by (conrelid|confrelid).
+        // scan pg_constraint by (conrelid|confrelid).
         types::logical_value_t table_lv(resource_, table_oid);
         std::pmr::vector<std::string> con_keys(resource_);
         con_keys.emplace_back(key_col);

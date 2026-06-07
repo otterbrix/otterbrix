@@ -24,7 +24,7 @@ static const collection_name_t collection_name_2 = "testcollection2";
     do {                                                                                                               \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
-            dispatcher->create_database(session, DB);                                                                  \
+            dispatcher->execute_sql(session, std::string("CREATE DATABASE ") + (DB) + ";");                            \
         }                                                                                                              \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
@@ -313,7 +313,7 @@ TEST_CASE("integration::cpp::test_wal_pool::sql_dml_full_cycle") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -408,7 +408,7 @@ TEST_CASE("integration::cpp::test_wal_pool::sql_constraint_enforcement") {
         // Create database
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         // Create table with NOT NULL on a string column
@@ -492,7 +492,7 @@ TEST_CASE("integration::cpp::test_wal_pool::constant_data_checkpoint_restart") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         // Create table with a typed schema
@@ -546,7 +546,7 @@ TEST_CASE("integration::cpp::test_wal_pool::insert_delete_checkpoint_restart") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {

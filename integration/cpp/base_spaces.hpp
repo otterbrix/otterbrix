@@ -10,6 +10,7 @@
 #include <core/file/file_system.hpp>
 
 #include <memory>
+#include <memory_resource>
 
 namespace services {
 
@@ -75,6 +76,15 @@ namespace otterbrix {
         services::index::manager_index_ptr manager_index_;
         std::unique_ptr<otterbrix::wrapper_dispatcher_t, actor_zeta::pmr::deleter_t> wrapper_dispatcher_;
         actor_zeta::scheduler_ptr scheduler_disk_;
+
+        // Catalog-driven index bootstrap. Called once during construction, after
+        // WAL replay and before scheduler.start, while single-threaded. Scans
+        // pg_class / pg_index via manager_disk_ sync helpers, then:
+        //   - creates an empty index_engine_t per live table oid;
+        //   - spawns an index_agent_disk_t per alive pg_index row and transfers
+        //     ownership to manager_index_;
+        //   - restores per-oid dropped-table tombstones.
+        void bootstrap_indexes_sync(const configuration::config_disk& disk_config);
 
     private:
         inline static std::unordered_set<std::filesystem::path, core::filesystem::path_hash> paths_ = {};

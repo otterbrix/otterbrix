@@ -23,19 +23,26 @@ namespace components::operators {
         components::table::transaction_data txn_data =
             txn_t ? txn_t->data() : components::table::transaction_data{0, 0};
         std::vector<components::pg_catalog_append_range_t> swap_appends;
+        std::set<components::catalog::oid_t> swap_deletes_unused;
         if (txn_t) {
-            swap_appends = std::move(txn_t->pg_catalog_appends);
-            // delete_tables: nothing to revert — uncommitted tombstones are invisible.
-            txn_t->pg_catalog_delete_tables.clear();
+            // drain_pg_catalog_pending mirrors the COMMIT path. On ABORT we
+            // discard the delete-tables set (uncommitted tombstones with
+            // delete_id == txn_id are invisible to every reader; abort()
+            // makes them GC-eligible). The appends still need revert because
+            // their physical row slots persist until storage_revert_appends.
+            txn_t->drain_pg_catalog_pending(swap_appends, swap_deletes_unused);
+            swap_deletes_unused.clear();
+            // Backfill markers carry no residual state; their target rows are in
+            // swap_appends and get reverted by storage_revert_appends.
+            (void) txn_t->drain_pg_attribute_commit_id_backfills();
         }
 
-        // Step 2: abort the transaction in the txn_manager (synchronous).
+        // abort the transaction in the txn_manager (synchronous).
         if (tm) {
             tm->abort(ctx->session);
         }
 
-        // Step 3: revert any pg_catalog rows appended under this transaction
-        // via the new batched API.
+        // revert any pg_catalog rows appended under this transaction.
         if (txn_data.transaction_id != 0 && !swap_appends.empty() &&
             ctx->disk_address != actor_zeta::address_t::empty_address()) {
             components::execution_context_t swap_ctx{ctx->session, txn_data, {}};

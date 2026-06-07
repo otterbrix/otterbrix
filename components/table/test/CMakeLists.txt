@@ -10,6 +10,7 @@ set(${PROJECT_NAME}_SOURCES
         test_mvcc_operations.cpp
         test_statistics.cpp
         test_parallel_scan.cpp
+        test_block_e_procarray.cpp
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})
@@ -17,6 +18,7 @@ add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})
 target_link_libraries(
     ${PROJECT_NAME} PRIVATE
     otterbrix::expressions
+    otterbrix::logical_plan
     otterbrix::table
     otterbrix::file
     otterbrix::types

@@ -68,7 +68,7 @@ namespace components::operators {
         const types::logical_value_t toid_lv(resource_, table_oid_);
 
         for (const auto& col : columns_) {
-            // Step 1: read existing pg_computed_column rows for (relid, attname).
+            // read existing pg_computed_column rows for (relid, attname).
             // pg_computed_column layout: 0=relid 1=attoid 2=attname
             // 3=atttypid 4=atttypspec 5=attversion 6=attrefcount.
             types::logical_value_t name_lv(resource_, std::string(col.name()));
@@ -150,7 +150,6 @@ namespace components::operators {
                 atttypspec = catalog::encode_type_spec(col.type());
             }
 
-            // Step 2: classify and decide.
             // If latest row is a tombstone (refcount<=0), the column was
             // DROP'd. Treat re-INSERT as is_new so a fresh attoid + bumped
             // attversion are written and operator_computed_field_register
@@ -165,7 +164,7 @@ namespace components::operators {
                 continue;
             }
 
-            // Step 3: allocate a fresh attoid for the new (or evolved) column row.
+            // allocate a fresh attoid for the new (or evolved) column row.
             auto [_oa, oaf] = actor_zeta::send(ctx->disk_address,
                                                &services::disk::manager_disk_t::allocate_oids_batch,
                                                std::size_t{1});

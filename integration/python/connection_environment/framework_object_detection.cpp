@@ -63,9 +63,17 @@ namespace otterbrix {
     bool FrameworkObjectDetection::IsPandasDataframe(const py::object &object) {
         if (!ModuleIsLoaded<PandasCacheItem>()) {
             return false;
-        }    
+        }
         auto &import_cache_py = ConnectionEnvironment::ImportCache();
         return py::isinstance(object, import_cache_py.pandas.DataFrame());
+    }
+
+    bool FrameworkObjectDetection::IsPolarsDataframe(const py::object &object) {
+        if (!ModuleIsLoaded<PolarsCacheItem>()) {
+            return false;
+        }
+        auto &import_cache_py = ConnectionEnvironment::ImportCache();
+        return py::isinstance(object, import_cache_py.polars.DataFrame());
     }
 
 } // namespace otterbrix

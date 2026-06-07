@@ -193,14 +193,12 @@ namespace otterbrix {
     }
 
 
-    unique_ptr<PyRelation> PyConnection::FromDF(const PandasDataFrame& value) {
-        string name = "df_no_idea"; 
-        auto tableref = Scan::TryReplacementObject(value, name);
-        assert(tableref);
+    unique_ptr<PyRelation> PyConnection::FromDF(const py::object& value) {
+        string name = "df_no_idea";
+        auto tableref = Scan::ReplacementObject(value, name);
 
         shared_ptr<Relation> relation = RelationFactory::CreateDFRelation(std::move(tableref));
         return make_unique<PyRelation>(static_cast<ConnectionEnvironment*>(this), relation);
-
     }
 
     unique_ptr<PyRelation> PyConnection::FromObject(const py::object& value) {

@@ -94,7 +94,7 @@ namespace otterbrix {
 
         unique_ptr<PyRelation> RunQuery(const py::object& query, string alias = "", py::object params = py::list());
     public:
-        unique_ptr<PyRelation> FromDF(const PandasDataFrame& value);
+        unique_ptr<PyRelation> FromDF(const py::object& value);
         unique_ptr<PyRelation> FromObject(const py::object& value);
     public:
         bool HasResult() const;

@@ -32,7 +32,7 @@ namespace otterbrix {
     ConnectionEnvironment::ConnectionEnvironment(const boost::intrusive_ptr<otterbrix_t>& space)
         : ExpressionFactory(space), RelationFactory(space), space(space) {
             auto session = otterbrix::session_id_t();
-            space->dispatcher()->create_database(session, "tmp");
+            space->dispatcher()->execute_sql(session, "CREATE DATABASE tmp;");
         }
 
     ConnectionEnvironment::~ConnectionEnvironment() = default;
@@ -52,7 +52,7 @@ namespace otterbrix {
 
     void ConnectionEnvironment::CreateDatabase(const std::string& name) {
         auto session = session_id_t();
-        space->dispatcher()->create_database(session, name);
+        space->dispatcher()->execute_sql(session, "CREATE DATABASE " + name + ";");
     }
 
     shared_ptr<Relation> ConnectionEnvironment::RelationFromQuery(const string& query) {

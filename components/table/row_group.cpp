@@ -55,8 +55,7 @@ namespace components::table {
             assert(is_loaded_[c]);
             return *columns_[c];
         }
-        assert(column_pointers_.size() == columns_.size() &&
-               "Lazy loading a column but the pointer was not set");
+        assert(column_pointers_.size() == columns_.size() && "Lazy loading a column but the pointer was not set");
         assert(false && "row_group_t::get_column: unknown error");
         std::abort();
     }
@@ -304,10 +303,8 @@ namespace components::table {
             if (TYPE == table_scan_type::REGULAR) {
                 // REGULAR scans have no see-all fallback: state.txn must be a real
                 // transaction_data, as its snapshot fields drive MVCC visibility.
-                count = state.row_group->indexing_vector(state.txn,
-                                                         state.vector_index,
-                                                         state.valid_indexing,
-                                                         max_count);
+                count =
+                    state.row_group->indexing_vector(state.txn, state.vector_index, state.valid_indexing, max_count);
                 if (count == 0) {
                     next_vector(state);
                     continue;

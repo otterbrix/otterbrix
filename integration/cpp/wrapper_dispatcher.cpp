@@ -101,8 +101,8 @@ namespace otterbrix {
         return send_plan(
             session,
             components::logical_plan::execution_plan_t{resource(),
-                node,
-                components::logical_plan::make_parameter_node(resource())});
+                                                       node,
+                                                       components::logical_plan::make_parameter_node(resource())});
     }
 
     auto wrapper_dispatcher_t::find(const session_id_t& session,

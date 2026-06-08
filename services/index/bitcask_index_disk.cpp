@@ -27,8 +27,8 @@ namespace services::index {
     using core::filesystem::remove_file;
 
     namespace {
-        components::types::logical_value_t
-        normalize_hash_key(const components::types::logical_value_t& key, core::date::timezone_offset_t session_tz) {
+        components::types::logical_value_t normalize_hash_key(const components::types::logical_value_t& key,
+                                                              core::date::timezone_offset_t session_tz) {
             using namespace components::types;
             switch (key.type().type()) {
                 case logical_type::TINYINT:
@@ -212,10 +212,10 @@ namespace services::index {
 
     core::result_wrapper_t<std::unique_ptr<bitcask_index_disk_t>>
     bitcask_index_disk_t::create(const path_t& path,
-                                  std::pmr::memory_resource* resource,
-                                  uint64_t flush_threshold,
-                                  uint64_t segment_record_limit,
-                                  std::pmr::set<std::uint64_t> committed_txn_ids) {
+                                 std::pmr::memory_resource* resource,
+                                 uint64_t flush_threshold,
+                                 uint64_t segment_record_limit,
+                                 std::pmr::set<std::uint64_t> committed_txn_ids) {
         // skip_load ctor does no I/O, so we can run load_from_disk() and check
         // crc_failure_ before open_active_segment(). committed_txn_ids is stored
         // by the skip_load ctor so the recover gate is armed before recovery.
@@ -236,11 +236,11 @@ namespace services::index {
     }
 
     bitcask_index_disk_t::bitcask_index_disk_t(const path_t& path,
-                                                std::pmr::memory_resource* resource,
-                                                uint64_t flush_threshold,
-                                                uint64_t segment_record_limit,
-                                                std::pmr::set<std::uint64_t> committed_txn_ids,
-                                                skip_load_tag)
+                                               std::pmr::memory_resource* resource,
+                                               uint64_t flush_threshold,
+                                               uint64_t segment_record_limit,
+                                               std::pmr::set<std::uint64_t> committed_txn_ids,
+                                               skip_load_tag)
         : index_disk_t(flush_threshold)
         , path_(path)
         , hash_index_file_path_(path_ / hash_index_file)
@@ -323,9 +323,8 @@ namespace services::index {
                     !f->read(payload.data(), static_cast<uint64_t>(header.payload_size), payload_offset)) {
                     break;
                 }
-                absl::crc32c_t calc =
-                    absl::ComputeCrc32c(absl::string_view(reinterpret_cast<const char*>(&header.kind),
-                                                          sizeof(header) - sizeof(header.crc)));
+                absl::crc32c_t calc = absl::ComputeCrc32c(absl::string_view(reinterpret_cast<const char*>(&header.kind),
+                                                                            sizeof(header) - sizeof(header.crc)));
                 if (!payload.empty()) {
                     calc = absl::ExtendCrc32c(calc, absl::string_view(payload.data(), payload.size()));
                 }
@@ -454,9 +453,8 @@ namespace services::index {
         if (header.payload_size != 0 && !f->read(payload.data(), header.payload_size, value_offset)) {
             return false;
         }
-        absl::crc32c_t calc =
-            absl::ComputeCrc32c(absl::string_view(reinterpret_cast<const char*>(&header.kind),
-                                                  sizeof(header) - sizeof(header.crc)));
+        absl::crc32c_t calc = absl::ComputeCrc32c(
+            absl::string_view(reinterpret_cast<const char*>(&header.kind), sizeof(header) - sizeof(header.crc)));
         if (!payload.empty()) {
             calc = absl::ExtendCrc32c(calc, absl::string_view(payload.data(), payload.size()));
         }
@@ -472,8 +470,8 @@ namespace services::index {
     }
 
     bool bitcask_index_disk_t::load_full_key_for_hash_ref(uint32_t log_file_id,
-                                                           uint64_t log_offset,
-                                                           std::string& out_key) const {
+                                                          uint64_t log_offset,
+                                                          std::string& out_key) const {
         row_ids_t rows(resource_);
         value_t key(resource_, nullptr);
         if (!read_rows_at(log_file_id, log_offset, rows, &key)) {
@@ -499,10 +497,9 @@ namespace services::index {
     }
 
     void bitcask_index_disk_t::erase_all_refs_for_key(std::string_view key_bytes) {
-        while (hash_index_->erase(key_bytes,
-                                  [this](uint32_t log_file_id, uint64_t log_offset, std::string& out_key) {
-                                      return load_full_key_for_hash_ref(log_file_id, log_offset, out_key);
-                                  })) {
+        while (hash_index_->erase(key_bytes, [this](uint32_t log_file_id, uint64_t log_offset, std::string& out_key) {
+            return load_full_key_for_hash_ref(log_file_id, log_offset, out_key);
+        })) {
         }
     }
 
@@ -517,9 +514,9 @@ namespace services::index {
                          rows.empty() ? -1 : static_cast<int64_t>(rows.back()),
                          static_cast<uint32_t>(active_segment_id_),
                          offset + sizeof(record_header_t),
-            [this](uint32_t log_file_id, uint64_t log_offset, std::string& out_key) {
-                return load_full_key_for_hash_ref(log_file_id, log_offset, out_key);
-            });
+                         [this](uint32_t log_file_id, uint64_t log_offset, std::string& out_key) {
+                             return load_full_key_for_hash_ref(log_file_id, log_offset, out_key);
+                         });
         ++active_segment_records_;
     }
 
@@ -570,9 +567,10 @@ namespace services::index {
         return core::error_t::no_error();
     }
 
-    core::error_t bitcask_index_disk_t::append_txn_record_unlocked(uint64_t txn_id,
-                                                                   uint8_t op_kind,
-                                                                   const std::vector<std::pair<value_t, size_t>>& values) {
+    core::error_t
+    bitcask_index_disk_t::append_txn_record_unlocked(uint64_t txn_id,
+                                                     uint8_t op_kind,
+                                                     const std::vector<std::pair<value_t, size_t>>& values) {
         std::pmr::string payload(resource_);
         components::index::codec::append_le<uint32_t>(payload, static_cast<uint32_t>(values.size()));
         for (const auto& [key, row_id] : values) {
@@ -586,9 +584,9 @@ namespace services::index {
         header.op_kind = op_kind;
         header.payload_size = static_cast<uint64_t>(payload.size());
 
-        absl::crc32c_t crc = absl::ComputeCrc32c(
-            absl::string_view(reinterpret_cast<const char*>(&header.txn_id),
-                              sizeof(header) - sizeof(header.magic) - sizeof(header.crc)));
+        absl::crc32c_t crc =
+            absl::ComputeCrc32c(absl::string_view(reinterpret_cast<const char*>(&header.txn_id),
+                                                  sizeof(header) - sizeof(header.magic) - sizeof(header.crc)));
         if (!payload.empty()) {
             crc = absl::ExtendCrc32c(crc, absl::string_view(payload.data(), payload.size()));
         }
@@ -657,9 +655,9 @@ namespace services::index {
                 }
             }
 
-            absl::crc32c_t calc = absl::ComputeCrc32c(
-                absl::string_view(reinterpret_cast<const char*>(&header.txn_id),
-                                  sizeof(header) - sizeof(header.magic) - sizeof(header.crc)));
+            absl::crc32c_t calc =
+                absl::ComputeCrc32c(absl::string_view(reinterpret_cast<const char*>(&header.txn_id),
+                                                      sizeof(header) - sizeof(header.magic) - sizeof(header.crc)));
             if (!payload.empty()) {
                 calc = absl::ExtendCrc32c(calc, absl::string_view(payload.data(), payload.size()));
             }
@@ -684,8 +682,7 @@ namespace services::index {
                 const auto count = components::index::codec::read_le<uint32_t>(payload, pos);
                 for (uint32_t i = 0; i < count; ++i) {
                     auto key = components::index::codec::read_logical_value(resource_, payload, pos);
-                    const auto row_id =
-                        static_cast<size_t>(components::index::codec::read_le<uint64_t>(payload, pos));
+                    const auto row_id = static_cast<size_t>(components::index::codec::read_le<uint64_t>(payload, pos));
                     if (header.op_kind == 1) {
                         insert(key, row_id);
                     } else {
@@ -948,9 +945,7 @@ namespace services::index {
         };
 
         std::vector<disk_hash_table_t::value_ref_t> refs;
-        hash_index_->for_each([&](const disk_hash_table_t::value_ref_t& ref) {
-            refs.push_back(ref);
-        });
+        hash_index_->for_each([&](const disk_hash_table_t::value_ref_t& ref) { refs.push_back(ref); });
         std::vector<merged_ref_t> merged_refs;
         merged_refs.reserve(refs.size());
         for (const auto& ref : refs) {
@@ -965,9 +960,9 @@ namespace services::index {
             auto payload = serialize_payload(resource_, key, rows);
             const auto offset = merged_file->seek_position();
             write_record(*merged_file, static_cast<uint8_t>(record_kind_t::value), ++next_timestamp_, payload);
-            merged_refs.push_back(
-                merged_ref_t{key_bytes_for_hash(key), rows.empty() ? -1 : static_cast<int64_t>(rows.back()),
-                             offset + sizeof(record_header_t)});
+            merged_refs.push_back(merged_ref_t{key_bytes_for_hash(key),
+                                               rows.empty() ? -1 : static_cast<int64_t>(rows.back()),
+                                               offset + sizeof(record_header_t)});
         }
 
         merged_file->sync();

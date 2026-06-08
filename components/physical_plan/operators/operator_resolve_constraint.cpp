@@ -183,9 +183,9 @@ namespace components::operators {
                                     auto row_attoid = static_cast<catalog::oid_t>(
                                         attr_chunk.value(catalog::pg_attribute_col::attoid, ai).value<std::uint32_t>());
                                     if (row_attoid == wanted_oid) {
-                                        names.emplace_back(std::string(
-                                            attr_chunk.value(catalog::pg_attribute_col::attname, ai)
-                                                .value<std::string_view>()));
+                                        names.emplace_back(
+                                            std::string(attr_chunk.value(catalog::pg_attribute_col::attname, ai)
+                                                            .value<std::string_view>()));
                                         found = true;
                                         break;
                                     }
@@ -220,8 +220,8 @@ namespace components::operators {
                                     continue;
                                 row_meta_t r;
                                 if (!attr_chunk.value(catalog::pg_attribute_col::attname, ai).is_null()) {
-                                    r.attname.assign(
-                                        attr_chunk.value(catalog::pg_attribute_col::attname, ai).value<std::string_view>());
+                                    r.attname.assign(attr_chunk.value(catalog::pg_attribute_col::attname, ai)
+                                                         .value<std::string_view>());
                                 }
                                 r.attnum = attr_chunk.value(kAttnum, ai).is_null()
                                                ? 0
@@ -264,9 +264,9 @@ namespace components::operators {
                                     auto row_attoid = static_cast<catalog::oid_t>(
                                         attr_chunk.value(catalog::pg_attribute_col::attoid, ai).value<std::uint32_t>());
                                     if (row_attoid == wanted_oid) {
-                                        names.emplace_back(std::string(
-                                            attr_chunk.value(catalog::pg_attribute_col::attname, ai)
-                                                .value<std::string_view>()));
+                                        names.emplace_back(
+                                            std::string(attr_chunk.value(catalog::pg_attribute_col::attname, ai)
+                                                            .value<std::string_view>()));
                                         found = true;
                                         break;
                                     }
@@ -315,8 +315,9 @@ namespace components::operators {
                             auto ns_batches = co_await std::move(fut_ns);
                             if (!ns_batches.empty() && ns_batches[0].size() != 0 &&
                                 ns_batches[0].column_count() > catalog::pg_namespace_col::nspname) {
-                                fk.child_schema = std::string(
-                                    ns_batches[0].value(catalog::pg_namespace_col::nspname, 0).value<std::string_view>());
+                                fk.child_schema = std::string(ns_batches[0]
+                                                                  .value(catalog::pg_namespace_col::nspname, 0)
+                                                                  .value<std::string_view>());
                             }
                         }
                     }

@@ -56,14 +56,12 @@ namespace services::index {
         // operations into a single send-all-then-await-all fan-out; the first
         // contains_error() across the batch wins (remaining awaits still drain so
         // no future is dropped, but the first error is what is returned).
-        unique_future<core::error_t>
-        commit_inserts(execution_context_t ctx,
-                       std::pmr::vector<components::catalog::oid_t> table_oids,
-                       uint64_t commit_id);
-        unique_future<core::error_t>
-        commit_deletes(execution_context_t ctx,
-                       std::pmr::vector<components::catalog::oid_t> table_oids,
-                       uint64_t commit_id);
+        unique_future<core::error_t> commit_inserts(execution_context_t ctx,
+                                                    std::pmr::vector<components::catalog::oid_t> table_oids,
+                                                    uint64_t commit_id);
+        unique_future<core::error_t> commit_deletes(execution_context_t ctx,
+                                                    std::pmr::vector<components::catalog::oid_t> table_oids,
+                                                    uint64_t commit_id);
         unique_future<void> revert_insert(execution_context_t ctx, components::catalog::oid_t table_oid);
         unique_future<void> revert_delete(execution_context_t ctx, components::catalog::oid_t table_oid);
         unique_future<void> cleanup_all_versions(session_id_t session, uint64_t lowest_active);
@@ -144,9 +142,8 @@ namespace services::index {
         // (oid, dropped_at_commit_id) pair into dropped_table_agents_ for the
         // next on_horizon_advanced GC sweep. Pairs with
         // manager_dispatcher_t::on_drop_resource_marked(INDEX_KIND).
-        unique_future<void> mark_table_dropped(session_id_t session,
-                                               components::catalog::oid_t table_oid,
-                                               uint64_t dropped_at_commit_id);
+        unique_future<void>
+        mark_table_dropped(session_id_t session, components::catalog::oid_t table_oid, uint64_t dropped_at_commit_id);
 
         // DROP-GC value-space remap. mark_table_dropped recorded dropped_at_commit_id
         // in TXN-ID space (>= 2^62) because the cascade-delete operator only knew the

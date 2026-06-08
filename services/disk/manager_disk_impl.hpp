@@ -159,7 +159,9 @@ namespace services::disk {
                          std::pmr::memory_resource* resource,
                          Fn&& fn) {
             detail_impl_::inline_scan_range(const_cast<components::table::data_table_t&>(table),
-                                            col_indices, resource, std::forward<Fn>(fn));
+                                            col_indices,
+                                            resource,
+                                            std::forward<Fn>(fn));
         }
 
         template<typename Fn>
@@ -168,7 +170,9 @@ namespace services::disk {
                          std::pmr::memory_resource* resource,
                          Fn&& fn) {
             detail_impl_::inline_scan_range(const_cast<components::table::data_table_t&>(table),
-                                            col_indices, resource, std::forward<Fn>(fn));
+                                            col_indices,
+                                            resource,
+                                            std::forward<Fn>(fn));
         }
 
         // ---------------------------------------------------------------------------

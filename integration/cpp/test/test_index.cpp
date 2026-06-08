@@ -135,7 +135,7 @@ constexpr int kDocuments = 100;
 // SQL-driven assertion helper: run QUERY in a fresh per-statement session and
 // require it succeeds and returns COUNT rows. Used by the disk-index coherence
 // cases below that need CHECKPOINT / VACUUM statements (SQL-only verbs).
-#define CHECK_FIND_SQL(QUERY, COUNT)                                                                                    \
+#define CHECK_FIND_SQL(QUERY, COUNT)                                                                                   \
     do {                                                                                                               \
         auto session = otterbrix::session_id_t();                                                                      \
         auto cur = dispatcher->execute_sql(session, QUERY);                                                            \
@@ -446,8 +446,7 @@ TEST_CASE("integration::cpp::test_index::checkpoint_then_index_scan_same_session
     }
     {
         auto session = otterbrix::session_id_t();
-        auto cur =
-            dispatcher->execute_sql(session, "CREATE INDEX idx_count ON TestDatabase.TestCollection (count);");
+        auto cur = dispatcher->execute_sql(session, "CREATE INDEX idx_count ON TestDatabase.TestCollection (count);");
         REQUIRE(cur->is_success());
     }
 
@@ -515,8 +514,7 @@ TEST_CASE("integration::cpp::test_index::vacuum_rebuild_visible") {
     }
     {
         auto session = otterbrix::session_id_t();
-        auto cur =
-            dispatcher->execute_sql(session, "CREATE INDEX idx_count ON TestDatabase.TestCollection (count);");
+        auto cur = dispatcher->execute_sql(session, "CREATE INDEX idx_count ON TestDatabase.TestCollection (count);");
         REQUIRE(cur->is_success());
     }
 

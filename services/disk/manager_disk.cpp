@@ -528,8 +528,8 @@ namespace services::disk {
         agent_futures.reserve(agents_.size());
         for (auto& agent_ptr : agents_) {
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent_ptr->address(),
-                                                                   &agent_disk_t::on_horizon_advanced_inner,
-                                                                   new_horizon);
+                                                                  &agent_disk_t::on_horizon_advanced_inner,
+                                                                  new_horizon);
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent_ptr.get());
             }
@@ -568,16 +568,15 @@ namespace services::disk {
                 agent_sidecars.push_back(sidecar);
             }
             agents_[idx]->register_dropped_storage_inner_sync(oid,
-                                                               dropped_at_commit_id,
-                                                               std::move(path),
-                                                               std::move(agent_sidecars));
+                                                              dropped_at_commit_id,
+                                                              std::move(path),
+                                                              std::move(agent_sidecars));
         }
     }
 
-    manager_disk_t::unique_future<void>
-    manager_disk_t::mark_storage_dropped(session_id_t /*session*/,
-                                         components::catalog::oid_t table_oid,
-                                         uint64_t dropped_at_commit_id) {
+    manager_disk_t::unique_future<void> manager_disk_t::mark_storage_dropped(session_id_t /*session*/,
+                                                                             components::catalog::oid_t table_oid,
+                                                                             uint64_t dropped_at_commit_id) {
         // Must run BEFORE the drop_storage send: it reads the still-live storage
         // entry to derive the .otbx path + sidecars. The borrowed storage_entry_sync
         // pointer is valid for this handler only (the agent mailbox serializes
@@ -592,8 +591,7 @@ namespace services::disk {
         if (!agents_.empty()) {
             const auto idx = pool_idx_for_oid(table_oid, agents_.size());
             if (agents_[idx] != nullptr) {
-                if (const auto* entry = agents_[idx]->storage_entry_sync(table_oid);
-                    entry != nullptr) {
+                if (const auto* entry = agents_[idx]->storage_entry_sync(table_oid); entry != nullptr) {
                     otbx_path = entry->otbx_path;
                     if (!otbx_path.empty()) {
                         auto wal_id_sidecar = otbx_path;
@@ -620,11 +618,11 @@ namespace services::disk {
                 agent_sidecars.push_back(sidecar);
             }
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agents_[idx]->address(),
-                                                                   &agent_disk_t::register_dropped_storage_inner,
-                                                                   table_oid,
-                                                                   dropped_at_commit_id,
-                                                                   std::move(otbx_path),
-                                                                   std::move(agent_sidecars));
+                                                                  &agent_disk_t::register_dropped_storage_inner,
+                                                                  table_oid,
+                                                                  dropped_at_commit_id,
+                                                                  std::move(otbx_path),
+                                                                  std::move(agent_sidecars));
             if (needs_sched) {
                 scheduler_disk_->enqueue(agents_[idx].get());
             }
@@ -640,10 +638,7 @@ namespace services::disk {
         // the txn_id placeholder), so fan out to EVERY agent and let each rewrite
         // any of its own dropped_storages_ entries whose dropped_at_commit_id still
         // equals the TXN-ID placeholder. Mirrors on_horizon_advanced's broadcast.
-        trace(log_,
-              "manager_disk::storage_dropped_committed , txn_id : {} , commit_id : {}",
-              txn_id,
-              commit_id);
+        trace(log_, "manager_disk::storage_dropped_committed , txn_id : {} , commit_id : {}", txn_id, commit_id);
 
         std::pmr::vector<unique_future<void>> agent_futures{resource()};
         agent_futures.reserve(agents_.size());
@@ -663,8 +658,8 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_t::unique_future<void>
-    manager_disk_t::storage_drop_aborted(session_id_t /*session*/, uint64_t txn_id) {
+    manager_disk_t::unique_future<void> manager_disk_t::storage_drop_aborted(session_id_t /*session*/,
+                                                                             uint64_t txn_id) {
         // DROP-rollback un-mark — the abort mirror of storage_dropped_committed. The GC
         // entry is keyed by oid but the caller only has the txn_id placeholder, so fan
         // out to EVERY agent and let each ERASE any of its own dropped_storages_ entries
@@ -676,9 +671,8 @@ namespace services::disk {
         std::pmr::vector<unique_future<void>> agent_futures{resource()};
         agent_futures.reserve(agents_.size());
         for (auto& agent_ptr : agents_) {
-            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent_ptr->address(),
-                                                                  &agent_disk_t::storage_drop_aborted_inner,
-                                                                  txn_id);
+            auto [needs_sched, fut] =
+                actor_zeta::otterbrix::send(agent_ptr->address(), &agent_disk_t::storage_drop_aborted_inner, txn_id);
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent_ptr.get());
             }

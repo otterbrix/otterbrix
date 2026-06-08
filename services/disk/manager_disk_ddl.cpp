@@ -123,8 +123,7 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_t::unique_future<void>
-    manager_disk_t::update_pg_attribute_commit_id_fields(
+    manager_disk_t::unique_future<void> manager_disk_t::update_pg_attribute_commit_id_fields(
         execution_context_t ctx,
         std::pmr::vector<components::pg_attribute_commit_id_backfill_t> backfills,
         std::uint64_t commit_id) {
@@ -142,11 +141,11 @@ namespace services::disk {
     // unconditionally in components/table/data_table.cpp), so a "patch one column"
     // chunk would NULL out the other ten. We read the full row, mutate the target
     // field in the read-back chunk, and write the whole chunk back.
-    manager_disk_t::unique_future<void> manager_disk_t::update_pg_attribute_commit_id_field_one_(
-        execution_context_t ctx,
-        components::catalog::oid_t attoid,
-        components::pg_attribute_commit_id_backfill_t::kind_t kind,
-        std::uint64_t commit_id) {
+    manager_disk_t::unique_future<void>
+    manager_disk_t::update_pg_attribute_commit_id_field_one_(execution_context_t ctx,
+                                                             components::catalog::oid_t attoid,
+                                                             components::pg_attribute_commit_id_backfill_t::kind_t kind,
+                                                             std::uint64_t commit_id) {
         constexpr auto pg_attr_oid = components::catalog::well_known_oid::pg_attribute_table;
         // pg_attribute routes to agents_[0]. Null storage_entry_sync is a terminal
         // "no entry"; the mutation half (direct_update_sync) routes to the agent.
@@ -176,21 +175,18 @@ namespace services::disk {
         std::pmr::vector<components::types::logical_value_t> row_values(resource());
         row_values.reserve(col_count);
 
-        inline_scan(tbl,
-                    all_col_indices,
-                    &scan_resource,
-                    [&](components::vector::data_chunk_t& chunk, uint64_t i) {
-                        auto v0 = chunk.value(0, i);
-                        if (v0.is_null())
-                            return true;
-                        if (static_cast<components::catalog::oid_t>(v0.value<std::uint32_t>()) != attoid)
-                            return true;
-                        row_ids.push_back(chunk.row_ids.data<std::int64_t>()[i]);
-                        for (std::size_t c = 0; c < col_count; ++c) {
-                            row_values.push_back(chunk.value(static_cast<uint64_t>(c), i));
-                        }
-                        return false; // single-row identity — short-circuit
-                    });
+        inline_scan(tbl, all_col_indices, &scan_resource, [&](components::vector::data_chunk_t& chunk, uint64_t i) {
+            auto v0 = chunk.value(0, i);
+            if (v0.is_null())
+                return true;
+            if (static_cast<components::catalog::oid_t>(v0.value<std::uint32_t>()) != attoid)
+                return true;
+            row_ids.push_back(chunk.row_ids.data<std::int64_t>()[i]);
+            for (std::size_t c = 0; c < col_count; ++c) {
+                row_values.push_back(chunk.value(static_cast<uint64_t>(c), i));
+            }
+            return false; // single-row identity — short-circuit
+        });
         if (row_ids.empty()) {
             trace(log_,
                   "update_pg_attribute_commit_id_field: attoid={} not found (skipping backfill)",
@@ -305,11 +301,10 @@ namespace services::disk {
         auto& agent = agents_[pool_idx];
         for (const auto& attname : to_drop) {
             std::pmr::string column_name{attname.data(), attname.size(), resource()};
-            auto [needs_sched, fut] =
-                actor_zeta::otterbrix::send(agent->address(),
-                                             &agent_disk_t::drop_column_inner,
-                                             table_oid,
-                                             std::move(column_name));
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                                  &agent_disk_t::drop_column_inner,
+                                                                  table_oid,
+                                                                  std::move(column_name));
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }

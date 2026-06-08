@@ -19,9 +19,6 @@
 #include <components/catalog/catalog_codes.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/expressions/scalar_expression.hpp>
-#include <components/sql/parser/parser.h>
-#include <components/sql/transformer/transformer.hpp>
-#include <components/sql/transformer/utils.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_alter_column_add.hpp>
 #include <components/logical_plan/node_alter_column_drop.hpp>
@@ -57,6 +54,9 @@
 #include <components/logical_plan/node_refresh_matview.hpp>
 #include <components/logical_plan/node_sort.hpp>
 #include <components/logical_plan/node_update.hpp>
+#include <components/sql/parser/parser.h>
+#include <components/sql/transformer/transformer.hpp>
+#include <components/sql/transformer/utils.hpp>
 #include <services/index/manager_index.hpp>
 
 #include <limits>
@@ -64,230 +64,226 @@
 #include <string>
 #include <unordered_map>
 
-namespace services::dispatcher {
+namespace services::dispatcher { namespace {
 
-    namespace {
+    // Helpers: probe enrich_resolve_idx_t (plan-tree resolves stamped by
+    // operator_resolve_*_t). All catalog reads in enrich flow through
+    // these.
+    const components::logical_plan::resolved_table_metadata_t*
+    lookup_table_md_local(const enrich_resolve_idx_t* idx, std::string_view db, std::string_view rel) {
+        if (!idx)
+            return nullptr;
+        std::string key;
+        key.reserve(db.size() + 1 + rel.size());
+        key.append(db).push_back('|');
+        key.append(rel);
+        auto it = idx->tbl_md_by_qname.find(key);
+        return it != idx->tbl_md_by_qname.end() ? it->second : nullptr;
+    }
 
-        // Helpers: probe enrich_resolve_idx_t (plan-tree resolves stamped by
-        // operator_resolve_*_t). All catalog reads in enrich flow through
-        // these.
-        const components::logical_plan::resolved_table_metadata_t*
-        lookup_table_md_local(const enrich_resolve_idx_t* idx, std::string_view db, std::string_view rel) {
-            if (!idx)
-                return nullptr;
-            std::string key;
-            key.reserve(db.size() + 1 + rel.size());
-            key.append(db).push_back('|');
-            key.append(rel);
-            auto it = idx->tbl_md_by_qname.find(key);
-            return it != idx->tbl_md_by_qname.end() ? it->second : nullptr;
-        }
+    const components::logical_plan::resolved_table_metadata_t*
+    lookup_table_md_by_oid_local(const enrich_resolve_idx_t* idx, components::catalog::oid_t oid) {
+        if (!idx)
+            return nullptr;
+        auto it = idx->tbl_md_by_oid.find(oid);
+        return it != idx->tbl_md_by_oid.end() ? it->second : nullptr;
+    }
 
-        const components::logical_plan::resolved_table_metadata_t*
-        lookup_table_md_by_oid_local(const enrich_resolve_idx_t* idx, components::catalog::oid_t oid) {
-            if (!idx)
-                return nullptr;
-            auto it = idx->tbl_md_by_oid.find(oid);
-            return it != idx->tbl_md_by_oid.end() ? it->second : nullptr;
-        }
-
-        void fill_not_null(const components::logical_plan::resolved_table_metadata_t& md,
-                           std::vector<std::string>& out,
-                           bool include_with_defaults) {
-            for (const auto& col : md.columns) {
-                if (col.attnotnull && (include_with_defaults || !col.atthasdefault)) {
-                    out.push_back(col.attname);
-                }
+    void fill_not_null(const components::logical_plan::resolved_table_metadata_t& md,
+                       std::vector<std::string>& out,
+                       bool include_with_defaults) {
+        for (const auto& col : md.columns) {
+            if (col.attnotnull && (include_with_defaults || !col.atthasdefault)) {
+                out.push_back(col.attname);
             }
         }
+    }
 
-        void enrich_insert_sync(components::logical_plan::node_insert_t* node,
-                                const enrich_resolve_idx_t* idx,
-                                core::date::timezone_offset_t session_tz) {
-            // Insert node carries only its table_oid (stamped by
-            // stamp_drop_oids_from_resolves from the sibling resolve_table);
-            // look up table metadata by OID rather than (db, rel) strings.
-            if (node->table_oid() == components::catalog::INVALID_OID)
-                return;
-            const auto* md = lookup_table_md_by_oid_local(idx, node->table_oid());
-            if (!md)
-                return;
-            std::vector<std::string> nn;
-            fill_not_null(*md, nn, /*include_with_defaults=*/false);
-            node->set_not_null_cols(std::move(nn));
+    void enrich_insert_sync(components::logical_plan::node_insert_t* node,
+                            const enrich_resolve_idx_t* idx,
+                            core::date::timezone_offset_t session_tz) {
+        // Insert node carries only its table_oid (stamped by
+        // stamp_drop_oids_from_resolves from the sibling resolve_table);
+        // look up table metadata by OID rather than (db, rel) strings.
+        if (node->table_oid() == components::catalog::INVALID_OID)
+            return;
+        const auto* md = lookup_table_md_by_oid_local(idx, node->table_oid());
+        if (!md)
+            return;
+        std::vector<std::string> nn;
+        fill_not_null(*md, nn, /*include_with_defaults=*/false);
+        node->set_not_null_cols(std::move(nn));
 
-            // Coerce literal chunk types to table column types.
-            // The SQL transformer builds the INSERT chunk from VALUES literals,
-            // so integer literals become BIGINT, float literals become FLOAT/DOUBLE,
-            // and ROW(...) STRUCTs carry those literal types in their children.
-            // Storage allocates per-vector buffers from the chunk's type, so a
-            // BIGINT vector writes 8 bytes per row. On read, pg_attribute says
-            // the column is INTEGER (4 bytes) — and the int32 stride misaligns
-            // with the 8-byte payload. Rebuild each column vector with the
-            // table's declared type; cast_as on logical_value_t handles the
-            // recursive STRUCT/ARRAY descent.
-            // Skip for computing tables (relkind='g'): they adopt the literal's
-            // own type and may keep several same-name columns of different types
-            // (multi-type fields). Coercing every value to one resolved type would
-            // collapse those variants (e.g. a string 'val' cast to an existing
-            // BIGINT 'val'). Storage adopts the literal type directly, so the
-            // INTEGER/BIGINT width concern below does not apply there.
-            if (md->relkind != components::catalog::relkind::computed && !node->children().empty() &&
-                node->children().front() &&
-                node->children().front()->type() == components::logical_plan::node_type::data_t) {
-                auto* dat = static_cast<components::logical_plan::node_data_t*>(node->children().front().get());
-                auto& chunk = dat->data_chunk();
-                const auto& kt = node->key_translation();
-                for (std::size_t ci = 0; ci < chunk.column_count(); ++ci) {
-                    auto& col = chunk.data[ci];
-                    // Locate this chunk column's matching table column by name
-                    // (key_translation[i] when present, else position).
-                    std::string col_name;
-                    if (ci < kt.size()) {
-                        col_name = kt[ci].as_string();
+        // Coerce literal chunk types to table column types.
+        // The SQL transformer builds the INSERT chunk from VALUES literals,
+        // so integer literals become BIGINT, float literals become FLOAT/DOUBLE,
+        // and ROW(...) STRUCTs carry those literal types in their children.
+        // Storage allocates per-vector buffers from the chunk's type, so a
+        // BIGINT vector writes 8 bytes per row. On read, pg_attribute says
+        // the column is INTEGER (4 bytes) — and the int32 stride misaligns
+        // with the 8-byte payload. Rebuild each column vector with the
+        // table's declared type; cast_as on logical_value_t handles the
+        // recursive STRUCT/ARRAY descent.
+        // Skip for computing tables (relkind='g'): they adopt the literal's
+        // own type and may keep several same-name columns of different types
+        // (multi-type fields). Coercing every value to one resolved type would
+        // collapse those variants (e.g. a string 'val' cast to an existing
+        // BIGINT 'val'). Storage adopts the literal type directly, so the
+        // INTEGER/BIGINT width concern below does not apply there.
+        if (md->relkind != components::catalog::relkind::computed && !node->children().empty() &&
+            node->children().front() &&
+            node->children().front()->type() == components::logical_plan::node_type::data_t) {
+            auto* dat = static_cast<components::logical_plan::node_data_t*>(node->children().front().get());
+            auto& chunk = dat->data_chunk();
+            const auto& kt = node->key_translation();
+            for (std::size_t ci = 0; ci < chunk.column_count(); ++ci) {
+                auto& col = chunk.data[ci];
+                // Locate this chunk column's matching table column by name
+                // (key_translation[i] when present, else position).
+                std::string col_name;
+                if (ci < kt.size()) {
+                    col_name = kt[ci].as_string();
+                } else {
+                    col_name = std::string(col.type().alias());
+                }
+                const components::types::complex_logical_type* target_type = nullptr;
+                for (const auto& tc : md->columns) {
+                    if (tc.attname == col_name) {
+                        target_type = &tc.type;
+                        break;
+                    }
+                }
+                if (!target_type)
+                    continue;
+                // complex_logical_type::operator== only compares the top-
+                // level logical_type enum, so STRUCT-vs-STRUCT compares
+                // equal regardless of children. For composite types (where
+                // SQL literal children may carry the wrong width — BIGINT
+                // for int4, DOUBLE for float4, …), force a full rebuild so
+                // cast_as recurses into children. Scalars get the cheap
+                // identity check.
+                using LT = components::types::logical_type;
+                const bool is_composite = col.type().type() == LT::STRUCT || col.type().type() == LT::LIST ||
+                                          col.type().type() == LT::ARRAY || col.type().type() == LT::MAP;
+                if (!is_composite && col.type() == *target_type)
+                    continue;
+                // Build a fresh vector with the table's declared type and
+                // copy every row via cast_as. complex_logical_type::cast_as
+                // recurses STRUCT children, so nested ROW(int_literal,...)
+                // → STRUCT(INTEGER,...) is fully retyped.
+                components::vector::vector_t replacement(col.resource(), *target_type, chunk.capacity());
+                const auto rows = chunk.size();
+                for (std::uint64_t row = 0; row < rows; ++row) {
+                    auto v = col.value(row);
+                    if (!v.is_null() && v.type() != *target_type) {
+                        v = v.cast_as(*target_type, session_tz);
+                    }
+                    replacement.set_value(row, v);
+                }
+                // Preserve the original column alias (used by storage_append
+                // for name-based key matching).
+                if (col.type().has_alias()) {
+                    replacement.type().set_alias(col.type().alias());
+                }
+                col = std::move(replacement);
+            }
+        }
+    }
+
+    void enrich_update_sync(components::logical_plan::node_update_t* node, const enrich_resolve_idx_t* idx) {
+        // Lookup by table_oid stamped from the sibling resolve_table.
+        if (node->table_oid() == components::catalog::INVALID_OID)
+            return;
+        const auto* md = lookup_table_md_by_oid_local(idx, node->table_oid());
+        if (!md)
+            return;
+        std::vector<std::string> nn;
+        fill_not_null(*md, nn, /*include_with_defaults=*/true);
+        node->set_not_null_cols(std::move(nn));
+    }
+
+    void enrich_create_collection_sync(components::logical_plan::node_create_collection_t* node,
+                                       const enrich_resolve_idx_t* /*idx*/) {
+        // namespace_oid stamped by stamp_drop_oids_from_resolves from the
+        // sibling catalog_resolve_namespace_t; no per-node work here.
+        (void) node;
+    }
+
+    // Walk the plan tree, harvest namespace_oid / table_oid stamped
+    // by operator_resolve_*_t into a flat hashmap. Empty when
+    // the plan has no resolve wrap (DDL paths, disk-less harnesses).
+    // The caller (enrich_plan top-level) builds this once and threads
+    // the const-ptr through recursive calls.
+    void gather_enrich_resolve_idx(components::logical_plan::node_t* root, enrich_resolve_idx_t& out) {
+        using namespace components::logical_plan;
+        if (!root)
+            return;
+        std::queue<node_t*> q;
+        q.push(root);
+        while (!q.empty()) {
+            auto* n = q.front();
+            q.pop();
+            switch (n->type()) {
+                case node_type::catalog_resolve_table_t: {
+                    auto* rt = static_cast<node_catalog_resolve_table_t*>(n);
+                    if (rt->table_oid() != components::catalog::INVALID_OID) {
+                        std::string key;
+                        key.reserve(rt->dbname().size() + 1 + rt->relname().size());
+                        key.append(rt->dbname()).push_back('|');
+                        key.append(rt->relname());
+                        out.tbl_oid_by_qname[key] = rt->table_oid();
+                        // Stamp the full metadata pointer too when
+                        // operator_resolve_table_t populated it.
+                        if (rt->resolved_metadata().has_value()) {
+                            const auto* md_ptr = &rt->resolved_metadata().value();
+                            out.tbl_md_by_qname[std::move(key)] = md_ptr;
+                            out.tbl_md_by_oid[rt->table_oid()] = md_ptr;
+                        }
+                    }
+                    break;
+                }
+                case node_type::catalog_resolve_constraint_t: {
+                    auto* cr = static_cast<node_catalog_resolve_constraint_t*>(n);
+                    if (!cr->target())
+                        break;
+                    const auto& md = cr->target()->resolved_metadata();
+                    if (!md.has_value() || md->table_oid == components::catalog::INVALID_OID) {
+                        break;
+                    }
+                    using direction_t = node_catalog_resolve_constraint_t::direction_t;
+                    if (cr->direction() == direction_t::outgoing) {
+                        out.outgoing_fks_by_oid[md->table_oid] = cr->fks();
+                        out.check_exprs_by_oid[md->table_oid] = cr->check_exprs();
                     } else {
-                        col_name = std::string(col.type().alias());
+                        out.referencing_fks_by_oid[md->table_oid] = cr->fks();
                     }
-                    const components::types::complex_logical_type* target_type = nullptr;
-                    for (const auto& tc : md->columns) {
-                        if (tc.attname == col_name) {
-                            target_type = &tc.type;
-                            break;
-                        }
-                    }
-                    if (!target_type)
-                        continue;
-                    // complex_logical_type::operator== only compares the top-
-                    // level logical_type enum, so STRUCT-vs-STRUCT compares
-                    // equal regardless of children. For composite types (where
-                    // SQL literal children may carry the wrong width — BIGINT
-                    // for int4, DOUBLE for float4, …), force a full rebuild so
-                    // cast_as recurses into children. Scalars get the cheap
-                    // identity check.
-                    using LT = components::types::logical_type;
-                    const bool is_composite = col.type().type() == LT::STRUCT || col.type().type() == LT::LIST ||
-                                              col.type().type() == LT::ARRAY || col.type().type() == LT::MAP;
-                    if (!is_composite && col.type() == *target_type)
-                        continue;
-                    // Build a fresh vector with the table's declared type and
-                    // copy every row via cast_as. complex_logical_type::cast_as
-                    // recurses STRUCT children, so nested ROW(int_literal,...)
-                    // → STRUCT(INTEGER,...) is fully retyped.
-                    components::vector::vector_t replacement(col.resource(), *target_type, chunk.capacity());
-                    const auto rows = chunk.size();
-                    for (std::uint64_t row = 0; row < rows; ++row) {
-                        auto v = col.value(row);
-                        if (!v.is_null() && v.type() != *target_type) {
-                            v = v.cast_as(*target_type, session_tz);
-                        }
-                        replacement.set_value(row, v);
-                    }
-                    // Preserve the original column alias (used by storage_append
-                    // for name-based key matching).
-                    if (col.type().has_alias()) {
-                        replacement.type().set_alias(col.type().alias());
-                    }
-                    col = std::move(replacement);
+                    break;
                 }
+                default:
+                    break;
+            }
+            for (const auto& c : n->children()) {
+                if (c)
+                    q.push(c.get());
             }
         }
+    }
 
-        void enrich_update_sync(components::logical_plan::node_update_t* node, const enrich_resolve_idx_t* idx) {
-            // Lookup by table_oid stamped from the sibling resolve_table.
-            if (node->table_oid() == components::catalog::INVALID_OID)
-                return;
-            const auto* md = lookup_table_md_by_oid_local(idx, node->table_oid());
-            if (!md)
-                return;
-            std::vector<std::string> nn;
-            fill_not_null(*md, nn, /*include_with_defaults=*/true);
-            node->set_not_null_cols(std::move(nn));
-        }
+    // Name→OID lookup via plan-tree index. Returns INVALID_OID on miss;
+    // the caller decides whether a miss is fatal.
+    components::catalog::oid_t
+    lookup_table_oid(const enrich_resolve_idx_t* idx, std::string_view db, std::string_view rel) {
+        if (!idx)
+            return components::catalog::INVALID_OID;
+        std::string key;
+        key.reserve(db.size() + 1 + rel.size());
+        key.append(db).push_back('|');
+        key.append(rel);
+        auto it = idx->tbl_oid_by_qname.find(key);
+        return it != idx->tbl_oid_by_qname.end() ? it->second : components::catalog::INVALID_OID;
+    }
 
-        void enrich_create_collection_sync(components::logical_plan::node_create_collection_t* node,
-                                           const enrich_resolve_idx_t* /*idx*/) {
-            // namespace_oid stamped by stamp_drop_oids_from_resolves from the
-            // sibling catalog_resolve_namespace_t; no per-node work here.
-            (void) node;
-        }
-
-        // Walk the plan tree, harvest namespace_oid / table_oid stamped
-        // by operator_resolve_*_t into a flat hashmap. Empty when
-        // the plan has no resolve wrap (DDL paths, disk-less harnesses).
-        // The caller (enrich_plan top-level) builds this once and threads
-        // the const-ptr through recursive calls.
-        void gather_enrich_resolve_idx(components::logical_plan::node_t* root, enrich_resolve_idx_t& out) {
-            using namespace components::logical_plan;
-            if (!root)
-                return;
-            std::queue<node_t*> q;
-            q.push(root);
-            while (!q.empty()) {
-                auto* n = q.front();
-                q.pop();
-                switch (n->type()) {
-                    case node_type::catalog_resolve_table_t: {
-                        auto* rt = static_cast<node_catalog_resolve_table_t*>(n);
-                        if (rt->table_oid() != components::catalog::INVALID_OID) {
-                            std::string key;
-                            key.reserve(rt->dbname().size() + 1 + rt->relname().size());
-                            key.append(rt->dbname()).push_back('|');
-                            key.append(rt->relname());
-                            out.tbl_oid_by_qname[key] = rt->table_oid();
-                            // Stamp the full metadata pointer too when
-                            // operator_resolve_table_t populated it.
-                            if (rt->resolved_metadata().has_value()) {
-                                const auto* md_ptr = &rt->resolved_metadata().value();
-                                out.tbl_md_by_qname[std::move(key)] = md_ptr;
-                                out.tbl_md_by_oid[rt->table_oid()] = md_ptr;
-                            }
-                        }
-                        break;
-                    }
-                    case node_type::catalog_resolve_constraint_t: {
-                        auto* cr = static_cast<node_catalog_resolve_constraint_t*>(n);
-                        if (!cr->target())
-                            break;
-                        const auto& md = cr->target()->resolved_metadata();
-                        if (!md.has_value() || md->table_oid == components::catalog::INVALID_OID) {
-                            break;
-                        }
-                        using direction_t = node_catalog_resolve_constraint_t::direction_t;
-                        if (cr->direction() == direction_t::outgoing) {
-                            out.outgoing_fks_by_oid[md->table_oid] = cr->fks();
-                            out.check_exprs_by_oid[md->table_oid] = cr->check_exprs();
-                        } else {
-                            out.referencing_fks_by_oid[md->table_oid] = cr->fks();
-                        }
-                        break;
-                    }
-                    default:
-                        break;
-                }
-                for (const auto& c : n->children()) {
-                    if (c)
-                        q.push(c.get());
-                }
-            }
-        }
-
-        // Name→OID lookup via plan-tree index. Returns INVALID_OID on miss;
-        // the caller decides whether a miss is fatal.
-        components::catalog::oid_t
-        lookup_table_oid(const enrich_resolve_idx_t* idx, std::string_view db, std::string_view rel) {
-            if (!idx)
-                return components::catalog::INVALID_OID;
-            std::string key;
-            key.reserve(db.size() + 1 + rel.size());
-            key.append(db).push_back('|');
-            key.append(rel);
-            auto it = idx->tbl_oid_by_qname.find(key);
-            return it != idx->tbl_oid_by_qname.end() ? it->second : components::catalog::INVALID_OID;
-        }
-
-    } // anonymous namespace
-
-} // namespace services::dispatcher
+}} // namespace services::dispatcher::
 
 // Helpers shared between the dispatcher and executor pipelines.
 namespace services::catalog_resolve {
@@ -635,11 +631,10 @@ namespace services::catalog_resolve {
         try {
             auto* parsed = raw_parser(&parser_arena, view_sql.c_str());
             if (!parsed) {
-                out.error =
-                    components::cursor::make_cursor(resource,
-                                                    core::error_t(core::error_code_t::sql_parse_error,
-                                                                  std::pmr::string{"view body re-parse returned null",
-                                                                                   resource}));
+                out.error = components::cursor::make_cursor(
+                    resource,
+                    core::error_t(core::error_code_t::sql_parse_error,
+                                  std::pmr::string{"view body re-parse returned null", resource}));
                 return out;
             }
             parse_cell = linitial(parsed);
@@ -711,8 +706,7 @@ namespace services::catalog_resolve {
 
     // === Plan-routing helpers ===
 
-    const components::logical_plan::node_t*
-    effective_root_node(const components::logical_plan::node_t* n) {
+    const components::logical_plan::node_t* effective_root_node(const components::logical_plan::node_t* n) {
         if (!n)
             return nullptr;
         if (n->type() != components::logical_plan::node_type::sequence_t) {
@@ -745,8 +739,7 @@ namespace services::catalog_resolve {
         return n;
     }
 
-    components::logical_plan::node_t*
-    effective_root_node(components::logical_plan::node_t* n) {
+    components::logical_plan::node_t* effective_root_node(components::logical_plan::node_t* n) {
         return const_cast<components::logical_plan::node_t*>(
             effective_root_node(static_cast<const components::logical_plan::node_t*>(n)));
     }
@@ -833,21 +826,21 @@ namespace services::dispatcher {
                 // index sequence preserves that.
                 std::pmr::vector<actor_zeta::unique_future<std::pmr::vector<components::index::keys_base_storage_t>>>
                     keys_futures(resource);
-                std::pmr::vector<
-                    actor_zeta::unique_future<std::pmr::vector<components::index::index_description_t>>>
+                std::pmr::vector<actor_zeta::unique_future<std::pmr::vector<components::index::index_description_t>>>
                     desc_futures(resource);
                 for (auto tbl_oid : root->table_oid_dependencies()) {
                     if (tbl_oid == components::catalog::INVALID_OID) {
                         continue;
                     }
-                    auto [_ik, ikf] =
-                        actor_zeta::send(index_address, &index::manager_index_t::get_indexed_keys, ctx.session, tbl_oid);
+                    auto [_ik, ikf] = actor_zeta::send(index_address,
+                                                       &index::manager_index_t::get_indexed_keys,
+                                                       ctx.session,
+                                                       tbl_oid);
                     keys_futures.push_back(std::move(ikf));
-                    auto [_id, idf] =
-                        actor_zeta::send(index_address,
-                                         &index::manager_index_t::get_indexed_descriptions,
-                                         ctx.session,
-                                         tbl_oid);
+                    auto [_id, idf] = actor_zeta::send(index_address,
+                                                       &index::manager_index_t::get_indexed_descriptions,
+                                                       ctx.session,
+                                                       tbl_oid);
                     desc_futures.push_back(std::move(idf));
                 }
                 for (auto& ikf : keys_futures) {

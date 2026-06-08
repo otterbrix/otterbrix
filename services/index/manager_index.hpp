@@ -12,15 +12,15 @@
 #include <actor-zeta/detail/queue/enqueue_result.hpp>
 
 #include "index_agent_disk.hpp"
+#include <atomic>
+#include <boost/lockfree/queue.hpp>
+#include <chrono>
 #include <components/catalog/catalog_codes.hpp>
 #include <components/index/index_engine.hpp>
 #include <components/log/log.hpp>
 #include <components/logical_plan/node_create_index.hpp>
-#include <core/file/local_file_system.hpp>
-#include <boost/lockfree/queue.hpp>
-#include <atomic>
-#include <chrono>
 #include <condition_variable>
+#include <core/file/local_file_system.hpp>
 #include <list>
 #include <mutex>
 #include <thread>
@@ -46,14 +46,13 @@ namespace services::index {
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
 
-        manager_index_t(
-            std::pmr::memory_resource* resource,
-            actor_zeta::scheduler_raw scheduler,
-            log_t& log,
-            std::filesystem::path path_db = {},
-            uint64_t bitcask_flush_threshold = 1000,
-            uint64_t bitcask_segment_record_limit = 100,
-            uint64_t btree_flush_threshold = 1000);
+        manager_index_t(std::pmr::memory_resource* resource,
+                        actor_zeta::scheduler_raw scheduler,
+                        log_t& log,
+                        std::filesystem::path path_db = {},
+                        uint64_t bitcask_flush_threshold = 1000,
+                        uint64_t bitcask_segment_record_limit = 100,
+                        uint64_t btree_flush_threshold = 1000);
         ~manager_index_t();
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
@@ -85,9 +84,8 @@ namespace services::index {
 
         // Runtime DROP TABLE mailbox handler; thin coroutine wrapper around
         // mark_table_dropped_sync (see index_contract).
-        unique_future<void> mark_table_dropped(session_id_t session,
-                                               components::catalog::oid_t table_oid,
-                                               uint64_t dropped_at_commit_id);
+        unique_future<void>
+        mark_table_dropped(session_id_t session, components::catalog::oid_t table_oid, uint64_t dropped_at_commit_id);
 
         // DROP-GC value-space remap (see index_contract). mark_table_dropped[_sync]
         // recorded dropped_table_agents_[oid] in TXN-ID space (>= 2^62); after the
@@ -167,14 +165,12 @@ namespace services::index {
         // The batch form folds every oid's pending disk fan-out into a single
         // send-all-then-await-all pass (see the contract): the first
         // contains_error() across the batch is returned, but all awaits drain.
-        unique_future<core::error_t>
-        commit_inserts(execution_context_t ctx,
-                       std::pmr::vector<components::catalog::oid_t> table_oids,
-                       uint64_t commit_id);
-        unique_future<core::error_t>
-        commit_deletes(execution_context_t ctx,
-                       std::pmr::vector<components::catalog::oid_t> table_oids,
-                       uint64_t commit_id);
+        unique_future<core::error_t> commit_inserts(execution_context_t ctx,
+                                                    std::pmr::vector<components::catalog::oid_t> table_oids,
+                                                    uint64_t commit_id);
+        unique_future<core::error_t> commit_deletes(execution_context_t ctx,
+                                                    std::pmr::vector<components::catalog::oid_t> table_oids,
+                                                    uint64_t commit_id);
         unique_future<void> revert_insert(execution_context_t ctx, components::catalog::oid_t table_oid);
         // Engine-level pending-delete clear: discards this txn's mark_delete
         // entries from every index of the table's engine (the abort mirror of
@@ -308,8 +304,8 @@ namespace services::index {
 
         // Disk persistence actor addresses grouped by table oid; the commit_*
         // fan-out and on_horizon_advanced GC route through here.
-        std::pmr::unordered_map<components::catalog::oid_t,
-                                 std::pmr::vector<actor_zeta::address_t>> disk_agents_per_oid_;
+        std::pmr::unordered_map<components::catalog::oid_t, std::pmr::vector<actor_zeta::address_t>>
+            disk_agents_per_oid_;
 
         // Owning pointers to the disk agents, kept alive for the manager's
         // lifetime so the addresses in disk_agents_per_oid_ stay valid. Reaped

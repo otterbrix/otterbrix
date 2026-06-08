@@ -30,17 +30,11 @@ namespace disk_test_helpers {
         return td;
     }
 
-    inline components::execution_context_t auto_ctx() {
-        return {session_id_t{}, with_open_snapshot(0, 0), {}};
-    }
+    inline components::execution_context_t auto_ctx() { return {session_id_t{}, with_open_snapshot(0, 0), {}}; }
 
-    inline components::execution_context_t rebuild_ctx() {
-        return {session_id_t{}, with_open_snapshot(99, 0), {}};
-    }
+    inline components::execution_context_t rebuild_ctx() { return {session_id_t{}, with_open_snapshot(99, 0), {}}; }
 
-    inline components::execution_context_t txn_ctx() {
-        return {session_id_t{}, with_open_snapshot(88, 0), {}};
-    }
+    inline components::execution_context_t txn_ctx() { return {session_id_t{}, with_open_snapshot(88, 0), {}}; }
 
     // Append every write returned by a builder, collecting the resulting
     // pg_catalog_append_range_t values for a later batched storage_publish_commits call.
@@ -436,9 +430,10 @@ namespace disk_test_helpers {
                 const auto v = chunk.value(5, i).template value<std::int64_t>();
                 if (v > max_version) {
                     max_version = v;
-                    latest_atttypid = chunk.value(3, i).is_null()
-                                          ? catalog::INVALID_OID
-                                          : static_cast<catalog::oid_t>(chunk.value(3, i).template value<std::uint32_t>());
+                    latest_atttypid =
+                        chunk.value(3, i).is_null()
+                            ? catalog::INVALID_OID
+                            : static_cast<catalog::oid_t>(chunk.value(3, i).template value<std::uint32_t>());
                 }
             }
         }
@@ -509,10 +504,9 @@ namespace disk_test_helpers {
                     continue;
                 if (v > max_version) {
                     max_version = v;
-                    live_attoid =
-                        chunk.value(1, i).is_null()
-                            ? catalog::INVALID_OID
-                            : static_cast<catalog::oid_t>(chunk.value(1, i).template value<std::uint32_t>());
+                    live_attoid = chunk.value(1, i).is_null()
+                                      ? catalog::INVALID_OID
+                                      : static_cast<catalog::oid_t>(chunk.value(1, i).template value<std::uint32_t>());
                     live_atttypid =
                         chunk.value(3, i).is_null()
                             ? catalog::INVALID_OID

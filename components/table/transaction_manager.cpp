@@ -21,9 +21,7 @@ namespace components::table {
         // Capture + cache the MVCC snapshot under lock_ so later data() reads
         // need not re-lock the manager.
         auto horizon = published_horizon_.load(std::memory_order_relaxed);
-        std::pmr::vector<uint64_t> in_flight(in_flight_commits_.begin(),
-                                             in_flight_commits_.end(),
-                                             resource_);
+        std::pmr::vector<uint64_t> in_flight(in_flight_commits_.begin(), in_flight_commits_.end(), resource_);
         txn->set_snapshot(horizon, std::move(in_flight));
         auto& ref = *txn;
         active_[key] = std::move(txn);
@@ -57,17 +55,15 @@ namespace components::table {
         // out of allocation order; we keep the max ever published. Snapshots
         // taken after the CAS see the new horizon.
         auto current = published_horizon_.load(std::memory_order_relaxed);
-        while (commit_id > current &&
-               !published_horizon_.compare_exchange_weak(current,
-                                                         commit_id,
-                                                         std::memory_order_release,
-                                                         std::memory_order_relaxed)) {
+        while (commit_id > current && !published_horizon_.compare_exchange_weak(current,
+                                                                                commit_id,
+                                                                                std::memory_order_release,
+                                                                                std::memory_order_relaxed)) {
             // current updated by CAS on failure — retry
         }
     }
 
-    transaction_manager_t::snapshot_t
-    transaction_manager_t::take_snapshot(std::pmr::memory_resource* resource) const {
+    transaction_manager_t::snapshot_t transaction_manager_t::take_snapshot(std::pmr::memory_resource* resource) const {
         std::lock_guard guard(lock_);
         snapshot_t snap{resource};
         snap.snapshot_horizon = published_horizon_.load(std::memory_order_relaxed);

@@ -1784,8 +1784,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_massive_checkpoint_cyc
 // On restart bootstrap_indexes_sync must re-mint the engine and respawn the
 // disk agent from pg_index alone, so post-restart email lookups stay correct.
 TEST_CASE("integration::cpp::test_persistence::index_recovery_phase4_catalog_driven_bootstrap") {
-    auto config =
-        test_create_config("/tmp/otterbrix/integration/test_persistence/index_recovery_phase4_catalog_driven_bootstrap");
+    auto config = test_create_config(
+        "/tmp/otterbrix/integration/test_persistence/index_recovery_phase4_catalog_driven_bootstrap");
     test_clear_directory(config);
 
     INFO("phase 1: create users(id, email) + email index, insert 10 rows, dtor checkpoint") {
@@ -1805,8 +1805,7 @@ TEST_CASE("integration::cpp::test_persistence::index_recovery_phase4_catalog_dri
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "CREATE INDEX users_email_idx ON TestDatabase.users (email);");
+            auto cur = dispatcher->execute_sql(session, "CREATE INDEX users_email_idx ON TestDatabase.users (email);");
             REQUIRE(cur->is_success());
         }
 
@@ -1871,9 +1870,8 @@ TEST_CASE("integration::cpp::test_persistence::index_recovery_phase4_catalog_dri
         // writes, not just read-only replay.
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "INSERT INTO TestDatabase.users (id, email) VALUES (10, 'user_10@x');");
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.users (id, email) VALUES (10, 'user_10@x');");
             REQUIRE(cur->is_success());
         }
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.users;", 11);

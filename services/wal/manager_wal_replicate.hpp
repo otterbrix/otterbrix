@@ -140,9 +140,7 @@ namespace services::wal {
                    wal_bytes_since_checkpoint_.load(std::memory_order_relaxed) >=
                        config_.auto_checkpoint_threshold_bytes;
         }
-        void reset_auto_checkpoint_bytes() noexcept {
-            wal_bytes_since_checkpoint_.store(0, std::memory_order_relaxed);
-        }
+        void reset_auto_checkpoint_bytes() noexcept { wal_bytes_since_checkpoint_.store(0, std::memory_order_relaxed); }
 
         // Compute total WAL directory bytes by scanning segment files.
         std::uintmax_t total_wal_bytes() const noexcept;

@@ -160,9 +160,8 @@ struct test_wal_worker {
         return std::move(future);
     }
 
-    actor_zeta::unique_future<services::wal::id_t> send_commit(uint64_t txn_id,
-                                                               wal_sync_mode sync_mode = wal_sync_mode::NORMAL,
-                                                               uint64_t commit_id = 0) {
+    actor_zeta::unique_future<services::wal::id_t>
+    send_commit(uint64_t txn_id, wal_sync_mode sync_mode = wal_sync_mode::NORMAL, uint64_t commit_id = 0) {
         // commit_id is the MVCC version timestamp in the COMMIT record; tests
         // pass 0 unless they exercise snapshot-aware replay.
         auto [needs_sched, future] = actor_zeta::otterbrix::send(manager_->address(),

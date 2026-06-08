@@ -177,8 +177,7 @@ TEST_CASE("services::disk::ddl::computed_register_same_type_idempotent") {
     v1.emplace_back(name_lv);
     auto batches = fx.invoke(&manager_disk_t::read_chunks_by_key, fx.ctx(), pg_cc, std::move(k1), std::move(v1));
     std::uint64_t total = 0;
-    for (const auto& c : batches)
-        total += c.size();
+    for (const auto& c : batches) total += c.size();
     REQUIRE(total == 1);
     REQUIRE(batches[0].value(6, 0).value<std::int64_t>() == 1);
 
@@ -248,8 +247,7 @@ TEST_CASE("services::disk::ddl::computed_unregister_marks_dead") {
     v2.emplace_back(name_lv);
     auto batches = fx.invoke(&manager_disk_t::read_chunks_by_key, fx.ctx(), pg_cc, std::move(k2), std::move(v2));
     std::uint64_t total = 0;
-    for (const auto& c : batches)
-        total += c.size();
+    for (const auto& c : batches) total += c.size();
     REQUIRE(total == 2);
 
     bool found_live = false;
@@ -327,8 +325,7 @@ TEST_CASE("services::disk::ddl::computed_field_drop_then_readd") {
     v3.emplace_back(toid_lv);
     auto batches = fx.invoke(&manager_disk_t::read_chunks_by_key, fx.ctx(), pg_cc, std::move(k3), std::move(v3));
     std::uint64_t total_rows = 0;
-    for (const auto& c : batches)
-        total_rows += c.size();
+    for (const auto& c : batches) total_rows += c.size();
 
     // Branch on observed register-side behavior so the test stays useful even
     // if the operator's same-type policy is later relaxed (e.g. to revive
@@ -460,8 +457,7 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
         vv.emplace_back(toid_lv);
         auto batches = fx.invoke(&manager_disk_t::read_chunks_by_key, fx.ctx(), pg_cc, std::move(kk), std::move(vv));
         std::uint64_t total = 0;
-        for (const auto& c : batches)
-            total += c.size();
+        for (const auto& c : batches) total += c.size();
         REQUIRE(total == 4);
     }
 
@@ -506,8 +502,7 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
         vv.emplace_back(toid_lv);
         auto batches = fx.invoke(&manager_disk_t::read_chunks_by_key, fx.ctx(), pg_cc, std::move(kk), std::move(vv));
         std::uint64_t total = 0;
-        for (const auto& c : batches)
-            total += c.size();
+        for (const auto& c : batches) total += c.size();
         REQUIRE(total == 2);
         std::vector<std::string> names;
         for (const auto& chunk : batches) {

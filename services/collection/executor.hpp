@@ -159,9 +159,8 @@ namespace services::collection::executor {
         // allocation, the operator pipeline, and the DML/DDL commit (or
         // abort/accumulate) tail. All txn-state access rides txn_*_msg
         // messages to the dispatcher — the sole transaction_manager_t owner.
-        unique_future<execute_result_t>
-        execute_plan_full(components::session::session_id_t session,
-                          components::logical_plan::execution_plan_t plan);
+        unique_future<execute_result_t> execute_plan_full(components::session::session_id_t session,
+                                                          components::logical_plan::execution_plan_t plan);
 
         unique_future<std::unique_ptr<function_result_t>> register_udf(components::session::session_id_t session,
                                                                        components::compute::function_ptr function);
@@ -170,9 +169,8 @@ namespace services::collection::executor {
         // executor.cpp for the rationale).
         unique_future<void> poke_msg();
 
-        using dispatch_traits = actor_zeta::dispatch_traits<&executor_t::execute_plan_full,
-                                                            &executor_t::register_udf,
-                                                            &executor_t::poke_msg>;
+        using dispatch_traits = actor_zeta::
+            dispatch_traits<&executor_t::execute_plan_full, &executor_t::register_udf, &executor_t::poke_msg>;
 
         auto make_type() const noexcept -> const char*;
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);

@@ -28,10 +28,9 @@ namespace components::catalog::alter_column_validators {
 
     // Reject a DEFAULT whose declared type does not match the column type.
     // No-op if `default_value` is std::nullopt (no DEFAULT clause supplied).
-    core::error_t
-    validate_default_value_type(std::pmr::memory_resource* resource,
-                                const components::types::complex_logical_type& column_type,
-                                const std::optional<components::types::logical_value_t>& default_value);
+    core::error_t validate_default_value_type(std::pmr::memory_resource* resource,
+                                              const components::types::complex_logical_type& column_type,
+                                              const std::optional<components::types::logical_value_t>& default_value);
 
     // Reject a DEFAULT whose value cannot be evaluated at planning time.
     // TODO: accepts any present logical_value_t until the expression evaluator is wired in.

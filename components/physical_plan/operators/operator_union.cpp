@@ -2,10 +2,10 @@
 #include "join_utils.hpp"
 #include "operator_data.hpp"
 
-#include <core/operations_helper.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/indexing_vector.hpp>
 #include <components/vector/vector_operations.hpp>
+#include <core/operations_helper.hpp>
 
 namespace components::operators {
 

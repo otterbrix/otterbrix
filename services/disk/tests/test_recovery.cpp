@@ -281,14 +281,10 @@ TEST_CASE("services::disk::recovery::dynamic_schema_persists_across_restart") {
         rk.emplace_back("relid");
         std::pmr::vector<components::types::logical_value_t> rv{&fx_reopen.resource};
         rv.emplace_back(toid_lv);
-        auto batches = fx_reopen.invoke(&manager_disk_t::read_chunks_by_key,
-                                        fx_reopen.ctx(),
-                                        pg_cc,
-                                        std::move(rk),
-                                        std::move(rv));
+        auto batches =
+            fx_reopen.invoke(&manager_disk_t::read_chunks_by_key, fx_reopen.ctx(), pg_cc, std::move(rk), std::move(rv));
         std::uint64_t total = 0;
-        for (const auto& c : batches)
-            total += c.size();
+        for (const auto& c : batches) total += c.size();
         REQUIRE(total == 2);
         bool saw_a = false;
         bool saw_b = false;
@@ -297,8 +293,9 @@ TEST_CASE("services::disk::recovery::dynamic_schema_persists_across_restart") {
             for (std::uint64_t i = 0; i < chunk.size(); ++i) {
                 // pg_computed_column layout: [0]=relid, [1]=attoid, [2]=attname,
                 // [3]=atttypid, [4]=atttypspec, [5]=attversion, [6]=attrefcount.
-                const auto attname =
-                    chunk.value(2, i).is_null() ? std::string{} : std::string(chunk.value(2, i).value<std::string_view>());
+                const auto attname = chunk.value(2, i).is_null()
+                                         ? std::string{}
+                                         : std::string(chunk.value(2, i).value<std::string_view>());
                 const auto atttypid =
                     chunk.value(3, i).is_null()
                         ? components::catalog::INVALID_OID

@@ -64,8 +64,8 @@ namespace otterbrix {
         auto drop_collection(const session_id_t& session,
                              const database_name_t& database,
                              const collection_name_t& collection) -> components::cursor::cursor_t_ptr;
-        auto drop_database(const session_id_t& session,
-                           const database_name_t& database) -> components::cursor::cursor_t_ptr;
+        auto drop_database(const session_id_t& session, const database_name_t& database)
+            -> components::cursor::cursor_t_ptr;
         auto find(const session_id_t& session,
                   components::logical_plan::node_aggregate_ptr condition,
                   components::logical_plan::parameter_node_ptr params) -> components::cursor::cursor_t_ptr;

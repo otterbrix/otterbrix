@@ -43,7 +43,7 @@ TEST_CASE("catalog::oid::well_known_distinct_and_stable") {
 }
 
 // 3. Sequential allocate() yields strictly increasing unique OIDs starting at FIRST_USER_OID.
-//   
+//
 TEST_CASE("test_oid_generation_uniqueness") {
     oid_generator gen;
     std::unordered_set<oid_t> seen;

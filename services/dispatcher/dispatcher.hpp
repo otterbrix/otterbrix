@@ -70,10 +70,7 @@ namespace services::dispatcher {
             uint32_t stale_ticks{0};
         };
 
-        manager_dispatcher_t(
-            std::pmr::memory_resource*,
-            actor_zeta::scheduler_raw,
-            log_t& log);
+        manager_dispatcher_t(std::pmr::memory_resource*, actor_zeta::scheduler_raw, log_t& log);
         ~manager_dispatcher_t();
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
@@ -99,9 +96,8 @@ namespace services::dispatcher {
         void set_disk_has_dropped_sync(bool value) noexcept { disk_has_dropped_ = value; }
         void set_index_has_dropped_sync(bool value) noexcept { index_has_dropped_ = value; }
 
-        unique_future<components::cursor::cursor_t_ptr>
-        execute_plan(components::session::session_id_t session,
-                     components::logical_plan::execution_plan_t plan);
+        unique_future<components::cursor::cursor_t_ptr> execute_plan(components::session::session_id_t session,
+                                                                     components::logical_plan::execution_plan_t plan);
         unique_future<bool> register_udf(components::session::session_id_t session,
                                          components::compute::function_ptr function);
         unique_future<bool> unregister_udf(components::session::session_id_t session,
@@ -118,8 +114,7 @@ namespace services::dispatcher {
         // Unconditionally (and idempotently) begins the session's txn, so an
         // active txn exists before any operator runs — including the BEGIN
         // statement's own plan.
-        unique_future<txn_session_context_t>
-        txn_begin_session_msg(components::session::session_id_t session);
+        unique_future<txn_session_context_t> txn_begin_session_msg(components::session::session_id_t session);
         // begin (idempotent) THEN mark_explicit — never a no-op on a missing
         // txn. Sent by operator_begin_transaction_t.
         unique_future<void> txn_mark_explicit_msg(components::session::session_id_t session);

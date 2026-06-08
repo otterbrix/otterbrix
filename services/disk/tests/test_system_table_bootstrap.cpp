@@ -79,8 +79,7 @@ namespace {
                 c.path = path;
                 return c;
             }())
-            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
-        }
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {}
 
         ~disk_only_fixture() {
             // Destroy the manager first: its dtor joins the internal loop thread,

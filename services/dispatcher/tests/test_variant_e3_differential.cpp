@@ -147,8 +147,7 @@ namespace {
             auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
                                                           &manager_dispatcher_t::execute_plan,
                                                           components::session::session_id_t{},
-                                                          std::move(view.node),
-                                                          std::move(view.params));
+                                                          std::move(view));
             pending_future_ = std::make_unique<actor_zeta::unique_future<cursor_t_ptr>>(std::move(future));
         }
 

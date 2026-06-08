@@ -2498,7 +2498,7 @@ namespace services::dispatcher {
                 // look it up without any parameter threading.
                 impl::plan_resolve_index_t idx_with_cte = idx ? *idx : impl::plan_resolve_index_t{};
                 {
-                    impl::cte_schema_t cte_cols;
+                    catalog_resolve::cte_schema_t cte_cols;
                     for (const auto& entry : anchor_res.value()) {
                         cte_cols.push_back(
                             {std::pmr::string{entry.type.has_alias() ? entry.type.alias() : "", resource}, entry.type});

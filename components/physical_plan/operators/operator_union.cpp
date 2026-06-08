@@ -2,6 +2,7 @@
 #include "join_utils.hpp"
 #include "operator_data.hpp"
 
+#include <core/operations_helper.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/indexing_vector.hpp>
 #include <components/vector/vector_operations.hpp>
@@ -40,9 +41,9 @@ namespace components::operators {
                     case pt::UINT64:
                         return a.data<uint64_t>()[ra] == b.data<uint64_t>()[rb];
                     case pt::FLOAT:
-                        return a.data<float>()[ra] == b.data<float>()[rb];
+                        return core::is_equals(a.data<float>()[ra], b.data<float>()[rb]);
                     case pt::DOUBLE:
-                        return a.data<double>()[ra] == b.data<double>()[rb];
+                        return core::is_equals(a.data<double>()[ra], b.data<double>()[rb]);
                     default:
                         break;
                 }

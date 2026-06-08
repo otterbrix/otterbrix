@@ -84,12 +84,16 @@ namespace services::collection::executor {
 
     struct plan_t {
         std::stack<components::operators::operator_ptr> sub_plans;
-        components::logical_plan::storage_parameters parameters;
+        // Non-owning: points at the shared parameter node's storage owned by
+        // the execute_plan frame, which outlives execute_sub_plan_. Avoids
+        // copying the parameter map into every plan_t (the per-sub-plan
+        // pipeline::context_t still owns its own copy).
+        const components::logical_plan::storage_parameters* parameters;
         services::context_storage_t context_storage_;
         components::logical_plan::limit_t limit;
 
         explicit plan_t(std::stack<components::operators::operator_ptr>&& sub_plans,
-                        components::logical_plan::storage_parameters parameters,
+                        const components::logical_plan::storage_parameters* parameters,
                         services::context_storage_t&& context_storage,
                         components::logical_plan::limit_t limit = components::logical_plan::limit_t::unlimit());
     };
@@ -157,8 +161,7 @@ namespace services::collection::executor {
         // messages to the dispatcher — the sole transaction_manager_t owner.
         unique_future<execute_result_t>
         execute_plan_full(components::session::session_id_t session,
-                          components::logical_plan::node_ptr logical_plan,
-                          components::logical_plan::parameter_node_ptr params);
+                          components::logical_plan::execution_plan_t plan);
 
         unique_future<std::unique_ptr<function_result_t>> register_udf(components::session::session_id_t session,
                                                                        components::compute::function_ptr function);

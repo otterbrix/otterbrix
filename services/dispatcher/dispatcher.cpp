@@ -416,7 +416,7 @@ namespace services::dispatcher {
     manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr>
     manager_dispatcher_t::execute_plan(components::session::session_id_t session,
                                        components::logical_plan::execution_plan_t plan) {
-        trace(log_, "manager_dispatcher_t::execute_plan session: {}, {}", session.data(), plan->to_string());
+        trace(log_, "manager_dispatcher_t::execute_plan session: {}, {}", session.data(), plan.sub_queries.back()->to_string());
 
         // Pure session-hash routing — no plan inspection: the executor owns
         // optimize/resolve/validate/enrich/rewrites and the commit tails. The
@@ -428,8 +428,7 @@ namespace services::dispatcher {
         auto [needs_sched, future] = actor_zeta::otterbrix::send(executor_addresses_[pool_idx],
                                                                  &collection::executor::executor_t::execute_plan_full,
                                                                  session,
-                                                                 std::move(plan),
-                                                                 std::move(params));
+                                                                 std::move(plan));
         if (needs_sched && executors_[pool_idx]) {
             scheduler_->enqueue(executors_[pool_idx].get());
         }

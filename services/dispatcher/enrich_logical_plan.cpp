@@ -666,8 +666,8 @@ namespace services::catalog_resolve {
         // sequence_t(catalog_resolve_namespace, catalog_resolve_table(t),
         //            aggregate(t, ...)); its resolves still need a resolve round.
         out.had_expansion = true;
-        out.expanded_plan = std::move(tr.value().node);
-        out.expanded_params = std::move(tr.value().params);
+        out.expanded_plan = std::move(tr.value().sub_queries.back());
+        out.expanded_params = std::move(tr.value().parameters);
         return out;
     }
 

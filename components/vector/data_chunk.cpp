@@ -420,12 +420,22 @@ namespace components::vector {
     }
 
     core::result_wrapper_t<types::logical_value_t> compact_to_single_value(const data_chunk_t& data) {
-        if (data.size() == 1 && data.column_count() == 1) {
+        if (data.column_count() == 1 && data.size() == 1) {
             return data.value(0, 0);
-        } else {
-            return core::error_t(core::error_code_t::conversion_failure,
-                                 std::pmr::string{"could not convert data_chunk_t to a single value", data.resource()});
         }
+        // No extractable value cell → SQL NULL, not an error. This covers a
+        // scalar sub-query that returned zero rows AND the degenerate
+        // zero-column result an ungrouped aggregate emits when its input was
+        // filtered out (e.g. SELECT MAX(x) ... WHERE <no match> → one row, no
+        // column). Yielding an untyped NA null matches the value
+        // get_parameter() returns for an unbound id, so `x = (NULL scalar
+        // subquery)` compares against NULL and selects nothing. Only a genuine
+        // shape violation (>1 row, or >1 column) falls through to the error.
+        if (data.empty() || data.column_count() == 0) {
+            return types::logical_value_t{data.resource(), nullptr};
+        }
+        return core::error_t(core::error_code_t::conversion_failure,
+                             std::pmr::string{"could not convert data_chunk_t to a single value", data.resource()});
     }
 
     core::result_wrapper_t<types::logical_value_t> compact_to_array_value(const data_chunk_t& data) {

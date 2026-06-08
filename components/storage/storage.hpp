@@ -102,6 +102,7 @@ namespace components::storage {
         virtual void commit_append(uint64_t /*commit_id*/, int64_t /*row_start*/, uint64_t /*count*/) {}
         virtual void revert_append(int64_t /*row_start*/, uint64_t /*count*/) {}
         virtual void commit_all_deletes(uint64_t /*txn_id*/, uint64_t /*commit_id*/) {}
+        virtual void revert_all_deletes(uint64_t /*txn_id*/) {}
 
         virtual std::pmr::memory_resource* resource() const = 0;
     };

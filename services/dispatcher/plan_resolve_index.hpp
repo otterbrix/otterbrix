@@ -35,8 +35,6 @@ namespace services::catalog_resolve {
         // Namespace name -> ns_oid (from node_catalog_resolve_namespace_t
         // AND from node_catalog_resolve_table_t::namespace_oid()).
         std::unordered_map<std::string, components::catalog::oid_t> ns_by_dbname;
-        // "dbname|relname" -> namespace_oid (from resolve_table nodes).
-        std::unordered_map<std::string, components::catalog::oid_t> tbl_ns_by_qname;
         // "dbname|relname" -> const resolved_table_metadata_t*. Points into
         // the resolve_table node's resolved_metadata() optional (stamped by
         // operator_resolve_table_t). Validate reads columns/relkind here.
@@ -64,9 +62,8 @@ namespace services::catalog_resolve {
             check_exprs_by_oid;
 
         bool empty() const noexcept {
-            return ns_by_dbname.empty() && tbl_ns_by_qname.empty() && type_oid_by_qname.empty() &&
-                   fn_oid_by_qname.empty() && outgoing_fks_by_oid.empty() && referencing_fks_by_oid.empty() &&
-                   check_exprs_by_oid.empty();
+            return ns_by_dbname.empty() && type_oid_by_qname.empty() && fn_oid_by_qname.empty() &&
+                   outgoing_fks_by_oid.empty() && referencing_fks_by_oid.empty() && check_exprs_by_oid.empty();
         }
     };
 
@@ -98,7 +95,6 @@ namespace services::catalog_resolve {
                         key.reserve(rt->dbname().size() + 1 + rt->relname().size());
                         key.append(rt->dbname()).push_back('|');
                         key.append(rt->relname());
-                        out.tbl_ns_by_qname[key] = rt->namespace_oid();
                         // Stamp table metadata pointer so validate /
                         // dispatcher can read columns + relkind from the
                         // plan-tree idx.
@@ -164,32 +160,6 @@ namespace services::catalog_resolve {
         }
     }
 
-    // ns_oid_for resolves the namespace_oid for a table_id by probing
-    // the plan-tree index. Returns INVALID_OID when the namespace was not
-    // emitted as a catalog_resolve_namespace / catalog_resolve_table in the
-    // current plan (the transformer wrap is expected to cover every
-    // meaningful DDL/DML path).
-    inline components::catalog::oid_t ns_oid_for(const plan_resolve_index_t* idx,
-                                                 const components::catalog::table_id& id) {
-        auto& ns = id.get_namespace();
-        if (ns.empty())
-            return components::catalog::INVALID_OID;
-        if (!idx)
-            return components::catalog::INVALID_OID;
-        std::string ns_key(ns.front().data(), ns.front().size());
-        std::string qkey;
-        qkey.reserve(ns_key.size() + 1 + id.table_name().size());
-        qkey.append(ns_key).push_back('|');
-        qkey.append(id.table_name().data(), id.table_name().size());
-        if (auto it = idx->tbl_ns_by_qname.find(qkey); it != idx->tbl_ns_by_qname.end()) {
-            return it->second;
-        }
-        if (auto it = idx->ns_by_dbname.find(ns_key); it != idx->ns_by_dbname.end()) {
-            return it->second;
-        }
-        return components::catalog::INVALID_OID;
-    }
-
     inline const components::logical_plan::resolved_table_metadata_t*
     tbl_md_for(const plan_resolve_index_t* idx, std::string_view dbname, std::string_view relname) {
         if (!idx)
@@ -238,7 +208,6 @@ namespace services::catalog_resolve {
 // Lets dispatcher/validate/resolve_type keep spelling these as `impl::...`.
 namespace services::dispatcher::impl {
     using catalog_resolve::gather_plan_resolve_index;
-    using catalog_resolve::ns_oid_for;
     using catalog_resolve::ns_oid_for_dbname;
     using catalog_resolve::plan_resolve_index_t;
     using catalog_resolve::tbl_md_for;

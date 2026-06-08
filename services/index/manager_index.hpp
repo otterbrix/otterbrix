@@ -32,12 +32,19 @@ namespace services::index {
     // pg_catalog.pg_index now; this constant is kept as a comment so anyone reading
     // legacy data dirs can still recognize the filename.
 
+    // Bootstrap address bundle for sync() (plain named struct — no std::tuple,
+    // mirrors services::wal::wal_sync_pack_t and manager_disk_t::disk_sync_pack_t).
+    // Namespace-scope (not nested) so callers/tests use
+    // services::index::index_sync_pack_t. Carries manager_disk_t's address so the
+    // index manager can address it after spawn (scan_segment index population).
+    struct index_sync_pack_t {
+        actor_zeta::address_t disk = actor_zeta::address_t::empty_address();
+    };
+
     class manager_index_t final : public actor_zeta::actor::actor_mixin<manager_index_t> {
     public:
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
-
-        using address_pack = std::tuple<actor_zeta::address_t>;
 
         manager_index_t(
             std::pmr::memory_resource* resource,
@@ -70,7 +77,7 @@ namespace services::index {
         requires(actor_zeta::type_traits::is_unique_future_v<ReturnType>) [[nodiscard]] ReturnType
             enqueue_impl(actor_zeta::actor::address_t sender, actor_zeta::mailbox::message_id cmd, Args&&... args);
 
-        void sync(address_pack pack);
+        void sync(index_sync_pack_t pack);
 
         // Single-threaded callers only (NOT a mailbox handler): catalog-scan
         // rebuild and, internally, the mark_table_dropped handler.
@@ -81,6 +88,20 @@ namespace services::index {
         unique_future<void> mark_table_dropped(session_id_t session,
                                                components::catalog::oid_t table_oid,
                                                uint64_t dropped_at_commit_id);
+
+        // DROP-GC value-space remap (see index_contract). mark_table_dropped[_sync]
+        // recorded dropped_table_agents_[oid] in TXN-ID space (>= 2^62); after the
+        // transaction commits, this rewrites every entry whose value equals txn_id to
+        // the real commit_id so on_horizon_advanced can eventually reclaim it.
+        unique_future<void> table_dropped_committed(session_id_t session, uint64_t txn_id, uint64_t commit_id);
+
+        // DROP-rollback un-mark (see index_contract) — the abort mirror of
+        // table_dropped_committed. mark_table_dropped[_sync] recorded
+        // dropped_table_agents_[oid] in TXN-ID space (>= 2^62); if the transaction
+        // ABORTS the table must stay indexed, so this ERASES every
+        // dropped_table_agents_ entry whose value equals txn_id, un-marking the DROP
+        // so on_horizon_advanced never reaps the engine.
+        unique_future<void> table_drop_aborted(session_id_t session, uint64_t txn_id);
 
         // Wired by base_spaces before scheduler.start. Used to send the
         // on_subscriber_empty ack once dropped_table_agents_ empties.
@@ -143,13 +164,36 @@ namespace services::index {
         // MVCC commit/revert/cleanup. commit_* return core::error_t (no_error()
         // ↔ success) per the contract; the bitcask write path is assert+abort
         // terminal today, so success is currently the only value returned.
+        // The batch form folds every oid's pending disk fan-out into a single
+        // send-all-then-await-all pass (see the contract): the first
+        // contains_error() across the batch is returned, but all awaits drain.
         unique_future<core::error_t>
-        commit_insert(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id);
+        commit_inserts(execution_context_t ctx,
+                       std::pmr::vector<components::catalog::oid_t> table_oids,
+                       uint64_t commit_id);
         unique_future<core::error_t>
-        commit_delete(execution_context_t ctx, components::catalog::oid_t table_oid, uint64_t commit_id);
+        commit_deletes(execution_context_t ctx,
+                       std::pmr::vector<components::catalog::oid_t> table_oids,
+                       uint64_t commit_id);
         unique_future<void> revert_insert(execution_context_t ctx, components::catalog::oid_t table_oid);
+        // Engine-level pending-delete clear: discards this txn's mark_delete
+        // entries from every index of the table's engine (the abort mirror of
+        // revert_insert; aborted DELETE markers never reach disk, so no disk fan-out).
+        unique_future<void> revert_delete(execution_context_t ctx, components::catalog::oid_t table_oid);
         unique_future<void> cleanup_all_versions(session_id_t session, uint64_t lowest_active);
-        unique_future<void> rebuild_indexes(session_id_t session, components::catalog::oid_t table_oid);
+
+        // Runtime index rebuild driver (see index_contract). Returns the oids
+        // whose engine holds >= 1 index, EXCLUDING oids in dropped_table_agents_.
+        unique_future<std::pmr::vector<components::catalog::oid_t>> all_indexed_oids(session_id_t session);
+
+        // Repopulate one table's indexes from a post-compact storage chunk: disk
+        // agent clear() fan-out, in-memory engine clear, then txn_id=0 re-insert
+        // of every row (storage_row = i). See index_contract for details.
+        unique_future<void> repopulate_table(session_id_t session,
+                                             components::catalog::oid_t table_oid,
+                                             std::unique_ptr<components::vector::data_chunk_t> chunk,
+                                             uint64_t row_count,
+                                             core::date::timezone_offset_t session_tz);
 
         // DDL: index management
         unique_future<uint32_t> create_index(session_id_t session,
@@ -183,10 +227,13 @@ namespace services::index {
             core::date::timezone_offset_t session_tz);
 
 
-        unique_future<bool>
-        has_index(session_id_t session, components::catalog::oid_t table_oid, index_name_t index_name);
-
         unique_future<void> flush_all_indexes(session_id_t session);
+
+        // Compact gate (see index_contract): returns the subset of the input
+        // oids with NO engine in engines_ (safe to compact), input order
+        // preserved; an engine means its positional row refs would break on compact.
+        unique_future<std::pmr::vector<components::catalog::oid_t>>
+        tables_without_indexes(session_id_t session, std::pmr::vector<components::catalog::oid_t> table_oids);
 
         // GC subscriber: erases dropped_table_agents_ entries whose
         // dropped_at_commit_id is below the new snapshot floor. When that map
@@ -219,21 +266,25 @@ namespace services::index {
                                                        &manager_index_t::insert_rows,
                                                        &manager_index_t::delete_rows,
                                                        &manager_index_t::update_rows,
-                                                       &manager_index_t::commit_insert,
-                                                       &manager_index_t::commit_delete,
+                                                       &manager_index_t::commit_inserts,
+                                                       &manager_index_t::commit_deletes,
                                                        &manager_index_t::revert_insert,
+                                                       &manager_index_t::revert_delete,
                                                        &manager_index_t::cleanup_all_versions,
-                                                       &manager_index_t::rebuild_indexes,
+                                                       &manager_index_t::all_indexed_oids,
+                                                       &manager_index_t::repopulate_table,
                                                        &manager_index_t::create_index,
                                                        &manager_index_t::drop_index,
                                                        &manager_index_t::search,
                                                        &manager_index_t::search_with_preferred_type,
-                                                       &manager_index_t::has_index,
                                                        &manager_index_t::flush_all_indexes,
+                                                       &manager_index_t::tables_without_indexes,
                                                        &manager_index_t::get_indexed_keys,
                                                        &manager_index_t::get_indexed_descriptions,
                                                        &manager_index_t::on_horizon_advanced,
                                                        &manager_index_t::mark_table_dropped,
+                                                       &manager_index_t::table_dropped_committed,
+                                                       &manager_index_t::table_drop_aborted,
                                                        &manager_index_t::apply_wal_record_for_index>;
 
     private:

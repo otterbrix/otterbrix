@@ -6,6 +6,7 @@
 #include <components/catalog/dependency_walker.hpp>
 #include <components/context/context.hpp>
 #include <components/types/logical_value.hpp>
+#include <components/vector/data_chunk.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <services/index/manager_index.hpp>
@@ -131,25 +132,27 @@ namespace components::operators {
             rd_vals.emplace_back(cls_lv);
             rd_vals.emplace_back(oid_lv);
             auto [_rd, rdf] = actor_zeta::send(ctx->disk_address,
-                                               &services::disk::manager_disk_t::read_rows_by_key,
+                                               &services::disk::manager_disk_t::read_chunks_by_key,
                                                exec_ctx,
                                                kPgDepend,
                                                std::move(rd_keys),
                                                std::move(rd_vals));
-            auto dep_rows = co_await std::move(rdf);
+            auto dep_batches = co_await std::move(rdf);
 
             std::pmr::vector<catalog::dependency_t> deps(resource_);
-            deps.reserve(dep_rows.size());
-            for (const auto& row : dep_rows) {
-                if (row.size() < 5)
+            for (auto& chunk : dep_batches) {
+                if (chunk.column_count() < 5)
                     continue;
-                catalog::dependency_t d;
-                d.classid = static_cast<catalog::oid_t>(row[0].value<std::uint32_t>());
-                d.objid = static_cast<catalog::oid_t>(row[1].value<std::uint32_t>());
-                const auto dv = row[4].is_null() ? std::string_view{"n"} : row[4].value<std::string_view>();
-                d.deptype = dv.empty() ? 'n' : dv[0];
-                deps.push_back(d);
-                stack.push_back(encode_key(d.classid, d.objid));
+                for (uint64_t i = 0; i < chunk.size(); ++i) {
+                    catalog::dependency_t d;
+                    d.classid = static_cast<catalog::oid_t>(chunk.value(0, i).value<std::uint32_t>());
+                    d.objid = static_cast<catalog::oid_t>(chunk.value(1, i).value<std::uint32_t>());
+                    auto deptype_v = chunk.value(4, i);
+                    const auto dv = deptype_v.is_null() ? std::string_view{"n"} : deptype_v.value<std::string_view>();
+                    d.deptype = dv.empty() ? 'n' : dv[0];
+                    deps.push_back(d);
+                    stack.push_back(encode_key(d.classid, d.objid));
+                }
             }
             dep_graph.insert_or_assign(k, std::move(deps));
         }
@@ -203,6 +206,9 @@ namespace components::operators {
 
         constexpr catalog::oid_t kPgClass = catalog::well_known_oid::pg_class_table;
 
+        // pg_class relkind probe: each storage step's read is keyed by its own
+        // step.objid and only decides whether the oid is storage-backed, so no read
+        // feeds another iteration's read (probes are independent).
         for (const auto& step : plan.steps) {
             if (step.classid != catalog::well_known_oid::pg_class_table)
                 continue;
@@ -215,25 +221,24 @@ namespace components::operators {
             std::pmr::vector<types::logical_value_t> pc_vals(resource_);
             pc_vals.emplace_back(pcoid_lv);
             auto [_pc, pcf] = actor_zeta::send(ctx->disk_address,
-                                               &services::disk::manager_disk_t::read_rows_by_key,
+                                               &services::disk::manager_disk_t::read_chunks_by_key,
                                                exec_ctx,
                                                kPgClass,
                                                std::move(pc_keys),
                                                std::move(pc_vals));
-            auto pc_rows = co_await std::move(pcf);
-            if (pc_rows.empty() || pc_rows[0].size() < 4)
+            std::pmr::vector<components::vector::data_chunk_t> pc_batches = co_await std::move(pcf);
+            if (pc_batches.empty() || pc_batches[0].size() == 0 || pc_batches[0].column_count() < 4)
                 continue;
-            const auto& row = pc_rows[0];
 
-            const auto rkv = row[3].is_null() ? std::string_view{"r"} : row[3].value<std::string_view>();
+            const auto rk = pc_batches[0].value(3, 0);
+            const auto rkv = rk.is_null() ? std::string_view{"r"} : rk.value<std::string_view>();
             const char relkind = rkv.empty() ? catalog::relkind::regular : rkv[0];
 
             // Only regular and computing tables back actual storage. Index/
             // sequence/view/macro/composite-type entries are pure catalog
             // bookkeeping: deleting the pg_class row is sufficient.
-            if (relkind != catalog::relkind::regular && relkind != catalog::relkind::computed) {
+            if (relkind != catalog::relkind::regular && relkind != catalog::relkind::computed)
                 continue;
-            }
 
             pending_storage_drops.push_back({step.objid});
         }
@@ -242,60 +247,79 @@ namespace components::operators {
         // Over-deletion is safe: scans that find no matching rows for a
         // given (table, col, oid) tuple are silent no-ops. This matches
         // build_drop_sequence's behaviour in the old dispatcher path.
+        // deletes_for_classid is a pure local helper and plan.steps is fixed
+        // before this loop, so no spec depends on an intervening read; collect
+        // every (table, col, oid) delete into one batched call.
+        std::pmr::vector<services::disk::pg_catalog_delete_spec_t> catalog_specs(resource_);
         for (const auto& step : plan.steps) {
             for (auto& d : deletes_for_classid(resource_, step.classid)) {
-                auto [_d, df] = actor_zeta::send(ctx->disk_address,
-                                                 &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                                 exec_ctx,
-                                                 d.catalog_table_oid,
-                                                 d.oid_col_idx,
-                                                 step.objid);
-                co_await std::move(df);
+                catalog_specs.push_back({d.catalog_table_oid, d.oid_col_idx, step.objid});
                 if (ctx->txn.transaction_id != 0)
                     ctx->pg_catalog_delete_tables.insert(d.catalog_table_oid);
             }
         }
+        if (!catalog_specs.empty()) {
+            auto [_d, df] = actor_zeta::send(ctx->disk_address,
+                                             &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
+                                             exec_ctx,
+                                             std::move(catalog_specs));
+            co_await std::move(df);
+        }
 
-        // Drop on-disk storage + index entry per table. Order matters:
-        //   (a) mark_table_dropped / mark_storage_dropped record (oid, commit_id)
-        //       for the next horizon-advance GC sweep. These MUST precede
-        //       drop_storage: mark_storage_dropped reads the live storages_ entry
-        //       for the .otbx path + sidecars, which drop_storage then erases.
-        //   (b) unregister_collection before drop_storage, so concurrent
-        //       index_address consumers stop referencing the collection before
-        //       the storage actor frees it.
+        // Mark the storage + index entry dropped per table, but DO NOT physically
+        // tear them down here. The mark_table_dropped / mark_storage_dropped
+        // tombstones record (oid, dropped_at) for the next horizon-advance GC
+        // sweep; the actual drop_storage + unregister_collection now fire only at
+        // COMMIT time (operator_commit_transaction, after the txn_publish barrier).
+        //
+        // drop_storage and unregister_collection are deliberately
+        // NOT sent here. A DROP inside a txn must be REVERTIBLE until COMMIT — an
+        // explicit-txn ROLLBACK (operator_abort_transaction → storage_drop_aborted
+        // / table_drop_aborted) un-marks the tombstones and the table survives — so
+        // the backing .otbx and the index engine must still exist at abort time.
+        // And other sessions must keep READING the table until publish, which the
+        // un-removed storage + still-registered collection allow (the tombstone is
+        // GC-invisible until on_horizon_advanced after publish).
+        //
         // dropped_at = txn_id: the real commit_id isn't known yet, but txn_id is a
         // monotone upper bound that the GC predicate (dropped_at < new_horizon)
         // handles correctly once every snapshot older than this DROP has closed.
         // txn=0 (auto-commit/bootstrap) records 0, matching catalog-scan rebuild.
         const uint64_t dropped_at = ctx->txn.transaction_id;
         bool any_storage_drop = false;
+        // Two-phase fan-out: send both mark messages per storage drop without
+        // awaiting in the loop, then await every future afterwards. No
+        // intra-target drop ordering is required (the marks have no ordered
+        // follow-up here; the physical drop_storage / unregister_collection run
+        // at COMMIT), so awaiting below is completion-sync only.
+        std::pmr::vector<actor_zeta::unique_future<void>> drop_futures(resource_);
+        drop_futures.reserve(pending_storage_drops.size() * 2);
         for (auto& sd : pending_storage_drops) {
             any_storage_drop = true;
+            // DROP back-channel: record the dropped storage oid for the COMMIT
+            // drain's value-space remap (operator_commit_transaction keys the
+            // DROP-GC remap AND the post-publish drop_storage/unregister off the
+            // ACTUAL drops in the drain).
+            if (ctx->txn.transaction_id != 0) {
+                ctx->dropped_storage_oids.push_back(sd.table_oid);
+            }
             if (ctx->index_address != actor_zeta::address_t::empty_address()) {
                 auto [_mti, mtif] = actor_zeta::send(ctx->index_address,
                                                      &services::index::manager_index_t::mark_table_dropped,
                                                      ctx->session,
                                                      sd.table_oid,
                                                      dropped_at);
-                co_await std::move(mtif);
-                auto [_ui, uif] = actor_zeta::send(ctx->index_address,
-                                                   &services::index::manager_index_t::unregister_collection,
-                                                   ctx->session,
-                                                   sd.table_oid);
-                co_await std::move(uif);
+                drop_futures.push_back(std::move(mtif));
             }
             auto [_msd, msdf] = actor_zeta::send(ctx->disk_address,
                                                  &services::disk::manager_disk_t::mark_storage_dropped,
                                                  ctx->session,
                                                  sd.table_oid,
                                                  dropped_at);
-            co_await std::move(msdf);
-            auto [_ds, dsf] = actor_zeta::send(ctx->disk_address,
-                                               &services::disk::manager_disk_t::drop_storage,
-                                               ctx->session,
-                                               sd.table_oid);
-            co_await std::move(dsf);
+            drop_futures.push_back(std::move(msdf));
+        }
+        for (auto& f : drop_futures) {
+            co_await std::move(f);
         }
 
         // Flip the dispatcher's selective-broadcast flags so the next horizon

@@ -12,6 +12,13 @@
 #include <core/executor.hpp>
 #include <services/wal/wal_page_reader.hpp>
 
+// Needed for the auto-checkpoint orchestration (run_auto_checkpoint): the WAL
+// manager drives flush_all_indexes on the index manager and checkpoint_all on
+// the disk manager. wal_contract.hpp stays free of these to avoid the cycle
+// (manager_disk.hpp / manager_index.hpp pull only services/wal/base.hpp back).
+#include <services/disk/manager_disk.hpp>
+#include <services/index/manager_index.hpp>
+
 namespace services::wal {
 
     // -----------------------------------------------------------------------
@@ -29,7 +36,8 @@ namespace services::wal {
         , log_(log.clone())
         , enabled_(config_.on)
         , manager_disk_(actor_zeta::address_t::empty_address())
-        , manager_dispatcher_(actor_zeta::address_t::empty_address()) {
+        , manager_dispatcher_(actor_zeta::address_t::empty_address())
+        , manager_index_(actor_zeta::address_t::empty_address()) {
         trace(log_, "manager_wal_replicate start, enabled={}", enabled_);
         if (enabled_ && !config_.path.empty()) {
             std::filesystem::create_directories(config_.path);
@@ -139,6 +147,10 @@ namespace services::wal {
                     continue;
                 }
 
+                // Reap completed fire-and-forget auto-checkpoint futures before
+                // idling. Cheap no-op when no checkpoint is in flight.
+                poll_auto_checkpoint_();
+
                 // Idle: wait for an enqueue notify, or a bounded staleness window
                 // to re-check the inbox / behaviors that became ready off-thread.
                 std::unique_lock<std::mutex> lock(mutex_);
@@ -203,8 +215,8 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::current_wal_id, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::auto_checkpoint_wal_id>: {
-                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::auto_checkpoint_wal_id, msg);
+            case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::run_auto_checkpoint>: {
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::run_auto_checkpoint, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::write_physical_insert>: {
@@ -236,10 +248,10 @@ namespace services::wal {
     // sync: receive disk and dispatcher addresses
     // -----------------------------------------------------------------------
 
-    void manager_wal_replicate_t::sync(address_pack pack) {
-        auto [disk_addr, dispatcher_addr] = pack;
-        manager_disk_ = std::move(disk_addr);
-        manager_dispatcher_ = std::move(dispatcher_addr);
+    void manager_wal_replicate_t::sync(wal_sync_pack_t pack) {
+        manager_disk_ = std::move(pack.disk);
+        manager_dispatcher_ = std::move(pack.dispatcher);
+        manager_index_ = std::move(pack.index);
         trace(log_, "manager_wal_replicate::sync done");
     }
 
@@ -364,6 +376,30 @@ namespace services::wal {
         auto result = co_await std::move(fut);
         // Track WAL bytes for auto-checkpoint threshold.
         wal_bytes_since_checkpoint_.store(total_wal_bytes(), std::memory_order_relaxed);
+
+        // Auto-checkpoint trigger. needs_auto_checkpoint() compares WAL bytes
+        // written SINCE the last checkpoint (not total WAL size) against the
+        // configured auto_checkpoint_threshold_bytes. auto_checkpoint_in_flight_
+        // dedups: a burst of threshold-tripping commits must not stack concurrent
+        // checkpoints. We reset the byte counter HERE (not in the handler) so any
+        // commits racing in behind this one accumulate against a fresh window
+        // toward the NEXT checkpoint instead of re-tripping the same one.
+        //
+        // Fire-and-forget self-send: the checkpoint (index flush + storage
+        // checkpoint + WAL truncate) is heavy and must NOT extend the committer's
+        // commit_txn latency. The self-sent message lands in inbox_ and the loop
+        // runs run_auto_checkpoint as an independent in-flight entry after this
+        // coroutine returns its wal_id to the caller.
+        if (needs_auto_checkpoint() && !auto_checkpoint_in_flight_) {
+            auto_checkpoint_in_flight_ = true;
+            reset_auto_checkpoint_bytes();
+            auto [_ac, ac_fut] =
+                actor_zeta::send(address(), &manager_wal_replicate_t::run_auto_checkpoint, session);
+            // needs_sched is always false: enqueue_impl only pushes to inbox_ and
+            // wakes the loop (no scheduler hop). Park the [[nodiscard]] future;
+            // the loop drains it once ready (poll_auto_checkpoint_).
+            pending_auto_checkpoint_.emplace_back(std::move(ac_fut));
+        }
         co_return result;
     }
 
@@ -433,6 +469,83 @@ namespace services::wal {
     }
 
     // -----------------------------------------------------------------------
+    // Contract: run_auto_checkpoint
+    //
+    // Self-orchestrated analogue of the CHECKPOINT statement operator
+    // (operator_checkpoint.cpp): flush indexes -> snapshot current wal id ->
+    // checkpoint_all storage -> truncate the WAL below the returned checkpoint id.
+    // Triggered fire-and-forget from commit_txn when WAL growth since the last
+    // checkpoint trips the threshold; auto_checkpoint_in_flight_ dedups so only
+    // one runs at a time.
+    //
+    // M1.1 interaction (INVARIANT). Truncation only removes WAL segments whose
+    // records sit AT OR BELOW the checkpoint wal id (everything those records
+    // describe is already durable in the storage checkpoint). The bitcask index
+    // txn-log frames are a SEPARATE durability channel: they are consumed eagerly
+    // at commit time and gated on the WAL committed-transaction set during
+    // recovery (M1.1). So the committed-set gate never needs COMMIT markers that
+    // live in a truncated segment — those segments only describe rows already
+    // folded into the checkpoint, never the txn-id provenance the index recover
+    // gate reads. Truncating here cannot strand an index frame's commit decision.
+    // -----------------------------------------------------------------------
+
+    manager_wal_replicate_t::unique_future<void>
+    manager_wal_replicate_t::run_auto_checkpoint(session_id_t session) {
+        // Always clear the in-flight guard on every exit path below so a future
+        // threshold trip can launch the next checkpoint. enabled_ is implied: the
+        // trigger only fires inside the enabled commit_txn path.
+
+        // (a) Flush dirty index btrees first so a post-recovery rebuild starts
+        //     from a consistent on-disk index state (mirrors operator_checkpoint).
+        if (manager_index_ != actor_zeta::address_t::empty_address()) {
+            auto [_fi, fi_fut] =
+                actor_zeta::send(manager_index_, &services::index::manager_index_t::flush_all_indexes, session);
+            co_await std::move(fi_fut);
+        }
+
+        // (b) No disk manager => no storage to checkpoint against. This is the
+        //     no-disk test topology, NOT a fallback: without a disk checkpoint
+        //     there is no safe truncation boundary, so we clear the guard and stop.
+        if (manager_disk_ == actor_zeta::address_t::empty_address()) {
+            auto_checkpoint_in_flight_ = false;
+            co_return;
+        }
+
+        // Snapshot the current WAL id BEFORE the checkpoint so the per-table
+        // snapshot pins a known recovery boundary. global_id_ is the monotonic
+        // allocator behind next_wal_id(); its current value is the latest issued
+        // wal id — the local equivalent of the operator's current_wal_id round-trip.
+        const wal::id_t wal_max_id = global_id_.load(std::memory_order_relaxed);
+
+        // (c) checkpoint_all returns the wal id up to which storage is now durable.
+        auto [_cp, cp_fut] =
+            actor_zeta::send(manager_disk_, &services::disk::manager_disk_t::checkpoint_all, session, wal_max_id);
+        const wal::id_t checkpoint_wal_id = co_await std::move(cp_fut);
+
+        // (d) Truncate WAL below the checkpoint boundary. We are already on the WAL
+        //     actor, so invoke truncate_before's body directly (co_await the member
+        //     coroutine) instead of self-sending another message — the clamp to
+        //     active CREATE INDEX build retention runs inside it.
+        if (checkpoint_wal_id > wal::id_t{0}) {
+            co_await truncate_before(session, checkpoint_wal_id);
+        }
+
+        // (e) Release the dedup guard.
+        auto_checkpoint_in_flight_ = false;
+        co_return;
+    }
+
+    // Drop ready fire-and-forget auto-checkpoint futures (loop-thread only).
+    // Mirrors manager_dispatcher_t::poll_pending() for pending_void_.
+    void manager_wal_replicate_t::poll_auto_checkpoint_() {
+        pending_auto_checkpoint_.erase(
+            std::remove_if(pending_auto_checkpoint_.begin(),
+                           pending_auto_checkpoint_.end(),
+                           [](unique_future<void>& f) { return f.is_ready(); }),
+            pending_auto_checkpoint_.end());
+    }
+
+    // -----------------------------------------------------------------------
     // Contract: current_wal_id
     // -----------------------------------------------------------------------
 
@@ -455,19 +568,6 @@ namespace services::wal {
             }
         }
         co_return max_id;
-    }
-
-    // -----------------------------------------------------------------------
-    // Contract: auto_checkpoint_wal_id
-    // -----------------------------------------------------------------------
-
-    manager_wal_replicate_t::unique_future<wal::id_t>
-    manager_wal_replicate_t::auto_checkpoint_wal_id(session_id_t /*session*/) {
-        if (!needs_auto_checkpoint()) {
-            co_return wal::id_t{0};
-        }
-        reset_auto_checkpoint_bytes();
-        co_return global_id_.load(std::memory_order_relaxed);
     }
 
     // -----------------------------------------------------------------------

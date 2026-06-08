@@ -51,6 +51,29 @@ namespace services::disk {
                                                                                components::catalog::oid_t table_oid,
                                                                                std::int64_t oid_col_idx,
                                                                                components::catalog::oid_t target_oid) {
+        // Thin wrapper over the shared per-item body (also looped by
+        // delete_pg_catalog_rows_many) so both paths emit identical WAL records.
+        co_await delete_pg_catalog_rows_one_(ctx, table_oid, oid_col_idx, target_oid);
+        co_return;
+    }
+
+    manager_disk_t::unique_future<void>
+    manager_disk_t::delete_pg_catalog_rows_many(execution_context_t ctx,
+                                                std::pmr::vector<pg_catalog_delete_spec_t> specs) {
+        // Loop the singular inner logic per spec; each spec emits the same WAL +
+        // storage records as one singular delete_pg_catalog_rows call. Serialized
+        // (co_await per spec) so the WAL ordering matches N successive singular calls.
+        for (const auto& spec : specs) {
+            co_await delete_pg_catalog_rows_one_(ctx, spec.table_oid, spec.oid_col_idx, spec.target_oid);
+        }
+        co_return;
+    }
+
+    manager_disk_t::unique_future<void>
+    manager_disk_t::delete_pg_catalog_rows_one_(execution_context_t ctx,
+                                                components::catalog::oid_t table_oid,
+                                                std::int64_t oid_col_idx,
+                                                components::catalog::oid_t target_oid) {
         // Catalog OIDs only (all route to agents_[0]). Null storage_entry_sync is a
         // terminal "no entry"; the mutation half (direct_delete_sync) routes to the agent.
         const collection_storage_entry_t* entry = nullptr;
@@ -100,12 +123,26 @@ namespace services::disk {
         co_return;
     }
 
+    manager_disk_t::unique_future<void>
+    manager_disk_t::update_pg_attribute_commit_id_fields(
+        execution_context_t ctx,
+        std::pmr::vector<components::pg_attribute_commit_id_backfill_t> backfills,
+        std::uint64_t commit_id) {
+        // Loop the singular inner body per backfill with the shared commit_id; each
+        // emits its own physical_update WAL record. Serialized (co_await per item) so
+        // the per-backfill WAL records are emitted in order.
+        for (const auto& b : backfills) {
+            co_await update_pg_attribute_commit_id_field_one_(ctx, b.attoid, b.kind, commit_id);
+        }
+        co_return;
+    }
+
     // See header for the contract. Implementation pitfall: data_table_t::update()
     // rewrites EVERY column in the target row (it builds column_ids = [0..count)
     // unconditionally in components/table/data_table.cpp), so a "patch one column"
     // chunk would NULL out the other ten. We read the full row, mutate the target
     // field in the read-back chunk, and write the whole chunk back.
-    manager_disk_t::unique_future<void> manager_disk_t::update_pg_attribute_commit_id_field(
+    manager_disk_t::unique_future<void> manager_disk_t::update_pg_attribute_commit_id_field_one_(
         execution_context_t ctx,
         components::catalog::oid_t attoid,
         components::pg_attribute_commit_id_backfill_t::kind_t kind,

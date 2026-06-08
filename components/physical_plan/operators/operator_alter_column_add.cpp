@@ -9,6 +9,7 @@
 #include <components/catalog/alter_column_validators.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
+#include <components/vector/data_chunk.hpp>
 #include <services/disk/manager_disk.hpp>
 
 namespace components::operators {
@@ -66,19 +67,24 @@ namespace components::operators {
         std::pmr::vector<components::types::logical_value_t> pa_vals(resource_);
         pa_vals.emplace_back(toid_lv);
         auto [_pa, paf] = actor_zeta::send(ctx->disk_address,
-                                           &services::disk::manager_disk_t::read_rows_by_key,
+                                           &services::disk::manager_disk_t::read_chunks_by_key,
                                            exec_ctx,
                                            pg_attr_oid,
                                            std::move(pa_keys),
                                            std::move(pa_vals));
-        auto attr_rows = co_await std::move(paf);
+        std::pmr::vector<components::vector::data_chunk_t> attr_batches = co_await std::move(paf);
         std::int32_t next_attnum = 1;
-        for (const auto& row : attr_rows) {
-            if (row.size() < 5 || row[4].is_null())
+        for (auto& chunk : attr_batches) {
+            if (chunk.column_count() < 5)
                 continue;
-            auto n = row[4].value<std::int32_t>();
-            if (n >= next_attnum)
-                next_attnum = n + 1;
+            for (uint64_t i = 0; i < chunk.size(); ++i) {
+                auto attnum_cell = chunk.value(4, i);
+                if (attnum_cell.is_null())
+                    continue;
+                auto n = attnum_cell.value<std::int32_t>();
+                if (n >= next_attnum)
+                    next_attnum = n + 1;
+            }
         }
 
         auto [_oa, oaf] =

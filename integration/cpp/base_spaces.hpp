@@ -9,8 +9,10 @@
 #include <core/config.hpp>
 #include <core/file/file_system.hpp>
 
+#include <cstdint>
 #include <memory>
 #include <memory_resource>
+#include <set>
 
 namespace services {
 
@@ -84,7 +86,12 @@ namespace otterbrix {
         //   - spawns an index_agent_disk_t per alive pg_index row and transfers
         //     ownership to manager_index_;
         //   - restores per-oid dropped-table tombstones.
-        void bootstrap_indexes_sync(const configuration::config_disk& disk_config);
+        //
+        // committed_txn_ids is the WAL-replay set of committed transaction ids,
+        // forwarded by value into each spawned bitcask agent's txn-log recover
+        // gate (M1.1). Passed during the single-threaded pre-scheduler window.
+        void bootstrap_indexes_sync(const configuration::config_disk& disk_config,
+                                    const std::set<std::uint64_t>& committed_txn_ids);
 
     private:
         inline static std::unordered_set<std::filesystem::path, core::filesystem::path_hash> paths_ = {};

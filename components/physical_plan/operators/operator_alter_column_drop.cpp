@@ -7,6 +7,7 @@
 #include <components/catalog/alter_column_validators.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
+#include <components/vector/data_chunk.hpp>
 #include <services/disk/manager_disk.hpp>
 
 #include <cstdint>
@@ -60,34 +61,49 @@ namespace components::operators {
         std::pmr::vector<components::types::logical_value_t> pa_vals(resource_);
         pa_vals.emplace_back(attoid_lv);
         auto [_pa, paf] = actor_zeta::send(ctx->disk_address,
-                                           &services::disk::manager_disk_t::read_rows_by_key,
+                                           &services::disk::manager_disk_t::read_chunks_by_key,
                                            exec_ctx,
                                            pg_attr_oid,
                                            std::move(pa_keys),
                                            std::move(pa_vals));
-        auto attr_rows = co_await std::move(paf);
+        std::pmr::vector<components::vector::data_chunk_t> attr_batches = co_await std::move(paf);
 
         catalog::oid_t attoid = catalog::INVALID_OID;
         std::int32_t attnum = 0;
         catalog::oid_t atttypid = catalog::INVALID_OID;
         bool att_not_null = false, att_has_default = false;
         std::string att_typspec, att_defspec;
-        for (const auto& row : attr_rows) {
-            if (row.size() < 10 || row[0].is_null())
+        for (auto& chunk : attr_batches) {
+            if (chunk.column_count() < 10)
                 continue;
-            if (!row[7].is_null() && row[7].value<bool>())
-                continue; // already dropped
-            attoid = static_cast<catalog::oid_t>(row[0].value<std::uint32_t>());
-            atttypid =
-                row[3].is_null() ? catalog::INVALID_OID : static_cast<catalog::oid_t>(row[3].value<std::uint32_t>());
-            attnum = row[4].is_null() ? 0 : row[4].value<std::int32_t>();
-            att_not_null = !row[5].is_null() && row[5].value<bool>();
-            att_has_default = !row[6].is_null() && row[6].value<bool>();
-            if (!row[8].is_null())
-                att_typspec = std::string(row[8].value<std::string_view>());
-            if (!row[9].is_null())
-                att_defspec = std::string(row[9].value<std::string_view>());
-            break;
+            bool found = false;
+            for (uint64_t i = 0; i < chunk.size(); ++i) {
+                auto c0 = chunk.value(0, i);
+                if (c0.is_null())
+                    continue;
+                auto c7 = chunk.value(7, i);
+                if (!c7.is_null() && c7.value<bool>())
+                    continue; // already dropped
+                attoid = static_cast<catalog::oid_t>(c0.value<std::uint32_t>());
+                auto c3 = chunk.value(3, i);
+                atttypid = c3.is_null() ? catalog::INVALID_OID : static_cast<catalog::oid_t>(c3.value<std::uint32_t>());
+                auto c4 = chunk.value(4, i);
+                attnum = c4.is_null() ? 0 : c4.value<std::int32_t>();
+                auto c5 = chunk.value(5, i);
+                att_not_null = !c5.is_null() && c5.value<bool>();
+                auto c6 = chunk.value(6, i);
+                att_has_default = !c6.is_null() && c6.value<bool>();
+                auto c8 = chunk.value(8, i);
+                if (!c8.is_null())
+                    att_typspec = std::string(c8.value<std::string_view>());
+                auto c9 = chunk.value(9, i);
+                if (!c9.is_null())
+                    att_defspec = std::string(c9.value<std::string_view>());
+                found = true;
+                break;
+            }
+            if (found)
+                break;
         }
         if (attoid == catalog::INVALID_OID) {
             // Row not found or already dropped: no-op, no error.
@@ -105,23 +121,33 @@ namespace components::operators {
         pd_vals.emplace_back(att_cls_lv);
         pd_vals.emplace_back(att_oid_lv);
         auto [_pd, pdf] = actor_zeta::send(ctx->disk_address,
-                                           &services::disk::manager_disk_t::read_rows_by_key,
+                                           &services::disk::manager_disk_t::read_chunks_by_key,
                                            exec_ctx,
                                            pg_dep_oid,
                                            std::move(pd_keys),
                                            std::move(pd_vals));
-        auto dep_rows = co_await std::move(pdf);
+        std::pmr::vector<components::vector::data_chunk_t> dep_batches = co_await std::move(pdf);
+
+        std::size_t dep_row_count = 0;
+        for (const auto& chunk : dep_batches)
+            dep_row_count += chunk.size();
 
         // ABORT-on-error gate: validate dependents BEFORE the first mutating
         // delete/append below, so a rejected DROP leaves the catalog untouched.
         std::pmr::vector<std::pair<int, catalog::oid_t>> dependents{resource_};
-        dependents.reserve(dep_rows.size());
-        for (const auto& dep_row : dep_rows) {
-            if (dep_row.size() < 2 || dep_row[0].is_null() || dep_row[1].is_null())
+        dependents.reserve(dep_row_count);
+        for (auto& chunk : dep_batches) {
+            if (chunk.column_count() < 2)
                 continue;
-            const auto dep_cls = static_cast<catalog::oid_t>(dep_row[0].value<std::uint32_t>());
-            const auto dep_oid = static_cast<catalog::oid_t>(dep_row[1].value<std::uint32_t>());
-            dependents.emplace_back(static_cast<int>(dep_cls), dep_oid);
+            for (uint64_t i = 0; i < chunk.size(); ++i) {
+                auto d0 = chunk.value(0, i);
+                auto d1 = chunk.value(1, i);
+                if (d0.is_null() || d1.is_null())
+                    continue;
+                const auto dep_cls = static_cast<catalog::oid_t>(d0.value<std::uint32_t>());
+                const auto dep_oid = static_cast<catalog::oid_t>(d1.value<std::uint32_t>());
+                dependents.emplace_back(static_cast<int>(dep_cls), dep_oid);
+            }
         }
         auto ec_cascade =
             components::catalog::alter_column_validators::validate_cascade_dependencies(resource_, dependents);
@@ -143,80 +169,51 @@ namespace components::operators {
             }
         }
 
-        for (const auto& dep_row : dep_rows) {
-            if (dep_row.size() < 2 || dep_row[0].is_null() || dep_row[1].is_null())
+        // Collect every dependent-scrub delete across all dep_rows into one
+        // batched call. dep_batches was already awaited above, so no spec here
+        // depends on an intervening read; only the sends are hoisted.
+        std::pmr::vector<services::disk::pg_catalog_delete_spec_t> dep_specs(resource_);
+        dep_specs.reserve(dep_row_count * 4);
+        for (auto& chunk : dep_batches) {
+            if (chunk.column_count() < 2)
                 continue;
-            const auto dep_cls = static_cast<catalog::oid_t>(dep_row[0].value<std::uint32_t>());
-            const auto dep_oid = static_cast<catalog::oid_t>(dep_row[1].value<std::uint32_t>());
-            if (dep_cls == catalog::well_known_oid::pg_class_table) {
-                // Dependent index: scrub pg_index (by indexrelid=oid_col_idx 0),
-                // pg_depend.objid (idx 1), pg_depend.refobjid (idx 3), pg_class.oid.
-                auto [_i1, i1f] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                                   exec_ctx,
-                                                   pg_idx_oid,
-                                                   std::int64_t{0},
-                                                   dep_oid);
-                co_await std::move(i1f);
-                if (ctx->txn.transaction_id != 0)
-                    ctx->pg_catalog_delete_tables.insert(pg_idx_oid);
-                auto [_i2, i2f] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                                   exec_ctx,
-                                                   pg_dep_oid,
-                                                   std::int64_t{1},
-                                                   dep_oid);
-                co_await std::move(i2f);
-                if (ctx->txn.transaction_id != 0)
-                    ctx->pg_catalog_delete_tables.insert(pg_dep_oid);
-                auto [_i3, i3f] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                                   exec_ctx,
-                                                   pg_dep_oid,
-                                                   std::int64_t{3},
-                                                   dep_oid);
-                co_await std::move(i3f);
-                if (ctx->txn.transaction_id != 0)
-                    ctx->pg_catalog_delete_tables.insert(pg_dep_oid);
-                auto [_i4, i4f] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                                   exec_ctx,
-                                                   pg_class_oid,
-                                                   std::int64_t{0},
-                                                   dep_oid);
-                co_await std::move(i4f);
-                if (ctx->txn.transaction_id != 0)
-                    ctx->pg_catalog_delete_tables.insert(pg_class_oid);
-            } else if (dep_cls == catalog::well_known_oid::pg_constraint_table) {
-                // Dependent constraint: scrub pg_constraint + pg_depend rows.
-                auto [_c1, c1f] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                                   exec_ctx,
-                                                   pg_con_oid,
-                                                   std::int64_t{0},
-                                                   dep_oid);
-                co_await std::move(c1f);
-                if (ctx->txn.transaction_id != 0)
-                    ctx->pg_catalog_delete_tables.insert(pg_con_oid);
-                auto [_c2, c2f] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                                   exec_ctx,
-                                                   pg_dep_oid,
-                                                   std::int64_t{1},
-                                                   dep_oid);
-                co_await std::move(c2f);
-                if (ctx->txn.transaction_id != 0)
-                    ctx->pg_catalog_delete_tables.insert(pg_dep_oid);
-                auto [_c3, c3f] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                                   exec_ctx,
-                                                   pg_dep_oid,
-                                                   std::int64_t{3},
-                                                   dep_oid);
-                co_await std::move(c3f);
-                if (ctx->txn.transaction_id != 0)
-                    ctx->pg_catalog_delete_tables.insert(pg_dep_oid);
+            for (uint64_t i = 0; i < chunk.size(); ++i) {
+                auto d0 = chunk.value(0, i);
+                auto d1 = chunk.value(1, i);
+                if (d0.is_null() || d1.is_null())
+                    continue;
+                const auto dep_cls = static_cast<catalog::oid_t>(d0.value<std::uint32_t>());
+                const auto dep_oid = static_cast<catalog::oid_t>(d1.value<std::uint32_t>());
+                if (dep_cls == catalog::well_known_oid::pg_class_table) {
+                    // Dependent index: scrub pg_index (by indexrelid=oid_col_idx 0),
+                    // pg_depend.objid (idx 1), pg_depend.refobjid (idx 3), pg_class.oid.
+                    dep_specs.push_back({pg_idx_oid, std::int64_t{0}, dep_oid});
+                    dep_specs.push_back({pg_dep_oid, std::int64_t{1}, dep_oid});
+                    dep_specs.push_back({pg_dep_oid, std::int64_t{3}, dep_oid});
+                    dep_specs.push_back({pg_class_oid, std::int64_t{0}, dep_oid});
+                    if (ctx->txn.transaction_id != 0) {
+                        ctx->pg_catalog_delete_tables.insert(pg_idx_oid);
+                        ctx->pg_catalog_delete_tables.insert(pg_dep_oid);
+                        ctx->pg_catalog_delete_tables.insert(pg_class_oid);
+                    }
+                } else if (dep_cls == catalog::well_known_oid::pg_constraint_table) {
+                    // Dependent constraint: scrub pg_constraint + pg_depend rows.
+                    dep_specs.push_back({pg_con_oid, std::int64_t{0}, dep_oid});
+                    dep_specs.push_back({pg_dep_oid, std::int64_t{1}, dep_oid});
+                    dep_specs.push_back({pg_dep_oid, std::int64_t{3}, dep_oid});
+                    if (ctx->txn.transaction_id != 0) {
+                        ctx->pg_catalog_delete_tables.insert(pg_con_oid);
+                        ctx->pg_catalog_delete_tables.insert(pg_dep_oid);
+                    }
+                }
             }
+        }
+        if (!dep_specs.empty()) {
+            auto [_dep, depf] = actor_zeta::send(ctx->disk_address,
+                                                 &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
+                                                 exec_ctx,
+                                                 std::move(dep_specs));
+            co_await std::move(depf);
         }
 
         // soft-delete the column: drop original pg_attribute row,

@@ -11,7 +11,7 @@ namespace services::disk {
     // storage_entry_sync pointer — serialises against agent-0's compact path
     // (checkpoint/vacuum/maybe_cleanup_inner) running on the scheduler_disk_
     // threads, avoiding a borrowed-pointer race. transaction_data{} = "see all
-    // committed". scan_by_key / read_rows_by_key add one hop:
+    // committed". read_chunks_by_key adds one hop:
     // storage_column_names_inner resolves column NAMES to indices, then the
     // filter is built manager-side and shipped to storage_scan_batched_inner.
 
@@ -623,96 +623,75 @@ namespace services::disk {
         co_return batch;
     }
 
-    // ---------------------------------------------------------------------------
-    // scan_by_key — pure storage primitive, oid-keyed.
-    // ---------------------------------------------------------------------------
-
-    manager_disk_t::unique_future<std::pmr::vector<std::int64_t>>
-    manager_disk_t::scan_by_key(execution_context_t ctx,
-                                components::catalog::oid_t table_oid,
-                                std::pmr::vector<std::string> key_col_names,
-                                std::pmr::vector<components::types::logical_value_t> key_values) {
-        std::pmr::vector<std::int64_t> out(resource());
-        if (key_col_names.size() != key_values.size() || key_col_names.empty()) {
+    // Batched keyed scan for one table_oid. Every key routes to the SAME owning
+    // agent (keyed by table_oid), so the per-key loop runs intra-agent: one
+    // scan_by_keys_inner message carries the whole batch and the agent resolves the
+    // shared key column names to indices once. result[i] corresponds to keys[i].
+    manager_disk_t::unique_future<std::pmr::vector<std::pmr::vector<std::int64_t>>>
+    manager_disk_t::scan_by_keys(execution_context_t ctx,
+                                 components::catalog::oid_t table_oid,
+                                 std::pmr::vector<std::string> key_col_names,
+                                 components::vector::data_chunk_t keys) {
+        std::pmr::vector<std::pmr::vector<std::int64_t>> out(resource());
+        // INVARIANT: result.size() == keys.size() on EVERY path — one (possibly
+        // empty) row per input key, in input order, so result[i] always maps to
+        // keys[i]. Consumers (operator_fk_check / operator_fk_cascade) index
+        // result[i] positionally and treat an empty row as "no parent match", so a
+        // short outer vector would silently skip checks. No-key-columns, no-agents
+        // and null-agent paths therefore still emit keys.size() empty rows rather
+        // than a 0-size vector. (Per-key arity / unknown column is handled
+        // agent-side, also yielding empty rows in result order.) keys.empty()
+        // collapses to an empty result, which is keys.size()==0 — still the invariant.
+        auto fill_empty_rows = [&]() {
+            for (std::size_t i = 0; i < keys.size(); ++i) {
+                out.emplace_back();
+            }
+        };
+        if (keys.empty() || key_col_names.empty()) {
+            fill_empty_rows();
             co_return out;
         }
-
-        // Two mailbox round-trips (see file header): column names — name→index
-        // resolution happens manager-side on the result — then the filtered scan.
-        if (agents_.empty())
+        if (agents_.empty()) {
+            fill_empty_rows();
             co_return out;
+        }
         const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
         auto& agent = agents_[idx];
-        if (agent == nullptr)
+        if (agent == nullptr) {
+            fill_empty_rows();
             co_return out;
-
-        auto [names_ns, names_fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                  &agent_disk_t::storage_column_names_inner,
-                                                                  table_oid);
-        if (names_ns) {
-            scheduler_disk_->enqueue(agent.get());
-        }
-        auto all_names = co_await std::move(names_fut);
-        if (all_names.empty())
-            co_return out;
-
-        auto filter = std::make_unique<components::table::conjunction_and_filter_t>();
-        for (std::size_t ki = 0; ki < key_col_names.size(); ++ki) {
-            std::size_t col_idx = all_names.size();
-            for (std::size_t ci = 0; ci < all_names.size(); ++ci) {
-                if (all_names[ci] == key_col_names[ki]) {
-                    col_idx = ci;
-                    break;
-                }
-            }
-            if (col_idx == all_names.size())
-                co_return out;
-            std::pmr::vector<uint64_t> idx_vec(resource());
-            idx_vec.push_back(static_cast<uint64_t>(col_idx));
-            filter->child_filters.push_back(
-                std::make_unique<components::table::constant_filter_t>(components::expressions::compare_type::eq,
-                                                                       key_values[ki],
-                                                                       std::move(idx_vec)));
         }
 
-        auto [scan_ns, scan_fut] =
-            actor_zeta::otterbrix::send(agent->address(),
-                                        &agent_disk_t::storage_scan_batched_inner,
-                                        table_oid,
-                                        std::unique_ptr<components::table::table_filter_t>{std::move(filter)},
-                                        int64_t{-1},
-                                        std::vector<size_t>{},
-                                        ctx.txn);
+        auto [scan_ns, scan_fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                               &agent_disk_t::scan_by_keys_inner,
+                                                               table_oid,
+                                                               std::move(key_col_names),
+                                                               std::move(keys),
+                                                               ctx.txn);
         if (scan_ns) {
             scheduler_disk_->enqueue(agent.get());
         }
-        auto batches = co_await std::move(scan_fut);
-        for (auto& chunk : batches) {
-            for (uint64_t i = 0; i < chunk.size(); ++i) {
-                out.push_back(chunk.row_ids.data<std::int64_t>()[i]);
-            }
-        }
-        co_return out;
+        co_return co_await std::move(scan_fut);
     }
 
-    manager_disk_t::unique_future<std::pmr::vector<std::pmr::vector<components::types::logical_value_t>>>
-    manager_disk_t::read_rows_by_key(execution_context_t ctx,
-                                     components::catalog::oid_t table_oid,
-                                     std::pmr::vector<std::string> key_col_names,
-                                     std::pmr::vector<components::types::logical_value_t> key_values) {
-        using row_t = std::pmr::vector<components::types::logical_value_t>;
-        std::pmr::vector<row_t> out(resource());
+    manager_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+    manager_disk_t::read_chunks_by_key(execution_context_t ctx,
+                                       components::catalog::oid_t table_oid,
+                                       std::pmr::vector<std::string> key_col_names,
+                                       std::pmr::vector<components::types::logical_value_t> key_values) {
+        // Name→index resolution + filtered scan, with the storage_scan_batched_inner
+        // chunks returned as-is (no row-major flatten). Callers read cells via
+        // chunk.value(col_idx, row_idx).
+        std::pmr::vector<components::vector::data_chunk_t> empty(resource());
         if (key_col_names.size() != key_values.size() || key_col_names.empty())
-            co_return out;
+            co_return empty;
 
-        // Two mailbox round-trips (see file header): column names — name→index
-        // resolution happens manager-side on the result — then the filtered scan.
         if (agents_.empty())
-            co_return out;
+            co_return empty;
         const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
         auto& agent = agents_[idx];
         if (agent == nullptr)
-            co_return out;
+            co_return empty;
 
         auto [names_ns, names_fut] = actor_zeta::otterbrix::send(agent->address(),
                                                                   &agent_disk_t::storage_column_names_inner,
@@ -722,7 +701,7 @@ namespace services::disk {
         }
         auto all_names = co_await std::move(names_fut);
         if (all_names.empty())
-            co_return out;
+            co_return empty;
 
         auto filter = std::make_unique<components::table::conjunction_and_filter_t>();
         for (std::size_t ki = 0; ki < key_col_names.size(); ++ki) {
@@ -734,7 +713,7 @@ namespace services::disk {
                 }
             }
             if (col_idx == all_names.size())
-                co_return out;
+                co_return empty;
             std::pmr::vector<uint64_t> idx_vec(resource());
             idx_vec.push_back(static_cast<uint64_t>(col_idx));
             filter->child_filters.push_back(
@@ -754,18 +733,7 @@ namespace services::disk {
         if (scan_ns) {
             scheduler_disk_->enqueue(agent.get());
         }
-        auto batches = co_await std::move(scan_fut);
-        for (auto& chunk : batches) {
-            for (uint64_t i = 0; i < chunk.size(); ++i) {
-                row_t row(resource());
-                row.reserve(chunk.column_count());
-                for (uint64_t c = 0; c < chunk.column_count(); ++c) {
-                    row.push_back(chunk.value(c, i));
-                }
-                out.push_back(std::move(row));
-            }
-        }
-        co_return out;
+        co_return co_await std::move(scan_fut);
     }
 
 } // namespace services::disk

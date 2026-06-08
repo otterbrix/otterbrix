@@ -192,6 +192,12 @@ namespace components::index {
         }
     }
 
+    void index_engine_t::revert_delete(uint64_t txn_id) {
+        for (auto& index : storage_) {
+            index->revert_delete(txn_id);
+        }
+    }
+
     void index_engine_t::cleanup_versions(uint64_t lowest_active) {
         for (auto& index : storage_) {
             index->cleanup_versions(lowest_active);

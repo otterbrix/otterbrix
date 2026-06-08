@@ -66,6 +66,7 @@ namespace components::table {
         void commit_append(uint64_t commit_id, int64_t row_start, uint64_t count);
         void revert_append(int64_t row_start, uint64_t count);
         void commit_all_deletes(uint64_t txn_id, uint64_t commit_id);
+        void revert_all_deletes(uint64_t txn_id);
         void scan_table_segment(int64_t start_row,
                                 uint64_t count,
                                 const std::function<void(vector::data_chunk_t& chunk)>& function);

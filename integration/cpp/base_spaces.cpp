@@ -6,7 +6,9 @@
 #include <core/executor.hpp>
 #include <core/file/file_handle.hpp>
 #include <core/file/local_file_system.hpp>
+#include <cstdint>
 #include <memory>
+#include <set>
 #include <services/disk/manager_disk.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <services/index/index_agent_disk.hpp>
@@ -54,9 +56,16 @@ namespace otterbrix {
 
         auto index_definitions = std::pmr::vector<components::logical_plan::node_create_index_ptr>(&resource);
 
-        // Read WAL records via wal_reader_t
+        // Read WAL records via wal_reader_t. Capture the union of committed txn
+        // ids alongside the records: the bitcask index txn-log recover gate
+        // (M1.1) needs it to discard frames belonging to transactions whose WAL
+        // commit marker never landed (index txn-log frames are durable BEFORE the
+        // WAL commit marker, so an uncommitted txn's index entries could otherwise
+        // survive a crash). Threaded by VALUE through the single-threaded
+        // pre-scheduler bootstrap window down to each bitcask agent.
+        std::set<std::uint64_t> committed_txn_ids;
         services::wal::wal_reader_t wal_reader(config.wal, log_);
-        auto wal_records = wal_reader.read_committed_records(last_wal_id);
+        auto wal_records = wal_reader.read_committed_records(last_wal_id, &committed_txn_ids);
 
         trace(log_,
               "spaces::PHASE 1 complete - loaded {} index definitions, {} WAL records",
@@ -118,9 +127,11 @@ namespace otterbrix {
         // guards in dispatcher and disk manager skip every WAL round-trip at no cost.
         auto effective_wal_address = config.wal.on ? manager_wal_address : actor_zeta::address_t::empty_address();
 
-        manager_dispatcher_->sync(std::make_tuple(effective_wal_address, manager_disk_address, manager_index_address));
+        manager_dispatcher_->sync(services::dispatcher::manager_dispatcher_t::sync_pack{
+            effective_wal_address, manager_disk_address, manager_index_address});
 
-        wal_ptr->sync(std::make_tuple(actor_zeta::address_t(manager_disk_address), manager_dispatcher_->address()));
+        wal_ptr->sync(services::wal::wal_sync_pack_t{
+            actor_zeta::address_t(manager_disk_address), manager_dispatcher_->address(), manager_index_address});
 
         // Publish the dispatcher address into manager_disk / manager_index so the
         // GC-ack path (manager_disk → dispatcher → manager_wal truncate) has a
@@ -150,10 +161,10 @@ namespace otterbrix {
         if (disk_ptr) {
             // Pass WAL address: disk uses this to write pg_catalog WAL records inline from
             // append_pg_catalog_row.
-            disk_ptr->sync(std::make_tuple(effective_wal_address));
+            disk_ptr->sync(services::disk::manager_disk_t::disk_sync_pack_t{effective_wal_address});
         }
 
-        manager_index_->sync(std::make_tuple(manager_disk_address));
+        manager_index_->sync(services::index::index_sync_pack_t{manager_disk_address});
 
         // Replay physical WAL records directly to storage (before schedulers start). Group
         // by oid: system-table (oid < FIRST_USER_OID) records are replayed first
@@ -357,9 +368,12 @@ namespace otterbrix {
             }
         }
 
-        // Must run pre-scheduler-start while single-threaded.
+        // Must run pre-scheduler-start while single-threaded. committed_txn_ids
+        // travels by value into bootstrap_indexes_sync (and from there into each
+        // spawned bitcask agent) — legal during this single-threaded bootstrap
+        // window, no cross-actor sharing.
         if (disk_ptr && manager_index_) {
-            bootstrap_indexes_sync(config.disk);
+            bootstrap_indexes_sync(config.disk, committed_txn_ids);
         }
 
         scheduler_dispatcher_->start();
@@ -418,7 +432,8 @@ namespace otterbrix {
     // to an existing index_engine_t and does not mint one on the fly.
     // Errors propagate via log+return — scan helpers return empty on internal
     // failure, bootstrap_index_sync skips malformed rows, no throw escapes.
-    void base_otterbrix_t::bootstrap_indexes_sync(const configuration::config_disk& disk_config) {
+    void base_otterbrix_t::bootstrap_indexes_sync(const configuration::config_disk& disk_config,
+                                                  const std::set<std::uint64_t>& committed_txn_ids) {
         auto live_tables = manager_disk_->scan_live_table_oids_sync();
         for (auto oid : live_tables) {
             manager_index_->bootstrap_engine_sync(oid);
@@ -440,6 +455,15 @@ namespace otterbrix {
             // Spawn args must match manager_index_t::create_index so the agent is
             // equivalent to one from the runtime DDL path. Ctor takes a non-pmr
             // index_name_t (std::string) but row.name is pmr::string, hence the copy.
+            //
+            // Final arg: the WAL committed-txn set, used by the bitcask agent's
+            // txn-log recover gate. Materialised here as a pmr::set on this
+            // instance's resource (the resource the agent and its index store).
+            // A copy of the committed ids per agent — legal value transfer during
+            // the single-threaded bootstrap window.
+            std::pmr::set<std::uint64_t> committed_for_agent(committed_txn_ids.begin(),
+                                                             committed_txn_ids.end(),
+                                                             &resource);
             auto agent = actor_zeta::spawn<services::index::index_agent_disk_t>(
                 &resource,
                 disk_config.path,
@@ -449,7 +473,8 @@ namespace otterbrix {
                 disk_config.bitcask_flush_threshold,
                 disk_config.bitcask_segment_record_limit,
                 disk_config.btree_flush_threshold,
-                log_);
+                log_,
+                std::move(committed_for_agent));
             auto agent_addr = agent->address();
 
             manager_index_->bootstrap_index_sync(row.table_oid,

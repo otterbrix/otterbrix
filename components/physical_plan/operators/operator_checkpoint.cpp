@@ -1,6 +1,11 @@
 #include "operator_checkpoint.hpp"
 
+#include <components/catalog/catalog_oids.hpp>
 #include <components/context/context.hpp>
+#include <components/vector/data_chunk.hpp>
+
+#include <cstdint>
+#include <memory>
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
@@ -48,6 +53,60 @@ namespace components::operators {
                                                ctx->session,
                                                checkpoint_wal_id);
             co_await std::move(wtf);
+        }
+
+        // Index rebuild. This MUST run AFTER checkpoint_all: checkpoint_inner
+        // compact()s each table's on-disk storage, which renumbers row ids
+        // (0-based, gap-free post-compact). The in-memory index engines hold
+        // POSITIONAL row refs into the pre-compact layout, so leaving them as-is
+        // would make every post-checkpoint index_scan return stale/wrong rows.
+        // repopulate_table clears the on-disk index backing AND the in-memory
+        // engine before re-inserting, so both btree duplicate-growth and
+        // disk_hash wrong-row drift are wiped in one pass. Sequential per-oid is
+        // fine: checkpoint is a cold, exclusive operation.
+        if (ctx->index_address != actor_zeta::address_t::empty_address()) {
+            std::pmr::vector<components::catalog::oid_t> indexed_oids{resource_};
+            {
+                auto [_io, iof] = actor_zeta::send(ctx->index_address,
+                                                   &services::index::manager_index_t::all_indexed_oids,
+                                                   ctx->session);
+                indexed_oids = co_await std::move(iof);
+            }
+
+            for (const auto table_oid : indexed_oids) {
+                std::uint64_t total = 0;
+                {
+                    auto [_tr, trf] = actor_zeta::send(ctx->disk_address,
+                                                       &services::disk::manager_disk_t::storage_total_rows,
+                                                       ctx->session,
+                                                       table_oid);
+                    total = co_await std::move(trf);
+                }
+
+                // total==0 (table emptied by compact) still repopulates: the
+                // clear step inside repopulate_table wipes stale index entries.
+                // storage_scan_segment returns an empty chunk for count==0, which
+                // is exactly what repopulate_table expects.
+                std::unique_ptr<components::vector::data_chunk_t> scan_data;
+                {
+                    auto [_ss, ssf] = actor_zeta::send(ctx->disk_address,
+                                                       &services::disk::manager_disk_t::storage_scan_segment,
+                                                       ctx->session,
+                                                       table_oid,
+                                                       std::int64_t{0},
+                                                       total);
+                    scan_data = co_await std::move(ssf);
+                }
+
+                auto [_rp, rpf] = actor_zeta::send(ctx->index_address,
+                                                   &services::index::manager_index_t::repopulate_table,
+                                                   ctx->session,
+                                                   table_oid,
+                                                   std::move(scan_data),
+                                                   total,
+                                                   ctx->session_tz);
+                co_await std::move(rpf);
+            }
         }
 
         mark_executed();

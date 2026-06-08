@@ -3,6 +3,7 @@
 #include <components/catalog/ddl_metadata_builder.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
+#include <components/vector/data_chunk.hpp>
 #include <services/disk/manager_disk.hpp>
 
 #include <cstdint>
@@ -65,45 +66,53 @@ namespace components::operators {
         std::pmr::vector<types::logical_value_t> r_vals(resource_);
         r_vals.emplace_back(toid_lv);
         auto [_r, rf] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::read_rows_by_key,
+                                         &services::disk::manager_disk_t::read_chunks_by_key,
                                          exec_ctx,
                                          pg_computed_column,
                                          std::move(r_keys),
                                          std::move(r_vals));
-        auto rows = co_await std::move(rf);
+        auto batches = co_await std::move(rf);
 
         // pick the latest live row matching attoid_ (max attversion AND attrefcount > 0).
         std::int64_t max_version = -1;
         catalog::oid_t live_attoid = catalog::INVALID_OID;
         catalog::oid_t live_atttypid = catalog::INVALID_OID;
         bool found_live = false;
-        for (const auto& row : rows) {
-            if (row.size() < 7)
+        for (auto& chunk : batches) {
+            if (chunk.column_count() < 7)
                 continue;
-            if (row[1].is_null() || row[5].is_null() || row[6].is_null())
-                continue;
-            const auto row_attoid = static_cast<catalog::oid_t>(row[1].value<std::uint32_t>());
-            // Match by attoid when enrich stamped it; otherwise fall back to
-            // matching by attname (column_name_).
-            if (attoid_ != catalog::INVALID_OID) {
-                if (row_attoid != attoid_)
+            for (uint64_t i = 0; i < chunk.size(); ++i) {
+                auto attoid_v = chunk.value(1, i);
+                auto attversion_v = chunk.value(5, i);
+                auto refcount_v = chunk.value(6, i);
+                if (attoid_v.is_null() || attversion_v.is_null() || refcount_v.is_null())
                     continue;
-            } else {
-                if (row[2].is_null())
+                const auto row_attoid = static_cast<catalog::oid_t>(attoid_v.value<std::uint32_t>());
+                // Match by attoid when enrich stamped it; otherwise fall back to
+                // matching by attname (column_name_).
+                if (attoid_ != catalog::INVALID_OID) {
+                    if (row_attoid != attoid_)
+                        continue;
+                } else {
+                    auto attname_v = chunk.value(2, i);
+                    if (attname_v.is_null())
+                        continue;
+                    if (attname_v.value<std::string_view>() != column_name_)
+                        continue;
+                }
+                const auto v = attversion_v.value<std::int64_t>();
+                const auto rc = refcount_v.value<std::int64_t>();
+                if (rc <= 0)
                     continue;
-                if (row[2].value<std::string_view>() != column_name_)
-                    continue;
-            }
-            const auto v = row[5].value<std::int64_t>();
-            const auto rc = row[6].value<std::int64_t>();
-            if (rc <= 0)
-                continue;
-            if (v > max_version) {
-                max_version = v;
-                live_attoid = row_attoid;
-                live_atttypid = row[3].is_null() ? catalog::INVALID_OID
-                                                 : static_cast<catalog::oid_t>(row[3].value<std::uint32_t>());
-                found_live = true;
+                if (v > max_version) {
+                    auto atttypid_v = chunk.value(3, i);
+                    max_version = v;
+                    live_attoid = row_attoid;
+                    live_atttypid = atttypid_v.is_null()
+                                        ? catalog::INVALID_OID
+                                        : static_cast<catalog::oid_t>(atttypid_v.value<std::uint32_t>());
+                    found_live = true;
+                }
             }
         }
         if (!found_live) {

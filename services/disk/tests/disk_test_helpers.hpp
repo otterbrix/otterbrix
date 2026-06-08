@@ -8,6 +8,7 @@
 #include <components/context/execution_context.hpp>
 #include <components/context/pg_catalog_swap.hpp>
 #include <components/table/column_definition.hpp>
+#include <components/vector/data_chunk.hpp>
 #include <services/disk/manager_disk.hpp>
 
 #include <limits>
@@ -421,22 +422,24 @@ namespace disk_test_helpers {
         std::pmr::vector<components::types::logical_value_t> reg_vals{&fx.resource};
         reg_vals.emplace_back(toid_lv);
         reg_vals.emplace_back(name_lv);
-        auto rows =
-            fx.invoke(&manager_disk_t::read_rows_by_key, auto_ctx(), pg_cc, std::move(reg_keys), std::move(reg_vals));
+        auto batches =
+            fx.invoke(&manager_disk_t::read_chunks_by_key, auto_ctx(), pg_cc, std::move(reg_keys), std::move(reg_vals));
 
         std::int64_t max_version = -1;
         catalog::oid_t latest_atttypid = catalog::INVALID_OID;
-        for (const auto& row : rows) {
-            if (row.size() < 7)
+        for (const auto& chunk : batches) {
+            if (chunk.column_count() < 7)
                 continue;
-            if (row[5].is_null())
-                continue;
-            const auto v = row[5].template value<std::int64_t>();
-            if (v > max_version) {
-                max_version = v;
-                latest_atttypid = row[3].is_null()
-                                      ? catalog::INVALID_OID
-                                      : static_cast<catalog::oid_t>(row[3].template value<std::uint32_t>());
+            for (std::uint64_t i = 0; i < chunk.size(); ++i) {
+                if (chunk.value(5, i).is_null())
+                    continue;
+                const auto v = chunk.value(5, i).template value<std::int64_t>();
+                if (v > max_version) {
+                    max_version = v;
+                    latest_atttypid = chunk.value(3, i).is_null()
+                                          ? catalog::INVALID_OID
+                                          : static_cast<catalog::oid_t>(chunk.value(3, i).template value<std::uint32_t>());
+                }
             }
         }
 
@@ -484,32 +487,38 @@ namespace disk_test_helpers {
         std::pmr::vector<components::types::logical_value_t> unreg_vals{&fx.resource};
         unreg_vals.emplace_back(toid_lv);
         unreg_vals.emplace_back(name_lv);
-        auto rows = fx.invoke(&manager_disk_t::read_rows_by_key,
-                              auto_ctx(),
-                              pg_cc,
-                              std::move(unreg_keys),
-                              std::move(unreg_vals));
+        auto batches = fx.invoke(&manager_disk_t::read_chunks_by_key,
+                                 auto_ctx(),
+                                 pg_cc,
+                                 std::move(unreg_keys),
+                                 std::move(unreg_vals));
 
         std::int64_t max_version = -1;
         catalog::oid_t live_attoid = catalog::INVALID_OID;
         catalog::oid_t live_atttypid = catalog::INVALID_OID;
         bool found_live = false;
-        for (const auto& row : rows) {
-            if (row.size() < 7)
+        for (const auto& chunk : batches) {
+            if (chunk.column_count() < 7)
                 continue;
-            if (row[5].is_null() || row[6].is_null())
-                continue;
-            const auto v = row[5].template value<std::int64_t>();
-            const auto rc = row[6].template value<std::int64_t>();
-            if (rc <= 0)
-                continue;
-            if (v > max_version) {
-                max_version = v;
-                live_attoid = row[1].is_null() ? catalog::INVALID_OID
-                                               : static_cast<catalog::oid_t>(row[1].template value<std::uint32_t>());
-                live_atttypid = row[3].is_null() ? catalog::INVALID_OID
-                                                 : static_cast<catalog::oid_t>(row[3].template value<std::uint32_t>());
-                found_live = true;
+            for (std::uint64_t i = 0; i < chunk.size(); ++i) {
+                if (chunk.value(5, i).is_null() || chunk.value(6, i).is_null())
+                    continue;
+                const auto v = chunk.value(5, i).template value<std::int64_t>();
+                const auto rc = chunk.value(6, i).template value<std::int64_t>();
+                if (rc <= 0)
+                    continue;
+                if (v > max_version) {
+                    max_version = v;
+                    live_attoid =
+                        chunk.value(1, i).is_null()
+                            ? catalog::INVALID_OID
+                            : static_cast<catalog::oid_t>(chunk.value(1, i).template value<std::uint32_t>());
+                    live_atttypid =
+                        chunk.value(3, i).is_null()
+                            ? catalog::INVALID_OID
+                            : static_cast<catalog::oid_t>(chunk.value(3, i).template value<std::uint32_t>());
+                    found_live = true;
+                }
             }
         }
         if (!found_live)

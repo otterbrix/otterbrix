@@ -8,13 +8,14 @@ namespace components::operators {
     // for manager_dispatcher_t::abort_transaction.
     //
     // Steps (in await_async_and_resume):
-    //   1. Snapshot txn_data via ctx->txn_manager->find_transaction(session)
-    //      *before* abort() purges the active map.
-    //   2. ctx->txn_manager->abort(session) — synchronous.
-    //   3. If txn_data.transaction_id != 0 and disk_address is set: send
+    //   1. txn_abort_drain_msg(session) to the dispatcher (sole owner of
+    //      transaction_manager_t): the handler snapshots txn_data, drains the
+    //      pg_catalog appends, discards delete-tables + backfills, and calls
+    //      abort() — all by value, returning a txn_abort_drain_t.
+    //   2. If txn_data.transaction_id != 0 and disk_address is set: send
     //      storage_revert_appends(execution_context_t{...}, ranges) so any DDL rows
     //      this transaction wrote into pg_catalog tables are tombstoned.
-    //   4. mark_executed().
+    //   3. mark_executed().
     //
     // WAL semantics: there is no wal::abort_txn message; the legacy dispatcher
     // body did not emit any WAL record from abort_transaction (replay simply

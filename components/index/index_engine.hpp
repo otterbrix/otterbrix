@@ -50,6 +50,7 @@ namespace components::index {
         void commit_insert(uint64_t txn_id, uint64_t commit_id);
         void commit_delete(uint64_t txn_id, uint64_t commit_id);
         void revert_insert(uint64_t txn_id);
+        void revert_delete(uint64_t txn_id);
         void cleanup_versions(uint64_t lowest_active);
 
         auto indexes() -> std::vector<std::string>;

@@ -14,14 +14,17 @@ namespace components::operators {
     //   2. manager_index_t::cleanup_all_versions — drop index entries whose
     //      tuple versions were just reclaimed. Called once if index_address
     //      is set.
-    //   3. Iterate pg_class via storage_scan and rebuild/repopulate indexes
-    //      for every user relation (relkind 'r' = regular, 'g' = computing).
-    //      Compact in step 1 changes row positions, so we must:
-    //        a. rebuild_indexes(name)
-    //        b. storage_total_rows(name)        — get post-compact row count
-    //        c. storage_scan_segment(name, 0, total) — read the consolidated rows
-    //        d. insert_rows(ctx, chunk, 0, count) — re-populate index from storage
+    //   3. Iterate pg_class via storage_scan and repopulate indexes for every
+    //      user relation (relkind 'r' = regular, 'g' = computing). Compact in
+    //      step 1 changes row positions, so we must, per oid:
+    //        a. storage_total_rows(oid)            — post-compact row count
+    //        b. storage_scan_segment(oid, 0, total) — read the consolidated rows
+    //        c. repopulate_table(oid, chunk, total) — clear on-disk index backing
+    //           + in-memory engine, then re-insert at post-compact ids with
+    //           txn_id=0 (committed-for-everyone).
     //      pg_class is the source of truth for the set of user relations.
+    //      The txn_id=0 re-insert needs no index-commit; entries inserted under a
+    //      real txn id would stay PENDING-invisible (VACUUM never index-commits).
     //
     // Reads pipeline_context.lowest_active_start_time (set by executor from
     // txn_manager_t) — same value the legacy inline path used.

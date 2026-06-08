@@ -1,5 +1,6 @@
 #include "transaction_manager.hpp"
 
+#include <limits>
 #include <stdexcept>
 
 namespace components::table {
@@ -111,6 +112,40 @@ namespace components::table {
     bool transaction_manager_t::has_active_transactions() const {
         std::lock_guard guard(lock_);
         return !active_.empty();
+    }
+
+    uint64_t transaction_manager_t::lowest_active_snapshot_horizon() const {
+        std::lock_guard guard(lock_);
+        if (active_.empty()) {
+            // Empty active_ returns published_horizon_, NOT an in-flight
+            // commit id. A commit that ALLOCATED a commit_id but has not yet
+            // published sits in in_flight_commits_ (commit() inserts it; publish()
+            // erases it and only THEN bumps published_horizon_). With active_ empty
+            // this function therefore returns published_horizon_ < that pending
+            // commit_id. That cannot reclaim the pending txn's own tombstones early:
+            //   * the DROP-GC remap (operator_commit_transaction) stamps the
+            //     tombstones' dropped_at == commit_id and runs PRE-publish;
+            //   * the agents' sweep keeps a tombstone only while
+            //     dropped_at == commit_id < horizon;
+            //   * horizon only reaches commit_id AFTER this same txn's publish()
+            //     (which is co_awaited AFTER the remap).
+            // So during the pre-publish window horizon < commit_id, the sweep's
+            // strict `<` fails, and the txn's fresh tombstones survive until its
+            // own publish makes the rows visible. No early-reclaim race exists.
+            return published_horizon_.load(std::memory_order_acquire);
+        }
+        // Oldest commit-id horizon any live snapshot can still read below.
+        // Same value space as commit_id / published_horizon_ — used by the
+        // DROP-GC broadcast so the agents' `dropped_at_commit_id < horizon`
+        // sweep compares like with like.
+        uint64_t lowest = std::numeric_limits<uint64_t>::max();
+        for (const auto& [key, txn] : active_) {
+            const auto h = txn->data().snapshot_horizon;
+            if (h < lowest) {
+                lowest = h;
+            }
+        }
+        return lowest;
     }
 
 } // namespace components::table

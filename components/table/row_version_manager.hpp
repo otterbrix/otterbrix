@@ -153,6 +153,7 @@ namespace components::table {
         uint64_t delete_rows(uint64_t transaction_id, int64_t rows[], uint64_t count);
         void commit_delete(uint64_t commit_id, const delete_info& info);
         void commit_all_deletes(uint64_t txn_id, uint64_t commit_id);
+        void revert_all_deletes(uint64_t txn_id);
 
         bool has_deletes() const override;
 
@@ -215,6 +216,7 @@ namespace components::table {
         uint64_t delete_rows(uint64_t vector_idx, uint64_t transaction_id, int64_t rows[], uint64_t count);
         void commit_delete(uint64_t vector_idx, uint64_t commit_id, const delete_info& info);
         void commit_all_deletes(uint64_t txn_id, uint64_t commit_id);
+        void revert_all_deletes(uint64_t txn_id);
 
     private:
         chunk_info* get_chunk_info(uint64_t vector_idx);

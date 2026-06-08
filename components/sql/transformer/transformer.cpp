@@ -2,6 +2,7 @@
 #include "utils.hpp"
 
 #include <components/logical_plan/node_aggregate.hpp>
+#include <components/sql/parser/extension.hpp>
 
 namespace components::sql::transform {
 
@@ -25,8 +26,7 @@ namespace components::sql::transform {
         }
     } // namespace
 
-    transform_result transformer::transform(Node& node) {
-        auto params = logical_plan::make_parameter_node(resource_);
+    logical_plan::node_ptr transformer::transform_statement(Node& node, logical_plan::parameter_node_t* params) {
         logical_plan::node_ptr log_node;
 
         switch (node.type) {
@@ -63,7 +63,7 @@ namespace components::sql::transform {
                 log_node = transform_create_enum_type(pg_cast<CreateEnumStmt>(node));
                 break;
             case T_SelectStmt: {
-                log_node = transform_select(pg_cast<SelectStmt>(node), params.get());
+                log_node = transform_select(pg_cast<SelectStmt>(node), params);
                 // Stamp the primary FROM-clause table as a catalog dependency.
                 // The transformer's aggregate wrapper at the root carries the
                 // (dbname, relname); a future patch can walk joins to add
@@ -75,13 +75,13 @@ namespace components::sql::transform {
                 break;
             }
             case T_UpdateStmt:
-                log_node = transform_update(pg_cast<UpdateStmt>(node), params.get());
+                log_node = transform_update(pg_cast<UpdateStmt>(node), params);
                 break;
             case T_InsertStmt:
-                log_node = transform_insert(pg_cast<InsertStmt>(node), params.get());
+                log_node = transform_insert(pg_cast<InsertStmt>(node), params);
                 break;
             case T_DeleteStmt:
-                log_node = transform_delete(pg_cast<DeleteStmt>(node), params.get());
+                log_node = transform_delete(pg_cast<DeleteStmt>(node), params);
                 break;
             case T_IndexStmt:
                 // TODO: CREATE INDEX needs the parent table resolved — pull
@@ -103,7 +103,7 @@ namespace components::sql::transform {
             case T_CreateTableAsStmt: {
                 auto& cs = pg_cast<CreateTableAsStmt>(node);
                 if (cs.relkind == OBJECT_MATVIEW) {
-                    log_node = transform_create_matview(cs, params.get());
+                    log_node = transform_create_matview(cs, params);
                 } else {
                     error_ = core::error_t(
                         core::error_code_t::sql_parse_error,
@@ -141,11 +141,31 @@ namespace components::sql::transform {
                 }
                 break;
             }
+            case T_ExtensionNode: {
+                // route to the owning extension's transform stage by extension_id
+                auto& ext_node = pg_cast<ExtensionNode>(node);
+                const std::string id = ext_node.extension_id ? ext_node.extension_id : "";
+                const auto* extension = extensions_ ? extensions_->find(id) : nullptr;
+                if (extension != nullptr && extension->transform != nullptr) {
+                    log_node = extension->transform(resource_, &ext_node, params);
+                } else {
+                    error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                           std::pmr::string{"no transformer extension for '" + id + "'", resource_});
+                }
+                break;
+            }
             default:
                 error_ = core::error_t(
                     core::error_code_t::sql_parse_error,
                     std::pmr::string{"Unsupported node type: " + node_tag_to_string(node.type), resource_});
         }
+
+        return log_node;
+    }
+
+    transform_result transformer::transform(Node& node) {
+        auto params = logical_plan::make_parameter_node(resource_);
+        auto log_node = transform_statement(node, params.get());
 
         if (has_error()) {
             return {resource_, std::move(error_)};

@@ -279,7 +279,7 @@ namespace otterbrix {
         std::pmr::monotonic_buffer_resource parser_arena(resource());
         void* parse_result;
         try {
-            parse_result = linitial(raw_parser(&parser_arena, query.c_str()));
+            parse_result = linitial(raw_parser(&parser_arena, query.c_str(), parser_extensions_));
         } catch (const std::exception& exception) {
             return make_cursor(
                 resource(),
@@ -291,7 +291,7 @@ namespace otterbrix {
                                core::error_t(core::error_code_t::sql_parse_error,
                                              std::pmr::string{"unknown parser error", resource()}));
         }
-        transformer local_transformer(resource(), query.c_str());
+        transformer local_transformer(resource(), query.c_str(), &parser_extensions_);
         if (auto result = local_transformer.transform(pg_cell_to_node_cast(parse_result)).finalize();
             result.has_error()) {
             return make_cursor(resource(), result.error());
@@ -312,7 +312,7 @@ namespace otterbrix {
         std::pmr::monotonic_buffer_resource parser_arena(resource());
         void* parse_result;
         try {
-            parse_result = linitial(raw_parser(&parser_arena, query.c_str()));
+            parse_result = linitial(raw_parser(&parser_arena, query.c_str(), parser_extensions_));
         } catch (const std::exception& exception) {
             return make_cursor(
                 resource(),
@@ -324,7 +324,7 @@ namespace otterbrix {
                                core::error_t(core::error_code_t::sql_parse_error,
                                              std::pmr::string{"unknown parser error", resource()}));
         }
-        transformer local_transformer(resource(), query.c_str());
+        transformer local_transformer(resource(), query.c_str(), &parser_extensions_);
         auto binder = local_transformer.transform(pg_cell_to_node_cast(parse_result));
         try {
             for (const auto& [id, value] : params) {
@@ -342,6 +342,11 @@ namespace otterbrix {
         }
         auto& view = std::move(finalized).value();
         return execute_plan(session, std::move(view.node), std::move(view.params));
+    }
+
+    auto wrapper_dispatcher_t::add_parser_extension(components::sql::parser::parser_extension_t extension)
+        -> core::result_wrapper_t<const components::sql::parser::parser_extension_t*> {
+        return parser_extensions_.add(std::move(extension));
     }
 
     auto wrapper_dispatcher_t::set_timezone(const session_id_t& session, std::string timezone_name) -> cursor_t_ptr {

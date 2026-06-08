@@ -9,18 +9,30 @@
 #include <components/logical_plan/param_storage.hpp>
 #include <components/sql/parser/nodes/parsenodes.h>
 
+namespace components::sql::parser {
+    class parser_extension_registry_t;
+} // namespace components::sql::parser
+
 namespace components::sql::transform {
     class transformer {
     public:
-        explicit transformer(std::pmr::memory_resource* resource, const char* raw_sql = nullptr)
+        explicit transformer(std::pmr::memory_resource* resource,
+                             const char* raw_sql = nullptr,
+                             const parser::parser_extension_registry_t* extensions = nullptr)
             : resource_(resource)
             , raw_sql_(raw_sql)
+            , extensions_(extensions)
             , parameter_map_(resource_)
             , parameter_insert_map_(resource_)
             , parameter_insert_rows_(resource_, {})
             , error_(core::error_t::no_error()) {}
 
         transform_result transform(Node& node);
+
+        // Lower a single statement node to a plan node (the dispatch switch);
+        // transform() wraps the result with parameter bookkeeping. Sets the
+        // internal error and returns nullptr on failure.
+        logical_plan::node_ptr transform_statement(Node& node, logical_plan::parameter_node_t* params);
 
         // Parse a bare SQL expression string (e.g. "age > 0") as if it were a WHERE clause.
         // Used to compile stored CHECK constraint expressions for runtime evaluation.
@@ -143,9 +155,7 @@ namespace components::sql::transform {
         // column contributes its name) followed by every operator's key(s).
         // On a table-returning top operator (-> / #>) in this scalar position,
         // or any malformed operand, sets error_ and returns false.
-        bool resolve_jsonb_scalar_key(A_Expr* node,
-                                      const name_collection_t& names,
-                                      expressions::key_t& out_key);
+        bool resolve_jsonb_scalar_key(A_Expr* node, const name_collection_t& names, expressions::key_t& out_key);
         // Recursive worker: appends this chain's path segments (in order) and
         // sets `side` from the base operand. Accepts any nav operator.
         bool collect_jsonb_path(A_Expr* node,
@@ -173,9 +183,9 @@ namespace components::sql::transform {
         // Desugars each key to an IS NOT NULL test on the flattened path, then
         // combines with OR ('?'/'?|') or AND ('?&').
         expressions::expression_ptr transform_jsonb_exists(A_Expr* node,
-                                                          const name_collection_t& names,
-                                                          logical_plan::parameter_node_t* params,
-                                                          std::string_view op);
+                                                           const name_collection_t& names,
+                                                           logical_plan::parameter_node_t* params,
+                                                           std::string_view op);
 
         expressions::expression_ptr
         transform_null_test(NullTest* node, const name_collection_t& names, logical_plan::parameter_node_t* params);
@@ -200,6 +210,7 @@ namespace components::sql::transform {
 
         std::pmr::memory_resource* resource_;
         const char* raw_sql_;
+        const parser::parser_extension_registry_t* extensions_;
         std::pmr::unordered_map<size_t, core::parameter_id_t> parameter_map_;
         std::pmr::unordered_map<size_t, std::pmr::vector<insert_location_t>> parameter_insert_map_;
         vector::data_chunk_t parameter_insert_rows_;

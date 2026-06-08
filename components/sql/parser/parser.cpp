@@ -20,16 +20,21 @@
 */
 
 #include "parser.h"
+#include "extension.hpp"
 #include "gramparse.h"
 #include "pg_functions.h"
 
+#include <optional>
+
 /*
-* raw_parser
-*		Given a query in string form, do lexical and grammatical analysis.
+* base_raw_parser
+*		The core bison/flex parsing path — the "base" grammar layer that drives
+*		base_yyparse (cf. core_yylex / base_yylex). Reached when no registered
+*		parser extension claimed the query (see raw_parser below).
 *
 * Returns a list of raw (un-analyzed) parse trees.
 */
-List* raw_parser(std::pmr::memory_resource* resource, const char* str) {
+static List* base_raw_parser(std::pmr::memory_resource* resource, const char* str) {
     core_yyscan_t yyscanner;
     base_yy_extra_type yyextra;
     yyextra.core_yy_extra.resource = resource;
@@ -60,6 +65,50 @@ List* raw_parser(std::pmr::memory_resource* resource, const char* str) {
         return NIL;
 
     return yyextra.parsetree;
+}
+
+/*
+* raw_parser
+*		Core-only entry point: parses core SQL with no extensions condigured.
+*/
+List* raw_parser(std::pmr::memory_resource* resource, const char* str) {
+    const components::sql::parser::parser_extension_registry_t no_extensions;
+    return raw_parser(resource, str, no_extensions);
+}
+
+/*
+* raw_parser
+*		Primary entry point. The core bison/flex parser runs first, only
+*		syntax the core rejects is offered to `extensions`. If no extension
+*		claims it, the original core-parser error is surfaced.
+*/
+List* raw_parser(std::pmr::memory_resource* resource,
+                 const char* str,
+                 const components::sql::parser::parser_extension_registry_t& extensions) {
+    using namespace components::sql::parser;
+
+    std::optional<parser_exception_t> base_error_opt;
+    try {
+        List* tree = base_raw_parser(resource, str);
+        if (list_length(tree) > 0) {
+            return tree;
+        }
+    } catch (const parser_exception_t& error) {
+        base_error_opt = error;
+    }
+
+    parse_extension_result_t ext_result = extensions.dispatch(resource, str);
+    if (ext_result.has_error()) {
+        throw parser_exception_t(ext_result.error().what.c_str(), "");
+    }
+    if (ext_result.value() != NIL) {
+        return ext_result.value();
+    }
+
+    if (base_error_opt) {
+        throw *base_error_opt;
+    }
+    return NIL;
 }
 
 /*

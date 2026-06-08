@@ -25,6 +25,7 @@
 #include <components/logical_plan/node_drop_index.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/session/session.hpp>
+#include <components/sql/parser/extension.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/types/logical_value.hpp>
 
@@ -111,11 +112,15 @@ namespace otterbrix {
             -> components::cursor::cursor_t_ptr;
         auto set_timezone(const session_id_t& session, std::string timezone_name) -> components::cursor::cursor_t_ptr;
 
+        auto add_parser_extension(components::sql::parser::parser_extension_t extension)
+            -> core::result_wrapper_t<const components::sql::parser::parser_extension_t*>;
+
     private:
         std::pmr::memory_resource* resource_;
         services::dispatcher::manager_dispatcher_t* manager_dispatcher_;
         actor_zeta::scheduler_raw scheduler_;
         log_t log_;
+        components::sql::parser::parser_extension_registry_t parser_extensions_;
         std::atomic_int i = 0;
 
         std::mutex event_loop_mutex_;

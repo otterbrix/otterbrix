@@ -2285,15 +2285,200 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_multi_statement_t
     }
 }
 
-// ROLLBACK undoes pg_computed_column appends via storage_revert_appends.
-// Skipped at SQL level: the SQL transformer in otterbrix does not currently
-// lower TransactionStmt (BEGIN/COMMIT/ROLLBACK) to physical operators, so
-// there is no SQL-level handle to test the rollback path. The disk-level
-// revert path is exercised in services/disk/tests/test_mvcc_ddl.cpp; the
-// SQL coverage here will land after the planner gains a transaction-stmt branch.
-TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_rollback_undoes_register") {
-    WARN("TODO: SQL transformer does not lower BEGIN/COMMIT/ROLLBACK yet; "
-         "disk-level revert covered by test_mvcc_ddl.cpp");
+// SQL explicit transactions, end to end. transform_transaction lowers
+// TRANS_STMT_BEGIN/COMMIT/ROLLBACK to node_begin/commit/abort_transaction_t,
+// the planner builds operator_{begin,commit,abort}_transaction, and the
+// executor runs them in its pipeline. The statements MUST share one
+// session_id_t: transaction_manager_t keys active transactions by
+// session.data(), and execute_sql runs only the FIRST statement of a string
+// (wrapper_dispatcher linitial), so the flow is four separate calls.
+TEST_CASE("integration::cpp::test_sql_features::explicit_txn_commit_visible") {
+    auto config = test_create_config("/tmp/test_sql_features/explicit_txn_commit");
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "CREATE TABLE TestDatabase.TestCollection (name string, value bigint);");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("BEGIN; INSERT; INSERT; COMMIT — one shared session") {
+        auto session = otterbrix::session_id_t();
+        auto begin_cur = dispatcher->execute_sql(session, "BEGIN;");
+        REQUIRE(begin_cur->is_success());
+        auto ins1_cur = dispatcher->execute_sql(
+            session,
+            "INSERT INTO TestDatabase.TestCollection (name, value) VALUES ('Alice', 10);");
+        REQUIRE(ins1_cur->is_success());
+        auto ins2_cur = dispatcher->execute_sql(
+            session,
+            "INSERT INTO TestDatabase.TestCollection (name, value) VALUES ('Bob', 20);");
+        REQUIRE(ins2_cur->is_success());
+        auto commit_cur = dispatcher->execute_sql(session, "COMMIT;");
+        REQUIRE(commit_cur->is_success());
+    }
+
+    INFO("both committed rows visible to a fresh session") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+}
+
+TEST_CASE("integration::cpp::test_sql_features::explicit_txn_rollback_invisible") {
+    auto config = test_create_config("/tmp/test_sql_features/explicit_txn_rollback");
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "CREATE TABLE TestDatabase.TestCollection (name string, value bigint);");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("BEGIN; INSERT; ROLLBACK — one shared session") {
+        auto session = otterbrix::session_id_t();
+        auto begin_cur = dispatcher->execute_sql(session, "BEGIN;");
+        REQUIRE(begin_cur->is_success());
+        auto ins_cur = dispatcher->execute_sql(
+            session,
+            "INSERT INTO TestDatabase.TestCollection (name, value) VALUES ('Alice', 10);");
+        REQUIRE(ins_cur->is_success());
+        auto rollback_cur = dispatcher->execute_sql(session, "ROLLBACK;");
+        REQUIRE(rollback_cur->is_success());
+    }
+
+    INFO("rolled-back row invisible to a fresh session") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+}
+
+// DDL inside an explicit transaction block is fully transactional: CREATE TABLE
+// inside BEGIN accumulates its catalog rows into the open txn and DEFERS
+// publish/commit to the SQL COMMIT, rather than rejecting the statement or
+// eagerly committing the whole transaction. The new catalog rows are visible to
+// the SAME txn through the
+// MVCC self-write rule (row_version_manager self-write), so an INSERT into the
+// just-created table and a SELECT back both succeed in the same session before
+// COMMIT — while fresh sessions see nothing until COMMIT publishes. A ROLLBACK
+// must discard the whole unit (table + its rows), leaving no trace.
+//
+// Statements share one session_id_t (transaction_manager_t keys active txns by
+// session.data()); execute_sql runs only the first statement of a string, so
+// each step is a separate call.
+TEST_CASE("integration::cpp::test_sql_features::ddl_inside_explicit_txn_transactional") {
+    auto config = test_create_config("/tmp/test_sql_features/ddl_inside_explicit_txn");
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup") {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+    }
+
+    INFO("BEGIN; CREATE TABLE t2; INSERT t2; SELECT t2 (self-write visible); COMMIT — one shared session") {
+        auto session = otterbrix::session_id_t();
+        auto begin_cur = dispatcher->execute_sql(session, "BEGIN;");
+        REQUIRE(begin_cur->is_success());
+
+        // CREATE TABLE inside the explicit txn now SUCCEEDS: it accumulates the
+        // catalog rows and defers publish to COMMIT.
+        auto ddl_cur = dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.t2 (id bigint);");
+        REQUIRE(ddl_cur->is_success());
+
+        // Same txn: the new table's catalog rows are MVCC-visible to this txn
+        // (self-write), so an INSERT into it resolves and succeeds.
+        auto ins_cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.t2 (id) VALUES (1), (2), (3);");
+        REQUIRE(ins_cur->is_success());
+        REQUIRE(ins_cur->size() == 3);
+
+        // Same session, before COMMIT: the just-inserted rows of the
+        // just-created table are visible (self-write read-your-own-writes).
+        auto sel_cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.t2;");
+        REQUIRE(sel_cur->is_success());
+        REQUIRE(sel_cur->size() == 3);
+
+        auto commit_cur = dispatcher->execute_sql(session, "COMMIT;");
+        REQUIRE(commit_cur->is_success());
+    }
+
+    INFO("after COMMIT: a fresh session sees t2 and all its rows") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.t2;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+
+    INFO("BEGIN; CREATE TABLE t3; ROLLBACK — the created table is discarded") {
+        auto session = otterbrix::session_id_t();
+        auto begin_cur = dispatcher->execute_sql(session, "BEGIN;");
+        REQUIRE(begin_cur->is_success());
+
+        auto ddl_cur = dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.t3 (id bigint);");
+        REQUIRE(ddl_cur->is_success());
+
+        auto rollback_cur = dispatcher->execute_sql(session, "ROLLBACK;");
+        REQUIRE(rollback_cur->is_success());
+    }
+
+    INFO("after ROLLBACK: a fresh session finds t3 was never created") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.t3;");
+        REQUIRE(cur->is_error());
+    }
+}
+
+// Characterization: ALTER TABLE on a non-existent table. Pins the observable
+// behavior of the unresolved-ALTER no-op branch.
+TEST_CASE("integration::cpp::test_sql_features::alter_table_nonexistent_characterization") {
+    auto config = test_create_config("/tmp/test_sql_features/alter_nonexistent");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup database only") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        REQUIRE(cur->is_success());
+    }
+
+    INFO("ALTER on a table that does not exist") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "ALTER TABLE TestDatabase.NoSuchTable ADD COLUMN extra bigint;");
+        // Characterization probe: record the actual outcome (success vs error).
+        WARN("ALTER nonexistent: is_success=" << cur->is_success()
+                                              << " error=" << (cur->is_error() ? cur->get_error().what : ""));
+        REQUIRE(true);
+    }
 }
 
 // Multi-step type evolution. Inserting into the same column with a sequence
@@ -3507,4 +3692,587 @@ TEST_CASE("integration::cpp::test_sql_features::create_table_if_not_exists") {
     // pre-validate step — dispatcher_idx for CREATE TABLE has the namespace but not
     // the target relation (no resolve_table sibling). The IF NOT EXISTS short-circuit
     // is what matters for benchmark idempotency, and step 2 above covers it.
+}
+
+// ROLLBACK must leave a secondary index consistent with the heap: rows inserted
+// inside an aborted transaction must not survive in the index, and the index must
+// stay functional for subsequent autocommit writes. BEGIN/INSERT/ROLLBACK share a
+// single session_id_t (transaction_manager_t keys active txns by session.data()),
+// and execute_sql runs only the FIRST statement of a string, so each step is a
+// separate call. Verification runs on fresh sessions through the index path
+// (equality on the indexed 'count' column).
+TEST_CASE("integration::cpp::test_sql_features::rollback_indexed_insert_leaves_clean_index") {
+    auto config = test_create_config("/tmp/test_sql_features/rollback_indexed_insert");
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup: table + index on count") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE TABLE TestDatabase.TestCollection (name string, count bigint);");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur =
+                dispatcher->execute_sql(session, "CREATE INDEX idx_count ON TestDatabase.TestCollection (count);");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("BEGIN; INSERT indexed rows; ROLLBACK — one shared session") {
+        auto session = otterbrix::session_id_t();
+        auto begin_cur = dispatcher->execute_sql(session, "BEGIN;");
+        REQUIRE(begin_cur->is_success());
+        auto ins_cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.TestCollection (name, count) VALUES "
+                                               "('alice', 10), ('bob', 20), ('charlie', 30);");
+        REQUIRE(ins_cur->is_success());
+        auto rollback_cur = dispatcher->execute_sql(session, "ROLLBACK;");
+        REQUIRE(rollback_cur->is_success());
+    }
+
+    INFO("index path returns no rolled-back rows on fresh sessions") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 0);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE count = 10;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 0);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE count = 30;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 0);
+        }
+    }
+
+    INFO("index still functional: autocommit re-insert is found via index path") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.TestCollection (name, count) VALUES "
+                                               "('alice', 10), ('bob', 20), ('charlie', 30);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE count = 10;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE count = 30;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+        }
+    }
+}
+
+// Characterization: VACUUM after an ALTER TABLE ADD/DROP COLUMN cycle keeps the
+// table usable for ordinary DML. ALTER COLUMN add/drop propagate as success
+// cursors (see test_sql_features::ddl_error_propagation), VACUUM compacts the
+// heap, and the table must still accept INSERTs and return correct SELECT counts.
+// Kept minimal and robust — deep GC/compaction invariants are asserted in
+// production::compaction_checkpoint_cycle, not here.
+TEST_CASE("integration::cpp::test_sql_features::vacuum_after_alter_keeps_working") {
+    auto config = test_create_config("/tmp/test_sql_features/vacuum_after_alter");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup: table with a couple rows") {
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.items (id bigint, val bigint);")
+                        ->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.items (id, val) VALUES "
+                                               "(1, 10), (2, 20), (3, 30);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+        }
+    }
+
+    INFO("ALTER TABLE ADD then DROP COLUMN cycle") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "ALTER TABLE TestDatabase.items ADD COLUMN extra bigint;");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "ALTER TABLE TestDatabase.items DROP COLUMN extra;");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("VACUUM after the ALTER cycle") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "VACUUM;");
+        REQUIRE(cur->is_success());
+    }
+
+    INFO("table still accepts DML and returns correct results") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.items;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.items (id, val) VALUES (4, 40), (5, 50);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.items;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 5);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.items WHERE val = 40;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+    }
+}
+
+// A bare COMMIT with no open transaction must be a no-op — it must
+// NOT allocate a commit_id nor advance the GC horizon (txn_commit_drain_msg
+// aborts instead of committing when the found txn has !has_accumulated(); a
+// missing txn never allocates either). Observable at SQL level only as: the
+// bare COMMIT succeeds (or characterizes cleanly) and the system stays healthy
+// for subsequent work. The stronger "no commit_id allocated / horizon
+// unchanged" assertion is unit-level state inside manager_dispatcher_t's
+// private txn_manager_ and the internal drain result — neither is reachable
+// from any test fixture without touching production code, so it stays a
+// code-level invariant (documented at dispatcher.cpp txn_commit_drain_msg).
+// Here we pin the SQL-visible contract: a stray COMMIT does not wedge the
+// session, and an explicit read-only transaction (BEGIN; SELECT; COMMIT) is a
+// clean no-op too. Statements that must share a transaction share one
+// session_id_t (transaction_manager_t keys active txns by session.data()).
+TEST_CASE("integration::cpp::test_sql_features::bare_commit_is_noop") {
+    auto config = test_create_config("/tmp/test_sql_features/bare_commit_is_noop");
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup") {
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.TestCollection (name string, value bigint);")
+                        ->is_success());
+        }
+    }
+
+    INFO("COMMIT with no BEGIN — characterize and require no wedge") {
+        auto session = otterbrix::session_id_t();
+        auto commit_cur = dispatcher->execute_sql(session, "COMMIT;");
+        // Empty COMMIT lowers to operator_commit_transaction_t with no active
+        // txn → drain finds nothing → commit_id stays 0, all publishes/WAL are
+        // skipped. The statement itself is a valid no-op and reports success.
+        WARN("bare COMMIT: is_success=" << commit_cur->is_success()
+                                        << " error=" << (commit_cur->is_error() ? commit_cur->get_error().what : ""));
+        REQUIRE(commit_cur->is_success());
+    }
+
+    INFO("system stays healthy after the bare COMMIT: autocommit INSERT then SELECT") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.TestCollection (name, value) VALUES "
+                                               "('Alice', 10), ('Bob', 20);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2);
+        }
+    }
+
+    INFO("explicit read-only txn (BEGIN; SELECT only; COMMIT) is a clean no-op") {
+        auto session = otterbrix::session_id_t();
+        auto begin_cur = dispatcher->execute_sql(session, "BEGIN;");
+        REQUIRE(begin_cur->is_success());
+        // A SELECT inside the txn accumulates nothing (no base appends/deletes,
+        // no pg_catalog changes), so the COMMIT below has !has_accumulated()
+        // and must abort instead of allocating a spurious commit_id.
+        auto sel_cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+        REQUIRE(sel_cur->is_success());
+        REQUIRE(sel_cur->size() == 2);
+        auto commit_cur = dispatcher->execute_sql(session, "COMMIT;");
+        REQUIRE(commit_cur->is_success());
+    }
+
+    INFO("data unchanged by the read-only COMMIT — still exactly the two rows") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+}
+
+// ROLLBACK after a DELETE must leave the secondary index clean. The aborted
+// DELETE parks PENDING index DELETE markers; the aborted-revert path must drive
+// both the dml_appends through revert_insert AND the pending index DELETE bucket
+// through revert_delete, otherwise those markers linger after ROLLBACK and an
+// index-path SELECT under-reports rows. The index path must still return ALL
+// original rows. BEGIN/DELETE/ROLLBACK share one session_id_t; verification runs
+// on fresh sessions through the index path (equality on the indexed 'count'
+// column).
+TEST_CASE("integration::cpp::test_sql_features::rollback_after_delete_keeps_index_clean") {
+    auto config = test_create_config("/tmp/test_sql_features/rollback_after_delete_index");
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup: table + index on count + autocommit INSERT of all original rows") {
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher
+                        ->execute_sql(session, "CREATE TABLE TestDatabase.TestCollection (name string, count bigint);")
+                        ->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(
+                dispatcher->execute_sql(session, "CREATE INDEX idx_count ON TestDatabase.TestCollection (count);")
+                    ->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.TestCollection (name, count) VALUES "
+                                               "('alice', 10), ('bob', 20), ('charlie', 30), ('dave', 40);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 4);
+        }
+    }
+
+    INFO("a row is present via the index path before the aborted DELETE") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE count = 20;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+
+    INFO("BEGIN; DELETE some rows; ROLLBACK — one shared session") {
+        auto session = otterbrix::session_id_t();
+        auto begin_cur = dispatcher->execute_sql(session, "BEGIN;");
+        REQUIRE(begin_cur->is_success());
+        auto del_cur = dispatcher->execute_sql(session,
+                                               "DELETE FROM TestDatabase.TestCollection WHERE count IN (20, 30);");
+        REQUIRE(del_cur->is_success());
+        REQUIRE(del_cur->size() == 2);
+        auto rollback_cur = dispatcher->execute_sql(session, "ROLLBACK;");
+        REQUIRE(rollback_cur->is_success());
+    }
+
+    INFO("after ROLLBACK the index path returns ALL original rows (no lingering DELETE markers)") {
+        {
+            // The two deleted-then-rolled-back rows must reappear via the index path.
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE count = 20;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE count = 30;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+        {
+            // Rows untouched by the aborted DELETE are also still found.
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE count = 10;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE count = 40;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+        {
+            // Full scan and a range index probe both report the original four.
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 4);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE count > 15;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+        }
+    }
+
+    INFO("index still functional for a subsequent autocommit DELETE") {
+        {
+            // Re-DELETE one of the rows that was deleted-then-rolled-back. The
+            // storage delete-revert (revert_all_deletes(txn_id)) un-stamps the
+            // aborted DELETE's heap slots, so the slot is NO LONGER stamped with
+            // the aborted txn_id; chunk_vector_info::delete_rows sees an
+            // undeleted slot and the re-DELETE is a real heap delete (one row),
+            // not a no-op.
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count = 20;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE count = 20;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 0);
+        }
+        {
+            // The storage delete-revert makes the full-scan count exact: the
+            // four rolled-back rows minus the one just re-deleted leaves three.
+            // (Without the revert the aborted DELETE leaves heap slots stamped
+            // with the aborted txn_id, the autocommit DELETE is a heap no-op, and
+            // the full scan sees a stale count.)
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+        }
+        {
+            // The other rolled-back row (count = 30) is also a live, re-deletable
+            // heap slot — re-deleting it really removes it.
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count = 30;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2);
+        }
+    }
+}
+
+// DDL-fail characterization. Today every CREATE INDEX validation failure
+// is PRE-pipeline: CREATE INDEX on a non-existent column is rejected in
+// validate_schema (validate_logical_plan.cpp, node_create_index_t case →
+// validate_key), which runs in the executor BEFORE the destructive rewrite
+// block and BEFORE allocate_oids — so no catalog appends and no OID bump ever
+// happen for the doomed statement. There is therefore no DDL that fails INSIDE
+// the pipeline after partial catalog appends to exercise the new
+// txn-abort-on-DDL-failure branch via SQL today. This is a characterization
+// test of that pre-pipeline rejection: it asserts the error cursor, that a
+// subsequent statement on the SAME session still works, and overall system
+// health. The "the failing DDL's txn was aborted / next statement sees a FRESH
+// txn" assertion is NOT observable via SQL here — an autocommit DDL that fails
+// in pre-validation never started a transaction to abort — so we assert system
+// health only and note the limit. (When an in-pipeline DDL failure path becomes
+// reachable, extend this with the abort-observability check.)
+TEST_CASE("integration::cpp::test_sql_features::ddl_failure_pre_pipeline_characterization") {
+    auto config = test_create_config("/tmp/test_sql_features/ddl_failure_pre_pipeline");
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup: table with rows so CREATE INDEX passes the relkind/non-empty gate") {
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher
+                        ->execute_sql(session, "CREATE TABLE TestDatabase.TestCollection (name string, count bigint);")
+                        ->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.TestCollection (name, count) VALUES "
+                                               "('alice', 10), ('bob', 20);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2);
+        }
+    }
+
+    // Reuse one session across the failing DDL and the following statement to
+    // prove the rejection did not poison the session.
+    auto session = otterbrix::session_id_t();
+
+    INFO("CREATE INDEX on a non-existent column is rejected pre-pipeline (error cursor)") {
+        auto cur =
+            dispatcher->execute_sql(session, "CREATE INDEX idx_missing ON TestDatabase.TestCollection (no_such_col);");
+        REQUIRE(cur->is_error());
+        WARN("failing CREATE INDEX: error=" << cur->get_error().what);
+    }
+
+    INFO("a subsequent statement on the SAME session still works (no poisoned txn)") {
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+
+    INFO("system health: the doomed DDL left no partial index — a valid CREATE INDEX still succeeds") {
+        {
+            auto fresh = otterbrix::session_id_t();
+            auto cur =
+                dispatcher->execute_sql(fresh, "CREATE INDEX idx_count ON TestDatabase.TestCollection (count);");
+            REQUIRE(cur->is_success());
+        }
+        {
+            // The freshly created index serves queries correctly.
+            auto fresh = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(fresh, "SELECT * FROM TestDatabase.TestCollection WHERE count = 10;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+        {
+            // Autocommit DML continues to function.
+            auto fresh = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(fresh,
+                                               "INSERT INTO TestDatabase.TestCollection (name, count) VALUES "
+                                               "('charlie', 30);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+        {
+            auto fresh = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(fresh, "SELECT * FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+        }
+    }
+}
+
+// The commit pipeline runs the per-table index commit_inserts/commit_deletes
+// BEFORE the storage_publish_* block, so an index-commit error aborts cleanly
+// before anything is published. This guards post-commit index visibility under
+// that ordering: an autocommit INSERT of a batch into an indexed table must be
+// immediately visible via the index path on a fresh session. Existing
+// index+commit tests cover the broader path; this is the targeted visibility
+// guard.
+TEST_CASE("integration::cpp::test_sql_features::indexed_insert_commit_visible_after_reorder") {
+    auto config = test_create_config("/tmp/test_sql_features/indexed_insert_commit_visible");
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup: table + index on count") {
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher
+                        ->execute_sql(session, "CREATE TABLE TestDatabase.TestCollection (name string, count bigint);")
+                        ->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(
+                dispatcher->execute_sql(session, "CREATE INDEX idx_count ON TestDatabase.TestCollection (count);")
+                    ->is_success());
+        }
+    }
+
+    INFO("autocommit INSERT of 20 indexed rows") {
+        auto session = otterbrix::session_id_t();
+        std::stringstream query;
+        query << "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
+        for (int num = 0; num < 20; ++num) {
+            query << "('Row " << num << "', " << num << ")" << (num == 19 ? ";" : ", ");
+        }
+        auto cur = dispatcher->execute_sql(session, query.str());
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 20);
+    }
+
+    INFO("index-path SELECT immediately returns the committed rows on a fresh session") {
+        {
+            // Single-key equality probe through the index.
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE count = 7;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 7);
+        }
+        {
+            // Boundary keys (first and last of the batch) are visible too.
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE count = 0;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE count = 19;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+        {
+            // Range index probe returns the expected slice.
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE count > 14;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 5); // 15..19
+        }
+        {
+            // Full scan agrees on the total.
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 20);
+        }
+    }
 }

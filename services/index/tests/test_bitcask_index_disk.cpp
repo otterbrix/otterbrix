@@ -3,8 +3,11 @@
 #include <charconv>
 #include <fstream>
 #include <limits>
+#include <memory_resource>
 #include <mutex>
 #include <random>
+#include <set>
+#include <core/result_wrapper.hpp>
 #include <services/index/bitcask_index_disk.hpp>
 #include <services/index/btree_index_disk.hpp>
 #include <thread>
@@ -18,8 +21,42 @@ namespace {
     constexpr uint64_t test_flush_threshold = 1000;
     constexpr uint64_t test_segment_record_limit = 100;
 
-    bitcask_index_disk_t make_test_index(const std::filesystem::path& path, std::pmr::memory_resource* resource) {
-        return bitcask_index_disk_t(path, resource, test_flush_threshold, test_segment_record_limit);
+    // Empty committed set: the segment-only fixtures below never recover a
+    // txn-log, so the recover gate is never consulted — an empty set is the
+    // correct value, not a fallback (a fresh dir has no txn-log to gate).
+    bitcask_index_disk_t make_test_index(const std::filesystem::path& path,
+                                         std::pmr::memory_resource* resource,
+                                         std::pmr::set<std::uint64_t> committed_txn_ids =
+                                             std::pmr::set<std::uint64_t>{}) {
+        return bitcask_index_disk_t(path,
+                                    resource,
+                                    test_flush_threshold,
+                                    test_segment_record_limit,
+                                    std::move(committed_txn_ids));
+    }
+
+    // Build a committed set from an initializer list using the given resource.
+    std::pmr::set<std::uint64_t> committed_set(std::pmr::memory_resource* resource,
+                                               std::initializer_list<std::uint64_t> ids) {
+        std::pmr::set<std::uint64_t> out(resource);
+        for (auto id : ids) {
+            out.insert(id);
+        }
+        return out;
+    }
+
+    // Simulate the crash window: the durable txn-log frames survive, but the
+    // eagerly-applied segment state and the applied-offset checkpoint do not.
+    // Removing everything except bitcask.txn.log forces the next reopen to
+    // replay the log from offset 0, so the recover gate alone decides which
+    // frames are applied.
+    void wipe_all_but_txn_log(const std::filesystem::path& path) {
+        for (const auto& entry : std::filesystem::directory_iterator(path)) {
+            if (entry.path().filename() == "bitcask.txn.log") {
+                continue;
+            }
+            std::filesystem::remove_all(entry.path());
+        }
     }
 
     size_t count_bitcask_data_files(const std::filesystem::path& path) {
@@ -126,7 +163,10 @@ TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen") {
     std::filesystem::create_directories(path);
 
     {
-        auto index = bitcask_index_disk_t(path, &resource, test_flush_threshold, 1000);
+        // Segment-only fixture: no txn-log is written, so an empty committed
+        // set is the correct value for this recover.
+        auto index =
+            bitcask_index_disk_t(path, &resource, test_flush_threshold, 1000, std::pmr::set<std::uint64_t>{});
         for (int i = 1; i <= 100; ++i) {
             index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
         }
@@ -141,7 +181,8 @@ TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen") {
     REQUIRE(count_bitcask_data_files(path) == 1);
 
     {
-        auto index = bitcask_index_disk_t(path, &resource, test_flush_threshold, 1000);
+        auto index =
+            bitcask_index_disk_t(path, &resource, test_flush_threshold, 1000, std::pmr::set<std::uint64_t>{});
 
         REQUIRE(index.find(logical_value_t(&resource, 1l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 1l)).front() == 1);
@@ -458,7 +499,8 @@ TEST_CASE("services::index::bitcask_index_disk::flush_threshold_persists_without
 
     {
         // flush_threshold = 3, so third operation should trigger flush_if_needed.
-        auto index = bitcask_index_disk_t(path, &resource, 3, 1000);
+        // Segment-only fixture: empty committed set is correct (no txn-log).
+        auto index = bitcask_index_disk_t(path, &resource, 3, 1000, std::pmr::set<std::uint64_t>{});
         index.insert(logical_value_t(&resource, 1l), 10);
         index.insert(logical_value_t(&resource, 2l), 20);
         index.insert(logical_value_t(&resource, 3l), 30);
@@ -551,7 +593,8 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_throws_on_crc_mismatch"
     std::filesystem::create_directories(path);
 
     {
-        auto index = bitcask_index_disk_t(path, &resource, test_flush_threshold, 2);
+        auto index =
+            bitcask_index_disk_t(path, &resource, test_flush_threshold, 2, std::pmr::set<std::uint64_t>{});
         index.insert(logical_value_t(&resource, 1l), 11);
         index.insert(logical_value_t(&resource, 2l), 22);
         index.insert(logical_value_t(&resource, 100l), 100);
@@ -577,7 +620,12 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_throws_on_crc_mismatch"
         REQUIRE(file.good());
     }
 
-    REQUIRE_THROWS_AS((make_test_index(path, &resource)), std::runtime_error);
+    {
+        auto res =
+            bitcask_index_disk_t::create(path, &resource, test_flush_threshold, 2, std::pmr::set<std::uint64_t>{});
+        REQUIRE(res.has_error());
+        REQUIRE(res.error().type == core::error_code_t::index_create_fail);
+    }
 
     std::filesystem::copy_file(backup_path, file_path, std::filesystem::copy_options::overwrite_existing);
     std::filesystem::remove(backup_path);
@@ -636,7 +684,12 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_crc_mismatch_does_not_d
         REQUIRE(file.good());
     }
 
-    REQUIRE_THROWS_AS((make_test_index(path, &resource)), std::runtime_error);
+    {
+        auto res = bitcask_index_disk_t::create(
+            path, &resource, test_flush_threshold, test_segment_record_limit, std::pmr::set<std::uint64_t>{});
+        REQUIRE(res.has_error());
+        REQUIRE(res.error().type == core::error_code_t::index_create_fail);
+    }
 
     const auto intact_after_failed_recovery = read_file_bytes(intact_segment);
     REQUIRE(intact_after_failed_recovery == intact_before);
@@ -773,11 +826,12 @@ TEST_CASE("services::index::bitcask_index_disk::txn_log_recovery_replays_committ
         std::vector<std::pair<logical_value_t, size_t>> inserts;
         inserts.emplace_back(logical_value_t(&resource, 1001l), 11);
         inserts.emplace_back(logical_value_t(&resource, 1002l), 22);
-        index.apply_txn_inserts(5001, inserts);
+        REQUIRE(!index.apply_txn_inserts(5001, inserts).contains_error());
     }
 
     {
-        auto index = make_test_index(path, &resource);
+        // txn 5001 is committed: its frame must replay if the gate is consulted.
+        auto index = make_test_index(path, &resource, committed_set(&resource, {5001}));
         REQUIRE(index.find(logical_value_t(&resource, 1001l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 1001l)).front() == 11);
         REQUIRE(index.find(logical_value_t(&resource, 1002l)).size() == 1);
@@ -796,11 +850,12 @@ TEST_CASE("services::index::bitcask_index_disk::txn_log_applied_checkpoint_preve
         auto index = make_test_index(path, &resource);
         std::vector<std::pair<logical_value_t, size_t>> inserts;
         inserts.emplace_back(logical_value_t(&resource, 2001l), 77);
-        index.apply_txn_inserts(6001, inserts);
+        REQUIRE(!index.apply_txn_inserts(6001, inserts).contains_error());
     }
 
     {
-        auto index = make_test_index(path, &resource);
+        // txn 6001 is committed: replays once, never duplicated across reopens.
+        auto index = make_test_index(path, &resource, committed_set(&resource, {6001}));
         auto rows = index.find(logical_value_t(&resource, 2001l));
         REQUIRE(rows.size() == 1);
         REQUIRE(rows.front() == 77);
@@ -818,15 +873,17 @@ TEST_CASE("services::index::bitcask_index_disk::txn_log_recovery_is_order_indepe
         auto index = make_test_index(path, &resource);
         std::vector<std::pair<logical_value_t, size_t>> first;
         first.emplace_back(logical_value_t(&resource, 3001l), 1);
-        index.apply_txn_inserts(9002, first);
+        REQUIRE(!index.apply_txn_inserts(9002, first).contains_error());
 
         std::vector<std::pair<logical_value_t, size_t>> second;
         second.emplace_back(logical_value_t(&resource, 3002l), 2);
-        index.apply_txn_inserts(9001, second); // lower txn_id, committed later
+        // lower txn_id, committed later
+        REQUIRE(!index.apply_txn_inserts(9001, second).contains_error());
     }
 
     {
-        auto index = make_test_index(path, &resource);
+        // Both txns committed regardless of txn_id order.
+        auto index = make_test_index(path, &resource, committed_set(&resource, {9001, 9002}));
         REQUIRE(index.find(logical_value_t(&resource, 3001l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 3001l)).front() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 3002l)).size() == 1);
@@ -871,6 +928,11 @@ TEST_CASE("services::index::bitcask_index_disk::concurrent_insert_remove_find_st
     constexpr size_t keys_per_thread = key_count / thread_count;
 
     std::atomic<size_t> find_count{0};
+    // Catch2's RunContext is not thread-safe — REQUIRE must not run on
+    // worker threads (TSAN flags the shared assertion counters/message
+    // scopes). Workers record violations here; the main thread REQUIREs
+    // zero after join.
+    std::atomic<size_t> duplicate_row_violations{0};
     std::array<std::unordered_set<size_t>, key_count> expected_after_stress;
 
     auto snapshot = [&](bitcask_index_disk_t& from) {
@@ -891,7 +953,7 @@ TEST_CASE("services::index::bitcask_index_disk::concurrent_insert_remove_find_st
     };
 
     {
-        auto index = bitcask_index_disk_t(path, &resource, 128, 10'000'000);
+        auto index = bitcask_index_disk_t(path, &resource, 128, 10'000'000, std::pmr::set<std::uint64_t>{});
         auto worker = [&](size_t worker_id) {
             std::mt19937_64 rng(0xB17CA5ULL + worker_id * 7919ULL);
             const size_t key_begin = worker_id * keys_per_thread;
@@ -918,7 +980,9 @@ TEST_CASE("services::index::bitcask_index_disk::concurrent_insert_remove_find_st
                         for (auto r : rows) {
                             seen.insert(r);
                         }
-                        REQUIRE(seen.size() == rows.size());
+                        if (seen.size() != rows.size()) {
+                            duplicate_row_violations.fetch_add(1, std::memory_order_relaxed);
+                        }
                     }
                     find_count.fetch_add(1, std::memory_order_relaxed);
                 }
@@ -934,6 +998,7 @@ TEST_CASE("services::index::bitcask_index_disk::concurrent_insert_remove_find_st
             thread.join();
         }
 
+        REQUIRE(duplicate_row_violations.load(std::memory_order_relaxed) == 0);
         REQUIRE(find_count.load(std::memory_order_relaxed) > 0);
         index.force_flush();
         expected_after_stress = snapshot(index);
@@ -949,4 +1014,123 @@ TEST_CASE("services::index::bitcask_index_disk::concurrent_insert_remove_find_st
             }
         }
     }
+}
+
+// Recover gate. apply_txn_inserts writes a durable txn-log frame AND
+// eagerly applies the entries to the active segment. wipe_all_but_txn_log
+// reproduces the crash window: only the durable txn-log survives, so the next
+// reopen replays the log from offset 0 and the committed_txn_ids gate alone
+// decides which frames are applied.
+TEST_CASE("services::index::bitcask_index_disk::recover_gates_uncommitted_txn_frames") {
+    auto resource = std::pmr::synchronized_pool_resource();
+
+    std::filesystem::path path{"/tmp/index_disk/bitcask_recover_gate"};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    constexpr std::uint64_t txn_a = 7001;
+    constexpr std::uint64_t txn_b = 7002;
+
+    {
+        auto index = make_test_index(path, &resource);
+
+        std::vector<std::pair<logical_value_t, size_t>> a_inserts;
+        a_inserts.emplace_back(logical_value_t(&resource, 4001l), 41);
+        a_inserts.emplace_back(logical_value_t(&resource, 4002l), 42);
+        REQUIRE(!index.apply_txn_inserts(txn_a, a_inserts).contains_error());
+
+        std::vector<std::pair<logical_value_t, size_t>> b_inserts;
+        b_inserts.emplace_back(logical_value_t(&resource, 5001l), 51);
+        b_inserts.emplace_back(logical_value_t(&resource, 5002l), 52);
+        REQUIRE(!index.apply_txn_inserts(txn_b, b_inserts).contains_error());
+    }
+
+    // Crash window: keep only the durable txn-log; drop the eagerly-applied
+    // segment state and the applied-offset checkpoint.
+    wipe_all_but_txn_log(path);
+    REQUIRE(std::filesystem::exists(path / "bitcask.txn.log"));
+
+    {
+        // Only txn B committed: A's frame must be skipped, B's applied.
+        auto index = make_test_index(path, &resource, committed_set(&resource, {txn_b}));
+
+        REQUIRE(index.find(logical_value_t(&resource, 4001l)).empty());
+        REQUIRE(index.find(logical_value_t(&resource, 4002l)).empty());
+
+        const auto b_first = index.find(logical_value_t(&resource, 5001l));
+        REQUIRE(b_first.size() == 1);
+        REQUIRE(b_first.front() == 51);
+        const auto b_second = index.find(logical_value_t(&resource, 5002l));
+        REQUIRE(b_second.size() == 1);
+        REQUIRE(b_second.front() == 52);
+    }
+}
+
+// A skipped frame still advances write_applied_log_offset past its end,
+// so it is consumed permanently. Even if a later reopen reports the previously
+// uncommitted txn as committed, its frame is never replayed again.
+TEST_CASE("services::index::bitcask_index_disk::recover_skipped_frames_advance_applied_offset") {
+    auto resource = std::pmr::synchronized_pool_resource();
+
+    std::filesystem::path path{"/tmp/index_disk/bitcask_recover_skip_offset"};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    constexpr std::uint64_t txn_a = 8001;
+    constexpr std::uint64_t txn_b = 8002;
+
+    {
+        auto index = make_test_index(path, &resource);
+
+        std::vector<std::pair<logical_value_t, size_t>> a_inserts;
+        a_inserts.emplace_back(logical_value_t(&resource, 6001l), 61);
+        REQUIRE(!index.apply_txn_inserts(txn_a, a_inserts).contains_error());
+
+        std::vector<std::pair<logical_value_t, size_t>> b_inserts;
+        b_inserts.emplace_back(logical_value_t(&resource, 7001l), 71);
+        REQUIRE(!index.apply_txn_inserts(txn_b, b_inserts).contains_error());
+    }
+
+    wipe_all_but_txn_log(path);
+
+    {
+        // First reopen gates A out; recover advances the applied offset past
+        // every frame, including A's skipped one.
+        auto index = make_test_index(path, &resource, committed_set(&resource, {txn_b}));
+        REQUIRE(index.find(logical_value_t(&resource, 6001l)).empty());
+        REQUIRE(index.find(logical_value_t(&resource, 7001l)).size() == 1);
+    }
+
+    {
+        // Second reopen now reports A committed too, but A's frame was already
+        // consumed (offset advanced past it) — it must NOT come back.
+        auto index = make_test_index(path, &resource, committed_set(&resource, {txn_a, txn_b}));
+        REQUIRE(index.find(logical_value_t(&resource, 6001l)).empty());
+        REQUIRE(index.find(logical_value_t(&resource, 7001l)).size() == 1);
+        REQUIRE(index.find(logical_value_t(&resource, 7001l)).front() == 71);
+    }
+}
+
+// A fresh runtime instance receives an EMPTY committed set (correct value, not a
+// fallback): with no txn-log to gate, normal insert/find works.
+TEST_CASE("services::index::bitcask_index_disk::fresh_instance_with_empty_set_works") {
+    auto resource = std::pmr::synchronized_pool_resource();
+
+    std::filesystem::path path{"/tmp/index_disk/bitcask_fresh_empty_set"};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    REQUIRE_FALSE(std::filesystem::exists(path / "bitcask.txn.log"));
+
+    auto index = make_test_index(path, &resource, std::pmr::set<std::uint64_t>{});
+    index.insert(logical_value_t(&resource, 8001l), 81);
+    index.insert(logical_value_t(&resource, 8002l), 82);
+
+    const auto first = index.find(logical_value_t(&resource, 8001l));
+    REQUIRE(first.size() == 1);
+    REQUIRE(first.front() == 81);
+    const auto second = index.find(logical_value_t(&resource, 8002l));
+    REQUIRE(second.size() == 1);
+    REQUIRE(second.front() == 82);
+    REQUIRE(index.find(logical_value_t(&resource, 9999l)).empty());
 }

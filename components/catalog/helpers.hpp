@@ -48,10 +48,4 @@ namespace components::catalog {
         constexpr std::uint64_t nspname = 1;
     } // namespace pg_namespace_col
 
-    // Resolve `attoids` to attnames by scanning a pg_attribute row set, preserving
-    // input order. Rows without sufficient columns are skipped silently.
-    std::vector<std::string>
-    attoids_to_names(const std::pmr::vector<std::pmr::vector<components::types::logical_value_t>>& attr_rows,
-                     const std::vector<oid_t>& attoids);
-
 } // namespace components::catalog

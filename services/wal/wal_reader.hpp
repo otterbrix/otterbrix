@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -25,11 +27,24 @@ namespace services::wal {
         /// Scans config_.path for database subdirectories, reads all segment files
         /// in each, applies the 2-pass committed-transaction filter, and returns
         /// the merged result sorted by wal_id ascending.
-        std::vector<record_t> read_committed_records(id_t after_wal_id);
+        ///
+        /// When committed_out is non-null, the union of committed transaction ids
+        /// across all scanned databases is written into it. The bitcask index
+        /// txn-log recover gate (M1.1) needs this set to discard frames of
+        /// transactions whose WAL commit marker never landed: index txn-log frames
+        /// are fsync'd durable BEFORE the WAL commit marker, so a crash inside that
+        /// window would otherwise resurrect uncommitted transactions' index
+        /// entries. The set is threaded out (not derived in the index layer) so it
+        /// stays byte-identical with the filter applied here.
+        std::vector<record_t> read_committed_records(id_t after_wal_id,
+                                                     std::set<std::uint64_t>* committed_out = nullptr);
 
     private:
         /// Read all records from segment files in a single database directory.
-        std::vector<record_t> read_database_segments(const std::filesystem::path& db_dir, id_t after_wal_id);
+        /// committed_out, when non-null, receives this database's committed txn ids.
+        std::vector<record_t> read_database_segments(const std::filesystem::path& db_dir,
+                                                     id_t after_wal_id,
+                                                     std::set<std::uint64_t>* committed_out);
 
         configuration::config_wal config_;
         log_t log_;

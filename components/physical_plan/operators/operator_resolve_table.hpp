@@ -52,7 +52,7 @@ namespace components::operators {
 
         // back-pointer form. After resolving, the operator stamps
         // namespace_oid + table_oid onto target_node so the dispatcher's
-        // Pass 2 (validate / enrich) can read it via plan_resolve_index_t.
+        // (validate / enrich) can read it via plan_resolve_index_t.
         operator_resolve_table_t(std::pmr::memory_resource* resource,
                                  log_t log,
                                  components::catalog::oid_t namespace_oid,
@@ -74,7 +74,7 @@ namespace components::operators {
         // When table_oid_ == INVALID_OID we use (input_namespace_oid_,
         // relname_) and resolve table_oid_ inside await_async_and_resume.
         // namespace_oid_ (below) is the *resolved* relnamespace, populated by
-        // the oid-keyed pg_class scan in step 1.
+        // the oid-keyed pg_class scan.
         components::catalog::oid_t table_oid_;
         components::catalog::oid_t input_namespace_oid_{components::catalog::INVALID_OID};
         std::string relname_;

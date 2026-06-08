@@ -8,6 +8,7 @@
 #include <components/context/execution_context.hpp>
 #include <components/context/pg_catalog_swap.hpp>
 #include <components/table/column_definition.hpp>
+#include <components/vector/data_chunk.hpp>
 #include <services/disk/manager_disk.hpp>
 
 #include <limits>
@@ -21,20 +22,28 @@ namespace disk_test_helpers {
     namespace catalog = components::catalog;
     using session_id_t = components::session::session_id_t;
 
+    // These helpers bypass transaction_manager, so there is no real horizon.
+    // Set it to UINT64_MAX so the visibility filter shows every committed row.
+    inline components::table::transaction_data with_open_snapshot(uint64_t txn_id, uint64_t start_time) {
+        components::table::transaction_data td(txn_id, start_time);
+        td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
+        return td;
+    }
+
     inline components::execution_context_t auto_ctx() {
-        return {session_id_t{}, components::table::transaction_data{0, 0}, {}};
+        return {session_id_t{}, with_open_snapshot(0, 0), {}};
     }
 
     inline components::execution_context_t rebuild_ctx() {
-        return {session_id_t{}, components::table::transaction_data{99, 0}, {}};
+        return {session_id_t{}, with_open_snapshot(99, 0), {}};
     }
 
     inline components::execution_context_t txn_ctx() {
-        return {session_id_t{}, components::table::transaction_data{88, 0}, {}};
+        return {session_id_t{}, with_open_snapshot(88, 0), {}};
     }
 
     // Append every write returned by a builder, collecting the resulting
-    // pg_catalog_append_range_t values for a later batched storage_commit_appends call.
+    // pg_catalog_append_range_t values for a later batched storage_publish_commits call.
     template<typename Fx, typename Writes>
     inline void append_writes(Fx& fx,
                               components::execution_context_t ctx,
@@ -53,7 +62,7 @@ namespace disk_test_helpers {
         auto writes = catalog::build_create_namespace_writes(&fx.resource, name, ns_oid);
         std::vector<components::pg_catalog_append_range_t> appends_local;
         append_writes(fx, auto_ctx(), writes, appends_local);
-        fx.invoke(&manager_disk_t::storage_commit_appends,
+        fx.invoke(&manager_disk_t::storage_publish_commits,
                   rebuild_ctx(),
                   std::uint64_t{1000},
                   std::move(appends_local));
@@ -80,7 +89,7 @@ namespace disk_test_helpers {
                                                          relkind_char);
         std::vector<components::pg_catalog_append_range_t> appends_local;
         append_writes(fx, auto_ctx(), writes, appends_local);
-        fx.invoke(&manager_disk_t::storage_commit_appends,
+        fx.invoke(&manager_disk_t::storage_publish_commits,
                   rebuild_ctx(),
                   std::uint64_t{1000},
                   std::move(appends_local));
@@ -103,7 +112,7 @@ namespace disk_test_helpers {
                                                          catalog::relkind::computed);
         std::vector<components::pg_catalog_append_range_t> appends_local;
         append_writes(fx, auto_ctx(), writes, appends_local);
-        fx.invoke(&manager_disk_t::storage_commit_appends,
+        fx.invoke(&manager_disk_t::storage_publish_commits,
                   rebuild_ctx(),
                   std::uint64_t{1000},
                   std::move(appends_local));
@@ -138,8 +147,8 @@ namespace disk_test_helpers {
         auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_index, std::move(valid_row));
         appends_local.push_back(std::move(rng));
         std::set<catalog::oid_t> deletes_local{pg_index};
-        fx.invoke(&manager_disk_t::storage_commit_appends, txn_ctx(), std::uint64_t{1000}, std::move(appends_local));
-        fx.invoke(&manager_disk_t::storage_commit_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
+        fx.invoke(&manager_disk_t::storage_publish_commits, txn_ctx(), std::uint64_t{1000}, std::move(appends_local));
+        fx.invoke(&manager_disk_t::storage_publish_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
         return index_oid;
     }
 
@@ -161,7 +170,7 @@ namespace disk_test_helpers {
         auto writes = catalog::build_create_type_writes(&fx.resource, type_name, ns_oid, type_oid, type_spec);
         std::vector<components::pg_catalog_append_range_t> appends_local;
         append_writes(fx, auto_ctx(), writes, appends_local);
-        fx.invoke(&manager_disk_t::storage_commit_appends,
+        fx.invoke(&manager_disk_t::storage_publish_commits,
                   rebuild_ctx(),
                   std::uint64_t{1000},
                   std::move(appends_local));
@@ -190,7 +199,7 @@ namespace disk_test_helpers {
                                                             cycle);
         std::vector<components::pg_catalog_append_range_t> appends_local;
         append_writes(fx, auto_ctx(), writes, appends_local);
-        fx.invoke(&manager_disk_t::storage_commit_appends,
+        fx.invoke(&manager_disk_t::storage_publish_commits,
                   rebuild_ctx(),
                   std::uint64_t{1000},
                   std::move(appends_local));
@@ -206,7 +215,7 @@ namespace disk_test_helpers {
         auto writes = catalog::build_create_view_writes(&fx.resource, name, ns_oid, view_oid, rule_oid, body_sql);
         std::vector<components::pg_catalog_append_range_t> appends_local;
         append_writes(fx, auto_ctx(), writes, appends_local);
-        fx.invoke(&manager_disk_t::storage_commit_appends,
+        fx.invoke(&manager_disk_t::storage_publish_commits,
                   rebuild_ctx(),
                   std::uint64_t{1000},
                   std::move(appends_local));
@@ -222,7 +231,7 @@ namespace disk_test_helpers {
         auto writes = catalog::build_create_macro_writes(&fx.resource, name, ns_oid, macro_oid, rule_oid, body_sql);
         std::vector<components::pg_catalog_append_range_t> appends_local;
         append_writes(fx, auto_ctx(), writes, appends_local);
-        fx.invoke(&manager_disk_t::storage_commit_appends,
+        fx.invoke(&manager_disk_t::storage_publish_commits,
                   rebuild_ctx(),
                   std::uint64_t{1000},
                   std::move(appends_local));
@@ -249,7 +258,7 @@ namespace disk_test_helpers {
                                                             prorettype);
         std::vector<components::pg_catalog_append_range_t> appends_local;
         append_writes(fx, auto_ctx(), writes, appends_local);
-        fx.invoke(&manager_disk_t::storage_commit_appends,
+        fx.invoke(&manager_disk_t::storage_publish_commits,
                   rebuild_ctx(),
                   std::uint64_t{1000},
                   std::move(appends_local));
@@ -284,7 +293,7 @@ namespace disk_test_helpers {
                                                               check_expr);
         std::vector<components::pg_catalog_append_range_t> appends_local;
         append_writes(fx, auto_ctx(), writes, appends_local);
-        fx.invoke(&manager_disk_t::storage_commit_appends,
+        fx.invoke(&manager_disk_t::storage_publish_commits,
                   rebuild_ctx(),
                   std::uint64_t{1000},
                   std::move(appends_local));
@@ -301,7 +310,7 @@ namespace disk_test_helpers {
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep, std::int64_t{1}, table_oid);
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep, std::int64_t{3}, table_oid);
         std::set<catalog::oid_t> deletes_local{pg_class, pg_attr, pg_dep};
-        fx.invoke(&manager_disk_t::storage_commit_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
+        fx.invoke(&manager_disk_t::storage_publish_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
     }
 
     template<typename Fx>
@@ -312,7 +321,7 @@ namespace disk_test_helpers {
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep, std::int64_t{1}, ns_oid);
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep, std::int64_t{3}, ns_oid);
         std::set<catalog::oid_t> deletes_local{pg_ns, pg_dep};
-        fx.invoke(&manager_disk_t::storage_commit_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
+        fx.invoke(&manager_disk_t::storage_publish_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
     }
 
     template<typename Fx>
@@ -325,7 +334,7 @@ namespace disk_test_helpers {
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep, std::int64_t{1}, index_oid);
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep, std::int64_t{3}, index_oid);
         std::set<catalog::oid_t> deletes_local{pg_idx, pg_cls, pg_dep};
-        fx.invoke(&manager_disk_t::storage_commit_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
+        fx.invoke(&manager_disk_t::storage_publish_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
     }
 
     template<typename Fx>
@@ -338,7 +347,7 @@ namespace disk_test_helpers {
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep, std::int64_t{1}, seq_oid);
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep, std::int64_t{3}, seq_oid);
         std::set<catalog::oid_t> deletes_local{pg_class, pg_seq, pg_dep};
-        fx.invoke(&manager_disk_t::storage_commit_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
+        fx.invoke(&manager_disk_t::storage_publish_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
     }
 
     // pg_rewrite col layout: [0]=oid, [1]=rulename, [2]=ev_class, [3]=ev_type, [4]=ev_action
@@ -352,7 +361,7 @@ namespace disk_test_helpers {
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep, std::int64_t{1}, view_oid);
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep, std::int64_t{3}, view_oid);
         std::set<catalog::oid_t> deletes_local{pg_class, pg_rewrite, pg_dep};
-        fx.invoke(&manager_disk_t::storage_commit_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
+        fx.invoke(&manager_disk_t::storage_publish_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
     }
 
     template<typename Fx>
@@ -363,7 +372,7 @@ namespace disk_test_helpers {
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep, std::int64_t{1}, type_oid);
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_dep, std::int64_t{3}, type_oid);
         std::set<catalog::oid_t> deletes_local{pg_type, pg_dep};
-        fx.invoke(&manager_disk_t::storage_commit_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
+        fx.invoke(&manager_disk_t::storage_publish_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
     }
 
     // Append a pg_computed_column row for a (table, field, type) triple at refcount=1
@@ -389,7 +398,7 @@ namespace disk_test_helpers {
         auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_cc, std::move(row));
         std::vector<components::pg_catalog_append_range_t> appends_local;
         appends_local.push_back(std::move(rng));
-        fx.invoke(&manager_disk_t::storage_commit_appends,
+        fx.invoke(&manager_disk_t::storage_publish_commits,
                   rebuild_ctx(),
                   std::uint64_t{1000},
                   std::move(appends_local));
@@ -413,22 +422,24 @@ namespace disk_test_helpers {
         std::pmr::vector<components::types::logical_value_t> reg_vals{&fx.resource};
         reg_vals.emplace_back(toid_lv);
         reg_vals.emplace_back(name_lv);
-        auto rows =
-            fx.invoke(&manager_disk_t::read_rows_by_key, auto_ctx(), pg_cc, std::move(reg_keys), std::move(reg_vals));
+        auto batches =
+            fx.invoke(&manager_disk_t::read_chunks_by_key, auto_ctx(), pg_cc, std::move(reg_keys), std::move(reg_vals));
 
         std::int64_t max_version = -1;
         catalog::oid_t latest_atttypid = catalog::INVALID_OID;
-        for (const auto& row : rows) {
-            if (row.size() < 7)
+        for (const auto& chunk : batches) {
+            if (chunk.column_count() < 7)
                 continue;
-            if (row[5].is_null())
-                continue;
-            const auto v = row[5].template value<std::int64_t>();
-            if (v > max_version) {
-                max_version = v;
-                latest_atttypid = row[3].is_null()
-                                      ? catalog::INVALID_OID
-                                      : static_cast<catalog::oid_t>(row[3].template value<std::uint32_t>());
+            for (std::uint64_t i = 0; i < chunk.size(); ++i) {
+                if (chunk.value(5, i).is_null())
+                    continue;
+                const auto v = chunk.value(5, i).template value<std::int64_t>();
+                if (v > max_version) {
+                    max_version = v;
+                    latest_atttypid = chunk.value(3, i).is_null()
+                                          ? catalog::INVALID_OID
+                                          : static_cast<catalog::oid_t>(chunk.value(3, i).template value<std::uint32_t>());
+                }
             }
         }
 
@@ -453,7 +464,7 @@ namespace disk_test_helpers {
         auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_cc, std::move(row));
         std::vector<components::pg_catalog_append_range_t> appends_local;
         appends_local.push_back(std::move(rng));
-        fx.invoke(&manager_disk_t::storage_commit_appends,
+        fx.invoke(&manager_disk_t::storage_publish_commits,
                   rebuild_ctx(),
                   std::uint64_t{1000},
                   std::move(appends_local));
@@ -476,32 +487,38 @@ namespace disk_test_helpers {
         std::pmr::vector<components::types::logical_value_t> unreg_vals{&fx.resource};
         unreg_vals.emplace_back(toid_lv);
         unreg_vals.emplace_back(name_lv);
-        auto rows = fx.invoke(&manager_disk_t::read_rows_by_key,
-                              auto_ctx(),
-                              pg_cc,
-                              std::move(unreg_keys),
-                              std::move(unreg_vals));
+        auto batches = fx.invoke(&manager_disk_t::read_chunks_by_key,
+                                 auto_ctx(),
+                                 pg_cc,
+                                 std::move(unreg_keys),
+                                 std::move(unreg_vals));
 
         std::int64_t max_version = -1;
         catalog::oid_t live_attoid = catalog::INVALID_OID;
         catalog::oid_t live_atttypid = catalog::INVALID_OID;
         bool found_live = false;
-        for (const auto& row : rows) {
-            if (row.size() < 7)
+        for (const auto& chunk : batches) {
+            if (chunk.column_count() < 7)
                 continue;
-            if (row[5].is_null() || row[6].is_null())
-                continue;
-            const auto v = row[5].template value<std::int64_t>();
-            const auto rc = row[6].template value<std::int64_t>();
-            if (rc <= 0)
-                continue;
-            if (v > max_version) {
-                max_version = v;
-                live_attoid = row[1].is_null() ? catalog::INVALID_OID
-                                               : static_cast<catalog::oid_t>(row[1].template value<std::uint32_t>());
-                live_atttypid = row[3].is_null() ? catalog::INVALID_OID
-                                                 : static_cast<catalog::oid_t>(row[3].template value<std::uint32_t>());
-                found_live = true;
+            for (std::uint64_t i = 0; i < chunk.size(); ++i) {
+                if (chunk.value(5, i).is_null() || chunk.value(6, i).is_null())
+                    continue;
+                const auto v = chunk.value(5, i).template value<std::int64_t>();
+                const auto rc = chunk.value(6, i).template value<std::int64_t>();
+                if (rc <= 0)
+                    continue;
+                if (v > max_version) {
+                    max_version = v;
+                    live_attoid =
+                        chunk.value(1, i).is_null()
+                            ? catalog::INVALID_OID
+                            : static_cast<catalog::oid_t>(chunk.value(1, i).template value<std::uint32_t>());
+                    live_atttypid =
+                        chunk.value(3, i).is_null()
+                            ? catalog::INVALID_OID
+                            : static_cast<catalog::oid_t>(chunk.value(3, i).template value<std::uint32_t>());
+                    found_live = true;
+                }
             }
         }
         if (!found_live)
@@ -517,14 +534,14 @@ namespace disk_test_helpers {
         auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_cc, std::move(row));
         std::vector<components::pg_catalog_append_range_t> appends_local;
         appends_local.push_back(std::move(rng));
-        fx.invoke(&manager_disk_t::storage_commit_appends,
+        fx.invoke(&manager_disk_t::storage_publish_commits,
                   rebuild_ctx(),
                   std::uint64_t{1000},
                   std::move(appends_local));
         return true;
     }
 
-    // Append pg_attribute row + storage_commit_appends; resolve_table picks up
+    // Append pg_attribute row + storage_publish_commits; resolve_table picks up
     // the new column on the next call (no in-memory user-storage sync needed).
     template<typename Fx>
     catalog::oid_t
@@ -547,7 +564,7 @@ namespace disk_test_helpers {
         auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_attr, std::move(row));
         std::vector<components::pg_catalog_append_range_t> appends_local;
         appends_local.push_back(std::move(rng));
-        fx.invoke(&manager_disk_t::storage_commit_appends,
+        fx.invoke(&manager_disk_t::storage_publish_commits,
                   rebuild_ctx(),
                   std::uint64_t{1000},
                   std::move(appends_local));

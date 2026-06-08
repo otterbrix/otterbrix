@@ -4,6 +4,7 @@ set(SOURCE_${PROJECT_NAME}
         cascade_planner.cpp
         catalog_oids.cpp
         ddl_metadata_builder.cpp
+        alter_column_validators.cpp
         dependency_walker.cpp
         helpers.cpp
         system_table_schemas.cpp

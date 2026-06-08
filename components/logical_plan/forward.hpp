@@ -43,7 +43,7 @@ namespace components::logical_plan {
         create_macro_t,
         drop_macro_t,
         // CREATE MATERIALIZED VIEW (relkind='m'). Carries body_sql + body_plan as
-        // child[0]. Planner derives output schema from body_plan + Pass 1-stamped
+        // child[0]. Planner derives output schema from body_plan + stamped
         // source metadata, then lowers to sequence_t(create_collection +
         // pg_class/pg_attribute/pg_rewrite/pg_depend writes + insert_t).
         create_matview_t,
@@ -70,10 +70,6 @@ namespace components::logical_plan {
         // at runtime starting from a (classid, oid) seed and deletes the
         // transitive closure. Subsumes the dispatcher BFS in execute_ddl.
         dynamic_cascade_delete_t,
-        // GET_SCHEMA: self-resolving leaf that returns one
-        // complex_logical_type per (database, collection) id by reading
-        // pg_namespace+pg_class+pg_attribute through the operator pipeline.
-        get_schema_t,
         // REGISTER_UDF / UNREGISTER_UDF: operator-pipeline
         // replacement for inline manager_dispatcher_t::{register,unregister}_udf.
         // Carries the UDF function payload (or name + arg-type signature for
@@ -85,9 +81,12 @@ namespace components::logical_plan {
         // manager_dispatcher_t::{commit,abort}_transaction. The leaf
         // node carries no fields (session is on pipeline::context_t); the
         // operator drives txn_manager.commit/abort + pg_catalog MVCC swap on
-        // disk via storage_commit_appends / storage_revert_appends.
+        // disk via storage_publish_commits / storage_revert_appends.
         commit_transaction_t,
         abort_transaction_t,
+        // BEGIN / START TRANSACTION: leaf lowered to operator_begin_transaction_t,
+        // which marks the session's transaction_t explicit (see node_begin_transaction.hpp).
+        begin_transaction_t,
         // COMPUTED_FIELD_REGISTER / COMPUTED_FIELD_UNREGISTER: pipeline
         // operators that maintain pg_computed_column rows for relkind='g'
         // (Mongo-style dynamic-schema) tables. The register variant runs
@@ -102,13 +101,14 @@ namespace components::logical_plan {
         // planner → optimizer → physical_plan_generator → executor → disk).
         catalog_resolve_table_t,
         catalog_resolve_namespace_t,
+        // Resolves a database name to its pg_database OID (distinct from
+        // pg_namespace); populates execution_context_t.database_oid for WAL routing.
+        catalog_resolve_database_t,
         catalog_resolve_type_t,
         catalog_resolve_function_t,
         catalog_resolve_constraint_t,
-        // Leaf that allocates a batch of OIDs from the disk-side oid_generator
-        // at Pass 1 time. Replaces inline dispatcher calls to
-        // manager_disk_t::allocate_oids_batch — DDL planner reads the
-        // resulting batch via node_allocate_oids_t::oids().
+        // Leaf that allocates a batch of OIDs from the disk-side oid_generator;
+        // the DDL planner reads the batch via node_allocate_oids_t::oids().
         allocate_oids_t,
         set_timezone_t,
         unused

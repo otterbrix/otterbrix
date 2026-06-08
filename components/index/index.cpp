@@ -211,6 +211,8 @@ namespace components::index {
 
     void index_t::revert_insert(uint64_t txn_id) { revert_insert_impl(txn_id); }
 
+    void index_t::revert_delete(uint64_t txn_id) { revert_delete_impl(txn_id); }
+
     void index_t::cleanup_versions(uint64_t lowest_active) { cleanup_versions_impl(lowest_active); }
 
     void index_t::for_each_pending_insert(uint64_t txn_id,

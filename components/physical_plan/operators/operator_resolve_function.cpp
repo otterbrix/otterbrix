@@ -95,9 +95,9 @@ namespace components::operators {
             co_return;
         }
 
-        // Issue read_rows_by_key against pg_proc keyed on (proname, pronamespace).
+        // Issue read_chunks_by_key against pg_proc keyed on (proname, pronamespace).
         // Key order matches the column ordering used at write-time, but
-        // read_rows_by_key resolves indices by name so order is informational.
+        // read_chunks_by_key resolves indices by name so order is informational.
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
         types::logical_value_t name_lv(resource_, std::string_view{name_});
         types::logical_value_t ns_lv(resource_, namespace_oid_);
@@ -109,43 +109,71 @@ namespace components::operators {
         pr_vals.emplace_back(name_lv);
         pr_vals.emplace_back(ns_lv);
         auto [_h, fut] = actor_zeta::send(ctx->disk_address,
-                                          &services::disk::manager_disk_t::read_rows_by_key,
+                                          &services::disk::manager_disk_t::read_chunks_by_key,
                                           exec_ctx,
                                           kPgProc,
                                           std::move(pr_keys),
                                           std::move(pr_vals));
-        auto rows = co_await std::move(fut);
+        auto batches = co_await std::move(fut);
 
-        // Materialise rows into a fresh chunk. Capacity is sized to the
-        // matched-row count (≥ 1 to avoid zero-capacity vector_t allocation
-        // surprises elsewhere). Each pg_proc row already follows the schema
-        // layout above, so we copy positionally — missing trailing optional
-        // columns leave the destination cell null (set_value is only called
-        // for non-null source values).
-        const auto cap = std::max<std::size_t>(rows.size(), 1);
+        // Materialise the matched rows into a fresh chunk. Capacity is sized to
+        // the total matched-row count across all batches (≥ 1 to avoid
+        // zero-capacity vector_t allocation surprises elsewhere). Each pg_proc
+        // row already follows the schema layout above, so we copy positionally —
+        // missing trailing optional columns leave the destination cell null
+        // (set_value is only called for non-null source values).
+        std::size_t total_rows = 0;
+        for (const auto& batch : batches) {
+            total_rows += batch.size();
+        }
+        const auto cap = std::max<std::size_t>(total_rows, 1);
         output_ = make_operator_data(resource_, out_types, cap);
         auto& chunk = output_->data_chunk();
-        chunk.set_cardinality(rows.size());
+        chunk.set_cardinality(total_rows);
 
-        for (std::size_t r = 0; r < rows.size(); ++r) {
-            const auto& row = rows[r];
-            // Direct typed writes against pg_proc schema. Preserves the
-            // original guard: skip cells whose source is missing or null so
-            // the destination validity stays false.
-            if (row.size() > 0 && !row[0].is_null())
-                set_uint32(chunk, 0, r, row[0].value<std::uint32_t>());
-            if (row.size() > 1 && !row[1].is_null())
-                set_str(chunk, 1, r, row[1].value<std::string_view>(), resource_);
-            if (row.size() > 2 && !row[2].is_null())
-                set_uint32(chunk, 2, r, row[2].value<std::uint32_t>());
-            if (row.size() > 3 && !row[3].is_null())
-                set_int32(chunk, 3, r, row[3].value<std::int32_t>());
-            if (row.size() > 4 && !row[4].is_null())
-                set_int64(chunk, 4, r, row[4].value<std::int64_t>());
-            if (row.size() > 5 && !row[5].is_null())
-                set_str(chunk, 5, r, row[5].value<std::string_view>(), resource_);
-            if (row.size() > 6 && !row[6].is_null())
-                set_str(chunk, 6, r, row[6].value<std::string_view>(), resource_);
+        std::size_t r = 0;
+        for (const auto& batch : batches) {
+            const auto ncols = batch.column_count();
+            for (uint64_t i = 0; i < batch.size(); ++i, ++r) {
+                // Direct typed writes against pg_proc schema. Preserves the
+                // original guard: skip cells whose source is missing or null so
+                // the destination validity stays false.
+                if (ncols > 0) {
+                    auto v = batch.value(0, i);
+                    if (!v.is_null())
+                        set_uint32(chunk, 0, r, v.value<std::uint32_t>());
+                }
+                if (ncols > 1) {
+                    auto v = batch.value(1, i);
+                    if (!v.is_null())
+                        set_str(chunk, 1, r, v.value<std::string_view>(), resource_);
+                }
+                if (ncols > 2) {
+                    auto v = batch.value(2, i);
+                    if (!v.is_null())
+                        set_uint32(chunk, 2, r, v.value<std::uint32_t>());
+                }
+                if (ncols > 3) {
+                    auto v = batch.value(3, i);
+                    if (!v.is_null())
+                        set_int32(chunk, 3, r, v.value<std::int32_t>());
+                }
+                if (ncols > 4) {
+                    auto v = batch.value(4, i);
+                    if (!v.is_null())
+                        set_int64(chunk, 4, r, v.value<std::int64_t>());
+                }
+                if (ncols > 5) {
+                    auto v = batch.value(5, i);
+                    if (!v.is_null())
+                        set_str(chunk, 5, r, v.value<std::string_view>(), resource_);
+                }
+                if (ncols > 6) {
+                    auto v = batch.value(6, i);
+                    if (!v.is_null())
+                        set_str(chunk, 6, r, v.value<std::string_view>(), resource_);
+                }
+            }
         }
 
         mark_executed();

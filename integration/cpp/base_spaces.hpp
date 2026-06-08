@@ -9,7 +9,10 @@
 #include <core/config.hpp>
 #include <core/file/file_system.hpp>
 
+#include <cstdint>
 #include <memory>
+#include <memory_resource>
+#include <set>
 
 namespace services {
 
@@ -75,6 +78,20 @@ namespace otterbrix {
         services::index::manager_index_ptr manager_index_;
         std::unique_ptr<otterbrix::wrapper_dispatcher_t, actor_zeta::pmr::deleter_t> wrapper_dispatcher_;
         actor_zeta::scheduler_ptr scheduler_disk_;
+
+        // Catalog-driven index bootstrap. Called once during construction, after
+        // WAL replay and before scheduler.start, while single-threaded. Scans
+        // pg_class / pg_index via manager_disk_ sync helpers, then:
+        //   - creates an empty index_engine_t per live table oid;
+        //   - spawns an index_agent_disk_t per alive pg_index row and transfers
+        //     ownership to manager_index_;
+        //   - restores per-oid dropped-table tombstones.
+        //
+        // committed_txn_ids is the WAL-replay set of committed transaction ids,
+        // forwarded by value into each spawned bitcask agent's txn-log recover
+        // gate (M1.1). Passed during the single-threaded pre-scheduler window.
+        void bootstrap_indexes_sync(const configuration::config_disk& disk_config,
+                                    const std::set<std::uint64_t>& committed_txn_ids);
 
     private:
         inline static std::unordered_set<std::filesystem::path, core::filesystem::path_hash> paths_ = {};

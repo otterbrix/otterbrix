@@ -165,13 +165,16 @@ namespace components::operators {
         // 3. WAL physical_delete.
         if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
             auto count = static_cast<uint64_t>(wal_row_ids.size());
+            // See operator_insert comment on db_oid temporary hardcode.
+            constexpr auto db_oid = components::catalog::well_known_oid::main_database;
             auto [_w, wf] = actor_zeta::send(ctx->wal_address,
                                              &services::wal::manager_wal_replicate_t::write_physical_delete,
                                              ctx->session,
                                              table_oid_,
                                              std::move(wal_row_ids),
                                              count,
-                                             ctx->txn.transaction_id);
+                                             ctx->txn.transaction_id,
+                                             db_oid);
             auto wal_id = co_await std::move(wf);
             auto [_df2, dff] =
                 actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::flush, ctx->session, wal_id);

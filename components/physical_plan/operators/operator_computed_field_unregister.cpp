@@ -3,6 +3,7 @@
 #include <components/catalog/ddl_metadata_builder.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
+#include <components/vector/data_chunk.hpp>
 #include <services/disk/manager_disk.hpp>
 
 #include <cstdint>
@@ -54,10 +55,9 @@ namespace components::operators {
         // attoid (the pre-existing attoid path remains a fast path for
         // callers that do stamp it).
 
-        // Step 1: scan pg_computed_column rows for this relid (table is small
-        // per-table, perf OK), filter by attoid in-callback. Cannot read by
-        // attoid alone because the same logical (relid, attoid) row may have
-        // multiple version entries; we still need max(attversion).
+        // Scan by relid and filter by attoid in-callback: a keyed (relid, attoid)
+        // read won't do because the same column can have multiple version rows
+        // and we need max(attversion).
         // pg_computed_column layout: 0=relid 1=attoid 2=attname
         // 3=atttypid 4=atttypspec 5=attversion 6=attrefcount.
         types::logical_value_t toid_lv(resource_, table_oid_);
@@ -66,45 +66,53 @@ namespace components::operators {
         std::pmr::vector<types::logical_value_t> r_vals(resource_);
         r_vals.emplace_back(toid_lv);
         auto [_r, rf] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::read_rows_by_key,
+                                         &services::disk::manager_disk_t::read_chunks_by_key,
                                          exec_ctx,
                                          pg_computed_column,
                                          std::move(r_keys),
                                          std::move(r_vals));
-        auto rows = co_await std::move(rf);
+        auto batches = co_await std::move(rf);
 
-        // Step 2: pick the latest live row matching attoid_ (max attversion AND attrefcount > 0).
+        // pick the latest live row matching attoid_ (max attversion AND attrefcount > 0).
         std::int64_t max_version = -1;
         catalog::oid_t live_attoid = catalog::INVALID_OID;
         catalog::oid_t live_atttypid = catalog::INVALID_OID;
         bool found_live = false;
-        for (const auto& row : rows) {
-            if (row.size() < 7)
+        for (auto& chunk : batches) {
+            if (chunk.column_count() < 7)
                 continue;
-            if (row[1].is_null() || row[5].is_null() || row[6].is_null())
-                continue;
-            const auto row_attoid = static_cast<catalog::oid_t>(row[1].value<std::uint32_t>());
-            // Match by attoid when enrich stamped it; otherwise fall back to
-            // matching by attname (column_name_).
-            if (attoid_ != catalog::INVALID_OID) {
-                if (row_attoid != attoid_)
+            for (uint64_t i = 0; i < chunk.size(); ++i) {
+                auto attoid_v = chunk.value(1, i);
+                auto attversion_v = chunk.value(5, i);
+                auto refcount_v = chunk.value(6, i);
+                if (attoid_v.is_null() || attversion_v.is_null() || refcount_v.is_null())
                     continue;
-            } else {
-                if (row[2].is_null())
+                const auto row_attoid = static_cast<catalog::oid_t>(attoid_v.value<std::uint32_t>());
+                // Match by attoid when enrich stamped it; otherwise fall back to
+                // matching by attname (column_name_).
+                if (attoid_ != catalog::INVALID_OID) {
+                    if (row_attoid != attoid_)
+                        continue;
+                } else {
+                    auto attname_v = chunk.value(2, i);
+                    if (attname_v.is_null())
+                        continue;
+                    if (attname_v.value<std::string_view>() != column_name_)
+                        continue;
+                }
+                const auto v = attversion_v.value<std::int64_t>();
+                const auto rc = refcount_v.value<std::int64_t>();
+                if (rc <= 0)
                     continue;
-                if (row[2].value<std::string_view>() != column_name_)
-                    continue;
-            }
-            const auto v = row[5].value<std::int64_t>();
-            const auto rc = row[6].value<std::int64_t>();
-            if (rc <= 0)
-                continue;
-            if (v > max_version) {
-                max_version = v;
-                live_attoid = row_attoid;
-                live_atttypid = row[3].is_null() ? catalog::INVALID_OID
-                                                 : static_cast<catalog::oid_t>(row[3].value<std::uint32_t>());
-                found_live = true;
+                if (v > max_version) {
+                    auto atttypid_v = chunk.value(3, i);
+                    max_version = v;
+                    live_attoid = row_attoid;
+                    live_atttypid = atttypid_v.is_null()
+                                        ? catalog::INVALID_OID
+                                        : static_cast<catalog::oid_t>(atttypid_v.value<std::uint32_t>());
+                    found_live = true;
+                }
             }
         }
         if (!found_live) {
@@ -113,10 +121,8 @@ namespace components::operators {
             co_return;
         }
 
-        // Step 3: append a tombstone row (same attoid + same atttypid, version =
-        // max + 1, refcount = 0). Reusing the live attoid keeps any pg_depend
-        // attrefs valid; the reader filters this row out via the refcount<=0
-        // gate.
+        // Tombstone row: version = max+1, refcount = 0, same attoid so any
+        // pg_depend attrefs stay valid; readers drop it via the refcount<=0 gate.
         auto cc_row = catalog::build_pg_computed_column_row(resource_,
                                                             table_oid_,
                                                             live_attoid,

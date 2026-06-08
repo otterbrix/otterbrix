@@ -74,6 +74,7 @@ namespace components::table {
         uint64_t delete_rows(data_table_t& table, int64_t* row_ids, uint64_t count, uint64_t transaction_id);
         void commit_delete(uint64_t commit_id, uint64_t vector_idx, const delete_info& info);
         void commit_all_deletes(uint64_t txn_id, uint64_t commit_id);
+        void revert_all_deletes(uint64_t txn_id);
 
         uint64_t committed_row_count();
 
@@ -105,13 +106,10 @@ namespace components::table {
         uint64_t calculate_size();
 
     private:
-        uint64_t indexing_vector(uint64_t vector_idx, vector::indexing_vector_t& indexing_vector, uint64_t max_count);
         uint64_t indexing_vector(transaction_data txn,
                                  uint64_t vector_idx,
                                  vector::indexing_vector_t& indexing_vector,
                                  uint64_t max_count);
-        uint64_t
-        committed_indexing_vector(uint64_t vector_idx, vector::indexing_vector_t& indexing_vector, uint64_t max_count);
         std::shared_ptr<row_version_manager_t> get_or_create_version_info_internal();
         row_version_manager_t* version_info();
         void set_version_info(std::shared_ptr<row_version_manager_t> version);

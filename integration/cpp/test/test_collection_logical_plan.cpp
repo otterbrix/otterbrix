@@ -86,7 +86,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
     INFO("initialization") {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, table_database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + table_database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();

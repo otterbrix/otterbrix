@@ -30,6 +30,12 @@ namespace services::index {
         virtual void upper_bound(const value_t& value, result& res) const = 0;
         virtual result upper_bound(const value_t& value) const = 0;
         virtual void drop() = 0;
+        // Wipe all stored index data IN PLACE, keeping the backing live and
+        // writable: subsequent insert/remove (incl. the direct, non-txn-log
+        // txn_id==0 path) repopulate cleanly. NOT the terminal drop — the
+        // files/directory survive (re-initialized empty), the instance stays
+        // usable. Used by the runtime repopulate path.
+        virtual void clear() = 0;
         virtual void force_flush() = 0;
 
     protected:

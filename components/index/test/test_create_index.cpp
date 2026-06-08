@@ -36,6 +36,7 @@ private:
     void commit_insert_impl(uint64_t, uint64_t) override {}
     void commit_delete_impl(uint64_t, uint64_t) override {}
     void revert_insert_impl(uint64_t) override {}
+    void revert_delete_impl(uint64_t) override {}
     void cleanup_versions_impl(uint64_t) override {}
     void for_each_pending_insert_impl(uint64_t, const std::function<void(const value_t&, int64_t)>&) const override {}
     void for_each_pending_delete_impl(uint64_t, const std::function<void(const value_t&, int64_t)>&) const override {}

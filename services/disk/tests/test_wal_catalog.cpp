@@ -18,6 +18,7 @@
 
 #include <filesystem>
 #include <limits>
+#include <thread>
 #include <unistd.h>
 
 // DDL records persist through WAL via manager_disk_t::append_pg_catalog_row,
@@ -64,13 +65,18 @@ namespace {
             , wal(actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&resource, scheduler, wal_config, log))
             , disk(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
             std::filesystem::create_directories(dir);
-            wal->set_run_fn([this] { scheduler->run(10000); });
-            disk->set_run_fn([this] { scheduler->run(10000); });
-            wal->sync(std::make_tuple(actor_zeta::address_t(disk->address()), actor_zeta::address_t::empty_address()));
-            disk->sync(std::make_tuple(wal->address()));
+            wal->sync(services::wal::wal_sync_pack_t{actor_zeta::address_t(disk->address()),
+                                                     actor_zeta::address_t::empty_address(),
+                                                     actor_zeta::address_t::empty_address()});
+            disk->sync(services::disk::manager_disk_t::disk_sync_pack_t{wal->address()});
             disk->bootstrap_system_tables_sync();
         }
         ~fixture() {
+            // Destroy the managers first: each dtor joins its internal loop thread,
+            // which may still enqueue children onto the scheduler. Only then is it
+            // safe to stop/delete the scheduler.
+            disk.reset();
+            wal.reset();
             scheduler->stop();
             delete scheduler;
         }
@@ -78,8 +84,12 @@ namespace {
         template<typename Fn, typename... Args>
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(disk->address(), fn, std::forward<Args>(args)...);
-            scheduler->run(10000);
-            return std::move(future).get();
+            for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
+                scheduler->run(1000);
+                std::this_thread::yield();
+            }
+            REQUIRE(future.is_ready());
+            return std::move(future).take_ready();
         }
 
         components::execution_context_t ctx() {

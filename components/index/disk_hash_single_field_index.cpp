@@ -134,6 +134,13 @@ namespace components::index {
 
     void disk_hash_single_field_index_t::revert_insert_impl(uint64_t txn_id) { pending_inserts_.erase(txn_id); }
 
+    // mark_delete_impl only records the pending bucket here (storage entries are
+    // never stamped on the disk-hash variant), so reverting is a pure bucket
+    // erase — symmetric with revert_insert_impl.
+    void disk_hash_single_field_index_t::revert_delete_impl(uint64_t txn_id) {
+        pending_deletes_.erase(txn_id);
+    }
+
     void disk_hash_single_field_index_t::cleanup_versions_impl(uint64_t) {}
 
     void disk_hash_single_field_index_t::for_each_pending_insert_impl(

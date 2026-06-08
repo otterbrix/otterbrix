@@ -1,6 +1,5 @@
 #include "wrapper_dispatcher.hpp"
 #include <components/logical_plan/node_create_collection.hpp>
-#include <components/logical_plan/node_create_database.hpp>
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_drop_collection.hpp>
 #include <components/logical_plan/node_drop_database.hpp>
@@ -20,55 +19,40 @@ using namespace components::cursor;
 namespace otterbrix {
 
     wrapper_dispatcher_t::wrapper_dispatcher_t(std::pmr::memory_resource* resource,
-                                               actor_zeta::address_t manager_dispatcher,
+                                               services::dispatcher::manager_dispatcher_t* manager_dispatcher,
+                                               actor_zeta::scheduler_raw scheduler,
                                                log_t& log)
         : actor_zeta::actor::actor_mixin<wrapper_dispatcher_t>()
         , resource_(resource)
         , manager_dispatcher_(manager_dispatcher)
+        , scheduler_(scheduler)
         , log_(log.clone()) {}
 
     wrapper_dispatcher_t::~wrapper_dispatcher_t() { trace(log_, "delete wrapper_dispatcher_t"); }
 
-    void wrapper_dispatcher_t::behavior(actor_zeta::mailbox::message* /*msg*/) {}
+    actor_zeta::behavior_t wrapper_dispatcher_t::behavior(actor_zeta::mailbox::message* /*msg*/) { co_return; }
 
     auto wrapper_dispatcher_t::make_type() const noexcept -> const char* { return "wrapper_dispatcher"; }
 
+    [[nodiscard]] std::pair<bool, actor_zeta::detail::enqueue_result>
+    wrapper_dispatcher_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
+        // Dead in production — wrapper.address() is never a send target. Exists
+        // only to satisfy the has_enqueue_impl concept; do not delete. The
+        // schedule hint is ignored because manager_dispatcher is an actor_mixin
+        // whose drain loop runs from its own resume(), not scheduler->enqueue.
+        auto [_, res] = manager_dispatcher_->enqueue_impl(std::move(msg));
+        return {false, res};
+    }
+
     void wrapper_dispatcher_t::wait_future_void(unique_future<void>& future) {
-        while (!future.available()) {
+        while (!future.is_ready()) {
             std::unique_lock<std::mutex> lock(event_loop_mutex_);
-            if (!future.available()) {
-                event_loop_cv_.wait_for(lock, std::chrono::milliseconds(10));
+            if (!future.is_ready()) {
+                // See wait_future in the header for the 100µs poll rationale.
+                event_loop_cv_.wait_for(lock, std::chrono::microseconds(100));
             }
         }
-
-        event_loop_cv_.notify_all();
-
-        std::move(future).get();
-    }
-
-    auto wrapper_dispatcher_t::create_database(const session_id_t& session, const database_name_t& database)
-        -> cursor_t_ptr {
-        auto node = components::logical_plan::make_node_create_database(resource(), core::dbname_t{database});
-        return send_plan(
-            session,
-            components::logical_plan::execution_plan_t{resource(),
-                                                       node,
-                                                       components::logical_plan::make_parameter_node(resource())});
-    }
-
-    auto wrapper_dispatcher_t::drop_database(const components::session::session_id_t& session,
-                                             const database_name_t& database) -> cursor_t_ptr {
-        // Drop nodes carry no names; the (db) identity travels via a
-        // sibling catalog_resolve_namespace_t wrapped in a sequence_t. Pass 1
-        // in the dispatcher resolves namespace_oid and stamps it on the drop.
-        auto drop = components::logical_plan::make_node_drop_database(resource());
-        components::logical_plan::node_ptr node =
-            components::sql::transform::maybe_wrap_with_catalog_resolve_namespace(resource(), database, drop);
-        return send_plan(
-            session,
-            components::logical_plan::execution_plan_t{resource(),
-                                                       node,
-                                                       components::logical_plan::make_parameter_node(resource())});
+        std::move(future).take_ready();
     }
 
     auto wrapper_dispatcher_t::create_collection(const session_id_t& session,
@@ -104,6 +88,21 @@ namespace otterbrix {
             components::logical_plan::execution_plan_t{resource(),
                                                        node,
                                                        components::logical_plan::make_parameter_node(resource())});
+    }
+
+    auto wrapper_dispatcher_t::drop_database(const components::session::session_id_t& session,
+                                             const database_name_t& database) -> cursor_t_ptr {
+        // Drop nodes carry no names; the (db) identity travels via a
+        // sibling catalog_resolve_namespace_t wrapped in a sequence_t. Pass 1
+        // in the dispatcher resolves namespace_oid and stamps it on the drop.
+        auto drop = components::logical_plan::make_node_drop_database(resource());
+        components::logical_plan::node_ptr node =
+            components::sql::transform::maybe_wrap_with_catalog_resolve_namespace(resource(), database, drop);
+        return send_plan(
+            session,
+            components::logical_plan::execution_plan_t{resource(),
+                node,
+                components::logical_plan::make_parameter_node(resource())});
     }
 
     auto wrapper_dispatcher_t::find(const session_id_t& session,
@@ -228,7 +227,7 @@ namespace otterbrix {
               "wrapper_dispatcher_t::register_udf session: {}, function name : {} ",
               session.data(),
               function->name());
-        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
+        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
                                                        &services::dispatcher::manager_dispatcher_t::register_udf,
                                                        session,
                                                        std::move(function));
@@ -243,7 +242,7 @@ namespace otterbrix {
               "wrapper_dispatcher_t::unregister_udf session: {}, function name : {} ",
               session.data(),
               function_name);
-        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
+        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
                                                        &services::dispatcher::manager_dispatcher_t::unregister_udf,
                                                        session,
                                                        function_name,
@@ -372,17 +371,6 @@ namespace otterbrix {
         return execute_plan(session, std::move(plan));
     }
 
-    auto wrapper_dispatcher_t::get_schema(const components::session::session_id_t& session,
-                                          const std::pmr::vector<std::pair<database_name_t, collection_name_t>>& ids)
-        -> components::cursor::cursor_t_ptr {
-        trace(log_, "wrapper_dispatcher_t::get_schema session: {}", session.data());
-        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
-                                                       &services::dispatcher::manager_dispatcher_t::get_schema,
-                                                       session,
-                                                       ids);
-        return wait_future(future);
-    }
-
     auto wrapper_dispatcher_t::set_timezone(const session_id_t& session, std::string timezone_name) -> cursor_t_ptr {
         std::transform(timezone_name.begin(), timezone_name.end(), timezone_name.begin(), [](unsigned char character) {
             return static_cast<char>(std::tolower(character));
@@ -403,7 +391,7 @@ namespace otterbrix {
               plan.sub_queries.back()->to_string());
         assert(plan.parameters);
 
-        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
+        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
                                                        &services::dispatcher::manager_dispatcher_t::execute_plan,
                                                        session,
                                                        std::move(plan));

@@ -13,6 +13,13 @@ namespace components::operators {
     //   3. checkpoint_all on disk — copy + fsync per-table data, then 2nd fsync barrier
     //      so the W-TORN per-table prev/current wal-id snapshot is durable.
     //   4. truncate_before on wal (if checkpoint_wal_id > 0) — drop old WAL segments.
+    //   5. Index rebuild (if index_address present) — checkpoint_inner compact()s
+    //      each table, renumbering row ids; the in-memory index engines hold
+    //      positional refs into the pre-compact layout. For every all_indexed_oids
+    //      table: storage_total_rows -> storage_scan_segment(0, total) ->
+    //      repopulate_table (clears on-disk index backing + in-memory engine, then
+    //      re-inserts at post-compact ids). total==0 still repopulates to wipe
+    //      stale entries. MUST follow checkpoint_all (step 3).
     //
     // WAL recovery semantics: identical to the legacy dispatcher.cpp checkpoint_t case.
     // The checkpoint_all return value is min(prev_checkpoint_wal_id_) across tables;

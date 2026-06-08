@@ -69,6 +69,7 @@ namespace components::index {
         void commit_insert_impl(uint64_t txn_id, uint64_t commit_id) final;
         void commit_delete_impl(uint64_t txn_id, uint64_t commit_id) final;
         void revert_insert_impl(uint64_t txn_id) final;
+        void revert_delete_impl(uint64_t txn_id) final;
         void cleanup_versions_impl(uint64_t lowest_active) final;
         void for_each_pending_insert_impl(uint64_t txn_id,
                                           const std::function<void(const value_t&, int64_t)>& fn) const final;

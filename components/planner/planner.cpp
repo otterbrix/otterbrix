@@ -126,6 +126,7 @@ namespace components::planner {
                 // execute time. Pass through unchanged — no children to walk.
                 case node_type::catalog_resolve_table_t:
                 case node_type::catalog_resolve_namespace_t:
+                case node_type::catalog_resolve_database_t:
                 case node_type::catalog_resolve_type_t:
                 case node_type::catalog_resolve_function_t:
                 case node_type::catalog_resolve_constraint_t:
@@ -140,7 +141,7 @@ namespace components::planner {
         }
 
         // CREATE DATABASE → sequence_t(primitive_write × N) over pg_namespace.
-        // Намespace_oid выделяется заранее в дисптчере и приходит как первый OID в batch.
+        // The namespace_oid is pre-allocated in the dispatcher and arrives as the first OID in the batch.
         node_ptr rewrite_create_database(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
             auto* cd = static_cast<logical_plan::node_create_database_t*>(node.get());
             const std::string ns_name(cd->dbname());
@@ -512,7 +513,6 @@ namespace components::planner {
 
         // DROP DATABASE / TABLE / TYPE / SEQUENCE / VIEW / MACRO → node_dynamic_cascade_delete_t.
         //
-        // Replaces the per-DROP BFS that used to live in services/dispatcher/ddl.cpp.
         // The dynamic cascade operator self-resolves the pg_depend closure at runtime
         // and performs catalog row deletes + (for pg_class regular/computed entries)
         // storage drop + index unregister.
@@ -597,7 +597,7 @@ namespace components::planner {
             for (const auto& sub : alter->subcommands()) {
                 if (sub.kind == logical_plan::alter_table_kind::add_column) {
                     auto col = sub.column;
-                    // Mirror ddl.cpp: resolve UNKNOWN-by-name builtins.
+                    // Resolve UNKNOWN-by-name builtins.
                     if (col.type().type() == components::types::logical_type::UNKNOWN) {
                         const auto lt = catalog::pg_name_to_logical_type(col.type().type_name());
                         if (lt != components::types::logical_type::UNKNOWN) {
@@ -659,9 +659,8 @@ namespace components::planner {
                 case node_type::create_matview_t:
                     return rewrite_create_matview(r, node, oid_batch);
                 case node_type::refresh_matview_t:
-                    // First iteration: REFRESH not lowered; planner returns node
-                    // unchanged. Future PR wires DELETE + INSERT(re-parsed body)
-                    // using Phase A's dispatcher Pass 1 re-run infra.
+                    // REFRESH not lowered yet; returned unchanged. TODO: lower to
+                    // DELETE + INSERT(re-parsed body) via the dispatcher's resolve re-run.
                     return node;
                 case node_type::create_constraint_t:
                     return rewrite_create_constraint(r, node, oid_batch);
@@ -691,6 +690,7 @@ namespace components::planner {
                 // operator_resolve_*_t at execute time.
                 case node_type::catalog_resolve_table_t:
                 case node_type::catalog_resolve_namespace_t:
+                case node_type::catalog_resolve_database_t:
                 case node_type::catalog_resolve_type_t:
                 case node_type::catalog_resolve_function_t:
                 case node_type::catalog_resolve_constraint_t:

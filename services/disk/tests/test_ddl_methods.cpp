@@ -8,6 +8,7 @@
 #include <components/session/session.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/types/types.hpp>
+#include <components/vector/data_chunk.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <services/disk/manager_disk.hpp>
 
@@ -16,6 +17,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <functional>
+#include <thread>
 #include <unistd.h>
 
 // DDL roundtrip tests. Each test creates catalog objects via the build_create_*_writes
@@ -52,10 +54,13 @@ namespace {
             , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
             cleanup();
             std::filesystem::create_directories(ddl_dir());
-            manager->set_run_fn([this] { scheduler->run(10000); });
             manager->bootstrap_system_tables_sync();
         }
         ~fixture() {
+            // Destroy the manager first: its dtor joins the internal loop thread,
+            // which may still enqueue children onto the scheduler. Only then is it
+            // safe to stop/delete the scheduler.
+            manager.reset();
             scheduler->stop();
             delete scheduler;
             cleanup();
@@ -64,8 +69,12 @@ namespace {
         template<typename Fn, typename... Args>
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::forward<Args>(args)...);
-            scheduler->run(10000);
-            return std::move(future).get();
+            for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
+                scheduler->run(1000);
+                std::this_thread::yield();
+            }
+            REQUIRE(future.is_ready());
+            return std::move(future).take_ready();
         }
 
         components::execution_context_t ctx() {
@@ -166,9 +175,12 @@ TEST_CASE("services::disk::ddl::computed_register_same_type_idempotent") {
     std::pmr::vector<components::types::logical_value_t> v1{&fx.resource};
     v1.emplace_back(toid_lv);
     v1.emplace_back(name_lv);
-    auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc, std::move(k1), std::move(v1));
-    REQUIRE(rows.size() == 1);
-    REQUIRE(rows[0][6].value<std::int64_t>() == 1);
+    auto batches = fx.invoke(&manager_disk_t::read_chunks_by_key, fx.ctx(), pg_cc, std::move(k1), std::move(v1));
+    std::uint64_t total = 0;
+    for (const auto& c : batches)
+        total += c.size();
+    REQUIRE(total == 1);
+    REQUIRE(batches[0].value(6, 0).value<std::int64_t>() == 1);
 
     auto rs = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("agg"), std::uint64_t{0});
     REQUIRE(rs.found);
@@ -210,7 +222,7 @@ TEST_CASE("services::disk::ddl::computed_unregister_then_resolve_hides_column") 
 // 25. Refcount-decrement is replaced by binary register/unregister +
 // tombstone semantics. Verify that unregister appends a tombstone row with
 // refcount=0 and that the live row + tombstone coexist until VACUUM
-// (i.e. read_rows_by_key sees both).
+// (i.e. read_chunks_by_key sees both).
 TEST_CASE("services::disk::ddl::computed_unregister_marks_dead") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "nstomb");
@@ -234,24 +246,29 @@ TEST_CASE("services::disk::ddl::computed_unregister_marks_dead") {
     std::pmr::vector<components::types::logical_value_t> v2{&fx.resource};
     v2.emplace_back(toid_lv);
     v2.emplace_back(name_lv);
-    auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc, std::move(k2), std::move(v2));
-    REQUIRE(rows.size() == 2);
+    auto batches = fx.invoke(&manager_disk_t::read_chunks_by_key, fx.ctx(), pg_cc, std::move(k2), std::move(v2));
+    std::uint64_t total = 0;
+    for (const auto& c : batches)
+        total += c.size();
+    REQUIRE(total == 2);
 
     bool found_live = false;
     bool found_tomb = false;
     std::int64_t live_v = -1;
     std::int64_t tomb_v = -1;
-    for (const auto& row : rows) {
-        REQUIRE(row.size() >= 7);
-        const auto v = row[5].value<std::int64_t>();
-        const auto rc = row[6].value<std::int64_t>();
-        if (rc > 0) {
-            found_live = true;
-            live_v = v;
-        }
-        if (rc == 0) {
-            found_tomb = true;
-            tomb_v = v;
+    for (const auto& chunk : batches) {
+        REQUIRE(chunk.column_count() >= 7);
+        for (std::uint64_t i = 0; i < chunk.size(); ++i) {
+            const auto v = chunk.value(5, i).value<std::int64_t>();
+            const auto rc = chunk.value(6, i).value<std::int64_t>();
+            if (rc > 0) {
+                found_live = true;
+                live_v = v;
+            }
+            if (rc == 0) {
+                found_tomb = true;
+                tomb_v = v;
+            }
         }
     }
     REQUIRE(found_live);
@@ -259,21 +276,19 @@ TEST_CASE("services::disk::ddl::computed_unregister_marks_dead") {
     REQUIRE(tomb_v > live_v);
 }
 
-// 25b. task #103 — disk-level mirror of the SQL-level
-// dynamic_schema_drop_then_readd_preserves_old_data test. Verify the post-
+// Disk-level mirror of the SQL-level
+// dynamic_schema_drop_then_readd_preserves_old_data test. Verify the
 // register/unregister/register sequence at the pg_computed_column row level:
 //
 //   register("a", BIGINT)            -> 1 row: a/v0/rc=1
 //   register("b", STRING)            -> 2 rows: a/v0/rc=1, b/v0/rc=1
 //   unregister("b")                  -> 3 rows: a/v0/rc=1, b/v0/rc=1, b-tomb/v1/rc=0
 //                                      (tombstone reuses live attoid_b)
-//   register("b", STRING)            -> EXPECTED 3 rows still: same-type re-
-//                                      register short-circuits to a no-op
-//                                      (operator_computed_field_register.cpp:126-134
-//                                      treats latest_atttypid==new_atttypid as
-//                                      `same_type`; max_version comes from the
-//                                      tombstone, refcount filter is not applied
-//                                      at this read).
+//   register("b", STRING)            -> EXPECTED 3 rows still: a same-type
+//                                      re-register short-circuits to a no-op in
+//                                      operator_computed_field_register (max_version
+//                                      comes from the tombstone, refcount filter
+//                                      not applied at this read).
 //   resolve_table                    -> EXPECTED 1 column ("a") — 'b' is
 //                                      tombstoned and the resolver gates on
 //                                      refcount>0.
@@ -310,7 +325,10 @@ TEST_CASE("services::disk::ddl::computed_field_drop_then_readd") {
     k3.emplace_back("relid");
     std::pmr::vector<components::types::logical_value_t> v3{&fx.resource};
     v3.emplace_back(toid_lv);
-    auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc, std::move(k3), std::move(v3));
+    auto batches = fx.invoke(&manager_disk_t::read_chunks_by_key, fx.ctx(), pg_cc, std::move(k3), std::move(v3));
+    std::uint64_t total_rows = 0;
+    for (const auto& c : batches)
+        total_rows += c.size();
 
     // Branch on observed register-side behavior so the test stays useful even
     // if the operator's same-type policy is later relaxed (e.g. to revive
@@ -320,7 +338,7 @@ TEST_CASE("services::disk::ddl::computed_field_drop_then_readd") {
         //   a (live, v=0, rc=1)
         //   b (live, v=0, rc=1)            -- attoid_b
         //   b (tombstone, v=1, rc=0)       -- attoid_b reused
-        REQUIRE(rows.size() == 3);
+        REQUIRE(total_rows == 3);
 
         // Per-attname classification.
         int rows_a = 0, rows_b_live = 0, rows_b_tomb = 0;
@@ -328,22 +346,24 @@ TEST_CASE("services::disk::ddl::computed_field_drop_then_readd") {
         std::int64_t b_tomb_v = -1;
         catalog::oid_t observed_b_live_attoid = catalog::INVALID_OID;
         catalog::oid_t observed_b_tomb_attoid = catalog::INVALID_OID;
-        for (const auto& row : rows) {
-            REQUIRE(row.size() >= 7);
-            const auto attname = std::string(row[2].value<std::string_view>());
-            const auto v = row[5].value<std::int64_t>();
-            const auto rc = row[6].value<std::int64_t>();
-            if (attname == "a") {
-                ++rows_a;
-            } else if (attname == "b") {
-                if (rc > 0) {
-                    ++rows_b_live;
-                    b_live_v = v;
-                    observed_b_live_attoid = static_cast<catalog::oid_t>(row[1].value<std::uint32_t>());
-                } else {
-                    ++rows_b_tomb;
-                    b_tomb_v = v;
-                    observed_b_tomb_attoid = static_cast<catalog::oid_t>(row[1].value<std::uint32_t>());
+        for (const auto& chunk : batches) {
+            REQUIRE(chunk.column_count() >= 7);
+            for (std::uint64_t i = 0; i < chunk.size(); ++i) {
+                const auto attname = std::string(chunk.value(2, i).value<std::string_view>());
+                const auto v = chunk.value(5, i).value<std::int64_t>();
+                const auto rc = chunk.value(6, i).value<std::int64_t>();
+                if (attname == "a") {
+                    ++rows_a;
+                } else if (attname == "b") {
+                    if (rc > 0) {
+                        ++rows_b_live;
+                        b_live_v = v;
+                        observed_b_live_attoid = static_cast<catalog::oid_t>(chunk.value(1, i).value<std::uint32_t>());
+                    } else {
+                        ++rows_b_tomb;
+                        b_tomb_v = v;
+                        observed_b_tomb_attoid = static_cast<catalog::oid_t>(chunk.value(1, i).value<std::uint32_t>());
+                    }
                 }
             }
         }
@@ -361,7 +381,7 @@ TEST_CASE("services::disk::ddl::computed_field_drop_then_readd") {
         WARN("operator_computed_field_register_t now allocates a fresh attoid "
              "on same-type re-register (instead of no-oping); update task "
              "#103 expectations.");
-        REQUIRE(rows.size() == 4);
+        REQUIRE(total_rows == 4);
         REQUIRE(attoid_b2 != attoid_b);
     }
 
@@ -438,8 +458,11 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
         kk.emplace_back("relid");
         std::pmr::vector<components::types::logical_value_t> vv{&fx.resource};
         vv.emplace_back(toid_lv);
-        auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc, std::move(kk), std::move(vv));
-        REQUIRE(rows.size() == 4);
+        auto batches = fx.invoke(&manager_disk_t::read_chunks_by_key, fx.ctx(), pg_cc, std::move(kk), std::move(vv));
+        std::uint64_t total = 0;
+        for (const auto& c : batches)
+            total += c.size();
+        REQUIRE(total == 4);
     }
 
     // Imitate operator_vacuum_t step 5: collect attoids of dead rows (rc<=0)
@@ -452,13 +475,15 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
         kk.emplace_back("relid");
         std::pmr::vector<components::types::logical_value_t> vv{&fx.resource};
         vv.emplace_back(toid_lv);
-        auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc, std::move(kk), std::move(vv));
+        auto batches = fx.invoke(&manager_disk_t::read_chunks_by_key, fx.ctx(), pg_cc, std::move(kk), std::move(vv));
         std::vector<catalog::oid_t> dead_attoids;
-        for (const auto& row : rows) {
-            REQUIRE(row.size() >= 7);
-            const auto rc = row[6].value<std::int64_t>();
-            if (rc <= 0) {
-                dead_attoids.push_back(static_cast<catalog::oid_t>(row[1].value<std::uint32_t>()));
+        for (const auto& chunk : batches) {
+            REQUIRE(chunk.column_count() >= 7);
+            for (std::uint64_t i = 0; i < chunk.size(); ++i) {
+                const auto rc = chunk.value(6, i).value<std::int64_t>();
+                if (rc <= 0) {
+                    dead_attoids.push_back(static_cast<catalog::oid_t>(chunk.value(1, i).value<std::uint32_t>()));
+                }
             }
         }
         REQUIRE(dead_attoids.size() == 1);
@@ -468,7 +493,7 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
             fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_cc, std::int64_t{1}, attoid);
         }
         std::set<catalog::oid_t> deletes_local{pg_cc};
-        fx.invoke(&manager_disk_t::storage_commit_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
+        fx.invoke(&manager_disk_t::storage_publish_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
     }
 
     // Post-VACUUM: 2 rows left (a, c). b's live row was wiped together with
@@ -479,11 +504,16 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
         kk.emplace_back("relid");
         std::pmr::vector<components::types::logical_value_t> vv{&fx.resource};
         vv.emplace_back(toid_lv);
-        auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc, std::move(kk), std::move(vv));
-        REQUIRE(rows.size() == 2);
+        auto batches = fx.invoke(&manager_disk_t::read_chunks_by_key, fx.ctx(), pg_cc, std::move(kk), std::move(vv));
+        std::uint64_t total = 0;
+        for (const auto& c : batches)
+            total += c.size();
+        REQUIRE(total == 2);
         std::vector<std::string> names;
-        for (const auto& row : rows) {
-            names.emplace_back(row[2].value<std::string_view>());
+        for (const auto& chunk : batches) {
+            for (std::uint64_t i = 0; i < chunk.size(); ++i) {
+                names.emplace_back(chunk.value(2, i).value<std::string_view>());
+            }
         }
         std::sort(names.begin(), names.end());
         REQUIRE(names == std::vector<std::string>{"a", "c"});
@@ -567,18 +597,20 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
         kk.emplace_back("relid");
         std::pmr::vector<logical_value_t> vv{&fx.resource};
         vv.emplace_back(toid_lv);
-        auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc, std::move(kk), std::move(vv));
+        auto batches = fx.invoke(&manager_disk_t::read_chunks_by_key, fx.ctx(), pg_cc, std::move(kk), std::move(vv));
         std::vector<catalog::oid_t> dead_attoids;
-        for (const auto& row : rows) {
-            if (row[6].value<std::int64_t>() <= 0) {
-                dead_attoids.push_back(static_cast<catalog::oid_t>(row[1].value<std::uint32_t>()));
+        for (const auto& chunk : batches) {
+            for (std::uint64_t i = 0; i < chunk.size(); ++i) {
+                if (chunk.value(6, i).value<std::int64_t>() <= 0) {
+                    dead_attoids.push_back(static_cast<catalog::oid_t>(chunk.value(1, i).value<std::uint32_t>()));
+                }
             }
         }
         for (const auto attoid : dead_attoids) {
             fx.invoke(&manager_disk_t::delete_pg_catalog_rows, txn_ctx(), pg_cc, std::int64_t{1}, attoid);
         }
         std::set<catalog::oid_t> deletes_local{pg_cc};
-        fx.invoke(&manager_disk_t::storage_commit_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
+        fx.invoke(&manager_disk_t::storage_publish_deletes, txn_ctx(), std::uint64_t{1000}, std::move(deletes_local));
     }
 
     // Now run step 5b: compact_relkind_g_storage with live = {a, c}. Storage
@@ -640,20 +672,13 @@ TEST_CASE("services::disk::ddl::dynamic_schema_wal_recovery_skip") {
     WARN("TODO: requires restart fixture; covered by test_recovery.cpp pattern but not yet for relkind='g'");
 }
 
-// 30. task #91 — verify storage_append behavior for relkind='g'
-// tables with dynamic schema. The premise under test: an INSERT bringing a new
-// column (not yet in the underlying table_storage_t) should silently extend
-// the storage's schema. This documents what storage_append actually does today
-// (services/disk/manager_disk_storage.cpp lines 290+):
-//   - If !s->has_schema(), the FIRST chunk's types are adopted (one-shot).
-//   - On subsequent chunks the code only iterates over table_columns and seeks
-//     matching incoming columns by alias. Extra columns in the incoming chunk
-//     (that are NOT yet in table_columns) are silently DROPPED.
-// Conclusion: storage_append does NOT auto-extend an already-adopted schema.
-// adopt_schema is one-shot (data_table.cpp:90 asserts column_definitions_.empty()),
-// so dynamic-schema growth for relkind='g' must happen via an explicit
-// add_column / pg_computed_column path before storage_append. This test pins
-// that behavior down with WARN()s so the regression boundary is explicit.
+// Pins down storage_append for relkind='g' (dynamic-schema) tables:
+//   - first chunk: adopts its types (one-shot, since adopt_schema asserts the
+//     schema is empty);
+//   - later chunks: matches incoming columns to existing ones by alias; columns
+//     not already in the schema are silently DROPPED, not auto-added.
+// So dynamic-schema growth must go through an explicit add_column /
+// pg_computed_column path before storage_append, never via the INSERT itself.
 TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
     using components::types::complex_logical_type;
     using components::types::logical_type;
@@ -693,7 +718,6 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
         return chunk;
     };
 
-    // Step 1: register column "a" then storage_append a row with just "a".
     auto attoid_a = test_computed_register(fx, table_oid, "a", components::catalog::well_known_oid::int64_type);
     REQUIRE(attoid_a >= FIRST_USER_OID);
     {
@@ -707,12 +731,9 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
         (void) start;
     }
 
-    // Step 2: register column "b" and storage_append a row with both "a" and "b".
-    // Expected (per task #91 premise): storage now has 2 columns; row 1 has b=NULL.
-    // Actual: storage's schema was frozen at 1 column when the first chunk was
-    // appended (adopt_schema is one-shot). The "b" column in the incoming chunk
-    // is silently dropped by manager_disk_storage.cpp:316 (only iterates over
-    // table_columns). storage_total_rows grows to 2, but column count stays 1.
+    // The schema was frozen at 1 column by the first append (adopt_schema is
+    // one-shot), so the incoming "b" is silently dropped: row count grows to 2
+    // but column count stays 1. (Naively you'd expect 2 columns with b=NULL.)
     auto attoid_b = test_computed_register(fx, table_oid, "b", components::catalog::well_known_oid::string_type);
     REQUIRE(attoid_b >= FIRST_USER_OID);
     {
@@ -744,7 +765,6 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
         REQUIRE(rows->size() == 2);
     }
 
-    // Step 3: register "c" and storage_append a row with all three columns.
     auto attoid_c = test_computed_register(fx, table_oid, "c", components::catalog::well_known_oid::float64_type);
     REQUIRE(attoid_c >= FIRST_USER_OID);
     {
@@ -784,10 +804,9 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
     REQUIRE(rs.columns.size() == 3);
 }
 
-// 26. Computing tables (relkind='g') do not get pg_attribute rows on creation —
-// versioned fields live in pg_computed_column. resolve_table.columns must
-// therefore be empty for a fresh computing table. Doc test alias:
-// test_computing_table_pg_attribute_empty (catalog-migration-to-postgresql-style.md §14).
+// Computing tables (relkind='g') get no pg_attribute rows on creation —
+// versioned fields live in pg_computed_column, so resolve_table.columns is
+// empty for a fresh computing table.
 TEST_CASE("services::disk::ddl::computing_table_pg_attribute_empty") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "nscempty");

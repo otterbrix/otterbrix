@@ -9,6 +9,7 @@
 #include <components/catalog/alter_column_validators.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
+#include <components/vector/data_chunk.hpp>
 #include <services/disk/manager_disk.hpp>
 
 namespace components::operators {
@@ -59,12 +60,12 @@ namespace components::operators {
         std::pmr::vector<components::types::logical_value_t> pa_vals(resource_);
         pa_vals.emplace_back(attoid_lv);
         auto [_pa, paf] = actor_zeta::send(ctx->disk_address,
-                                           &services::disk::manager_disk_t::read_rows_by_key,
+                                           &services::disk::manager_disk_t::read_chunks_by_key,
                                            exec_ctx,
                                            pg_attr,
                                            std::move(pa_keys),
                                            std::move(pa_vals));
-        auto attr_rows = co_await std::move(paf);
+        std::pmr::vector<components::vector::data_chunk_t> attr_batches = co_await std::move(paf);
 
         catalog::oid_t attoid = catalog::INVALID_OID;
         std::int32_t attnum = 0;
@@ -74,27 +75,45 @@ namespace components::operators {
         // Captured so the re-appended row keeps the same added_at_commit_id:
         // RENAME is identity-preserving, so added_at MUST NOT change.
         std::int64_t att_added_at_commit_id = 0;
-        for (const auto& row : attr_rows) {
-            if (row.size() < 10 || row[0].is_null())
+        for (auto& chunk : attr_batches) {
+            if (chunk.column_count() < 10)
                 continue;
-            if (!row[7].is_null() && row[7].value<bool>())
-                continue; // dropped
-            attoid = static_cast<catalog::oid_t>(row[0].value<std::uint32_t>());
-            atttypid =
-                row[3].is_null() ? catalog::INVALID_OID : static_cast<catalog::oid_t>(row[3].value<std::uint32_t>());
-            attnum = row[4].is_null() ? 0 : row[4].value<std::int32_t>();
-            att_not_null = !row[5].is_null() && row[5].value<bool>();
-            att_has_default = !row[6].is_null() && row[6].value<bool>();
-            if (!row[8].is_null())
-                att_typspec = std::string(row[8].value<std::string_view>());
-            if (!row[9].is_null())
-                att_defspec = std::string(row[9].value<std::string_view>());
-            // Column 10 = added_at_commit_id. Rows written before the MVCC
-            // commit_id columns landed have only 10 columns; tolerate a missing
-            // slot as 0.
-            if (row.size() > 10 && !row[10].is_null())
-                att_added_at_commit_id = row[10].value<std::int64_t>();
-            break;
+            bool found = false;
+            for (uint64_t i = 0; i < chunk.size(); ++i) {
+                auto c0 = chunk.value(0, i);
+                if (c0.is_null())
+                    continue;
+                auto c7 = chunk.value(7, i);
+                if (!c7.is_null() && c7.value<bool>())
+                    continue; // dropped
+                attoid = static_cast<catalog::oid_t>(c0.value<std::uint32_t>());
+                auto c3 = chunk.value(3, i);
+                atttypid = c3.is_null() ? catalog::INVALID_OID : static_cast<catalog::oid_t>(c3.value<std::uint32_t>());
+                auto c4 = chunk.value(4, i);
+                attnum = c4.is_null() ? 0 : c4.value<std::int32_t>();
+                auto c5 = chunk.value(5, i);
+                att_not_null = !c5.is_null() && c5.value<bool>();
+                auto c6 = chunk.value(6, i);
+                att_has_default = !c6.is_null() && c6.value<bool>();
+                auto c8 = chunk.value(8, i);
+                if (!c8.is_null())
+                    att_typspec = std::string(c8.value<std::string_view>());
+                auto c9 = chunk.value(9, i);
+                if (!c9.is_null())
+                    att_defspec = std::string(c9.value<std::string_view>());
+                // Column 10 = added_at_commit_id. Rows written before the MVCC
+                // commit_id columns landed have only 10 columns; tolerate a missing
+                // slot as 0.
+                if (chunk.column_count() > 10) {
+                    auto c10 = chunk.value(10, i);
+                    if (!c10.is_null())
+                        att_added_at_commit_id = c10.value<std::int64_t>();
+                }
+                found = true;
+                break;
+            }
+            if (found)
+                break;
         }
 
         if (attoid != catalog::INVALID_OID) {

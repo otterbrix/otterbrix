@@ -102,31 +102,26 @@ namespace services::disk {
                                              std::pmr::vector<components::pg_attribute_commit_id_backfill_t> backfills,
                                              std::uint64_t commit_id);
 
-        // Pure storage scan: row_ids of committed+txn-visible rows in the table with
-        // the given OID where every key_col_names[i] == key_values[i].
-        actor_zeta::unique_future<std::pmr::vector<std::int64_t>>
-        scan_by_key(execution_context_t ctx,
-                    components::catalog::oid_t table_oid,
-                    std::pmr::vector<std::string> key_col_names,
-                    std::pmr::vector<components::types::logical_value_t> key_values);
-
-        // Batched scan_by_key for one table: result[i] = match row_ids for keys[i].
-        // All keys share the same table_oid (and therefore the same owning agent), so
-        // the per-key loop runs intra-agent via a single scan_by_keys_inner message.
+        // Batched keyed scan for one table: result[i] = match row_ids for key-tuple i.
+        // Keys are columnar: `keys` is a data_chunk whose column j holds key_col_names[j]
+        // and whose row i is the i-th key-tuple, so no row-major logical_value_t crosses
+        // the boundary. All keys share the same table_oid (and therefore the same owning
+        // agent), so the per-key loop runs intra-agent via a single scan_by_keys_inner.
         actor_zeta::unique_future<std::pmr::vector<std::pmr::vector<std::int64_t>>>
         scan_by_keys(execution_context_t ctx,
                      components::catalog::oid_t table_oid,
                      std::pmr::vector<std::string> key_col_names,
-                     std::pmr::vector<std::pmr::vector<components::types::logical_value_t>> keys);
+                     components::vector::data_chunk_t keys);
 
-        // Pure row-data scan: returns the full column values for every txn-visible row
-        // in the table with the given OID where key_col_names[i] == key_values[i].
-        // Outer vector = rows, inner vector = column values in schema order.
-        actor_zeta::unique_future<std::pmr::vector<std::pmr::vector<components::types::logical_value_t>>>
-        read_rows_by_key(execution_context_t ctx,
-                         components::catalog::oid_t table_oid,
-                         std::pmr::vector<std::string> key_col_names,
-                         std::pmr::vector<components::types::logical_value_t> key_values);
+        // Columnar row-data scan: returns the txn-visible rows for key_col_names[i] ==
+        // key_values[i] as batched data_chunk_t (each chunk <= DEFAULT_VECTOR_CAPACITY
+        // rows). Callers read cells via chunk.value(col_idx, row_idx) without
+        // materializing a row-major vector.
+        actor_zeta::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+        read_chunks_by_key(execution_context_t ctx,
+                           components::catalog::oid_t table_oid,
+                           std::pmr::vector<std::string> key_col_names,
+                           std::pmr::vector<components::types::logical_value_t> key_values);
 
         // Physical column compaction for an IN_MEMORY relkind='g'
         // table_storage_t.
@@ -302,9 +297,8 @@ namespace services::disk {
                                                             &disk_contract::delete_pg_catalog_rows,
                                                             &disk_contract::delete_pg_catalog_rows_many,
                                                             &disk_contract::update_pg_attribute_commit_id_fields,
-                                                            &disk_contract::scan_by_key,
                                                             &disk_contract::scan_by_keys,
-                                                            &disk_contract::read_rows_by_key,
+                                                            &disk_contract::read_chunks_by_key,
                                                             &disk_contract::compact_relkind_g_storage,
                                                             &disk_contract::on_horizon_advanced,
                                                             &disk_contract::mark_storage_dropped,

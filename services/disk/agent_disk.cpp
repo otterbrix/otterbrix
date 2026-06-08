@@ -890,7 +890,7 @@ namespace services::disk {
     agent_disk_t::unique_future<std::pmr::vector<std::pmr::vector<std::int64_t>>>
     agent_disk_t::scan_by_keys_inner(components::catalog::oid_t table_oid,
                                      std::pmr::vector<std::string> key_col_names,
-                                     std::pmr::vector<std::pmr::vector<components::types::logical_value_t>> keys,
+                                     components::vector::data_chunk_t keys,
                                      components::table::transaction_data txn) {
         // result[i] = row_ids matching keys[i]; one (possibly empty) entry per key,
         // preserving input order. Name→index resolution runs once for the whole
@@ -931,37 +931,35 @@ namespace services::disk {
             key_col_indices.push_back(static_cast<std::uint64_t>(col_idx));
         }
 
-        // `keys` is a by-value sink: every path consumes its per-key values by MOVE
-        // (no copy of a logical_value_t anywhere). The two branches are symmetric on
-        // value handling — the arity-mismatch path moves the whole `key_values` row
-        // out (into the discarded `bad_key`), the matching path moves each element
-        // into its constant_filter_t — so neither branch copies and both leave the
-        // source row empty afterwards.
-        for (auto& key_values : keys) {
-            std::pmr::vector<std::int64_t> row_ids{resource()};
-            // Arity mismatch for this key: leave the row empty (per-key, so one bad
-            // key doesn't void the batch). Move the row out to match the consume
-            // semantics of the matching path below.
-            if (key_values.size() != key_col_indices.size()) {
-                auto bad_key = std::move(key_values);
-                (void) bad_key;
-                result.emplace_back(std::move(row_ids));
-                continue;
+        // Columnar keys: column j == key_col_names[j], row i == key-tuple i. Arity is
+        // uniform across the chunk, so a mismatch (chunk column count != resolved key
+        // columns) voids the whole batch with one empty row per key. Each filter
+        // constant is the single materialization of a key cell (keys.value(ki, i)): the
+        // filter API requires a logical_value_t, so this is the irreducible floor — no
+        // row-major keys cross the mailbox.
+        const std::uint64_t nkeys = keys.size();
+        if (keys.column_count() != key_col_indices.size()) {
+            for (std::uint64_t i = 0; i < nkeys; ++i) {
+                result.emplace_back();
             }
+            co_return std::move(result);
+        }
+        for (std::uint64_t i = 0; i < nkeys; ++i) {
+            std::pmr::vector<std::int64_t> row_ids{resource()};
             auto filter = std::make_unique<components::table::conjunction_and_filter_t>();
             for (std::size_t ki = 0; ki < key_col_indices.size(); ++ki) {
                 std::pmr::vector<std::uint64_t> idx_vec{resource()};
                 idx_vec.push_back(key_col_indices[ki]);
                 filter->child_filters.push_back(
                     std::make_unique<components::table::constant_filter_t>(components::expressions::compare_type::eq,
-                                                                          std::move(key_values[ki]),
+                                                                          keys.value(ki, i),
                                                                           std::move(idx_vec)));
             }
             std::pmr::vector<components::vector::data_chunk_t> batches{resource()};
             entry->storage->scan_batched(batches, filter.get(), int64_t{-1}, nullptr, txn);
             for (auto& chunk : batches) {
-                for (uint64_t i = 0; i < chunk.size(); ++i) {
-                    row_ids.push_back(chunk.row_ids.data<std::int64_t>()[i]);
+                for (uint64_t r = 0; r < chunk.size(); ++r) {
+                    row_ids.push_back(chunk.row_ids.data<std::int64_t>()[r]);
                 }
             }
             result.emplace_back(std::move(row_ids));

@@ -4,6 +4,8 @@
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
 #include <components/types/logical_value.hpp>
+#include <components/vector/data_chunk.hpp>
+#include <components/vector/vector_operations.hpp>
 #include <services/disk/manager_disk.hpp>
 
 #include <limits>
@@ -64,17 +66,20 @@ namespace components::operators {
 
         // Stage A: build one key per deleted parent row, then a single batched
         // scan of the child table. per_row_child_ids[row] = referencing child
-        // row_ids for that parent row (empty -> nothing references it).
-        std::pmr::vector<std::pmr::vector<types::logical_value_t>> keys(resource_);
-        keys.reserve(chunk.size());
-        for (uint64_t row = 0; row < chunk.size(); ++row) {
-            std::pmr::vector<types::logical_value_t> key_values(resource_);
-            key_values.reserve(par_indices.size());
-            for (auto pidx : par_indices) {
-                key_values.push_back(chunk.value(pidx, row));
-            }
-            keys.push_back(std::move(key_values));
+        // row_ids for that parent row (empty -> nothing references it). The parent
+        // key columns are copied into an OWNED keys-chunk (it crosses the mailbox and
+        // actors must not share buffers). All rows are copied in input order, so
+        // keys-chunk row i pairs with parent row i (result[i] mapping).
+        std::pmr::vector<types::complex_logical_type> key_types(resource_);
+        key_types.reserve(par_indices.size());
+        for (auto pidx : par_indices) {
+            key_types.push_back(chunk.data[pidx].type());
         }
+        components::vector::data_chunk_t keys(resource_, key_types, chunk.size() == 0 ? 1 : chunk.size());
+        for (std::size_t j = 0; j < par_indices.size(); ++j) {
+            components::vector::vector_ops::copy(chunk.data[par_indices[j]], keys.data[j], chunk.size(), 0, 0);
+        }
+        keys.set_cardinality(chunk.size());
 
         auto [_s, sfut] = actor_zeta::send(ctx->disk_address,
                                            &services::disk::manager_disk_t::scan_by_keys,

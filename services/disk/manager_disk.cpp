@@ -72,9 +72,8 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::delete_pg_catalog_rows>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::delete_pg_catalog_rows_many>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::update_pg_attribute_commit_id_fields>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::scan_by_key>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::scan_by_keys>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::read_rows_by_key>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::read_chunks_by_key>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::compact_relkind_g_storage>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::on_horizon_advanced>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::mark_storage_dropped>,
@@ -477,16 +476,12 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::append_pg_catalog_row, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::scan_by_key>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::scan_by_key, msg);
-                break;
-            }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::scan_by_keys>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::scan_by_keys, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::read_rows_by_key>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::read_rows_by_key, msg);
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::read_chunks_by_key>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::read_chunks_by_key, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::delete_pg_catalog_rows>: {

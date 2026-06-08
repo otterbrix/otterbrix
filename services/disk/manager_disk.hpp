@@ -460,30 +460,24 @@ namespace services::disk {
                                              std::pmr::vector<components::pg_attribute_commit_id_backfill_t> backfills,
                                              std::uint64_t commit_id);
 
-        // Pure storage scan: row_ids of txn-visible rows in the table with `table_oid`
-        // where key_col_names[i] == key_values[i] for every i.
-        unique_future<std::pmr::vector<std::int64_t>>
-        scan_by_key(execution_context_t ctx,
-                    components::catalog::oid_t table_oid,
-                    std::pmr::vector<std::string> key_col_names,
-                    std::pmr::vector<components::types::logical_value_t> key_values);
-
-        // Batched scan_by_key: result[i] = match row_ids for keys[i]. All keys share
-        // `table_oid` (one owning agent), so the per-key loop runs intra-agent via a
-        // single scan_by_keys_inner message.
+        // Batched keyed scan: result[i] = match row_ids for key-tuple i. Keys are
+        // columnar — `keys` is a data_chunk (column j = key_col_names[j], row i = i-th
+        // key-tuple). All keys share `table_oid` (one owning agent), so the per-key loop
+        // runs intra-agent via a single scan_by_keys_inner message.
         unique_future<std::pmr::vector<std::pmr::vector<std::int64_t>>>
         scan_by_keys(execution_context_t ctx,
                      components::catalog::oid_t table_oid,
                      std::pmr::vector<std::string> key_col_names,
-                     std::pmr::vector<std::pmr::vector<components::types::logical_value_t>> keys);
+                     components::vector::data_chunk_t keys);
 
-        // Full row-data scan: returns all column values for every txn-visible row
-        // where key_col_names[i] == key_values[i].
-        unique_future<std::pmr::vector<std::pmr::vector<components::types::logical_value_t>>>
-        read_rows_by_key(execution_context_t ctx,
-                         components::catalog::oid_t table_oid,
-                         std::pmr::vector<std::string> key_col_names,
-                         std::pmr::vector<components::types::logical_value_t> key_values);
+        // Columnar row-data scan: returns the txn-visible rows where key_col_names[i] ==
+        // key_values[i] as batched data_chunk_t (each <= DEFAULT_VECTOR_CAPACITY rows)
+        // instead of materializing a row-major vector.
+        unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+        read_chunks_by_key(execution_context_t ctx,
+                           components::catalog::oid_t table_oid,
+                           std::pmr::vector<std::string> key_col_names,
+                           std::pmr::vector<components::types::logical_value_t> key_values);
 
         // Physical column compaction. For an IN_MEMORY relkind='g' storage,
         // drop every physical column whose name is NOT in `live_attnames`. Called by
@@ -721,9 +715,8 @@ namespace services::disk {
                                                        &manager_disk_t::delete_pg_catalog_rows,
                                                        &manager_disk_t::delete_pg_catalog_rows_many,
                                                        &manager_disk_t::update_pg_attribute_commit_id_fields,
-                                                       &manager_disk_t::scan_by_key,
                                                        &manager_disk_t::scan_by_keys,
-                                                       &manager_disk_t::read_rows_by_key,
+                                                       &manager_disk_t::read_chunks_by_key,
                                                        &manager_disk_t::compact_relkind_g_storage,
                                                        &manager_disk_t::on_horizon_advanced,
                                                        &manager_disk_t::mark_storage_dropped,

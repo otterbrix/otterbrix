@@ -78,7 +78,7 @@ namespace components::operators {
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
         // pg_namespace schema: [oid (uint32), nspname (string)].
-        // Filter on nspname == name_ via the generic read_rows_by_key actor
+        // Filter on nspname == name_ via the generic read_chunks_by_key actor
         // message — pure storage primitive.
         types::logical_value_t name_lv(resource_, std::string_view{name_});
         std::pmr::vector<std::string> ns_keys(resource_);
@@ -86,27 +86,33 @@ namespace components::operators {
         std::pmr::vector<types::logical_value_t> ns_vals(resource_);
         ns_vals.emplace_back(name_lv);
         auto [_ns, nsf] = actor_zeta::send(ctx->disk_address,
-                                           &services::disk::manager_disk_t::read_rows_by_key,
+                                           &services::disk::manager_disk_t::read_chunks_by_key,
                                            exec_ctx,
                                            kPgNamespace,
                                            std::move(ns_keys),
                                            std::move(ns_vals));
-        auto ns_rows = co_await std::move(nsf);
+        auto ns_batches = co_await std::move(nsf);
 
-        if (!ns_rows.empty() && !ns_rows[0].empty() && !ns_rows[0][0].is_null()) {
+        bool resolved = false;
+        if (!ns_batches.empty() && ns_batches[0].size() != 0 && ns_batches[0].column_count() >= 1) {
             // First row's col 0 = namespace_oid. Mirrors
             // manager_disk_t::resolve_namespace (manager_disk_resolve.cpp:9-32)
             // which returns the first match.
-            const auto oid_val = static_cast<catalog::oid_t>(ns_rows[0][0].value<std::uint32_t>());
-            out_chunk.set_cardinality(1);
-            set_uint32(out_chunk, 0, 0, static_cast<std::uint32_t>(oid_val));
-            // Stamp the resolved oid onto the logical-plan node so the
-            // dispatcher's Pass 2 (validate / enrich / planner) can read
-            // it via plan_resolve_index_t.
-            if (target_node_) {
-                target_node_->set_namespace_oid(oid_val);
+            auto ns_oid_v = ns_batches[0].value(0, 0);
+            if (!ns_oid_v.is_null()) {
+                const auto oid_val = static_cast<catalog::oid_t>(ns_oid_v.value<std::uint32_t>());
+                out_chunk.set_cardinality(1);
+                set_uint32(out_chunk, 0, 0, static_cast<std::uint32_t>(oid_val));
+                // Stamp the resolved oid onto the logical-plan node so the
+                // dispatcher's Pass 2 (validate / enrich / planner) can read
+                // it via plan_resolve_index_t.
+                if (target_node_) {
+                    target_node_->set_namespace_oid(oid_val);
+                }
+                resolved = true;
             }
-        } else {
+        }
+        if (!resolved) {
             out_chunk.set_cardinality(0);
         }
 

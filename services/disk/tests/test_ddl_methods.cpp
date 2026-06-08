@@ -8,6 +8,7 @@
 #include <components/session/session.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/types/types.hpp>
+#include <components/vector/data_chunk.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <services/disk/manager_disk.hpp>
 
@@ -174,9 +175,12 @@ TEST_CASE("services::disk::ddl::computed_register_same_type_idempotent") {
     std::pmr::vector<components::types::logical_value_t> v1{&fx.resource};
     v1.emplace_back(toid_lv);
     v1.emplace_back(name_lv);
-    auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc, std::move(k1), std::move(v1));
-    REQUIRE(rows.size() == 1);
-    REQUIRE(rows[0][6].value<std::int64_t>() == 1);
+    auto batches = fx.invoke(&manager_disk_t::read_chunks_by_key, fx.ctx(), pg_cc, std::move(k1), std::move(v1));
+    std::uint64_t total = 0;
+    for (const auto& c : batches)
+        total += c.size();
+    REQUIRE(total == 1);
+    REQUIRE(batches[0].value(6, 0).value<std::int64_t>() == 1);
 
     auto rs = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("agg"), std::uint64_t{0});
     REQUIRE(rs.found);
@@ -218,7 +222,7 @@ TEST_CASE("services::disk::ddl::computed_unregister_then_resolve_hides_column") 
 // 25. Refcount-decrement is replaced by binary register/unregister +
 // tombstone semantics. Verify that unregister appends a tombstone row with
 // refcount=0 and that the live row + tombstone coexist until VACUUM
-// (i.e. read_rows_by_key sees both).
+// (i.e. read_chunks_by_key sees both).
 TEST_CASE("services::disk::ddl::computed_unregister_marks_dead") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "nstomb");
@@ -242,24 +246,29 @@ TEST_CASE("services::disk::ddl::computed_unregister_marks_dead") {
     std::pmr::vector<components::types::logical_value_t> v2{&fx.resource};
     v2.emplace_back(toid_lv);
     v2.emplace_back(name_lv);
-    auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc, std::move(k2), std::move(v2));
-    REQUIRE(rows.size() == 2);
+    auto batches = fx.invoke(&manager_disk_t::read_chunks_by_key, fx.ctx(), pg_cc, std::move(k2), std::move(v2));
+    std::uint64_t total = 0;
+    for (const auto& c : batches)
+        total += c.size();
+    REQUIRE(total == 2);
 
     bool found_live = false;
     bool found_tomb = false;
     std::int64_t live_v = -1;
     std::int64_t tomb_v = -1;
-    for (const auto& row : rows) {
-        REQUIRE(row.size() >= 7);
-        const auto v = row[5].value<std::int64_t>();
-        const auto rc = row[6].value<std::int64_t>();
-        if (rc > 0) {
-            found_live = true;
-            live_v = v;
-        }
-        if (rc == 0) {
-            found_tomb = true;
-            tomb_v = v;
+    for (const auto& chunk : batches) {
+        REQUIRE(chunk.column_count() >= 7);
+        for (std::uint64_t i = 0; i < chunk.size(); ++i) {
+            const auto v = chunk.value(5, i).value<std::int64_t>();
+            const auto rc = chunk.value(6, i).value<std::int64_t>();
+            if (rc > 0) {
+                found_live = true;
+                live_v = v;
+            }
+            if (rc == 0) {
+                found_tomb = true;
+                tomb_v = v;
+            }
         }
     }
     REQUIRE(found_live);
@@ -316,7 +325,10 @@ TEST_CASE("services::disk::ddl::computed_field_drop_then_readd") {
     k3.emplace_back("relid");
     std::pmr::vector<components::types::logical_value_t> v3{&fx.resource};
     v3.emplace_back(toid_lv);
-    auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc, std::move(k3), std::move(v3));
+    auto batches = fx.invoke(&manager_disk_t::read_chunks_by_key, fx.ctx(), pg_cc, std::move(k3), std::move(v3));
+    std::uint64_t total_rows = 0;
+    for (const auto& c : batches)
+        total_rows += c.size();
 
     // Branch on observed register-side behavior so the test stays useful even
     // if the operator's same-type policy is later relaxed (e.g. to revive
@@ -326,7 +338,7 @@ TEST_CASE("services::disk::ddl::computed_field_drop_then_readd") {
         //   a (live, v=0, rc=1)
         //   b (live, v=0, rc=1)            -- attoid_b
         //   b (tombstone, v=1, rc=0)       -- attoid_b reused
-        REQUIRE(rows.size() == 3);
+        REQUIRE(total_rows == 3);
 
         // Per-attname classification.
         int rows_a = 0, rows_b_live = 0, rows_b_tomb = 0;
@@ -334,22 +346,24 @@ TEST_CASE("services::disk::ddl::computed_field_drop_then_readd") {
         std::int64_t b_tomb_v = -1;
         catalog::oid_t observed_b_live_attoid = catalog::INVALID_OID;
         catalog::oid_t observed_b_tomb_attoid = catalog::INVALID_OID;
-        for (const auto& row : rows) {
-            REQUIRE(row.size() >= 7);
-            const auto attname = std::string(row[2].value<std::string_view>());
-            const auto v = row[5].value<std::int64_t>();
-            const auto rc = row[6].value<std::int64_t>();
-            if (attname == "a") {
-                ++rows_a;
-            } else if (attname == "b") {
-                if (rc > 0) {
-                    ++rows_b_live;
-                    b_live_v = v;
-                    observed_b_live_attoid = static_cast<catalog::oid_t>(row[1].value<std::uint32_t>());
-                } else {
-                    ++rows_b_tomb;
-                    b_tomb_v = v;
-                    observed_b_tomb_attoid = static_cast<catalog::oid_t>(row[1].value<std::uint32_t>());
+        for (const auto& chunk : batches) {
+            REQUIRE(chunk.column_count() >= 7);
+            for (std::uint64_t i = 0; i < chunk.size(); ++i) {
+                const auto attname = std::string(chunk.value(2, i).value<std::string_view>());
+                const auto v = chunk.value(5, i).value<std::int64_t>();
+                const auto rc = chunk.value(6, i).value<std::int64_t>();
+                if (attname == "a") {
+                    ++rows_a;
+                } else if (attname == "b") {
+                    if (rc > 0) {
+                        ++rows_b_live;
+                        b_live_v = v;
+                        observed_b_live_attoid = static_cast<catalog::oid_t>(chunk.value(1, i).value<std::uint32_t>());
+                    } else {
+                        ++rows_b_tomb;
+                        b_tomb_v = v;
+                        observed_b_tomb_attoid = static_cast<catalog::oid_t>(chunk.value(1, i).value<std::uint32_t>());
+                    }
                 }
             }
         }
@@ -367,7 +381,7 @@ TEST_CASE("services::disk::ddl::computed_field_drop_then_readd") {
         WARN("operator_computed_field_register_t now allocates a fresh attoid "
              "on same-type re-register (instead of no-oping); update task "
              "#103 expectations.");
-        REQUIRE(rows.size() == 4);
+        REQUIRE(total_rows == 4);
         REQUIRE(attoid_b2 != attoid_b);
     }
 
@@ -444,8 +458,11 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
         kk.emplace_back("relid");
         std::pmr::vector<components::types::logical_value_t> vv{&fx.resource};
         vv.emplace_back(toid_lv);
-        auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc, std::move(kk), std::move(vv));
-        REQUIRE(rows.size() == 4);
+        auto batches = fx.invoke(&manager_disk_t::read_chunks_by_key, fx.ctx(), pg_cc, std::move(kk), std::move(vv));
+        std::uint64_t total = 0;
+        for (const auto& c : batches)
+            total += c.size();
+        REQUIRE(total == 4);
     }
 
     // Imitate operator_vacuum_t step 5: collect attoids of dead rows (rc<=0)
@@ -458,13 +475,15 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
         kk.emplace_back("relid");
         std::pmr::vector<components::types::logical_value_t> vv{&fx.resource};
         vv.emplace_back(toid_lv);
-        auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc, std::move(kk), std::move(vv));
+        auto batches = fx.invoke(&manager_disk_t::read_chunks_by_key, fx.ctx(), pg_cc, std::move(kk), std::move(vv));
         std::vector<catalog::oid_t> dead_attoids;
-        for (const auto& row : rows) {
-            REQUIRE(row.size() >= 7);
-            const auto rc = row[6].value<std::int64_t>();
-            if (rc <= 0) {
-                dead_attoids.push_back(static_cast<catalog::oid_t>(row[1].value<std::uint32_t>()));
+        for (const auto& chunk : batches) {
+            REQUIRE(chunk.column_count() >= 7);
+            for (std::uint64_t i = 0; i < chunk.size(); ++i) {
+                const auto rc = chunk.value(6, i).value<std::int64_t>();
+                if (rc <= 0) {
+                    dead_attoids.push_back(static_cast<catalog::oid_t>(chunk.value(1, i).value<std::uint32_t>()));
+                }
             }
         }
         REQUIRE(dead_attoids.size() == 1);
@@ -485,11 +504,16 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
         kk.emplace_back("relid");
         std::pmr::vector<components::types::logical_value_t> vv{&fx.resource};
         vv.emplace_back(toid_lv);
-        auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc, std::move(kk), std::move(vv));
-        REQUIRE(rows.size() == 2);
+        auto batches = fx.invoke(&manager_disk_t::read_chunks_by_key, fx.ctx(), pg_cc, std::move(kk), std::move(vv));
+        std::uint64_t total = 0;
+        for (const auto& c : batches)
+            total += c.size();
+        REQUIRE(total == 2);
         std::vector<std::string> names;
-        for (const auto& row : rows) {
-            names.emplace_back(row[2].value<std::string_view>());
+        for (const auto& chunk : batches) {
+            for (std::uint64_t i = 0; i < chunk.size(); ++i) {
+                names.emplace_back(chunk.value(2, i).value<std::string_view>());
+            }
         }
         std::sort(names.begin(), names.end());
         REQUIRE(names == std::vector<std::string>{"a", "c"});
@@ -573,11 +597,13 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
         kk.emplace_back("relid");
         std::pmr::vector<logical_value_t> vv{&fx.resource};
         vv.emplace_back(toid_lv);
-        auto rows = fx.invoke(&manager_disk_t::read_rows_by_key, fx.ctx(), pg_cc, std::move(kk), std::move(vv));
+        auto batches = fx.invoke(&manager_disk_t::read_chunks_by_key, fx.ctx(), pg_cc, std::move(kk), std::move(vv));
         std::vector<catalog::oid_t> dead_attoids;
-        for (const auto& row : rows) {
-            if (row[6].value<std::int64_t>() <= 0) {
-                dead_attoids.push_back(static_cast<catalog::oid_t>(row[1].value<std::uint32_t>()));
+        for (const auto& chunk : batches) {
+            for (std::uint64_t i = 0; i < chunk.size(); ++i) {
+                if (chunk.value(6, i).value<std::int64_t>() <= 0) {
+                    dead_attoids.push_back(static_cast<catalog::oid_t>(chunk.value(1, i).value<std::uint32_t>()));
+                }
             }
         }
         for (const auto attoid : dead_attoids) {

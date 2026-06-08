@@ -249,18 +249,19 @@ namespace services::disk {
                                    int64_t start,
                                    uint64_t count);
 
-        // scan_by_keys_inner — batched scan_by_key for one owned table. Resolves the
-        //   key column NAMES to storage indices once, then loops `keys`: per key it
-        //   builds an eq-AND filter over the shared key columns and scans, collecting
-        //   the matching row_ids. result[i] == match row_ids for keys[i]; result has
-        //   one (possibly empty) entry per key. A not-owned OID / unknown column /
-        //   arity mismatch yields a same-length result of empty rows (or empty when
-        //   keys is empty). The whole batch is one mailbox message so name resolution
-        //   happens once and every key scan is serialized against same-oid mutations.
+        // scan_by_keys_inner — batched keyed scan for one owned table. Resolves the
+        //   key column NAMES to storage indices once, then loops the key-tuples of the
+        //   columnar `keys` chunk: per row i it builds an eq-AND filter over the shared
+        //   key columns (constant = keys.value(j, i)) and scans, collecting the matching
+        //   row_ids. result[i] == match row_ids for key-tuple i; result has one
+        //   (possibly empty) entry per key. A not-owned OID / unknown column / arity
+        //   mismatch yields a same-length result of empty rows (or empty when keys is
+        //   empty). The whole batch is one mailbox message so name resolution happens
+        //   once and every key scan is serialized against same-oid mutations.
         unique_future<std::pmr::vector<std::pmr::vector<std::int64_t>>>
         scan_by_keys_inner(components::catalog::oid_t table_oid,
                            std::pmr::vector<std::string> key_col_names,
-                           std::pmr::vector<std::pmr::vector<components::types::logical_value_t>> keys,
+                           components::vector::data_chunk_t keys,
                            components::table::transaction_data txn);
 
         // storage_types_inner — schema metadata accessor.

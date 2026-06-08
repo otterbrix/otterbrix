@@ -2,6 +2,8 @@
 
 #include <components/context/context.hpp>
 #include <components/types/logical_value.hpp>
+#include <components/vector/data_chunk.hpp>
+#include <components/vector/vector_operations.hpp>
 #include <services/disk/manager_disk.hpp>
 
 #include <limits>
@@ -46,9 +48,11 @@ namespace components::operators {
             parent_col_names.emplace_back(n);
         }
 
-        // Collect one key per qualifying row in row order; result[i] empty -> violation.
-        std::pmr::vector<std::pmr::vector<types::logical_value_t>> keys(resource_);
-        keys.reserve(chunk.size());
+        // Collect the qualifying child rows as a SELECTION into the input chunk,
+        // preserving the MATCH null policy + error path.
+        // selection[k] = source row of the k-th qualifying key; matches[k] empty -> violation.
+        components::vector::indexing_vector_t selection(resource_, chunk.size() == 0 ? 1 : chunk.size());
+        uint64_t qcount = 0;
 
         for (uint64_t row = 0; row < chunk.size(); ++row) {
             bool any_null = false;
@@ -78,29 +82,42 @@ namespace components::operators {
                     continue;
             }
 
-            // Build key_values from pre-resolved column positions.
-            std::pmr::vector<types::logical_value_t> key_values(resource_);
-            key_values.reserve(indices.size());
+            // Any unresolved key column position voids this row's check.
             bool has_absent = false;
             for (auto idx : indices) {
                 if (idx == absent) {
                     has_absent = true;
                     break;
                 }
-                key_values.push_back(chunk.value(idx, row));
             }
-            if (has_absent || key_values.empty())
+            if (has_absent || indices.empty())
                 continue;
 
-            keys.push_back(std::move(key_values));
+            selection.set_index(qcount, row);
+            ++qcount;
         }
 
-        if (keys.empty()) {
+        if (qcount == 0) {
             mark_executed();
             co_return;
         }
 
-        // One batched scan verifies every per-row key against the parent table.
+        // Build the keys-chunk: column j == child key column indices[j], rows == the
+        // qcount qualifying source rows selected above. Must be an OWNED copy (not a
+        // reference into the input): it crosses the mailbox and actors must not share
+        // buffers (actor isolation).
+        std::pmr::vector<types::complex_logical_type> key_types(resource_);
+        key_types.reserve(indices.size());
+        for (auto idx : indices) {
+            key_types.push_back(chunk.data[idx].type());
+        }
+        components::vector::data_chunk_t keys(resource_, key_types, qcount);
+        for (std::size_t j = 0; j < indices.size(); ++j) {
+            components::vector::vector_ops::copy(chunk.data[indices[j]], keys.data[j], selection, qcount, 0, 0);
+        }
+        keys.set_cardinality(qcount);
+
+        // One batched scan verifies every qualifying key against the parent table.
         auto [_, fut] = actor_zeta::send(ctx->disk_address,
                                          &services::disk::manager_disk_t::scan_by_keys,
                                          exec_ctx,

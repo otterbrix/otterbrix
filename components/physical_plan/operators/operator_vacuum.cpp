@@ -150,7 +150,7 @@ namespace components::operators {
         //
         // Safety vs. concurrent VACUUM + INSERT: VACUUM uses
         // ctx->lowest_active_start_time as the snapshot horizon. The
-        // pg_computed_column GC below reads via read_rows_by_key and deletes
+        // pg_computed_column GC below reads via read_chunks_by_key and deletes
         // via delete_pg_catalog_rows — both go through ctx->txn, so rows
         // newer than the horizon are NOT GC-eligible. Concurrent INSERT's
         // writes (under txn_id >= TRANSACTION_ID_START) are invisible to
@@ -198,30 +198,33 @@ namespace components::operators {
                 std::pmr::vector<types::logical_value_t> cc_vals(resource_);
                 cc_vals.emplace_back(toid_lv);
                 auto [_cc, ccf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::read_rows_by_key,
+                                                   &services::disk::manager_disk_t::read_chunks_by_key,
                                                    cc_ctx,
                                                    kPgComputedColumn,
                                                    std::move(cc_keys),
                                                    std::move(cc_vals));
-                auto cc_rows = co_await std::move(ccf);
+                auto cc_batches = co_await std::move(ccf);
 
                 // Both GC passes below delete by (kPgComputedColumn, col 1=attoid)
                 // and derive their target attoids purely from the already-awaited
-                // cc_rows (no intervening await), so collect every delete into one
+                // cc_batches (no intervening await), so collect every delete into one
                 // batched call issued before the post-GC re-read.
                 std::pmr::vector<services::disk::pg_catalog_delete_spec_t> cc_specs(resource_);
 
                 std::vector<catalog::oid_t> dead_attoids;
-                dead_attoids.reserve(cc_rows.size());
-                for (const auto& row : cc_rows) {
-                    if (row.size() < 7)
+                for (auto& chunk : cc_batches) {
+                    if (chunk.column_count() < 7)
                         continue;
-                    if (row[1].is_null() || row[6].is_null())
-                        continue;
-                    const auto rc = row[6].value<std::int64_t>();
-                    if (rc > 0)
-                        continue;
-                    dead_attoids.push_back(static_cast<catalog::oid_t>(row[1].value<std::uint32_t>()));
+                    for (uint64_t i = 0; i < chunk.size(); ++i) {
+                        auto attoid_v = chunk.value(1, i);
+                        auto refcount_v = chunk.value(6, i);
+                        if (attoid_v.is_null() || refcount_v.is_null())
+                            continue;
+                        const auto rc = refcount_v.value<std::int64_t>();
+                        if (rc > 0)
+                            continue;
+                        dead_attoids.push_back(static_cast<catalog::oid_t>(attoid_v.value<std::uint32_t>()));
+                    }
                 }
 
                 for (const auto attoid : dead_attoids) {
@@ -238,19 +241,26 @@ namespace components::operators {
                     std::int64_t attversion;
                 };
                 std::map<std::string, std::vector<version_row_t>> grouped;
-                for (const auto& row : cc_rows) {
-                    if (row.size() < 7)
+                for (auto& chunk : cc_batches) {
+                    if (chunk.column_count() < 7)
                         continue;
-                    if (row[1].is_null() || row[2].is_null() || row[5].is_null() || row[6].is_null()) {
-                        continue;
+                    for (uint64_t i = 0; i < chunk.size(); ++i) {
+                        auto attoid_v = chunk.value(1, i);
+                        auto attname_v = chunk.value(2, i);
+                        auto attversion_v = chunk.value(5, i);
+                        auto refcount_v = chunk.value(6, i);
+                        if (attoid_v.is_null() || attname_v.is_null() || attversion_v.is_null() ||
+                            refcount_v.is_null()) {
+                            continue;
+                        }
+                        // Skip rows already queued for deletion as tombstones.
+                        if (refcount_v.value<std::int64_t>() <= 0)
+                            continue;
+                        auto attname = attname_v.value<std::string_view>();
+                        auto attversion = attversion_v.value<std::int64_t>();
+                        auto attoid = static_cast<catalog::oid_t>(attoid_v.value<std::uint32_t>());
+                        grouped[std::string(attname)].push_back({attoid, attversion});
                     }
-                    // Skip rows already queued for deletion as tombstones.
-                    if (row[6].value<std::int64_t>() <= 0)
-                        continue;
-                    auto attname = row[2].value<std::string_view>();
-                    auto attversion = row[5].value<std::int64_t>();
-                    auto attoid = static_cast<catalog::oid_t>(row[1].value<std::uint32_t>());
-                    grouped[std::string(attname)].push_back({attoid, attversion});
                 }
                 for (auto& [_key, rows] : grouped) {
                     if (rows.size() <= 1)
@@ -293,7 +303,7 @@ namespace components::operators {
                     std::pmr::vector<types::logical_value_t> cc2_vals(resource_);
                     cc2_vals.emplace_back(toid_lv2);
                     auto [_cc2, ccf2] = actor_zeta::send(ctx->disk_address,
-                                                         &services::disk::manager_disk_t::read_rows_by_key,
+                                                         &services::disk::manager_disk_t::read_chunks_by_key,
                                                          cc_ctx,
                                                          kPgComputedColumn,
                                                          std::move(cc2_keys),
@@ -301,14 +311,18 @@ namespace components::operators {
                     auto live_cc = co_await std::move(ccf2);
 
                     std::set<std::string> live_attnames;
-                    for (const auto& row : live_cc) {
-                        if (row.size() < 7)
+                    for (auto& chunk : live_cc) {
+                        if (chunk.column_count() < 7)
                             continue;
-                        if (row[2].is_null() || row[6].is_null())
-                            continue;
-                        if (row[6].value<std::int64_t>() <= 0)
-                            continue;
-                        live_attnames.emplace(std::string(row[2].value<std::string_view>()));
+                        for (uint64_t i = 0; i < chunk.size(); ++i) {
+                            auto attname_v = chunk.value(2, i);
+                            auto refcount_v = chunk.value(6, i);
+                            if (attname_v.is_null() || refcount_v.is_null())
+                                continue;
+                            if (refcount_v.value<std::int64_t>() <= 0)
+                                continue;
+                            live_attnames.emplace(std::string(attname_v.value<std::string_view>()));
+                        }
                     }
 
                     auto [_dc, dcf] = actor_zeta::send(ctx->disk_address,

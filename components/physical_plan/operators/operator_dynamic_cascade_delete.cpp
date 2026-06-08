@@ -6,6 +6,7 @@
 #include <components/catalog/dependency_walker.hpp>
 #include <components/context/context.hpp>
 #include <components/types/logical_value.hpp>
+#include <components/vector/data_chunk.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <services/index/manager_index.hpp>
@@ -131,25 +132,27 @@ namespace components::operators {
             rd_vals.emplace_back(cls_lv);
             rd_vals.emplace_back(oid_lv);
             auto [_rd, rdf] = actor_zeta::send(ctx->disk_address,
-                                               &services::disk::manager_disk_t::read_rows_by_key,
+                                               &services::disk::manager_disk_t::read_chunks_by_key,
                                                exec_ctx,
                                                kPgDepend,
                                                std::move(rd_keys),
                                                std::move(rd_vals));
-            auto dep_rows = co_await std::move(rdf);
+            auto dep_batches = co_await std::move(rdf);
 
             std::pmr::vector<catalog::dependency_t> deps(resource_);
-            deps.reserve(dep_rows.size());
-            for (const auto& row : dep_rows) {
-                if (row.size() < 5)
+            for (auto& chunk : dep_batches) {
+                if (chunk.column_count() < 5)
                     continue;
-                catalog::dependency_t d;
-                d.classid = static_cast<catalog::oid_t>(row[0].value<std::uint32_t>());
-                d.objid = static_cast<catalog::oid_t>(row[1].value<std::uint32_t>());
-                const auto dv = row[4].is_null() ? std::string_view{"n"} : row[4].value<std::string_view>();
-                d.deptype = dv.empty() ? 'n' : dv[0];
-                deps.push_back(d);
-                stack.push_back(encode_key(d.classid, d.objid));
+                for (uint64_t i = 0; i < chunk.size(); ++i) {
+                    catalog::dependency_t d;
+                    d.classid = static_cast<catalog::oid_t>(chunk.value(0, i).value<std::uint32_t>());
+                    d.objid = static_cast<catalog::oid_t>(chunk.value(1, i).value<std::uint32_t>());
+                    auto deptype_v = chunk.value(4, i);
+                    const auto dv = deptype_v.is_null() ? std::string_view{"n"} : deptype_v.value<std::string_view>();
+                    d.deptype = dv.empty() ? 'n' : dv[0];
+                    deps.push_back(d);
+                    stack.push_back(encode_key(d.classid, d.objid));
+                }
             }
             dep_graph.insert_or_assign(k, std::move(deps));
         }
@@ -203,14 +206,9 @@ namespace components::operators {
 
         constexpr catalog::oid_t kPgClass = catalog::well_known_oid::pg_class_table;
 
-        // Two-phase pg_class relkind probe: each step's read is keyed by its own
-        // step.objid (plan.steps is fixed here) and only decides whether the oid
-        // gets a storage drop, so no read feeds another iteration's read. Send
-        // every probe first, recording step.objid alongside each future, then
-        // await and apply the relkind filter.
-        std::pmr::vector<actor_zeta::unique_future<std::pmr::vector<std::pmr::vector<types::logical_value_t>>>>
-            relkind_futures(resource_);
-        std::pmr::vector<catalog::oid_t> relkind_oids(resource_);
+        // pg_class relkind probe: each storage step's read is keyed by its own
+        // step.objid and only decides whether the oid is storage-backed, so no read
+        // feeds another iteration's read (probes are independent).
         for (const auto& step : plan.steps) {
             if (step.classid != catalog::well_known_oid::pg_class_table)
                 continue;
@@ -223,31 +221,26 @@ namespace components::operators {
             std::pmr::vector<types::logical_value_t> pc_vals(resource_);
             pc_vals.emplace_back(pcoid_lv);
             auto [_pc, pcf] = actor_zeta::send(ctx->disk_address,
-                                               &services::disk::manager_disk_t::read_rows_by_key,
+                                               &services::disk::manager_disk_t::read_chunks_by_key,
                                                exec_ctx,
                                                kPgClass,
                                                std::move(pc_keys),
                                                std::move(pc_vals));
-            relkind_futures.push_back(std::move(pcf));
-            relkind_oids.push_back(step.objid);
-        }
-        for (std::size_t i = 0; i < relkind_futures.size(); ++i) {
-            auto pc_rows = co_await std::move(relkind_futures[i]);
-            if (pc_rows.empty() || pc_rows[0].size() < 4)
+            std::pmr::vector<components::vector::data_chunk_t> pc_batches = co_await std::move(pcf);
+            if (pc_batches.empty() || pc_batches[0].size() == 0 || pc_batches[0].column_count() < 4)
                 continue;
-            const auto& row = pc_rows[0];
 
-            const auto rkv = row[3].is_null() ? std::string_view{"r"} : row[3].value<std::string_view>();
+            const auto rk = pc_batches[0].value(3, 0);
+            const auto rkv = rk.is_null() ? std::string_view{"r"} : rk.value<std::string_view>();
             const char relkind = rkv.empty() ? catalog::relkind::regular : rkv[0];
 
             // Only regular and computing tables back actual storage. Index/
             // sequence/view/macro/composite-type entries are pure catalog
             // bookkeeping: deleting the pg_class row is sufficient.
-            if (relkind != catalog::relkind::regular && relkind != catalog::relkind::computed) {
+            if (relkind != catalog::relkind::regular && relkind != catalog::relkind::computed)
                 continue;
-            }
 
-            pending_storage_drops.push_back({relkind_oids[i]});
+            pending_storage_drops.push_back({step.objid});
         }
 
         // execute the catalog-row deletes in the planned order.

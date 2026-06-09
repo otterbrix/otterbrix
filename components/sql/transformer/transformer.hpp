@@ -10,18 +10,29 @@
 #include <components/logical_plan/param_storage.hpp>
 #include <components/sql/parser/nodes/parsenodes.h>
 
+namespace components::sql::parser {
+    class parser_extension_registry_t;
+} // namespace components::sql::parser
+
 namespace components::sql::transform {
     class transformer {
     public:
-        explicit transformer(std::pmr::memory_resource* resource, const char* raw_sql = nullptr)
+        explicit transformer(std::pmr::memory_resource* resource,
+                             const char* raw_sql = nullptr,
+                             const parser::parser_extension_registry_t* extensions = nullptr)
             : resource_(resource)
             , raw_sql_(raw_sql)
+            , extensions_(extensions)
             , parameter_map_(resource_)
             , parameter_insert_map_(resource_)
             , parameter_insert_rows_(resource_, {})
             , error_(core::error_t::no_error()) {}
 
         transform_result transform(Node& node);
+        // Lower a single statement node to a plan node (the dispatch switch);
+        // transform() wraps the result with parameter bookkeeping. Sets the
+        // internal error and returns nullptr on failure. Subqueries are collected
+        // into plan->sub_queries; extension nodes route through plan->parameters.
         logical_plan::node_ptr transform(Node& node, logical_plan::execution_plan_t* plan);
 
         // Parse a bare SQL expression string (e.g. "age > 0") as if it were a WHERE clause.
@@ -210,6 +221,7 @@ namespace components::sql::transform {
 
         std::pmr::memory_resource* resource_;
         const char* raw_sql_;
+        const parser::parser_extension_registry_t* extensions_;
         std::pmr::unordered_map<size_t, core::parameter_id_t> parameter_map_;
         std::pmr::unordered_map<size_t, std::pmr::vector<insert_location_t>> parameter_insert_map_;
         vector::data_chunk_t parameter_insert_rows_;

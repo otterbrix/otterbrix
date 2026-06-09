@@ -2,6 +2,7 @@
 #include "utils.hpp"
 
 #include <components/logical_plan/node_aggregate.hpp>
+#include <components/sql/parser/extension.hpp>
 
 namespace components::sql::transform {
 
@@ -153,6 +154,19 @@ namespace components::sql::transform {
                     error_ = core::error_t(
                         core::error_code_t::sql_parse_error,
                         std::pmr::string{"SET " + std::string(var_name) + " is not supported", resource_});
+                }
+                break;
+            }
+            case T_ExtensionNode: {
+                // route to the owning extension's transform stage by extension_id
+                auto& ext_node = pg_cast<ExtensionNode>(node);
+                const std::string id = ext_node.extension_id ? ext_node.extension_id : "";
+                const auto* extension = extensions_ ? extensions_->find(id) : nullptr;
+                if (extension != nullptr && extension->transform != nullptr) {
+                    log_node = extension->transform(resource_, &ext_node, plan->parameters.get());
+                } else {
+                    error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                           std::pmr::string{"no transformer extension for '" + id + "'", resource_});
                 }
                 break;
             }

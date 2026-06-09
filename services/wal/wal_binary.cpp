@@ -238,11 +238,7 @@ namespace services::wal {
     //   [commit_id:8]
     //   [crc32:4]
     // -----------------------------------------------------------------------
-    crc32_t encode_commit(buffer_t& buffer,
-                          crc32_t last_crc32,
-                          id_t wal_id,
-                          uint64_t txn_id,
-                          uint64_t commit_id) {
+    crc32_t encode_commit(buffer_t& buffer, crc32_t last_crc32, id_t wal_id, uint64_t txn_id, uint64_t commit_id) {
         // commit_id is appended AFTER the type byte to preserve the type byte's
         // offset, so DML decode (which reads only up to the type byte before
         // branching) stays unaffected.

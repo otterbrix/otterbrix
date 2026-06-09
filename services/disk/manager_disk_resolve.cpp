@@ -156,10 +156,10 @@ namespace services::disk {
                         row.base.attoid =
                             static_cast<components::catalog::oid_t>(chunk.value(1, i).value<std::uint32_t>());
                         row.base.attname = std::string(chunk.value(2, i).value<std::string_view>());
-                        row.base.atttypid = chunk.value(3, i).is_null()
-                                                ? components::catalog::INVALID_OID
-                                                : static_cast<components::catalog::oid_t>(
-                                                      chunk.value(3, i).value<std::uint32_t>());
+                        row.base.atttypid =
+                            chunk.value(3, i).is_null()
+                                ? components::catalog::INVALID_OID
+                                : static_cast<components::catalog::oid_t>(chunk.value(3, i).value<std::uint32_t>());
                         auto spec_v = chunk.value(4, i);
                         if (!spec_v.is_null())
                             row.atttypspec = std::string(spec_v.value<std::string_view>());
@@ -257,8 +257,7 @@ namespace services::disk {
                             continue;
                     }
                     column_info_t info;
-                    info.attoid =
-                        static_cast<components::catalog::oid_t>(chunk.value(0, i).value<std::uint32_t>());
+                    info.attoid = static_cast<components::catalog::oid_t>(chunk.value(0, i).value<std::uint32_t>());
                     auto name_v = chunk.value(2, i);
                     if (!name_v.is_null())
                         info.attname = std::string(name_v.value<std::string_view>());
@@ -377,8 +376,7 @@ namespace services::disk {
                         continue;
                     if (!str_equals(chunk.value(1, i), name))
                         continue;
-                    composite_oid =
-                        static_cast<components::catalog::oid_t>(chunk.value(0, i).value<std::uint32_t>());
+                    composite_oid = static_cast<components::catalog::oid_t>(chunk.value(0, i).value<std::uint32_t>());
                     stop = true;
                     break;
                 }
@@ -693,9 +691,8 @@ namespace services::disk {
         if (agent == nullptr)
             co_return empty;
 
-        auto [names_ns, names_fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                  &agent_disk_t::storage_column_names_inner,
-                                                                  table_oid);
+        auto [names_ns, names_fut] =
+            actor_zeta::otterbrix::send(agent->address(), &agent_disk_t::storage_column_names_inner, table_oid);
         if (names_ns) {
             scheduler_disk_->enqueue(agent.get());
         }

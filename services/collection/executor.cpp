@@ -35,19 +35,19 @@
 // catalog-resolve helpers (services::catalog_resolve) let the executor drive
 // resolve without a dispatcher dependency. Defined in
 // services/dispatcher/enrich_logical_plan.cpp, already linked into the library.
-#include <services/dispatcher/dispatcher.hpp>
-#include <services/dispatcher/enrich_logical_plan.hpp>
-#include <services/dispatcher/plan_resolve_index.hpp>
-#include <services/dispatcher/txn_messages.hpp>
-#include <services/dispatcher/validate_logical_plan.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/catalog/table_id.hpp>
-#include <components/planner/optimizer.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_commit_transaction.hpp>
 #include <components/logical_plan/node_create_database.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_match.hpp>
+#include <components/planner/optimizer.hpp>
+#include <services/dispatcher/dispatcher.hpp>
+#include <services/dispatcher/enrich_logical_plan.hpp>
+#include <services/dispatcher/plan_resolve_index.hpp>
+#include <services/dispatcher/txn_messages.hpp>
+#include <services/dispatcher/validate_logical_plan.hpp>
 
 using namespace components::cursor;
 
@@ -98,7 +98,7 @@ namespace services::collection::executor {
     } // namespace
 
     plan_t::plan_t(std::stack<components::operators::operator_ptr>&& sub_plans,
-                   components::logical_plan::storage_parameters parameters,
+                   const components::logical_plan::storage_parameters* parameters,
                    services::context_storage_t&& context_storage,
                    components::logical_plan::limit_t limit)
         : sub_plans(std::move(sub_plans))
@@ -152,8 +152,7 @@ namespace services::collection::executor {
 
     executor_t::unique_future<execute_result_t>
     executor_t::execute_plan(components::session::session_id_t session,
-                             components::logical_plan::node_ptr logical_plan,
-                             components::logical_plan::storage_parameters parameters,
+                             components::logical_plan::execution_plan_t plan,
                              services::context_storage_t context_storage,
                              components::table::transaction_data txn,
                              uint64_t lowest_active_start_time) {
@@ -173,7 +172,7 @@ namespace services::collection::executor {
         // Skip the catalog_resolve_* prefix first (it never carries a limit),
         // then fall back to iterating the raw children for non-DML plans.
         auto limit = components::logical_plan::limit_t::unlimit();
-        auto* limit_lookup_node = logical_plan.get();
+        auto* limit_lookup_node = plan.sub_queries.back().get();
         if (limit_lookup_node && limit_lookup_node->type() == components::logical_plan::node_type::sequence_t) {
             // Find first non-resolve child as the limit-carrying consumer.
             auto is_catalog_resolve = [](components::logical_plan::node_type t) {
@@ -201,22 +200,24 @@ namespace services::collection::executor {
         // index scans). Point it at THIS frame's `parameters` local: the
         // pointer is consumed only at plan-build time (inside create_plan),
         // before the move into plan_data below.
-        context_storage.parameters = &parameters;
-        components::operators::operator_ptr plan =
-            planner::create_plan(context_storage, function_registry_, logical_plan, limit, &parameters);
+        context_storage.parameters = &plan.parameters->parameters();
+        components::operators::operator_ptr node = planner::create_plan(context_storage,
+                                                                        function_registry_,
+                                                                        plan.sub_queries.back(),
+                                                                        limit,
+                                                                        &plan.parameters->parameters());
 
-        if (!plan) {
+        if (!node) {
             // Surface the error via cursor so execute_plan_full's tail routes
             // through abort.
-            co_return execute_result_t{
-                make_cursor(resource(),
-                            core::error_t(core::error_code_t::create_physical_plan_error,
-                                          std::pmr::string{"invalid query plan", resource()}))};
+            co_return execute_result_t{make_cursor(resource(),
+                                                   core::error_t(core::error_code_t::create_physical_plan_error,
+                                                                 std::pmr::string{"invalid query plan", resource()}))};
         }
 
-        plan->set_as_root();
+        node->set_as_root();
 
-        auto plan_data = traverse_plan_(std::move(plan), std::move(parameters), std::move(context_storage));
+        auto plan_data = traverse_plan_(std::move(node), plan.parameters->parameters(), std::move(context_storage));
         plan_data.limit = limit;
 
         auto result = co_await execute_sub_plan_(session, std::move(plan_data), txn_data, lowest_active_start_time);
@@ -242,23 +243,65 @@ namespace services::collection::executor {
 
     executor_t::unique_future<execute_result_t>
     executor_t::execute_plan_full(components::session::session_id_t session,
-                                   components::logical_plan::node_ptr logical_plan,
-                                   components::logical_plan::parameter_node_ptr params) {
+                                  components::logical_plan::execution_plan_t plan) {
         // Full per-query pipeline: session-context fetch, optimize, resolve
         // wrap, catalog resolve, view splice, validate, enrich, planner
         // rewrites, operator pipeline, then the DML/DDL commit (or abort)
         // tail. The dispatcher only routes; ALL txn-state access goes through
         // its txn_*_msg mailbox handlers.
         using node_type = components::logical_plan::node_type;
-        using components::logical_plan::node_t;
-        using components::logical_plan::node_ptr;
         using components::logical_plan::node_aggregate_t;
-        using components::logical_plan::node_match_t;
-        using components::logical_plan::node_join_t;
-        using components::logical_plan::node_create_database_t;
         using components::logical_plan::node_catalog_resolve_namespace_t;
         using components::logical_plan::node_catalog_resolve_table_t;
+        using components::logical_plan::node_create_database_t;
+        using components::logical_plan::node_join_t;
+        using components::logical_plan::node_match_t;
+        using components::logical_plan::node_ptr;
         using components::logical_plan::node_sequence_t;
+        using components::logical_plan::node_t;
+
+        // === Sub-query pre-execution (front-to-back) ===
+        // The transformer flattens every nested sub-query into plan.sub_queries,
+        // ordered so dependencies run first; sub_queries.back() is the main
+        // query. Each non-final sub-query is run through this same full pipeline
+        // (recursively, as a single-query plan that SHARES the parameter node),
+        // its result compacted to a scalar/list via the mapping's compacter, and
+        // bound as a parameter the later sub-queries / the main query reference
+        // by id. Sharing the node is why execute_plan copies (not drains) the
+        // parameters: each binding must survive into the next plan.
+        for (std::size_t i = 0; i + 1 < plan.sub_queries.size(); ++i) {
+            auto* sub_root = services::catalog_resolve::effective_root_node(plan.sub_queries[i].get());
+            const node_type sub_type = sub_root ? sub_root->type() : node_type::unused;
+            // SQL standard: a sub-query is a query expression — never DML/DDL.
+            if (sub_type == node_type::insert_t || sub_type == node_type::update_t || sub_type == node_type::delete_t) {
+                co_return execute_result_t{make_cursor(
+                    resource(),
+                    core::error_t{core::error_code_t::sql_parse_error,
+                                  std::pmr::string{"DML statement is not allowed in a sub-query", resource()}})};
+            }
+            components::logical_plan::execution_plan_t sub_plan{resource(), plan.sub_queries[i], plan.parameters};
+            auto sub_result = co_await execute_plan_full(session, std::move(sub_plan));
+            if (sub_result.cursor->is_error()) {
+                co_return execute_result_t{std::move(sub_result.cursor)};
+            }
+            const auto& mapping = plan.sub_query_results[i];
+            trace(log_,
+                  "DBG subq[{}] cursor success={} size={} cols={}",
+                  i,
+                  sub_result.cursor->is_success(),
+                  sub_result.cursor->size(),
+                  sub_result.cursor->chunk_data().column_count());
+            auto compacted = mapping.compacter(sub_result.cursor->chunk_data());
+            trace(log_,
+                  "DBG subq[{}] compacted has_error={} is_null={}",
+                  i,
+                  compacted.has_error(),
+                  compacted.has_error() ? false : compacted.value().is_null());
+            if (compacted.has_error()) {
+                co_return execute_result_t{make_cursor(resource(), compacted.error())};
+            }
+            plan.parameters->set_parameter(mapping.id, std::move(compacted.value()));
+        }
 
         // One round-trip gives the executor everything session-scoped: the
         // (idempotently begun) txn snapshot shared by resolve and the operator
@@ -285,7 +328,7 @@ namespace services::collection::executor {
         // branch dispatch, the txn-kind decision, and the pass2 rewrite gates
         // below (the planner wraps/replaces nodes destructively later).
         const node_type original_type = [&] {
-            auto* r = services::catalog_resolve::effective_root_node(logical_plan.get());
+            auto* r = services::catalog_resolve::effective_root_node(plan.sub_queries.back().get());
             return r ? r->type() : node_type::unused;
         }();
 
@@ -295,14 +338,14 @@ namespace services::collection::executor {
         std::pmr::string pending_set_tz_name{resource()};
         if (original_type == node_type::set_timezone_t) {
             auto* tz_node = static_cast<components::logical_plan::node_set_timezone_t*>(
-                services::catalog_resolve::effective_root_node(logical_plan.get()));
-            pending_set_tz_name.assign(tz_node->timezone_name().c_str(),
-                                       tz_node->timezone_name().size());
+                services::catalog_resolve::effective_root_node(plan.sub_queries.back().get()));
+            pending_set_tz_name.assign(tz_node->timezone_name().c_str(), tz_node->timezone_name().size());
         }
 
         // Optimizer: constant folding, etc. Needs the parameter NODE (before
         // the destructive take_parameters below).
-        logical_plan = components::planner::optimize(resource(), logical_plan, params.get());
+        plan.sub_queries.back() =
+            components::planner::optimize(resource(), plan.sub_queries.back(), plan.parameters.get());
 
         // Wrap the plan with catalog_resolve_namespace + catalog_resolve_table
         // for every (db, rel) pair found in the tree. Validate/enrich consume
@@ -320,8 +363,8 @@ namespace services::collection::executor {
             // walk is unnecessary because resolve only consumes front-children.
             std::set<std::string> existing_dbs;
             std::set<std::pair<std::string, std::string>> existing_tbls;
-            if (logical_plan->type() == node_type::sequence_t) {
-                for (const auto& c : logical_plan->children()) {
+            if (plan.sub_queries.back()->type() == node_type::sequence_t) {
+                for (const auto& c : plan.sub_queries.back()->children()) {
                     if (!c)
                         continue;
                     if (c->type() == node_type::catalog_resolve_namespace_t) {
@@ -346,7 +389,7 @@ namespace services::collection::executor {
             };
             // Iterative pre-order walk (no recursion → no std::function).
             std::vector<const node_t*> stack;
-            stack.push_back(logical_plan.get());
+            stack.push_back(plan.sub_queries.back().get());
             while (!stack.empty()) {
                 const node_t* n = stack.back();
                 stack.pop_back();
@@ -419,7 +462,7 @@ namespace services::collection::executor {
                                                                                   core::dbname_t{db},
                                                                                   core::relname_t{rel}));
                 }
-                if (logical_plan->type() == node_type::sequence_t) {
+                if (plan.sub_queries.back()->type() == node_type::sequence_t) {
                     // Splice new resolves AFTER existing leading resolve_*
                     // siblings but BEFORE the consumer node. Order matters:
                     // stamp_oids_from_resolves picks the FIRST resolve_table
@@ -430,7 +473,7 @@ namespace services::collection::executor {
                                t == node_type::catalog_resolve_type_t || t == node_type::catalog_resolve_function_t ||
                                t == node_type::catalog_resolve_constraint_t;
                     };
-                    auto& kids = logical_plan->children();
+                    auto& kids = plan.sub_queries.back()->children();
                     std::vector<node_ptr> merged;
                     merged.reserve(kids.size() + new_resolves.size());
                     std::size_t split = 0;
@@ -447,16 +490,11 @@ namespace services::collection::executor {
                 } else {
                     auto seq = boost::intrusive_ptr<node_t>(new node_sequence_t(resource()));
                     for (auto& r : new_resolves) seq->append_child(std::move(r));
-                    seq->append_child(std::move(logical_plan));
-                    logical_plan = seq;
+                    seq->append_child(std::move(plan.sub_queries.back()));
+                    plan.sub_queries.back() = seq;
                 }
             }
         }
-
-        // Destructive: consumes the parameter node into storage_parameters.
-        // Everything below (validate_schema, create_plan, the operator
-        // pipeline) reads this local.
-        components::logical_plan::storage_parameters parameters = params->take_parameters();
 
         // Executor-owned plan context. session_tz arrives from the dispatcher
         // (the sole owner of default_tz_cat_) in the session-context bundle.
@@ -476,9 +514,8 @@ namespace services::collection::executor {
             original_type == node_type::drop_view_t || original_type == node_type::drop_macro_t ||
             original_type == node_type::create_database_t || original_type == node_type::alter_table_t ||
             original_type == node_type::create_matview_t;
-        const bool needs_dml_txn =
-            original_type == node_type::insert_t || original_type == node_type::update_t ||
-            original_type == node_type::delete_t;
+        const bool needs_dml_txn = original_type == node_type::insert_t || original_type == node_type::update_t ||
+                                   original_type == node_type::delete_t;
         // SET TIMEZONE and VACUUM are append/delete-shaped catalog writers that
         // are neither DDL nor DML but still produce committable pg_catalog
         // ranges (SET TIMEZONE → pg_settings append; VACUUM → pg_computed_column
@@ -496,8 +533,9 @@ namespace services::collection::executor {
         // mutable state) and run in this same actor coroutine. resolve_txn is
         // forwarded into both the resolve sub-plan and the final execute_plan
         // delegate so they share one MVCC snapshot.
-        if (logical_plan && logical_plan->type() == components::logical_plan::node_type::sequence_t) {
-            auto& kids = logical_plan->children();
+        if (plan.sub_queries.back() &&
+            plan.sub_queries.back()->type() == components::logical_plan::node_type::sequence_t) {
+            auto& kids = plan.sub_queries.back()->children();
             auto is_resolve = [](components::logical_plan::node_type t) {
                 return t == components::logical_plan::node_type::catalog_resolve_namespace_t ||
                        t == components::logical_plan::node_type::catalog_resolve_table_t ||
@@ -506,8 +544,7 @@ namespace services::collection::executor {
                        t == components::logical_plan::node_type::catalog_resolve_constraint_t;
             };
             std::size_t resolve_count = 0;
-            while (resolve_count < kids.size() && kids[resolve_count] &&
-                   is_resolve(kids[resolve_count]->type())) {
+            while (resolve_count < kids.size() && kids[resolve_count] && is_resolve(kids[resolve_count]->type())) {
                 ++resolve_count;
             }
             if (resolve_count > 0) {
@@ -527,14 +564,14 @@ namespace services::collection::executor {
                 // session_timezone); known_oids / table_metadata stay empty
                 // because resolves stamp onto the plan tree, not context_storage.
                 services::context_storage_t pass1_context_storage{resource(),
-                                                                   log_.clone(),
-                                                                   context_storage.session_timezone};
-                auto pass1_result = co_await this->execute_plan(session,
-                                                                 pass1_root,
-                                                                 pass1_params->take_parameters(),
-                                                                 std::move(pass1_context_storage),
-                                                                 resolve_txn,
-                                                                 session_ctx.lowest_active_start_time);
+                                                                  log_.clone(),
+                                                                  context_storage.session_timezone};
+                auto pass1_result = co_await this->execute_plan(
+                    session,
+                    components::logical_plan::execution_plan_t{resource(), pass1_root, pass1_params},
+                    std::move(pass1_context_storage),
+                    resolve_txn,
+                    session_ctx.lowest_active_start_time);
                 if (pass1_result.cursor->is_error()) {
                     trace(log_,
                           "executor::execute_plan_full: resolve failed: {}",
@@ -551,8 +588,8 @@ namespace services::collection::executor {
         // Post-resolve stamp: pure tree-walk re-writing resolved OIDs onto
         // their consumer nodes. (The full resolve index is gathered once into
         // dispatcher_idx below, right before validate/enrich.)
-        if (logical_plan) {
-            services::catalog_resolve::stamp_oids_from_resolves(logical_plan.get());
+        if (plan.sub_queries.back()) {
+            services::catalog_resolve::stamp_oids_from_resolves(plan.sub_queries.back().get());
         }
         // SELECT-time view expansion + fresh-resolve sub-execute. After
         // resolve stamped resolved_metadata.view_sql on
@@ -565,10 +602,10 @@ namespace services::collection::executor {
         //
         // The sub-plan's fresh resolves run via `co_await this->execute_plan`,
         // safe by the same reasoning as the outer resolve loop.
-        if (logical_plan) {
-            if (auto* view_node = services::catalog_resolve::find_first_view_resolve(logical_plan.get())) {
-                auto exp = services::catalog_resolve::expand_view_body(resource(),
-                                                                       view_node->resolved_metadata()->view_sql);
+        if (plan.sub_queries.back()) {
+            if (auto* view_node = services::catalog_resolve::find_first_view_resolve(plan.sub_queries.back().get())) {
+                auto exp =
+                    services::catalog_resolve::expand_view_body(resource(), view_node->resolved_metadata()->view_sql);
                 if (exp.error) {
                     trace(log_, "executor::execute_plan_full: view expansion failed");
                     co_return execute_result_t{std::move(exp.error)};
@@ -578,7 +615,7 @@ namespace services::collection::executor {
                     // passthrough. Preserving outer projections / filters
                     // (splice sub-plan as child of outer consumer) is not yet
                     // handled.
-                    logical_plan = std::move(exp.expanded_plan);
+                    plan.sub_queries.back() = std::move(exp.expanded_plan);
 
                     // Merge the sub-plan's parameter bindings into `parameters`
                     // so downstream operators see view-body constants (e.g.
@@ -587,12 +624,12 @@ namespace services::collection::executor {
                     // (raw storage_parameters here → add_parameter free fn.)
                     if (exp.expanded_params) {
                         for (const auto& [pid, val] : exp.expanded_params->parameters().parameters) {
-                            components::logical_plan::add_parameter(parameters, pid, val);
+                            plan.parameters->set_parameter(pid, val);
                         }
                     }
 
                     // === Resolve sub-plan's fresh resolves ===
-                    auto fresh = services::catalog_resolve::extract_unresolved_resolves(logical_plan.get());
+                    auto fresh = services::catalog_resolve::extract_unresolved_resolves(plan.sub_queries.back().get());
                     if (!fresh.empty()) {
                         auto pass2_root = boost::intrusive_ptr<components::logical_plan::node_t>(
                             new components::logical_plan::node_sequence_t(resource()));
@@ -605,12 +642,12 @@ namespace services::collection::executor {
                         services::context_storage_t pass2_context_storage{resource(),
                                                                           log_.clone(),
                                                                           context_storage.session_timezone};
-                        auto pass2_result = co_await this->execute_plan(session,
-                                                                         pass2_root,
-                                                                         pass2_params->take_parameters(),
-                                                                         std::move(pass2_context_storage),
-                                                                         resolve_txn,
-                                                                         session_ctx.lowest_active_start_time);
+                        auto pass2_result = co_await this->execute_plan(
+                            session,
+                            components::logical_plan::execution_plan_t{resource(), pass2_root, pass2_params},
+                            std::move(pass2_context_storage),
+                            resolve_txn,
+                            session_ctx.lowest_active_start_time);
                         if (pass2_result.cursor->is_error()) {
                             trace(log_,
                                   "executor::execute_plan_full: view sub-plan resolve failed: {}",
@@ -622,7 +659,7 @@ namespace services::collection::executor {
                     // The splice replaced the plan tree, so re-stamp the freshly
                     // resolved OIDs onto their consumer nodes; dispatcher_idx is
                     // re-gathered below so validate / enrich see consistent OIDs.
-                    services::catalog_resolve::stamp_oids_from_resolves(logical_plan.get());
+                    services::catalog_resolve::stamp_oids_from_resolves(plan.sub_queries.back().get());
                 }
             }
         }
@@ -631,25 +668,25 @@ namespace services::collection::executor {
         // checks (catalog_resolve helpers — no async, only resource()); the
         // default branch runs validate_types + validate_schema, then
         // post_validate_optimize → enrich_plan → planner.create_plan.
+        using components::catalog::table_id;
+        using components::logical_plan::constraint_kind;
         using components::logical_plan::node_create_collection_t;
         using components::logical_plan::node_create_constraint_t;
         using components::logical_plan::node_create_type_t;
-        using components::catalog::table_id;
-        using components::logical_plan::constraint_kind;
         using components::types::logical_type;
 
         // Rebuild dispatcher_idx against the (possibly view-spliced) plan
         // tree so validate / enrich / build_id_cfn see fully-stamped OIDs.
         services::catalog_resolve::plan_resolve_index_t dispatcher_idx;
-        if (logical_plan) {
-            services::catalog_resolve::stamp_oids_from_resolves(logical_plan.get());
-            services::catalog_resolve::gather_plan_resolve_index(logical_plan.get(), dispatcher_idx);
+        if (plan.sub_queries.back()) {
+            services::catalog_resolve::stamp_oids_from_resolves(plan.sub_queries.back().get());
+            services::catalog_resolve::gather_plan_resolve_index(plan.sub_queries.back().get(), &dispatcher_idx);
         }
 
         // Build qualified_name_t from the effective consumer node; nodes
         // that don't carry user-typed names pull (db, rel) from the
         // sibling resolve_* nodes via drop_target_names_from_resolves.
-        const auto* plan_root_for_drop_names = logical_plan.get();
+        const auto* plan_root_for_drop_names = plan.sub_queries.back().get();
         auto build_id_cfn = [plan_root_for_drop_names](const components::logical_plan::node_t* n) -> qualified_name_t {
             using components::logical_plan::node_create_database_t;
             using components::logical_plan::node_create_macro_t;
@@ -731,7 +768,7 @@ namespace services::collection::executor {
         // Build identification name from the effective consumer node, not
         // the (potentially transformer-wrapping) sequence_t.
         table_id id(resource(),
-                    build_id_cfn(services::catalog_resolve::effective_root_node(logical_plan.get())));
+                    build_id_cfn(services::catalog_resolve::effective_root_node(plan.sub_queries.back().get())));
         cursor_t_ptr error;
         // Existence checks read from the explicit dispatcher_idx populated
         // above (mirrors the dispatcher's pre-execute pass).
@@ -739,7 +776,7 @@ namespace services::collection::executor {
             case node_type::create_database_t:
                 if (!services::dispatcher::check_namespace_exists(resource(), &dispatcher_idx, id).contains_error()) {
                     auto* d = static_cast<const node_create_database_t*>(
-                        services::catalog_resolve::effective_root_node(logical_plan.get()));
+                        services::catalog_resolve::effective_root_node(plan.sub_queries.back().get()));
                     if (d && d->if_not_exists()) {
                         error = make_cursor(resource());
                     } else {
@@ -756,10 +793,9 @@ namespace services::collection::executor {
                 }
                 break;
             case node_type::create_collection_t: {
-                if (!services::dispatcher::check_collection_exists(resource(), &dispatcher_idx, id)
-                         .contains_error()) {
+                if (!services::dispatcher::check_collection_exists(resource(), &dispatcher_idx, id).contains_error()) {
                     auto* cc = static_cast<const node_create_collection_t*>(
-                        services::catalog_resolve::effective_root_node(logical_plan.get()));
+                        services::catalog_resolve::effective_root_node(plan.sub_queries.back().get()));
                     if (cc && cc->if_not_exists()) {
                         error = make_cursor(resource());
                     } else {
@@ -772,28 +808,26 @@ namespace services::collection::executor {
                         id.get_namespace().empty() ? std::string{} : std::string(id.get_namespace().front());
                     const auto str_path = services::catalog_resolve::build_type_search_path_str(target_db);
                     auto* n = static_cast<node_create_collection_t*>(
-                        services::catalog_resolve::effective_root_node(logical_plan.get()));
+                        services::catalog_resolve::effective_root_node(plan.sub_queries.back().get()));
                     for (auto& col_def : n->column_definitions()) {
                         if (col_def.type().type() == logical_type::UNKNOWN) {
                             if (col_def.type().type_name().empty()) {
                                 break;
                             }
-                            const auto lt =
-                                components::catalog::pg_name_to_logical_type(col_def.type().type_name());
+                            const auto lt = components::catalog::pg_name_to_logical_type(col_def.type().type_name());
                             if (lt != logical_type::UNKNOWN) {
-                                std::string alias =
-                                    col_def.type().has_alias() ? col_def.type().alias() : std::string{};
+                                std::string alias = col_def.type().has_alias() ? col_def.type().alias() : std::string{};
                                 col_def.type() = components::types::complex_logical_type{lt};
                                 if (!alias.empty()) {
                                     col_def.type().set_alias(alias);
                                 }
                                 continue;
                             }
-                            if (auto err = services::dispatcher::check_type_exists(
-                                    resource(),
-                                    &dispatcher_idx,
-                                    col_def.type().type_name(),
-                                    std::span<const std::string>(str_path));
+                            if (auto err =
+                                    services::dispatcher::check_type_exists(resource(),
+                                                                            &dispatcher_idx,
+                                                                            col_def.type().type_name(),
+                                                                            std::span<const std::string>(str_path));
                                 err.contains_error()) {
                                 error = make_cursor(resource(), err);
                             }
@@ -826,14 +860,14 @@ namespace services::collection::executor {
             }
             case node_type::create_type_t: {
                 auto* n = static_cast<node_create_type_t*>(
-                    services::catalog_resolve::effective_root_node(logical_plan.get()));
+                    services::catalog_resolve::effective_root_node(plan.sub_queries.back().get()));
                 components::catalog::oid_t target_ns = components::catalog::well_known_oid::public_namespace;
                 const std::string default_path[] = {"public", "pg_catalog"};
                 std::span<const std::string> str_path(default_path);
                 if (!services::dispatcher::check_type_exists(resource(),
-                                                              &dispatcher_idx,
-                                                              n->type().type_name(),
-                                                              str_path)
+                                                             &dispatcher_idx,
+                                                             n->type().type_name(),
+                                                             str_path)
                          .contains_error()) {
                     error = make_cursor(
                         resource(),
@@ -855,15 +889,17 @@ namespace services::collection::executor {
                                 continue;
                             }
                             if (auto err = services::dispatcher::check_type_exists(resource(),
-                                                                                    &dispatcher_idx,
-                                                                                    field.type_name(),
-                                                                                    str_path);
+                                                                                   &dispatcher_idx,
+                                                                                   field.type_name(),
+                                                                                   str_path);
                                 err.contains_error()) {
                                 error = make_cursor(resource(), err);
                                 break;
                             }
-                            const auto* md = services::catalog_resolve::probe_type_in_path(
-                                &dispatcher_idx, std::string_view(field.type_name()), str_path);
+                            const auto* md =
+                                services::catalog_resolve::probe_type_in_path(&dispatcher_idx,
+                                                                              std::string_view(field.type_name()),
+                                                                              str_path);
                             if (md) {
                                 std::string alias = field.has_alias() ? field.alias() : std::string{};
                                 field = md->type;
@@ -882,8 +918,8 @@ namespace services::collection::executor {
             }
             case node_type::drop_type_t: {
                 std::string type_name;
-                if (logical_plan->type() == node_type::sequence_t) {
-                    for (const auto& c : logical_plan->children()) {
+                if (plan.sub_queries.back()->type() == node_type::sequence_t) {
+                    for (const auto& c : plan.sub_queries.back()->children()) {
                         if (c && c->type() == node_type::catalog_resolve_type_t) {
                             type_name =
                                 static_cast<const components::logical_plan::node_catalog_resolve_type_t*>(c.get())
@@ -894,10 +930,8 @@ namespace services::collection::executor {
                 }
                 const std::string default_path[] = {"public", "pg_catalog"};
                 std::span<const std::string> str_path(default_path);
-                if (auto err = services::dispatcher::check_type_exists(resource(),
-                                                                        &dispatcher_idx,
-                                                                        type_name,
-                                                                        str_path);
+                if (auto err =
+                        services::dispatcher::check_type_exists(resource(), &dispatcher_idx, type_name, str_path);
                     err.contains_error()) {
                     error = make_cursor(resource(), err);
                 }
@@ -929,9 +963,8 @@ namespace services::collection::executor {
                 }
                 if (!error && !id.get_namespace().empty()) {
                     auto* cstr = static_cast<node_create_constraint_t*>(
-                        services::catalog_resolve::effective_root_node(logical_plan.get()));
-                    if (cstr->kind() == constraint_kind::foreign_key ||
-                        cstr->kind() == constraint_kind::check) {
+                        services::catalog_resolve::effective_root_node(plan.sub_queries.back().get()));
+                    if (cstr->kind() == constraint_kind::foreign_key || cstr->kind() == constraint_kind::check) {
                         const auto* tbl_local =
                             services::catalog_resolve::tbl_md_for(&dispatcher_idx,
                                                                   std::string_view(id.get_namespace().front()),
@@ -947,25 +980,23 @@ namespace services::collection::executor {
                         if (cstr->kind() == constraint_kind::foreign_key && (local_is_g || ref_is_g)) {
                             error = make_cursor(
                                 resource(),
-                                core::error_t{
-                                    core::error_code_t::schema_error,
-                                    std::pmr::string{
-                                        "Foreign key constraints are not supported when the referencing or "
-                                        "referenced table is dynamic-schema (relkind='g'). FK enforcement "
-                                        "requires stable column attoids; dynamic-schema columns may evolve. "
-                                        "Convert involved tables to static schema first.",
-                                        resource()}});
+                                core::error_t{core::error_code_t::schema_error,
+                                              std::pmr::string{
+                                                  "Foreign key constraints are not supported when the referencing or "
+                                                  "referenced table is dynamic-schema (relkind='g'). FK enforcement "
+                                                  "requires stable column attoids; dynamic-schema columns may evolve. "
+                                                  "Convert involved tables to static schema first.",
+                                                  resource()}});
                         } else if (cstr->kind() == constraint_kind::check && local_is_g) {
                             error = make_cursor(
                                 resource(),
-                                core::error_t{
-                                    core::error_code_t::schema_error,
-                                    std::pmr::string{
-                                        "CHECK constraints are not supported on dynamic-schema (relkind='g') "
-                                        "tables. CHECK enforcement requires stable column attoids; "
-                                        "dynamic-schema columns may evolve. Convert the table to static "
-                                        "schema first.",
-                                        resource()}});
+                                core::error_t{core::error_code_t::schema_error,
+                                              std::pmr::string{
+                                                  "CHECK constraints are not supported on dynamic-schema (relkind='g') "
+                                                  "tables. CHECK enforcement requires stable column attoids; "
+                                                  "dynamic-schema columns may evolve. Convert the table to static "
+                                                  "schema first.",
+                                                  resource()}});
                         }
                     }
                 }
@@ -973,16 +1004,16 @@ namespace services::collection::executor {
             }
             default: {
                 auto vt_err = services::dispatcher::validate_types(resource(),
-                                                                    &dispatcher_idx,
-                                                                    logical_plan.get(),
-                                                                    context_storage.session_timezone);
+                                                                   &dispatcher_idx,
+                                                                   plan.sub_queries.back().get(),
+                                                                   context_storage.session_timezone);
                 if (vt_err.contains_error()) {
                     error = make_cursor(resource(), vt_err);
                 } else {
                     auto schema_res = services::dispatcher::validate_schema(resource(),
-                                                                              &dispatcher_idx,
-                                                                              logical_plan.get(),
-                                                                              parameters);
+                                                                            &dispatcher_idx,
+                                                                            plan.sub_queries.back().get(),
+                                                                            plan.parameters->parameters());
                     if (schema_res.has_error()) {
                         error = make_cursor(resource(), schema_res.error());
                     }
@@ -991,9 +1022,7 @@ namespace services::collection::executor {
         }
 
         if (error) {
-            trace(log_,
-                  "executor::execute_plan_full: validation error: {}",
-                  error->get_error().what);
+            trace(log_, "executor::execute_plan_full: validation error: {}", error->get_error().what);
             co_return execute_result_t{std::move(error)};
         }
 
@@ -1022,25 +1051,24 @@ namespace services::collection::executor {
         // The executor is the ONLY side running these passes (the dispatcher
         // routes the raw plan straight here).
         {
-            logical_plan = components::planner::post_validate_optimize(resource(), std::move(logical_plan));
+            plan.sub_queries.back() =
+                components::planner::post_validate_optimize(resource(), std::move(plan.sub_queries.back()));
 
             // Enrich DML node fields with catalog metadata (NOT NULL, DEFAULT,
             // CHECK exprs), reading exclusively from the plan-tree idx. ctx
             // carries resolve_txn so enrich sees the same MVCC snapshot.
-            components::execution_context_t enrich_ctx{session,
-                                                       resolve_txn,
-                                                       context_storage.session_timezone};
+            components::execution_context_t enrich_ctx{session, resolve_txn, context_storage.session_timezone};
             auto ef = services::dispatcher::enrich_plan(resource(),
-                                                         logical_plan,
-                                                         disk_address_,
-                                                         enrich_ctx,
-                                                         index_address_,
-                                                         &context_storage);
+                                                        plan.sub_queries.back(),
+                                                        disk_address_,
+                                                        enrich_ctx,
+                                                        index_address_,
+                                                        &context_storage);
             co_await std::move(ef);
             // Logical plan rewrite: insert constraint wrapper nodes driven
             // by enriched fields.
             components::planner::planner_t planner;
-            logical_plan = planner.create_plan(resource(), std::move(logical_plan));
+            plan.sub_queries.back() = planner.create_plan(resource(), std::move(plan.sub_queries.back()));
 
             // Re-populate context_storage's known_oids / table_metadata from the
             // just-stamped plan tree. The dispatcher captured these BEFORE this
@@ -1052,12 +1080,12 @@ namespace services::collection::executor {
             // operator_match with no scan child, and SEGFAULTs in
             // operator_select::evaluate (chunk.cols=0 → out-of-bounds chunk.data[0]).
             {
-                auto dependency_oids = logical_plan->table_oid_dependencies();
+                auto dependency_oids = plan.sub_queries.back()->table_oid_dependencies();
                 for (auto oid : dependency_oids) {
                     context_storage.known_oids.insert(oid);
                 }
                 services::catalog_resolve::plan_resolve_index_t local_idx;
-                services::catalog_resolve::gather_plan_resolve_index(logical_plan.get(), local_idx);
+                services::catalog_resolve::gather_plan_resolve_index(plan.sub_queries.back().get(), &local_idx);
                 for (const auto& [oid, md_ptr] : local_idx.tbl_md_by_oid) {
                     context_storage.table_metadata[oid] = md_ptr;
                 }
@@ -1073,30 +1101,27 @@ namespace services::collection::executor {
             // via self->resource() — the [this] capture is not visible to the
             // coroutine frame allocator, and without `self` extract_resource_or_abort
             // fires.
-            auto allocate_oids_inline =
-                [this, session, &context_storage](executor_t* self, std::size_t count)
+            auto allocate_oids_inline = [this, session, &context_storage](executor_t* self, std::size_t count)
                 -> executor_t::unique_future<std::vector<components::catalog::oid_t>> {
-                (void)self;
+                (void) self;
                 auto node = components::logical_plan::make_node_allocate_oids(resource(), count);
                 components::compute::function_registry_t local_fn_registry{resource()};
-                services::context_storage_t cstor{resource(),
-                                                   log_.clone(),
-                                                   context_storage.session_timezone};
+                services::context_storage_t cstor{resource(), log_.clone(), context_storage.session_timezone};
                 auto op = services::planner::create_plan(cstor,
-                                                          local_fn_registry,
-                                                          node,
-                                                          components::logical_plan::limit_t::unlimit(),
-                                                          /*params=*/nullptr);
+                                                         local_fn_registry,
+                                                         node,
+                                                         components::logical_plan::limit_t::unlimit(),
+                                                         /*params=*/nullptr);
                 if (!op) {
                     co_return std::vector<components::catalog::oid_t>{};
                 }
                 op->set_as_root();
                 components::logical_plan::storage_parameters local_params(resource());
                 components::pipeline::context_t pctx{session,
-                                                      actor_zeta::address_t::empty_address(),
-                                                      actor_zeta::address_t::empty_address(),
-                                                      &local_fn_registry,
-                                                      local_params};
+                                                     actor_zeta::address_t::empty_address(),
+                                                     actor_zeta::address_t::empty_address(),
+                                                     &local_fn_registry,
+                                                     local_params};
                 pctx.disk_address = disk_address_;
                 pctx.txn = components::table::transaction_data{0, 0};
                 op->prepare();
@@ -1110,28 +1135,27 @@ namespace services::collection::executor {
                 }
                 if (pctx.has_pending_disk_futures()) {
                     auto futures = pctx.take_pending_disk_futures();
-                    for (auto& f : futures)
-                        co_await std::move(f);
+                    for (auto& f : futures) co_await std::move(f);
                 }
                 co_return node->oids();
             };
 
+            using components::catalog::relkind::computed;
             using components::logical_plan::node_create_matview_t;
             using components::logical_plan::node_sequence_t;
-            using components::catalog::relkind::computed;
 
             // INSERT relkind='g' wrap — wraps INSERT into
             // sequence_t(insert, computed_field_register) so
             // pg_computed_column rows are appended inside the DML txn.
-            if (original_type == node_type::insert_t &&
-                disk_address_ != actor_zeta::address_t::empty_address()) {
+            if (original_type == node_type::insert_t && disk_address_ != actor_zeta::address_t::empty_address()) {
                 components::catalog::oid_t resolved_tbl_oid = components::catalog::INVALID_OID;
                 bool is_computing = false;
-                auto* effective_insert_node = services::catalog_resolve::effective_root_node(logical_plan.get());
-                auto enriched_oid = effective_insert_node ? effective_insert_node->table_oid()
-                                                          : logical_plan->table_oid();
-                if (enriched_oid == components::catalog::INVALID_OID && !logical_plan->children().empty()) {
-                    enriched_oid = logical_plan->children().front()->table_oid();
+                auto* effective_insert_node =
+                    services::catalog_resolve::effective_root_node(plan.sub_queries.back().get());
+                auto enriched_oid =
+                    effective_insert_node ? effective_insert_node->table_oid() : plan.sub_queries.back()->table_oid();
+                if (enriched_oid == components::catalog::INVALID_OID && !plan.sub_queries.back()->children().empty()) {
+                    enriched_oid = plan.sub_queries.back()->children().front()->table_oid();
                 }
                 if (enriched_oid != components::catalog::INVALID_OID) {
                     if (const auto* tbl = services::catalog_resolve::tbl_md_for_oid(&dispatcher_idx, enriched_oid)) {
@@ -1144,14 +1168,14 @@ namespace services::collection::executor {
 
                 if (is_computing) {
                     std::vector<components::table::column_definition_t> registered_cols;
-                    auto* effective_insert = services::catalog_resolve::effective_root_node(logical_plan.get());
+                    auto* effective_insert =
+                        services::catalog_resolve::effective_root_node(plan.sub_queries.back().get());
                     if (effective_insert) {
                         for (const auto& child : effective_insert->children()) {
                             if (!child || child->type() != components::logical_plan::node_type::data_t) {
                                 continue;
                             }
-                            auto* data_node =
-                                static_cast<const components::logical_plan::node_data_t*>(child.get());
+                            auto* data_node = static_cast<const components::logical_plan::node_data_t*>(child.get());
                             const auto& chunk = data_node->data_chunk();
                             registered_cols.reserve(chunk.column_count());
                             for (size_t i = 0; i < chunk.column_count(); ++i) {
@@ -1164,9 +1188,9 @@ namespace services::collection::executor {
                     }
 
                     auto insert_names =
-                        services::catalog_resolve::drop_target_names_from_resolves(logical_plan.get());
-                    auto register_node = boost::intrusive_ptr(
-                        new components::logical_plan::node_computed_field_register_t(
+                        services::catalog_resolve::drop_target_names_from_resolves(plan.sub_queries.back().get());
+                    auto register_node =
+                        boost::intrusive_ptr(new components::logical_plan::node_computed_field_register_t(
                             resource(),
                             core::dbname_t{insert_names.first},
                             core::relname_t{insert_names.second},
@@ -1174,9 +1198,9 @@ namespace services::collection::executor {
                             std::move(registered_cols)));
 
                     auto seq = boost::intrusive_ptr(new node_sequence_t(resource()));
-                    seq->append_child(logical_plan);
+                    seq->append_child(plan.sub_queries.back());
                     seq->append_child(register_node);
-                    logical_plan = seq;
+                    plan.sub_queries.back() = seq;
                 }
             }
 
@@ -1185,12 +1209,13 @@ namespace services::collection::executor {
             if (original_type == node_type::create_collection_t &&
                 disk_address_ != actor_zeta::address_t::empty_address()) {
                 auto* cc = static_cast<node_create_collection_t*>(
-                    services::catalog_resolve::effective_root_node(logical_plan.get()));
+                    services::catalog_resolve::effective_root_node(plan.sub_queries.back().get()));
                 const std::size_t need = 1 + cc->column_definitions().size();
                 components::catalog::oid_batch_t oid_batch;
                 oid_batch.oids = co_await allocate_oids_inline(this, need);
                 components::planner::planner_t ddl_planner;
-                logical_plan = ddl_planner.create_plan(resource(), std::move(logical_plan), std::move(oid_batch));
+                plan.sub_queries.back() =
+                    ddl_planner.create_plan(resource(), std::move(plan.sub_queries.back()), std::move(oid_batch));
             }
 
             // CREATE DATABASE → planner rewrite into sequence_t(primitive_write
@@ -1200,30 +1225,30 @@ namespace services::collection::executor {
                 components::catalog::oid_batch_t oid_batch;
                 oid_batch.oids = co_await allocate_oids_inline(this, std::size_t{1});
                 components::planner::planner_t ddl_planner;
-                logical_plan = ddl_planner.create_plan(resource(), std::move(logical_plan), std::move(oid_batch));
+                plan.sub_queries.back() =
+                    ddl_planner.create_plan(resource(), std::move(plan.sub_queries.back()), std::move(oid_batch));
             }
 
             // CREATE TYPE → planner rewrite.
             //   STRUCT → 1 + N OIDs (pg_class.oid + N×pg_attribute.attoid).
             //   ENUM/other → 1 OID (pg_type.oid).
-            if (original_type == node_type::create_type_t &&
-                disk_address_ != actor_zeta::address_t::empty_address()) {
+            if (original_type == node_type::create_type_t && disk_address_ != actor_zeta::address_t::empty_address()) {
                 auto* ct = static_cast<node_create_type_t*>(
-                    services::catalog_resolve::effective_root_node(logical_plan.get()));
+                    services::catalog_resolve::effective_root_node(plan.sub_queries.back().get()));
                 const std::size_t need = (ct->type().type() == logical_type::STRUCT)
                                              ? std::size_t{1} + ct->type().child_types().size()
                                              : std::size_t{1};
                 components::catalog::oid_batch_t oid_batch;
                 oid_batch.oids = co_await allocate_oids_inline(this, need);
                 components::planner::planner_t ddl_planner;
-                logical_plan = ddl_planner.create_plan(resource(), std::move(logical_plan), std::move(oid_batch));
+                plan.sub_queries.back() =
+                    ddl_planner.create_plan(resource(), std::move(plan.sub_queries.back()), std::move(oid_batch));
             }
 
             // CREATE SEQUENCE/VIEW/MACRO → planner rewrite to
             // sequence_t(primitive_write × N).
             //   SEQUENCE → 1 OID; VIEW → 2 OIDs; MACRO → 2 OIDs.
-            if ((original_type == node_type::create_sequence_t ||
-                 original_type == node_type::create_view_t ||
+            if ((original_type == node_type::create_sequence_t || original_type == node_type::create_view_t ||
                  original_type == node_type::create_macro_t) &&
                 disk_address_ != actor_zeta::address_t::empty_address()) {
                 const std::size_t need =
@@ -1231,30 +1256,32 @@ namespace services::collection::executor {
                 components::catalog::oid_batch_t oid_batch;
                 oid_batch.oids = co_await allocate_oids_inline(this, need);
                 components::planner::planner_t ddl_planner;
-                logical_plan = ddl_planner.create_plan(resource(), std::move(logical_plan), std::move(oid_batch));
+                plan.sub_queries.back() =
+                    ddl_planner.create_plan(resource(), std::move(plan.sub_queries.back()), std::move(oid_batch));
             }
 
             // CREATE MATERIALIZED VIEW → mv_oid + N×attoid + rule_oid = 2 + N.
             if (original_type == node_type::create_matview_t &&
                 disk_address_ != actor_zeta::address_t::empty_address()) {
                 auto* cm = static_cast<node_create_matview_t*>(
-                    services::catalog_resolve::effective_root_node(logical_plan.get()));
+                    services::catalog_resolve::effective_root_node(plan.sub_queries.back().get()));
                 const std::size_t col_count = cm ? cm->inferred_columns().size() : std::size_t{0};
                 const std::size_t need = 2 + col_count;
                 components::catalog::oid_batch_t oid_batch;
                 oid_batch.oids = co_await allocate_oids_inline(this, need);
                 components::planner::planner_t ddl_planner;
-                logical_plan = ddl_planner.create_plan(resource(), std::move(logical_plan), std::move(oid_batch));
+                plan.sub_queries.back() =
+                    ddl_planner.create_plan(resource(), std::move(plan.sub_queries.back()), std::move(oid_batch));
             }
 
             // CREATE INDEX → planner rewrite to
             // sequence_t(primitive_write × N, create_index_t).
-            if (original_type == node_type::create_index_t &&
-                disk_address_ != actor_zeta::address_t::empty_address()) {
+            if (original_type == node_type::create_index_t && disk_address_ != actor_zeta::address_t::empty_address()) {
                 components::catalog::oid_batch_t oid_batch;
                 oid_batch.oids = co_await allocate_oids_inline(this, std::size_t{1});
                 components::planner::planner_t ddl_planner;
-                logical_plan = ddl_planner.create_plan(resource(), std::move(logical_plan), std::move(oid_batch));
+                plan.sub_queries.back() =
+                    ddl_planner.create_plan(resource(), std::move(plan.sub_queries.back()), std::move(oid_batch));
                 // Capture the indexed table oid NOW for the post-pipeline
                 // backfill commit_insert: logical_plan is move-consumed by the
                 // execute_plan delegate below, so the tail cannot probe the
@@ -1262,12 +1289,11 @@ namespace services::collection::executor {
                 // child of the rewritten sequence_t) also carries the pg_index
                 // row oid (set by rewrite_create_index via set_index_oid) and
                 // the index name — both needed by the CREATE INDEX failure path.
-                if (auto* eff = services::catalog_resolve::effective_root_node(logical_plan.get());
+                if (auto* eff = services::catalog_resolve::effective_root_node(plan.sub_queries.back().get());
                     eff && !eff->children().empty()) {
                     auto* back = eff->children().back().get();
                     if (back && back->type() == node_type::create_index_t) {
-                        const auto* ci =
-                            static_cast<const components::logical_plan::node_create_index_t*>(back);
+                        const auto* ci = static_cast<const components::logical_plan::node_create_index_t*>(back);
                         create_index_table_oid = ci->table_oid();
                         create_index_name.assign(ci->name().c_str(), ci->name().size());
                     }
@@ -1279,7 +1305,8 @@ namespace services::collection::executor {
             if (original_type == node_type::drop_index_t) {
                 components::catalog::oid_batch_t oid_batch;
                 components::planner::planner_t ddl_planner;
-                logical_plan = ddl_planner.create_plan(resource(), std::move(logical_plan), std::move(oid_batch));
+                plan.sub_queries.back() =
+                    ddl_planner.create_plan(resource(), std::move(plan.sub_queries.back()), std::move(oid_batch));
             }
 
             // ALTER TABLE → planner rewrite to
@@ -1289,35 +1316,31 @@ namespace services::collection::executor {
             // computed_field_unregister primitives that didn't exist before it
             // ran. Use resolve_txn so enrich's pg_computed_column scan sees the
             // INSERT-time register rows committed under that txn.
-            if (original_type == node_type::alter_table_t &&
-                disk_address_ != actor_zeta::address_t::empty_address()) {
+            if (original_type == node_type::alter_table_t && disk_address_ != actor_zeta::address_t::empty_address()) {
                 components::catalog::oid_batch_t oid_batch; // intentionally empty
                 components::planner::planner_t ddl_planner;
-                logical_plan = ddl_planner.create_plan(resource(), std::move(logical_plan), std::move(oid_batch));
-                components::execution_context_t enriched_ctx{session,
-                                                              resolve_txn,
-                                                              context_storage.session_timezone};
+                plan.sub_queries.back() =
+                    ddl_planner.create_plan(resource(), std::move(plan.sub_queries.back()), std::move(oid_batch));
+                components::execution_context_t enriched_ctx{session, resolve_txn, context_storage.session_timezone};
                 auto ef2 = services::dispatcher::enrich_plan(resource(),
-                                                              logical_plan,
-                                                              disk_address_,
-                                                              enriched_ctx,
-                                                              index_address_,
-                                                              &context_storage);
+                                                             plan.sub_queries.back(),
+                                                             disk_address_,
+                                                             enriched_ctx,
+                                                             index_address_,
+                                                             &context_storage);
                 co_await std::move(ef2);
             }
 
             // DROP DATABASE / TABLE / TYPE / SEQUENCE / VIEW / MACRO →
             // planner rewrite to node_dynamic_cascade_delete_t. No OIDs.
-            if ((original_type == node_type::drop_database_t ||
-                 original_type == node_type::drop_collection_t ||
-                 original_type == node_type::drop_type_t ||
-                 original_type == node_type::drop_sequence_t ||
-                 original_type == node_type::drop_view_t ||
-                 original_type == node_type::drop_macro_t) &&
+            if ((original_type == node_type::drop_database_t || original_type == node_type::drop_collection_t ||
+                 original_type == node_type::drop_type_t || original_type == node_type::drop_sequence_t ||
+                 original_type == node_type::drop_view_t || original_type == node_type::drop_macro_t) &&
                 disk_address_ != actor_zeta::address_t::empty_address()) {
                 components::catalog::oid_batch_t oid_batch; // intentionally empty
                 components::planner::planner_t ddl_planner;
-                logical_plan = ddl_planner.create_plan(resource(), std::move(logical_plan), std::move(oid_batch));
+                plan.sub_queries.back() =
+                    ddl_planner.create_plan(resource(), std::move(plan.sub_queries.back()), std::move(oid_batch));
             }
 
             // CREATE CONSTRAINT → planner rewrite to sequence_t(primitive_write
@@ -1327,7 +1350,7 @@ namespace services::collection::executor {
             if (original_type == node_type::create_constraint_t &&
                 disk_address_ != actor_zeta::address_t::empty_address()) {
                 auto* cstr = static_cast<node_create_constraint_t*>(
-                    services::catalog_resolve::effective_root_node(logical_plan.get()));
+                    services::catalog_resolve::effective_root_node(plan.sub_queries.back().get()));
                 if (cstr->kind() == constraint_kind::check && cstr->check_expr().empty()) {
                     co_return execute_result_t{make_cursor(
                         resource(),
@@ -1341,7 +1364,8 @@ namespace services::collection::executor {
                 components::catalog::oid_batch_t oid_batch;
                 oid_batch.oids = co_await allocate_oids_inline(this, std::size_t{1});
                 components::planner::planner_t ddl_planner;
-                logical_plan = ddl_planner.create_plan(resource(), std::move(logical_plan), std::move(oid_batch));
+                plan.sub_queries.back() =
+                    ddl_planner.create_plan(resource(), std::move(plan.sub_queries.back()), std::move(oid_batch));
             }
         }
         // Unresolved-ALTER no-op guard: a plan whose LITERAL root is still
@@ -1349,19 +1373,16 @@ namespace services::collection::executor {
         // (table_oid unresolved by enrich) — return no-op success. Wrapped
         // plans (sequence_t root with an alter_table_t child) keep the error
         // path through the pipeline.
-        if (original_type == node_type::alter_table_t && logical_plan &&
-            logical_plan->type() == node_type::alter_table_t) {
+        if (original_type == node_type::alter_table_t && plan.sub_queries.back() &&
+            plan.sub_queries.back()->type() == node_type::alter_table_t) {
             co_return execute_result_t{make_cursor(resource())};
         }
 
-        trace(log_,
-              "executor::execute_plan_full: delegating to execute_plan, session: {}",
-              session.data());
+        trace(log_, "executor::execute_plan_full: delegating to execute_plan, session: {}", session.data());
         // Operator-pipeline run, forwarding resolve_txn so the operator path
         // sees the same MVCC snapshot the resolves did.
         auto exec_result = co_await execute_plan(session,
-                                                 std::move(logical_plan),
-                                                 std::move(parameters),
+                                                 plan,
                                                  std::move(context_storage),
                                                  resolve_txn,
                                                  session_ctx.lowest_active_start_time);
@@ -1385,8 +1406,7 @@ namespace services::collection::executor {
                 }
                 payload.base_deletes.reserve(exec_result.dml_deletes.size());
                 for (const auto& del : exec_result.dml_deletes) {
-                    payload.base_deletes.push_back(
-                        components::table::dml_delete_range_t{del.table_oid, del.txn_id});
+                    payload.base_deletes.push_back(components::table::dml_delete_range_t{del.table_oid, del.txn_id});
                 }
                 payload.pg_catalog_appends = std::move(exec_result.pg_catalog_appends);
                 payload.pg_catalog_delete_tables = std::move(exec_result.pg_catalog_delete_tables);
@@ -1405,11 +1425,10 @@ namespace services::collection::executor {
                       payload.base_deletes.size(),
                       session_ctx.is_explicit ? "publish deferred to COMMIT" : "implicit COMMIT follows");
                 if (!payload.empty()) {
-                    auto [_ac, acf] = actor_zeta::send(
-                        parent_address_,
-                        &services::dispatcher::manager_dispatcher_t::txn_accumulate_msg,
-                        session,
-                        std::move(payload));
+                    auto [_ac, acf] = actor_zeta::send(parent_address_,
+                                                       &services::dispatcher::manager_dispatcher_t::txn_accumulate_msg,
+                                                       session,
+                                                       std::move(payload));
                     co_await std::move(acf);
                 }
                 exec_result.dml_appends.clear();
@@ -1482,10 +1501,7 @@ namespace services::collection::executor {
                     std::pmr::vector<actor_zeta::unique_future<void>> revert_index_futures{resource()};
                     revert_index_futures.reserve(revert_insert_oids.size() + revert_delete_oids.size());
                     for (auto oid : revert_insert_oids) {
-                        components::execution_context_t abort_ctx{session,
-                                                                  resolve_txn,
-                                                                  session_ctx.session_tz,
-                                                                  oid};
+                        components::execution_context_t abort_ctx{session, resolve_txn, session_ctx.session_tz, oid};
                         auto [_ri, rif] = actor_zeta::send(index_address_,
                                                            &services::index::manager_index_t::revert_insert,
                                                            abort_ctx,
@@ -1493,10 +1509,7 @@ namespace services::collection::executor {
                         revert_index_futures.push_back(std::move(rif));
                     }
                     for (auto oid : revert_delete_oids) {
-                        components::execution_context_t abort_ctx{session,
-                                                                  resolve_txn,
-                                                                  session_ctx.session_tz,
-                                                                  oid};
+                        components::execution_context_t abort_ctx{session, resolve_txn, session_ctx.session_tz, oid};
                         auto [_rd, rdf] = actor_zeta::send(index_address_,
                                                            &services::index::manager_index_t::revert_delete,
                                                            abort_ctx,
@@ -1508,10 +1521,9 @@ namespace services::collection::executor {
                     }
                 }
 
-                auto [_ab, abf] = actor_zeta::send(
-                    parent_address_,
-                    &services::dispatcher::manager_dispatcher_t::txn_abort_msg,
-                    session);
+                auto [_ab, abf] = actor_zeta::send(parent_address_,
+                                                   &services::dispatcher::manager_dispatcher_t::txn_abort_msg,
+                                                   session);
                 co_await std::move(abf);
 
                 exec_result.dml_appends.clear();
@@ -1563,11 +1575,10 @@ namespace services::collection::executor {
                 // accumulate is just the transit step in both modes.
                 payload.created_storage_oids = std::move(exec_result.created_storage_oids);
                 payload.created_indexes = std::move(exec_result.created_indexes);
-                auto [_ac, acf] = actor_zeta::send(
-                    parent_address_,
-                    &services::dispatcher::manager_dispatcher_t::txn_accumulate_msg,
-                    session,
-                    std::move(payload));
+                auto [_ac, acf] = actor_zeta::send(parent_address_,
+                                                   &services::dispatcher::manager_dispatcher_t::txn_accumulate_msg,
+                                                   session,
+                                                   std::move(payload));
                 co_await std::move(acf);
                 exec_result.pg_catalog_appends.clear();
                 exec_result.pg_catalog_delete_tables.clear();
@@ -1602,9 +1613,8 @@ namespace services::collection::executor {
                     executor_t* self,
                     components::catalog::oid_t table_oid,
                     std::pmr::string index_name) -> executor_t::unique_future<void> {
-                (void)self;
-                if (has_create_index_pg_index_range &&
-                    disk_address_ != actor_zeta::address_t::empty_address()) {
+                (void) self;
+                if (has_create_index_pg_index_range && disk_address_ != actor_zeta::address_t::empty_address()) {
                     std::vector<components::pg_catalog_append_range_t> revert_ranges;
                     revert_ranges.push_back(create_index_pg_index_range);
                     components::execution_context_t rv_ctx{session, resolve_txn, {}};
@@ -1772,9 +1782,8 @@ namespace services::collection::executor {
             exec_result.dml_appends.clear();
             exec_result.dml_deletes.clear();
 
-            auto [_ab, abf] = actor_zeta::send(parent_address_,
-                                               &services::dispatcher::manager_dispatcher_t::txn_abort_msg,
-                                               session);
+            auto [_ab, abf] =
+                actor_zeta::send(parent_address_, &services::dispatcher::manager_dispatcher_t::txn_abort_msg, session);
             co_await std::move(abf);
         }
 
@@ -1796,16 +1805,13 @@ namespace services::collection::executor {
         //   - needs_commit_txn plans (SET TIMEZONE / VACUUM): their pg_catalog
         //     writes were accumulated and committed by the DML tail above, so
         //     aborting here would discard the very rows they persisted.
-        const bool releases_resolve_txn =
-            !needs_ddl_txn && !needs_dml_txn && !needs_commit_txn && !session_ctx.is_explicit &&
-            original_type != node_type::begin_transaction_t &&
-            original_type != node_type::commit_transaction_t &&
-            original_type != node_type::abort_transaction_t;
+        const bool releases_resolve_txn = !needs_ddl_txn && !needs_dml_txn && !needs_commit_txn &&
+                                          !session_ctx.is_explicit && original_type != node_type::begin_transaction_t &&
+                                          original_type != node_type::commit_transaction_t &&
+                                          original_type != node_type::abort_transaction_t;
         if (releases_resolve_txn) {
-            auto [_rl, rlf] = actor_zeta::send(
-                parent_address_,
-                &services::dispatcher::manager_dispatcher_t::txn_abort_msg,
-                session);
+            auto [_rl, rlf] =
+                actor_zeta::send(parent_address_, &services::dispatcher::manager_dispatcher_t::txn_abort_msg, session);
             co_await std::move(rlf);
         }
 
@@ -1822,7 +1828,7 @@ namespace services::collection::executor {
     }
 
     plan_t executor_t::traverse_plan_(components::operators::operator_ptr&& plan,
-                                      components::logical_plan::storage_parameters&& parameters,
+                                      const components::logical_plan::storage_parameters& parameters,
                                       services::context_storage_t&& context_storage) {
         std::stack<components::operators::operator_ptr> look_up;
         std::stack<components::operators::operator_ptr> sub_plans;
@@ -1845,7 +1851,7 @@ namespace services::collection::executor {
 
         trace(log_, "executor::subplans count {}", sub_plans.size());
 
-        return plan_t{std::move(sub_plans), parameters, std::move(context_storage)};
+        return plan_t{std::move(sub_plans), &parameters, std::move(context_storage)};
     }
 
     executor_t::unique_future<sub_plan_result_t>
@@ -1874,7 +1880,7 @@ namespace services::collection::executor {
                                                              address(),
                                                              parent_address_,
                                                              &function_registry_,
-                                                             plan_data.parameters};
+                                                             *plan_data.parameters};
             pipeline_context.disk_address = disk_address_;
             pipeline_context.index_address = index_address_;
             pipeline_context.wal_address = wal_address_;
@@ -2042,8 +2048,8 @@ namespace services::collection::executor {
                                                        pipeline_context.dml_append_row_count});
             }
             if (pipeline_context.dml_delete_txn_id != 0) {
-                result_tracking.dml_deletes.push_back({pipeline_context.dml_table_oid,
-                                                       pipeline_context.dml_delete_txn_id});
+                result_tracking.dml_deletes.push_back(
+                    {pipeline_context.dml_table_oid, pipeline_context.dml_delete_txn_id});
             }
             // Lift the DROP storage-scrub oids: cascade-delete operators record
             // every storage whose backing files they tore down. Accumulate (not
@@ -2098,8 +2104,7 @@ namespace services::collection::executor {
         // dispatcher-owned transaction_t (txn_commit_drain_msg), batch-
         // publishes storage, commits the index mirrors per table, writes the
         // WAL marker and crosses the ProcArray barrier (txn_publish_msg).
-        auto commit_node =
-            boost::intrusive_ptr(new components::logical_plan::node_commit_transaction_t(resource()));
+        auto commit_node = boost::intrusive_ptr(new components::logical_plan::node_commit_transaction_t(resource()));
         if (ddl_mode) {
             // DDL mode prepends the flush durability barrier + WAL(cid=0)
             // record inside the operator.
@@ -2108,14 +2113,14 @@ namespace services::collection::executor {
             commit_node->set_txn_id(txn.transaction_id);
             commit_node->set_database_oid(db_oid);
         }
-        components::logical_plan::storage_parameters cparams(resource());
+        auto cparams = components::logical_plan::make_parameter_node(resource());
         services::context_storage_t cstor(resource(), log_.clone(), session_tz);
-        co_return co_await execute_plan(session,
-                                        std::move(commit_node),
-                                        std::move(cparams),
-                                        std::move(cstor),
-                                        txn,
-                                        lowest_active_start_time);
+        co_return co_await execute_plan(
+            session,
+            components::logical_plan::execution_plan_t{resource(), std::move(commit_node), std::move(cparams)},
+            std::move(cstor),
+            txn,
+            lowest_active_start_time);
     }
 
 } // namespace services::collection::executor

@@ -79,7 +79,7 @@ namespace services::planner::impl {
                 return false;
             }
             auto comp_expr = reinterpret_cast<const compare_expression_ptr&>(expr);
-            if (comp_expr->type() == compare_type::regex) {
+            if (comp_expr->type() == compare_type::regex || comp_expr->do_not_fold()) {
                 return false;
             }
             for (const auto& child : comp_expr->children()) {
@@ -88,8 +88,10 @@ namespace services::planner::impl {
                 }
             }
 
-            if (std::holds_alternative<expression_ptr>(comp_expr->left()) ||
-                std::holds_alternative<expression_ptr>(comp_expr->right())) {
+            // union compare expressions have nullptr in left and right slots
+            if (!is_union_compare_condition(comp_expr->type()) &&
+                (std::holds_alternative<expression_ptr>(comp_expr->left()) ||
+                 std::holds_alternative<expression_ptr>(comp_expr->right()))) {
                 return false;
             }
             return true;

@@ -107,8 +107,9 @@ namespace components::operators {
                         latest_atttypid = atttypid_v.is_null()
                                               ? catalog::INVALID_OID
                                               : static_cast<catalog::oid_t>(atttypid_v.value<std::uint32_t>());
-                        latest_atttypspec =
-                            atttypspec_v.is_null() ? std::string{} : std::string(atttypspec_v.value<std::string_view>());
+                        latest_atttypspec = atttypspec_v.is_null()
+                                                ? std::string{}
+                                                : std::string(atttypspec_v.value<std::string_view>());
                         latest_refcount = refcount_v.is_null() ? 0 : refcount_v.value<std::int64_t>();
                     }
                 }
@@ -143,8 +144,7 @@ namespace components::operators {
                                                      std::move(t_keys),
                                                      std::move(t_vals));
                     auto type_batches = co_await std::move(tf);
-                    if (!type_batches.empty() && type_batches[0].size() != 0 &&
-                        type_batches[0].column_count() > 0) {
+                    if (!type_batches.empty() && type_batches[0].size() != 0 && type_batches[0].column_count() > 0) {
                         auto typoid_v = type_batches[0].value(0, 0);
                         if (!typoid_v.is_null()) {
                             atttypid = static_cast<catalog::oid_t>(typoid_v.value<std::uint32_t>());

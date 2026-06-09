@@ -1,6 +1,6 @@
 #include <catch2/catch.hpp>
-#include <memory_resource>
 #include <components/table/transaction_manager.hpp>
+#include <memory_resource>
 
 TEST_CASE("components::table::transaction_manager::begin_commit") {
     using namespace components::table;

@@ -326,8 +326,7 @@ namespace components::operators {
         // advance fans on_horizon_advanced out to disk + index, draining the
         // dropped queues we just populated. Fire-and-forget; the sender is the
         // dispatcher (executor's parent_address_, see executor.cpp).
-        if (any_storage_drop &&
-            ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
+        if (any_storage_drop && ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
             constexpr uint8_t DISK_KIND = 1;
             constexpr uint8_t INDEX_KIND = 2;
             [[maybe_unused]] auto disk_mark =

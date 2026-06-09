@@ -38,9 +38,9 @@ namespace services::disk {
         agent_futures.reserve(agents_.size());
         for (auto& agent_ptr : agents_) {
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent_ptr->address(),
-                                                                   &agent_disk_t::checkpoint_inner,
-                                                                   session,
-                                                                   current_wal_id);
+                                                                  &agent_disk_t::checkpoint_inner,
+                                                                  session,
+                                                                  current_wal_id);
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent_ptr.get());
             }
@@ -101,9 +101,9 @@ namespace services::disk {
         agent_futures.reserve(agents_.size());
         for (auto& agent_ptr : agents_) {
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent_ptr->address(),
-                                                                   &agent_disk_t::vacuum_inner,
-                                                                   session,
-                                                                   lowest_active_start_time);
+                                                                  &agent_disk_t::vacuum_inner,
+                                                                  session,
+                                                                  lowest_active_start_time);
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent_ptr.get());
             }
@@ -144,9 +144,9 @@ namespace services::disk {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                   &agent_disk_t::maybe_cleanup_inner,
-                                                                   table_oid,
-                                                                   compact_gate);
+                                                                  &agent_disk_t::maybe_cleanup_inner,
+                                                                  table_oid,
+                                                                  compact_gate);
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }
@@ -223,8 +223,7 @@ namespace services::disk {
         // closing either fd releases it for both). Double-constructing the same OID
         // would race the lock and corrupt fsync/mmap pairing, so only the agent
         // thread opens it.
-        const std::size_t pool_idx =
-            agents_.empty() ? 0 : pool_idx_for_oid(table_oid, agents_.size());
+        const std::size_t pool_idx = agents_.empty() ? 0 : pool_idx_for_oid(table_oid, agents_.size());
         trace(log_,
               "manager_disk_t::load_storage_disk_sync: load oid={} pool_idx={} path={}",
               static_cast<unsigned>(table_oid),

@@ -8,8 +8,8 @@
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>
 #include <components/table/column_definition.hpp>
-#include <components/vector/data_chunk.hpp>
 #include <components/types/types.hpp>
+#include <components/vector/data_chunk.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <services/disk/manager_disk.hpp>
 
@@ -51,8 +51,7 @@ namespace {
                 c.path = path;
                 return c;
             }())
-            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
-        }
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {}
         ~fresh_disk() {
             // Destroy the manager first: its dtor joins the internal loop thread,
             // which may still enqueue children onto the scheduler. Only then is it
@@ -426,8 +425,7 @@ TEST_CASE("services::disk::persistence::test_sequence_persistence") {
         auto seq_batches =
             fd.invoke(&manager_disk_t::read_chunks_by_key, fd.ctx(), pg_seq, std::move(sk1), std::move(sv1));
         uint64_t seq_total = 0;
-        for (auto& c : seq_batches)
-            seq_total += c.size();
+        for (auto& c : seq_batches) seq_total += c.size();
         REQUIRE(seq_total == 1);
         // AC #2: DROP removes the pg_sequence row.
         test_drop_sequence(fd, seq_oid);
@@ -438,8 +436,7 @@ TEST_CASE("services::disk::persistence::test_sequence_persistence") {
         auto seq_batches_after =
             fd.invoke(&manager_disk_t::read_chunks_by_key, fd.ctx(), pg_seq, std::move(sk2), std::move(sv2));
         uint64_t seq_total_after = 0;
-        for (auto& c : seq_batches_after)
-            seq_total_after += c.size();
+        for (auto& c : seq_batches_after) seq_total_after += c.size();
         REQUIRE(seq_total_after == 0);
         // Re-create for restart test.
         seq_oid = test_create_sequence(fd, ns_oid, "counter2", 5, 1, 1, 500, false);
@@ -463,8 +460,7 @@ TEST_CASE("services::disk::persistence::test_sequence_persistence") {
         auto seq_batches2 =
             fd2.invoke(&manager_disk_t::read_chunks_by_key, fd2.ctx(), pg_seq2, std::move(sk3), std::move(sv3));
         uint64_t seq_total2 = 0;
-        for (auto& c : seq_batches2)
-            seq_total2 += c.size();
+        for (auto& c : seq_batches2) seq_total2 += c.size();
         REQUIRE(seq_total2 == 1);
     }
     std::filesystem::remove_all(dir);
@@ -494,8 +490,7 @@ TEST_CASE("services::disk::persistence::test_view_persistence") {
         auto rewrite_batches =
             fd.invoke(&manager_disk_t::read_chunks_by_key, fd.ctx(), pg_rewrite_tbl, std::move(rk1), std::move(rv1));
         uint64_t rewrite_total = 0;
-        for (auto& c : rewrite_batches)
-            rewrite_total += c.size();
+        for (auto& c : rewrite_batches) rewrite_total += c.size();
         REQUIRE(rewrite_total == 1);
         // AC #3: DROP removes the pg_rewrite row.
         test_drop_view(fd, view_oid);
@@ -506,8 +501,7 @@ TEST_CASE("services::disk::persistence::test_view_persistence") {
         auto rewrite_batches_after =
             fd.invoke(&manager_disk_t::read_chunks_by_key, fd.ctx(), pg_rewrite_tbl, std::move(rk2), std::move(rv2));
         uint64_t rewrite_total_after = 0;
-        for (auto& c : rewrite_batches_after)
-            rewrite_total_after += c.size();
+        for (auto& c : rewrite_batches_after) rewrite_total_after += c.size();
         REQUIRE(rewrite_total_after == 0);
         // Re-create for restart test.
         view_oid = test_create_view(fd, ns_oid, "my_view2", view_sql);
@@ -531,8 +525,7 @@ TEST_CASE("services::disk::persistence::test_view_persistence") {
         auto rewrite_batches2 =
             fd2.invoke(&manager_disk_t::read_chunks_by_key, fd2.ctx(), pg_rewrite_tbl2, std::move(rk3), std::move(rv3));
         uint64_t rewrite_total2 = 0;
-        for (auto& c : rewrite_batches2)
-            rewrite_total2 += c.size();
+        for (auto& c : rewrite_batches2) rewrite_total2 += c.size();
         REQUIRE(rewrite_total2 == 1);
     }
     std::filesystem::remove_all(dir);
@@ -561,8 +554,7 @@ TEST_CASE("services::disk::persistence::test_macro_persistence") {
         auto rewrite_batches_m =
             fd.invoke(&manager_disk_t::read_chunks_by_key, fd.ctx(), pg_rewrite_m, std::move(mk1), std::move(mv1));
         uint64_t rewrite_total_m = 0;
-        for (auto& c : rewrite_batches_m)
-            rewrite_total_m += c.size();
+        for (auto& c : rewrite_batches_m) rewrite_total_m += c.size();
         REQUIRE(rewrite_total_m == 1);
         fd.checkpoint();
     }
@@ -582,8 +574,7 @@ TEST_CASE("services::disk::persistence::test_macro_persistence") {
         auto rewrite_batches_m2 =
             fd2.invoke(&manager_disk_t::read_chunks_by_key, fd2.ctx(), pg_rewrite_m2, std::move(mk2), std::move(mv2));
         uint64_t rewrite_total_m2 = 0;
-        for (auto& c : rewrite_batches_m2)
-            rewrite_total_m2 += c.size();
+        for (auto& c : rewrite_batches_m2) rewrite_total_m2 += c.size();
         REQUIRE(rewrite_total_m2 == 1);
     }
     std::filesystem::remove_all(dir);
@@ -710,8 +701,7 @@ TEST_CASE("services::disk::persistence::test_check_constraint_persistence") {
         auto check_batches =
             fd2.invoke(&manager_disk_t::read_chunks_by_key, fd2.ctx(), pg_constr, std::move(ck), std::move(cv));
         uint64_t check_total = 0;
-        for (auto& c : check_batches)
-            check_total += c.size();
+        for (auto& c : check_batches) check_total += c.size();
         REQUIRE(check_total == 1);
     }
     std::filesystem::remove_all(dir);

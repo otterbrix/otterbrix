@@ -4,9 +4,8 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/compute/function.hpp>
 #include <components/context/pg_catalog_swap.hpp>
-#include <components/logical_plan/node.hpp>
+#include <components/logical_plan/execution_plan.hpp>
 #include <components/logical_plan/node_limit.hpp>
-#include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <set>
@@ -85,12 +84,16 @@ namespace services::collection::executor {
 
     struct plan_t {
         std::stack<components::operators::operator_ptr> sub_plans;
-        components::logical_plan::storage_parameters parameters;
+        // Non-owning: points at the shared parameter node's storage owned by
+        // the execute_plan frame, which outlives execute_sub_plan_. Avoids
+        // copying the parameter map into every plan_t (the per-sub-plan
+        // pipeline::context_t still owns its own copy).
+        const components::logical_plan::storage_parameters* parameters;
         services::context_storage_t context_storage_;
         components::logical_plan::limit_t limit;
 
         explicit plan_t(std::stack<components::operators::operator_ptr>&& sub_plans,
-                        components::logical_plan::storage_parameters parameters,
+                        const components::logical_plan::storage_parameters* parameters,
                         services::context_storage_t&& context_storage,
                         components::logical_plan::limit_t limit = components::logical_plan::limit_t::unlimit());
     };
@@ -143,8 +146,7 @@ namespace services::collection::executor {
         // called only from execute_plan_full (directly, via co_await — never
         // through the mailbox). The txn lifecycle is owned by the caller.
         unique_future<execute_result_t> execute_plan(components::session::session_id_t session,
-                                                     components::logical_plan::node_ptr logical_plan,
-                                                     components::logical_plan::storage_parameters parameters,
+                                                     components::logical_plan::execution_plan_t plan,
                                                      services::context_storage_t context_storage,
                                                      components::table::transaction_data txn,
                                                      uint64_t lowest_active_start_time);
@@ -157,10 +159,8 @@ namespace services::collection::executor {
         // allocation, the operator pipeline, and the DML/DDL commit (or
         // abort/accumulate) tail. All txn-state access rides txn_*_msg
         // messages to the dispatcher — the sole transaction_manager_t owner.
-        unique_future<execute_result_t>
-        execute_plan_full(components::session::session_id_t session,
-                          components::logical_plan::node_ptr logical_plan,
-                          components::logical_plan::parameter_node_ptr params);
+        unique_future<execute_result_t> execute_plan_full(components::session::session_id_t session,
+                                                          components::logical_plan::execution_plan_t plan);
 
         unique_future<std::unique_ptr<function_result_t>> register_udf(components::session::session_id_t session,
                                                                        components::compute::function_ptr function);
@@ -169,16 +169,15 @@ namespace services::collection::executor {
         // executor.cpp for the rationale).
         unique_future<void> poke_msg();
 
-        using dispatch_traits = actor_zeta::dispatch_traits<&executor_t::execute_plan_full,
-                                                            &executor_t::register_udf,
-                                                            &executor_t::poke_msg>;
+        using dispatch_traits = actor_zeta::
+            dispatch_traits<&executor_t::execute_plan_full, &executor_t::register_udf, &executor_t::poke_msg>;
 
         auto make_type() const noexcept -> const char*;
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
     private:
         plan_t traverse_plan_(components::operators::operator_ptr&& plan,
-                              components::logical_plan::storage_parameters&& parameters,
+                              const components::logical_plan::storage_parameters& parameters,
                               services::context_storage_t&& context_storage);
 
         unique_future<sub_plan_result_t> execute_sub_plan_(components::session::session_id_t session,

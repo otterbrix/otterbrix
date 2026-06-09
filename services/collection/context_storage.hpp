@@ -1,12 +1,13 @@
 #pragma once
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/expressions/compare_expression.hpp>
 #include <components/expressions/key.hpp>
 #include <components/index/forward.hpp>
 #include <components/log/log.hpp>
 #include <components/logical_plan/node_catalog_resolve_table.hpp>
-#include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/param_storage.hpp>
+#include <components/physical_plan/operators/operator_data.hpp>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -29,6 +30,9 @@ namespace services {
         // column names + relkind.
         std::unordered_map<components::catalog::oid_t, const components::logical_plan::resolved_table_metadata_t*>
             table_metadata;
+        // Slot pointers for recursive CTE working sets. Keyed by CTE name.
+        // Each entry points into the owning operator_recursive_cte_t's working_set_ field.
+        std::pmr::unordered_map<std::pmr::string, components::operators::operator_data_ptr*> cte_working_sets;
 
         context_storage_t(std::pmr::memory_resource* resource,
                           log_t log,
@@ -37,7 +41,8 @@ namespace services {
             , log(std::move(log))
             , session_timezone(session_timezone)
             , indexed_keys(resource)
-            , indexed_descriptions(resource) {}
+            , indexed_descriptions(resource)
+            , cte_working_sets(resource) {}
 
         bool has_table_oid(components::catalog::oid_t oid) const noexcept {
             return oid != components::catalog::INVALID_OID && known_oids.count(oid) > 0;
@@ -70,7 +75,8 @@ namespace services {
             return false;
         }
 
-        bool has_index_on_with_other_type(const components::expressions::key_t& key, components::logical_plan::index_type type) const {
+        bool has_index_on_with_other_type(const components::expressions::key_t& key,
+                                          components::logical_plan::index_type type) const {
             for (const auto& desc : indexed_descriptions) {
                 if (desc.type == type) {
                     continue;

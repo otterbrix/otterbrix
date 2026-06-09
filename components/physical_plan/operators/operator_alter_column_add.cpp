@@ -5,8 +5,8 @@
 
 #include "alter_validators.hpp"
 
-#include <components/catalog/ddl_metadata_builder.hpp>
 #include <components/catalog/alter_column_validators.hpp>
+#include <components/catalog/ddl_metadata_builder.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -51,9 +51,9 @@ namespace components::operators {
             co_return;
         }
 
-        auto ec_eval =
-            components::catalog::alter_column_validators::validate_default_value_evaluatable(resource_,
-                                                                                             column_.default_value_opt());
+        auto ec_eval = components::catalog::alter_column_validators::validate_default_value_evaluatable(
+            resource_,
+            column_.default_value_opt());
         if (ec_eval.contains_error()) {
             set_error(std::move(ec_eval));
             co_return;
@@ -125,10 +125,9 @@ namespace components::operators {
         if (rng.count > 0) {
             ctx->pg_catalog_appends.push_back(std::move(rng));
             // Backfill added_at_commit_id on this row, keyed by attoid.
-            ctx->pg_attribute_commit_id_backfills.push_back(
-                components::pg_attribute_commit_id_backfill_t{
-                    attoid,
-                    components::pg_attribute_commit_id_backfill_t::kind_t::added_at});
+            ctx->pg_attribute_commit_id_backfills.push_back(components::pg_attribute_commit_id_backfill_t{
+                attoid,
+                components::pg_attribute_commit_id_backfill_t::kind_t::added_at});
         }
 
         // resolve_table rebuilds columns from pg_attribute on each call, so

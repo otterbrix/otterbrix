@@ -27,10 +27,7 @@ namespace components::table {
             , start_time(time) {}
         // Full snapshot ctor — used by transaction_t::data() to construct a
         // copy from the transaction's pmr-anchored snapshot vector.
-        transaction_data(uint64_t id,
-                         uint64_t time,
-                         uint64_t horizon,
-                         const std::pmr::vector<uint64_t>& in_flight)
+        transaction_data(uint64_t id, uint64_t time, uint64_t horizon, const std::pmr::vector<uint64_t>& in_flight)
             : transaction_id(id)
             , start_time(time)
             , snapshot_horizon(horizon)

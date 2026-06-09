@@ -49,29 +49,28 @@ namespace components::operators {
 
         // Search index for matching row IDs (txn-aware visibility)
         std::pmr::vector<int64_t> row_ids_vec(resource_);
-        auto [_s, sf] =
-            preferred_index_type_ == logical_plan::index_type::no_valid
-            ? actor_zeta::send(ctx->index_address,
-                                         &services::index::manager_index_t::search,
-                                         ctx->session,
-                                         table_oid_,
-                                         index::keys_base_storage_t{{key_}},
-                                         types::logical_value_t{resource_, value_},
-                                         compare_type_,
-                                         ctx->txn.start_time,
-                                         ctx->txn.transaction_id,
-                                         ctx->session_tz)
-            : actor_zeta::send(ctx->index_address,
-                                     &services::index::manager_index_t::search_with_preferred_type,
-                                     ctx->session,
-                                     table_oid_,
-                                     index::keys_base_storage_t{{key_}},
-                                     types::logical_value_t{resource_, value_},
-                                     compare_type_,
-                                     preferred_index_type_,
-                                     ctx->txn.start_time,
-                                     ctx->txn.transaction_id,
-                                     ctx->session_tz);
+        auto [_s, sf] = preferred_index_type_ == logical_plan::index_type::no_valid
+                            ? actor_zeta::send(ctx->index_address,
+                                               &services::index::manager_index_t::search,
+                                               ctx->session,
+                                               table_oid_,
+                                               index::keys_base_storage_t{{key_}},
+                                               types::logical_value_t{resource_, value_},
+                                               compare_type_,
+                                               ctx->txn.start_time,
+                                               ctx->txn.transaction_id,
+                                               ctx->session_tz)
+                            : actor_zeta::send(ctx->index_address,
+                                               &services::index::manager_index_t::search_with_preferred_type,
+                                               ctx->session,
+                                               table_oid_,
+                                               index::keys_base_storage_t{{key_}},
+                                               types::logical_value_t{resource_, value_},
+                                               compare_type_,
+                                               preferred_index_type_,
+                                               ctx->txn.start_time,
+                                               ctx->txn.transaction_id,
+                                               ctx->session_tz);
         row_ids_vec = co_await std::move(sf);
 
         // Apply offset and limit

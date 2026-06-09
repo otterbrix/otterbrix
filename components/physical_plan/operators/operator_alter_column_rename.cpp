@@ -5,8 +5,8 @@
 
 #include "alter_validators.hpp"
 
-#include <components/catalog/ddl_metadata_builder.hpp>
 #include <components/catalog/alter_column_validators.hpp>
+#include <components/catalog/ddl_metadata_builder.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -37,10 +37,9 @@ namespace components::operators {
         // Reject new_name_ if it collides with a column visible to this snapshot.
         auto vc_fut = alter_validators::visible_column_names(resource_, ctx->disk_address, exec_ctx, table_oid_);
         auto visible_column_names = co_await std::move(vc_fut);
-        auto ec_dup =
-            components::catalog::alter_column_validators::validate_column_not_duplicate(resource_,
-                                                                                        visible_column_names,
-                                                                                        new_name_);
+        auto ec_dup = components::catalog::alter_column_validators::validate_column_not_duplicate(resource_,
+                                                                                                  visible_column_names,
+                                                                                                  new_name_);
         if (ec_dup.contains_error()) {
             set_error(std::move(ec_dup));
             co_return;

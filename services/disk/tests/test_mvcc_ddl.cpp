@@ -3,7 +3,6 @@
 #include "catalog_probe.hpp"
 #include "disk_test_helpers.hpp"
 #include <actor-zeta/spawn.hpp>
-#include <limits>
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/context/execution_context.hpp>
@@ -13,6 +12,7 @@
 #include <components/table/row_version_manager.hpp>
 #include <components/types/types.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
+#include <limits>
 #include <services/disk/manager_disk.hpp>
 
 #include <filesystem>

@@ -97,8 +97,14 @@ namespace services::index {
     }
 
     index_agent_disk_t::unique_future<core::error_t>
-    index_agent_disk_t::insert_many(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values) {
-        trace(log_, "index_agent_disk_t::insert_many: {}, txn_id: {}, session: {}", values.size(), txn_id, session.data());
+    index_agent_disk_t::insert_many(session_id_t session,
+                                    uint64_t txn_id,
+                                    std::vector<std::pair<value_t, size_t>> values) {
+        trace(log_,
+              "index_agent_disk_t::insert_many: {}, txn_id: {}, session: {}",
+              values.size(),
+              txn_id,
+              session.data());
         auto* bitcask = dynamic_cast<bitcask_index_disk_t*>(index_disk_.get());
         if (bitcask && txn_id != 0) {
             // M3.5: the only recoverable-failure branch — propagate the bitcask
@@ -130,8 +136,14 @@ namespace services::index {
     }
 
     index_agent_disk_t::unique_future<core::error_t>
-    index_agent_disk_t::remove_many(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values) {
-        trace(log_, "index_agent_disk_t::remove_many: {}, txn_id: {}, session: {}", values.size(), txn_id, session.data());
+    index_agent_disk_t::remove_many(session_id_t session,
+                                    uint64_t txn_id,
+                                    std::vector<std::pair<value_t, size_t>> values) {
+        trace(log_,
+              "index_agent_disk_t::remove_many: {}, txn_id: {}, session: {}",
+              values.size(),
+              txn_id,
+              session.data());
         auto* bitcask = dynamic_cast<bitcask_index_disk_t*>(index_disk_.get());
         if (bitcask && txn_id != 0) {
             // M3.5: propagate the bitcask txn-log IO error to commit_deletes.

@@ -153,8 +153,7 @@ namespace components::operators {
         // update_pg_attribute_commit_id_fields emits a physical_update per marker
         // paired with the matching physical_insert, so replay materializes them
         // together.
-        if (!swap_backfills.empty() && commit_id_ > 0 &&
-            ctx->disk_address != actor_zeta::address_t::empty_address()) {
+        if (!swap_backfills.empty() && commit_id_ > 0 && ctx->disk_address != actor_zeta::address_t::empty_address()) {
             components::execution_context_t backfill_ctx{ctx->session, txn_data, {}};
             // Log the marker count before the move empties the vector.
             const auto backfill_count = swap_backfills.size();
@@ -211,17 +210,18 @@ namespace components::operators {
         // accepted as the no-undo tradeoff. base_append_oids / base_delete_table_oids
         // are the masters; copy into per-send pmr-vectors so the masters survive
         // for the publish + compact consumers below.
-        if (ctx->index_address != actor_zeta::address_t::empty_address() &&
-            txn_data.transaction_id != 0 && commit_id_ > 0) {
+        if (ctx->index_address != actor_zeta::address_t::empty_address() && txn_data.transaction_id != 0 &&
+            commit_id_ > 0) {
             if (!base_append_oids.empty()) {
                 std::pmr::vector<components::catalog::oid_t> append_oids{base_append_oids.begin(),
-                                                                        base_append_oids.end(),
-                                                                        resource_};
-                auto [_ic, icf] = actor_zeta::send(ctx->index_address,
-                                                   &services::index::manager_index_t::commit_inserts,
-                                                   components::execution_context_t{ctx->session, txn_data, ctx->session_tz},
-                                                   std::move(append_oids),
-                                                   commit_id_);
+                                                                         base_append_oids.end(),
+                                                                         resource_};
+                auto [_ic, icf] =
+                    actor_zeta::send(ctx->index_address,
+                                     &services::index::manager_index_t::commit_inserts,
+                                     components::execution_context_t{ctx->session, txn_data, ctx->session_tz},
+                                     std::move(append_oids),
+                                     commit_id_);
                 core::error_t result = co_await std::move(icf);
                 if (result.contains_error()) {
                     // Clean abort: nothing published yet (this block runs before
@@ -236,11 +236,12 @@ namespace components::operators {
                 std::pmr::vector<components::catalog::oid_t> delete_oids{base_delete_table_oids.begin(),
                                                                          base_delete_table_oids.end(),
                                                                          resource_};
-                auto [_dc, dcf] = actor_zeta::send(ctx->index_address,
-                                                   &services::index::manager_index_t::commit_deletes,
-                                                   components::execution_context_t{ctx->session, txn_data, ctx->session_tz},
-                                                   std::move(delete_oids),
-                                                   commit_id_);
+                auto [_dc, dcf] =
+                    actor_zeta::send(ctx->index_address,
+                                     &services::index::manager_index_t::commit_deletes,
+                                     components::execution_context_t{ctx->session, txn_data, ctx->session_tz},
+                                     std::move(delete_oids),
+                                     commit_id_);
                 core::error_t result = co_await std::move(dcf);
                 if (result.contains_error()) {
                     // Clean abort BEFORE any publish — see commit_inserts note above.
@@ -432,12 +433,14 @@ namespace components::operators {
             // Single batched message: the disk manager fans the per-table compact
             // out internally.
             if (!safe_oids.empty()) {
-                auto [_mc, mcf] = actor_zeta::send(
-                    ctx->disk_address,
-                    &services::disk::manager_disk_t::maybe_cleanup_many,
-                    components::execution_context_t{ctx->session, txn_data, ctx->session_tz, components::catalog::INVALID_OID},
-                    std::move(safe_oids),
-                    compact_gate);
+                auto [_mc, mcf] = actor_zeta::send(ctx->disk_address,
+                                                   &services::disk::manager_disk_t::maybe_cleanup_many,
+                                                   components::execution_context_t{ctx->session,
+                                                                                   txn_data,
+                                                                                   ctx->session_tz,
+                                                                                   components::catalog::INVALID_OID},
+                                                   std::move(safe_oids),
+                                                   compact_gate);
                 co_await std::move(mcf);
             }
         }

@@ -12,8 +12,8 @@
 namespace components::operators {
 
     operator_set_timezone_t::operator_set_timezone_t(std::pmr::memory_resource* resource,
-                                                      log_t log,
-                                                      std::pmr::string timezone_name)
+                                                     log_t log,
+                                                     std::pmr::string timezone_name)
         : read_write_operator_t(resource, std::move(log), operator_type::set_timezone)
         , timezone_name_(std::move(timezone_name)) {}
 
@@ -21,8 +21,8 @@ namespace components::operators {
         // Validate the timezone name first (set_timezone returns error_t on an
         // unknown/unparseable identifier) so an invalid value never reaches disk.
         components::catalog::session_catalog_t local_cat;
-        auto err = local_cat.set_timezone(this->resource(),
-                                          std::string_view{timezone_name_.data(), timezone_name_.size()});
+        auto err =
+            local_cat.set_timezone(this->resource(), std::string_view{timezone_name_.data(), timezone_name_.size()});
         if (err.contains_error()) {
             set_error(std::move(err));
             mark_failed();
@@ -59,10 +59,10 @@ namespace components::operators {
 
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz};
         auto [_u, uf] = actor_zeta::send(ctx->disk_address,
-                                          &services::disk::manager_disk_t::append_pg_catalog_row,
-                                          exec_ctx,
-                                          components::catalog::well_known_oid::pg_settings_table,
-                                          std::move(row));
+                                         &services::disk::manager_disk_t::append_pg_catalog_row,
+                                         exec_ctx,
+                                         components::catalog::well_known_oid::pg_settings_table,
+                                         std::move(row));
         // Record the append range so the executor's commit tail publishes (and,
         // on error, reverts) this pg_settings row through the unified DML path.
         // append_pg_catalog_row returns count==0 for the txn-less (transaction_id

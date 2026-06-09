@@ -16,8 +16,8 @@
 #include <components/logical_plan/node_catalog_resolve_table.hpp>
 #include <components/logical_plan/node_catalog_resolve_type.hpp>
 #include <components/logical_plan/param_storage.hpp>
-#include <services/collection/context_storage.hpp>
 #include <memory_resource>
+#include <services/collection/context_storage.hpp>
 #include <span>
 #include <string>
 #include <string_view>
@@ -66,13 +66,14 @@ namespace services::dispatcher {
     // table_oid / namespace_oid without async catalog probes. When null,
     // enrich gathers a local index from `root` itself (recursive calls then
     // thread the gathered pointer through children).
-    actor_zeta::unique_future<void> enrich_plan(std::pmr::memory_resource* resource,
-                                                components::logical_plan::node_ptr root,
-                                                actor_zeta::address_t disk_address,
-                                                components::execution_context_t ctx,
-                                                actor_zeta::address_t index_address = actor_zeta::address_t::empty_address(),
-                                                services::context_storage_t* collections_ctx = nullptr,
-                                                const enrich_resolve_idx_t* idx = nullptr);
+    actor_zeta::unique_future<void>
+    enrich_plan(std::pmr::memory_resource* resource,
+                components::logical_plan::node_ptr root,
+                actor_zeta::address_t disk_address,
+                components::execution_context_t ctx,
+                actor_zeta::address_t index_address = actor_zeta::address_t::empty_address(),
+                services::context_storage_t* collections_ctx = nullptr,
+                const enrich_resolve_idx_t* idx = nullptr);
 
 } // namespace services::dispatcher
 
@@ -115,8 +116,7 @@ namespace services::catalog_resolve {
     // (i.e. need a fresh resolve round). Operates on direct children of
     // sequence_t roots; sub-plan splicing places them at the front so a
     // shallow scan suffices.
-    std::vector<components::logical_plan::node_ptr>
-    extract_unresolved_resolves(components::logical_plan::node_t* root);
+    std::vector<components::logical_plan::node_ptr> extract_unresolved_resolves(components::logical_plan::node_t* root);
 
     // When the SQL transformer wraps a DML/DDL plan in
     //   sequence_t(catalog_resolve_namespace_t, catalog_resolve_table_t, <real_root>)
@@ -126,8 +126,7 @@ namespace services::catalog_resolve {
     // all resolution-only prefix children). For non-sequence_t roots it returns
     // the node itself unchanged. Returns nullptr only when the input is null or
     // a sequence_t with no non-resolve children.
-    const components::logical_plan::node_t*
-    effective_root_node(const components::logical_plan::node_t* n);
+    const components::logical_plan::node_t* effective_root_node(const components::logical_plan::node_t* n);
     // Mutable-pointer overload, for call sites that mutate the consumer node.
     components::logical_plan::node_t* effective_root_node(components::logical_plan::node_t* n);
 

@@ -2306,9 +2306,8 @@ TEST_CASE("integration::cpp::test_sql_features::explicit_txn_commit_visible") {
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "CREATE TABLE TestDatabase.TestCollection (name string, value bigint);");
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE TABLE TestDatabase.TestCollection (name string, value bigint);");
             REQUIRE(cur->is_success());
         }
     }
@@ -2317,13 +2316,13 @@ TEST_CASE("integration::cpp::test_sql_features::explicit_txn_commit_visible") {
         auto session = otterbrix::session_id_t();
         auto begin_cur = dispatcher->execute_sql(session, "BEGIN;");
         REQUIRE(begin_cur->is_success());
-        auto ins1_cur = dispatcher->execute_sql(
-            session,
-            "INSERT INTO TestDatabase.TestCollection (name, value) VALUES ('Alice', 10);");
+        auto ins1_cur =
+            dispatcher->execute_sql(session,
+                                    "INSERT INTO TestDatabase.TestCollection (name, value) VALUES ('Alice', 10);");
         REQUIRE(ins1_cur->is_success());
-        auto ins2_cur = dispatcher->execute_sql(
-            session,
-            "INSERT INTO TestDatabase.TestCollection (name, value) VALUES ('Bob', 20);");
+        auto ins2_cur =
+            dispatcher->execute_sql(session,
+                                    "INSERT INTO TestDatabase.TestCollection (name, value) VALUES ('Bob', 20);");
         REQUIRE(ins2_cur->is_success());
         auto commit_cur = dispatcher->execute_sql(session, "COMMIT;");
         REQUIRE(commit_cur->is_success());
@@ -2351,9 +2350,8 @@ TEST_CASE("integration::cpp::test_sql_features::explicit_txn_rollback_invisible"
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "CREATE TABLE TestDatabase.TestCollection (name string, value bigint);");
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE TABLE TestDatabase.TestCollection (name string, value bigint);");
             REQUIRE(cur->is_success());
         }
     }
@@ -2362,9 +2360,9 @@ TEST_CASE("integration::cpp::test_sql_features::explicit_txn_rollback_invisible"
         auto session = otterbrix::session_id_t();
         auto begin_cur = dispatcher->execute_sql(session, "BEGIN;");
         REQUIRE(begin_cur->is_success());
-        auto ins_cur = dispatcher->execute_sql(
-            session,
-            "INSERT INTO TestDatabase.TestCollection (name, value) VALUES ('Alice', 10);");
+        auto ins_cur =
+            dispatcher->execute_sql(session,
+                                    "INSERT INTO TestDatabase.TestCollection (name, value) VALUES ('Alice', 10);");
         REQUIRE(ins_cur->is_success());
         auto rollback_cur = dispatcher->execute_sql(session, "ROLLBACK;");
         REQUIRE(rollback_cur->is_success());
@@ -2472,8 +2470,7 @@ TEST_CASE("integration::cpp::test_sql_features::alter_table_nonexistent_characte
 
     INFO("ALTER on a table that does not exist") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           "ALTER TABLE TestDatabase.NoSuchTable ADD COLUMN extra bigint;");
+        auto cur = dispatcher->execute_sql(session, "ALTER TABLE TestDatabase.NoSuchTable ADD COLUMN extra bigint;");
         // Characterization probe: record the actual outcome (success vs error).
         WARN("ALTER nonexistent: is_success=" << cur->is_success()
                                               << " error=" << (cur->is_error() ? cur->get_error().what : ""));
@@ -3852,8 +3849,8 @@ TEST_CASE("integration::cpp::test_sql_features::vacuum_after_alter_keeps_working
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "INSERT INTO TestDatabase.items (id, val) VALUES (4, 40), (5, 50);");
+            auto cur =
+                dispatcher->execute_sql(session, "INSERT INTO TestDatabase.items (id, val) VALUES (4, 40), (5, 50);");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 2);
         }
@@ -3899,7 +3896,8 @@ TEST_CASE("integration::cpp::test_sql_features::bare_commit_is_noop") {
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.TestCollection (name string, value bigint);")
+            REQUIRE(dispatcher
+                        ->execute_sql(session, "CREATE TABLE TestDatabase.TestCollection (name string, value bigint);")
                         ->is_success());
         }
     }
@@ -3981,9 +3979,8 @@ TEST_CASE("integration::cpp::test_sql_features::rollback_after_delete_keeps_inde
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(
-                dispatcher->execute_sql(session, "CREATE INDEX idx_count ON TestDatabase.TestCollection (count);")
-                    ->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE INDEX idx_count ON TestDatabase.TestCollection (count);")
+                        ->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -4006,8 +4003,8 @@ TEST_CASE("integration::cpp::test_sql_features::rollback_after_delete_keeps_inde
         auto session = otterbrix::session_id_t();
         auto begin_cur = dispatcher->execute_sql(session, "BEGIN;");
         REQUIRE(begin_cur->is_success());
-        auto del_cur = dispatcher->execute_sql(session,
-                                               "DELETE FROM TestDatabase.TestCollection WHERE count IN (20, 30);");
+        auto del_cur =
+            dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count IN (20, 30);");
         REQUIRE(del_cur->is_success());
         REQUIRE(del_cur->size() == 2);
         auto rollback_cur = dispatcher->execute_sql(session, "ROLLBACK;");
@@ -4165,8 +4162,7 @@ TEST_CASE("integration::cpp::test_sql_features::ddl_failure_pre_pipeline_charact
     INFO("system health: the doomed DDL left no partial index — a valid CREATE INDEX still succeeds") {
         {
             auto fresh = otterbrix::session_id_t();
-            auto cur =
-                dispatcher->execute_sql(fresh, "CREATE INDEX idx_count ON TestDatabase.TestCollection (count);");
+            auto cur = dispatcher->execute_sql(fresh, "CREATE INDEX idx_count ON TestDatabase.TestCollection (count);");
             REQUIRE(cur->is_success());
         }
         {
@@ -4220,9 +4216,8 @@ TEST_CASE("integration::cpp::test_sql_features::indexed_insert_commit_visible_af
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(
-                dispatcher->execute_sql(session, "CREATE INDEX idx_count ON TestDatabase.TestCollection (count);")
-                    ->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE INDEX idx_count ON TestDatabase.TestCollection (count);")
+                        ->is_success());
         }
     }
 

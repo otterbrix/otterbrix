@@ -182,8 +182,7 @@ TEST_CASE("services::disk::ddl::computed_register_same_type_idempotent") {
                              std::move(k1),
                              test_probe::build_key_chunk(&fx.resource, std::move(v1)));
     std::uint64_t total = 0;
-    for (const auto& c : batches)
-        total += c.size();
+    for (const auto& c : batches) total += c.size();
     REQUIRE(total == 1);
     REQUIRE(batches[0].value(6, 0).value<std::int64_t>() == 1);
 
@@ -257,8 +256,7 @@ TEST_CASE("services::disk::ddl::computed_unregister_marks_dead") {
                              std::move(k2),
                              test_probe::build_key_chunk(&fx.resource, std::move(v2)));
     std::uint64_t total = 0;
-    for (const auto& c : batches)
-        total += c.size();
+    for (const auto& c : batches) total += c.size();
     REQUIRE(total == 2);
 
     bool found_live = false;
@@ -340,8 +338,7 @@ TEST_CASE("services::disk::ddl::computed_field_drop_then_readd") {
                              std::move(k3),
                              test_probe::build_key_chunk(&fx.resource, std::move(v3)));
     std::uint64_t total_rows = 0;
-    for (const auto& c : batches)
-        total_rows += c.size();
+    for (const auto& c : batches) total_rows += c.size();
 
     // Branch on observed register-side behavior so the test stays useful even
     // if the operator's same-type policy is later relaxed (e.g. to revive
@@ -477,8 +474,7 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
                                  std::move(kk),
                                  test_probe::build_key_chunk(&fx.resource, std::move(vv)));
         std::uint64_t total = 0;
-        for (const auto& c : batches)
-            total += c.size();
+        for (const auto& c : batches) total += c.size();
         REQUIRE(total == 4);
     }
 
@@ -531,8 +527,7 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
                                  std::move(kk),
                                  test_probe::build_key_chunk(&fx.resource, std::move(vv)));
         std::uint64_t total = 0;
-        for (const auto& c : batches)
-            total += c.size();
+        for (const auto& c : batches) total += c.size();
         REQUIRE(total == 2);
         std::vector<std::string> names;
         for (const auto& chunk : batches) {

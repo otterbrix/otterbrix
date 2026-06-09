@@ -45,8 +45,8 @@ namespace components::index::codec {
 
     template<typename AppendFn>
     inline void append_decimal_payload(AppendFn&& append, const logical_value_t& key) {
-        const auto* decimal = reinterpret_cast<const components::types::decimal_logical_type_extension*>(
-            key.type().extension());
+        const auto* decimal =
+            reinterpret_cast<const components::types::decimal_logical_type_extension*>(key.type().extension());
         append(decimal->width());
         append(decimal->scale());
         switch (decimal->stored_as()) {
@@ -143,7 +143,8 @@ namespace components::index::codec {
         }
     }
 
-    inline logical_value_t read_logical_value(std::pmr::memory_resource* resource, const std::pmr::string& in, size_t& pos) {
+    inline logical_value_t
+    read_logical_value(std::pmr::memory_resource* resource, const std::pmr::string& in, size_t& pos) {
         const auto logical = static_cast<logical_type_t>(read_le<uint8_t>(in, pos));
         if (logical == logical_type_t::DECIMAL) {
             return read_decimal_payload(resource, [&in, &pos]<typename T>() { return read_le<T>(in, pos); });
@@ -205,7 +206,8 @@ namespace components::index::codec {
                     case logical_type_t::TIMESTAMP_TZ:
                         return logical_value_t(resource, core::date::timestamptz_t{core::date::microseconds{v}});
                     default:
-                        throw std::runtime_error("logical value codec: unsupported INT64 logical key type during decode");
+                        throw std::runtime_error(
+                            "logical value codec: unsupported INT64 logical key type during decode");
                 }
             }
             case physical_type_t::UINT64:

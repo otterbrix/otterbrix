@@ -18,4 +18,4 @@ namespace services::planner::impl {
                           components::logical_plan::limit_t limit,
                           const components::logical_plan::storage_parameters* params);
 
-}
+} // namespace services::planner::impl

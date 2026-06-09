@@ -6,9 +6,9 @@
 
 #include <actor-zeta/spawn.hpp>
 #include <algorithm>
+#include <components/index/disk_hash_single_field_index.hpp>
 #include <components/index/hash_single_field_index.hpp>
 #include <components/index/index_engine.hpp>
-#include <components/index/disk_hash_single_field_index.hpp>
 #include <components/index/single_field_index.hpp>
 #include <core/b_plus_tree/b_plus_tree.hpp>
 #include <core/b_plus_tree/msgpack_reader/msgpack_reader.hpp>
@@ -322,10 +322,9 @@ namespace services::index {
     void manager_index_t::poll_pending() {
         // No mutex: pending_void_ is touched only by the loop thread (here and
         // from handlers running on it).
-        pending_void_.erase(std::remove_if(pending_void_.begin(),
-                                           pending_void_.end(),
-                                           [](auto& f) { return f.is_ready(); }),
-                            pending_void_.end());
+        pending_void_.erase(
+            std::remove_if(pending_void_.begin(), pending_void_.end(), [](auto& f) { return f.is_ready(); }),
+            pending_void_.end());
     }
 
     void manager_index_t::sync(index_sync_pack_t pack) {
@@ -337,10 +336,9 @@ namespace services::index {
         dropped_table_agents_[oid] = dropped_at_commit_id;
     }
 
-    manager_index_t::unique_future<void>
-    manager_index_t::mark_table_dropped(session_id_t /*session*/,
-                                        components::catalog::oid_t table_oid,
-                                        uint64_t dropped_at_commit_id) {
+    manager_index_t::unique_future<void> manager_index_t::mark_table_dropped(session_id_t /*session*/,
+                                                                             components::catalog::oid_t table_oid,
+                                                                             uint64_t dropped_at_commit_id) {
         // Wrapper so the operator co_awaits a future and the dropped_table_agents_
         // mutation runs on this actor's thread, not synchronously cross-actor.
         trace(log_,
@@ -360,10 +358,7 @@ namespace services::index {
         // value < new_horizon. After the transaction commits and a real commit_id is
         // allocated, rewrite every dropped_table_agents_ entry whose value still
         // equals txn_id, moving it into commit-id space.
-        trace(log_,
-              "manager_index_t::table_dropped_committed , txn_id : {} , commit_id : {}",
-              txn_id,
-              commit_id);
+        trace(log_, "manager_index_t::table_dropped_committed , txn_id : {} , commit_id : {}", txn_id, commit_id);
         for (auto& kv : dropped_table_agents_) {
             if (kv.second == txn_id) {
                 kv.second = commit_id;
@@ -372,8 +367,8 @@ namespace services::index {
         co_return;
     }
 
-    manager_index_t::unique_future<void>
-    manager_index_t::table_drop_aborted(session_id_t /*session*/, uint64_t txn_id) {
+    manager_index_t::unique_future<void> manager_index_t::table_drop_aborted(session_id_t /*session*/,
+                                                                             uint64_t txn_id) {
         // DROP-rollback un-mark — the abort mirror of table_dropped_committed.
         // mark_table_dropped_sync stored the entry's value in TXN-ID space (>= 2^62),
         // the only id the cascade-delete operator had. If the transaction ABORTS the
@@ -451,10 +446,9 @@ namespace services::index {
             }
             case components::logical_plan::index_type::hashed: {
                 if (path_db_.empty()) {
-                    id_index =
-                        components::index::make_index<components::index::hash_single_field_index_t>(engine,
-                                                                                                      index_name,
-                                                                                                      keys);
+                    id_index = components::index::make_index<components::index::hash_single_field_index_t>(engine,
+                                                                                                           index_name,
+                                                                                                           keys);
                 } else {
                     const auto base = path_db_ / std::to_string(static_cast<unsigned>(table_oid)) / index_name;
                     std::filesystem::create_directories(base);
@@ -463,19 +457,20 @@ namespace services::index {
                             engine,
                             index_name,
                             keys,
-                            std::make_unique<services::index::disk_hash_table_t>(base / "hash_index.bin",
-                                                                                 services::index::disk_hash_table_t::default_bucket_count,
-                                                                                 true,
-                                                                                 resource_));
+                            std::make_unique<services::index::disk_hash_table_t>(
+                                base / "hash_index.bin",
+                                services::index::disk_hash_table_t::default_bucket_count,
+                                true,
+                                resource_));
                     } catch (const std::exception& e) {
                         trace(log_,
                               "manager_index_t::bootstrap_index_sync: disk hash storage init failed, "
                               "fallback to memory: {}",
                               e.what());
-                        id_index = components::index::make_index<components::index::hash_single_field_index_t>(
-                            engine,
-                            index_name,
-                            keys);
+                        id_index =
+                            components::index::make_index<components::index::hash_single_field_index_t>(engine,
+                                                                                                        index_name,
+                                                                                                        keys);
                     }
                 }
                 break;
@@ -512,8 +507,7 @@ namespace services::index {
             if (std::filesystem::exists(btree_path / "metadata")) {
                 try {
                     core::filesystem::local_file_system_t fs;
-                    auto db =
-                        std::make_unique<core::b_plus_tree::btree_t>(resource_, fs, btree_path, item_key_getter);
+                    auto db = std::make_unique<core::b_plus_tree::btree_t>(resource_, fs, btree_path, item_key_getter);
                     db->load();
                     if (db->size() > 0) {
                         struct pv_entry {
@@ -522,9 +516,9 @@ namespace services::index {
                         };
                         std::pmr::vector<pv_entry> raw(resource_);
                         db->full_scan<pv_entry>(&raw, [](void* data, size_t sz) -> pv_entry {
-                            auto item = core::b_plus_tree::btree_t::item_data{
-                                static_cast<core::b_plus_tree::data_ptr_t>(data),
-                                static_cast<uint32_t>(sz)};
+                            auto item =
+                                core::b_plus_tree::btree_t::item_data{static_cast<core::b_plus_tree::data_ptr_t>(data),
+                                                                      static_cast<uint32_t>(sz)};
                             return {item_key_getter(item),
                                     static_cast<int64_t>(
                                         id_getter(item).value<components::types::physical_type::UINT64>())};
@@ -546,8 +540,8 @@ namespace services::index {
 
         // Per-oid fan-out registration (used by commit_* and on_horizon_advanced
         // GC). Insertion order matches create_index for runtime/bootstrap parity.
-        auto oid_it = disk_agents_per_oid_.try_emplace(
-            table_oid, std::pmr::vector<actor_zeta::address_t>(resource_)).first;
+        auto oid_it =
+            disk_agents_per_oid_.try_emplace(table_oid, std::pmr::vector<actor_zeta::address_t>(resource_)).first;
         oid_it->second.emplace_back(disk_agent_addr);
 
         // Keep the agent alive for the manager's lifetime so the addresses
@@ -629,10 +623,9 @@ namespace services::index {
             }
             case components::logical_plan::index_type::hashed: {
                 if (path_db_.empty()) {
-                    id_index =
-                        components::index::make_index<components::index::hash_single_field_index_t>(engine,
-                                                                                                      index_name,
-                                                                                                      keys);
+                    id_index = components::index::make_index<components::index::hash_single_field_index_t>(engine,
+                                                                                                           index_name,
+                                                                                                           keys);
                 } else {
                     const auto base = path_db_ / std::to_string(static_cast<unsigned>(table_oid)) / index_name;
                     std::filesystem::create_directories(base);
@@ -641,18 +634,19 @@ namespace services::index {
                             engine,
                             index_name,
                             keys,
-                            std::make_unique<services::index::disk_hash_table_t>(base / "hash_index.bin",
-                                                                                 services::index::disk_hash_table_t::default_bucket_count,
-                                                                                 true,
-                                                                                 resource_));
+                            std::make_unique<services::index::disk_hash_table_t>(
+                                base / "hash_index.bin",
+                                services::index::disk_hash_table_t::default_bucket_count,
+                                true,
+                                resource_));
                     } catch (const std::exception& e) {
                         trace(log_,
                               "manager_index_t::create_index: disk hash storage init failed, fallback to memory: {}",
                               e.what());
-                        id_index = components::index::make_index<components::index::hash_single_field_index_t>(
-                            engine,
-                            index_name,
-                            keys);
+                        id_index =
+                            components::index::make_index<components::index::hash_single_field_index_t>(engine,
+                                                                                                        index_name,
+                                                                                                        keys);
                     }
                 }
                 break;
@@ -733,8 +727,9 @@ namespace services::index {
                     disk_agents_owned_.emplace_back(std::move(agent));
                     // Register address in per-oid fan-out map for commit_inserts
                     // / commit_deletes / on_horizon_advanced.
-                    auto oid_it = disk_agents_per_oid_.try_emplace(
-                        table_oid, std::pmr::vector<actor_zeta::address_t>(resource_)).first;
+                    auto oid_it =
+                        disk_agents_per_oid_.try_emplace(table_oid, std::pmr::vector<actor_zeta::address_t>(resource_))
+                            .first;
                     oid_it->second.emplace_back(addr);
                 } catch (const std::exception& e) {
                     trace(log_, "manager_index_t::create_index: disk agent creation failed: {}", e.what());
@@ -1128,7 +1123,6 @@ namespace services::index {
         co_return;
     }
 
-
     manager_index_t::unique_future<std::pmr::vector<components::catalog::oid_t>>
     manager_index_t::all_indexed_oids(session_id_t /*session*/) {
         // Every oid whose engine holds >= 1 index (size() counts indexes, not
@@ -1155,10 +1149,7 @@ namespace services::index {
                                       std::unique_ptr<components::vector::data_chunk_t> chunk,
                                       uint64_t row_count,
                                       core::date::timezone_offset_t session_tz) {
-        trace(log_,
-              "manager_index_t::repopulate_table: oid={} rows={}",
-              static_cast<unsigned>(table_oid),
-              row_count);
+        trace(log_, "manager_index_t::repopulate_table: oid={} rows={}", static_cast<unsigned>(table_oid), row_count);
 
         auto it = engines_.find(table_oid);
         if (it == engines_.end()) {
@@ -1183,8 +1174,7 @@ namespace services::index {
         if (disk_it != disk_agents_per_oid_.end()) {
             clear_futures.reserve(disk_it->second.size());
             for (auto& addr : disk_it->second) {
-                auto [needs_sched, fut] =
-                    actor_zeta::otterbrix::send(addr, &index_agent_disk_t::clear, session);
+                auto [needs_sched, fut] = actor_zeta::otterbrix::send(addr, &index_agent_disk_t::clear, session);
                 schedule_agent(addr, needs_sched);
                 clear_futures.emplace_back(std::move(fut));
             }
@@ -1365,9 +1355,8 @@ namespace services::index {
                 auto disk_it = disk_agents_per_oid_.find(oid);
                 if (disk_it != disk_agents_per_oid_.end()) {
                     for (auto& addr : disk_it->second) {
-                        auto [needs_sched, fut] = actor_zeta::otterbrix::send(addr,
-                                                                              &index_agent_disk_t::drop,
-                                                                              session_id_t{});
+                        auto [needs_sched, fut] =
+                            actor_zeta::otterbrix::send(addr, &index_agent_disk_t::drop, session_id_t{});
                         schedule_agent(addr, needs_sched);
                         pending_void_.emplace_back(std::move(fut));
                     }
@@ -1387,10 +1376,11 @@ namespace services::index {
             // so a force_flush can never race an in-flight agent drop (a btree-path
             // use-after-free).
             constexpr uint8_t INDEX_KIND = 2;
-            pending_void_.emplace_back(std::move(
-                actor_zeta::send(manager_dispatcher_,
-                                 &services::dispatcher::manager_dispatcher_t::on_subscriber_empty,
-                                 INDEX_KIND).second));
+            pending_void_.emplace_back(
+                std::move(actor_zeta::send(manager_dispatcher_,
+                                           &services::dispatcher::manager_dispatcher_t::on_subscriber_empty,
+                                           INDEX_KIND)
+                              .second));
         }
         co_return;
     }

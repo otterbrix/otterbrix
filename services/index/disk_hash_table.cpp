@@ -44,9 +44,7 @@ namespace services::index {
         open_or_create();
     }
 
-    disk_hash_table_t::~disk_hash_table_t() {
-        sync();
-    }
+    disk_hash_table_t::~disk_hash_table_t() { sync(); }
 
     bool disk_hash_table_t::put(std::string_view key,
                                 int64_t value,
@@ -96,7 +94,7 @@ namespace services::index {
     }
 
     std::optional<disk_hash_table_t::value_ref_t> disk_hash_table_t::get(std::string_view key,
-                                                                          const full_key_loader_t& key_loader) const {
+                                                                         const full_key_loader_t& key_loader) const {
         auto all = get_all(key, key_loader);
         if (all.empty()) {
             return std::nullopt;
@@ -105,7 +103,7 @@ namespace services::index {
     }
 
     std::vector<disk_hash_table_t::value_ref_t> disk_hash_table_t::get_all(std::string_view key,
-                                                                            const full_key_loader_t& key_loader) const {
+                                                                           const full_key_loader_t& key_loader) const {
         std::shared_lock lock(mutex_);
         const uint32_t key_hash = hash_key(key);
         uint64_t page_id = bucket_primary_page_id(bucket_id_for_key(key));
@@ -125,8 +123,10 @@ namespace services::index {
                 if (!keys_equal(key, entry, key_loader)) {
                     continue;
                 }
-                values.push_back(
-                    value_ref_t{entry.value, entry.log_file_id, entry.log_offset, (entry.entry_flags & entry_flag_truncated) != 0});
+                values.push_back(value_ref_t{entry.value,
+                                             entry.log_file_id,
+                                             entry.log_offset,
+                                             (entry.entry_flags & entry_flag_truncated) != 0});
             }
             page_id = page_overflow(page);
         }
@@ -362,8 +362,7 @@ namespace services::index {
         header_.page_size_value = codec::read_le_ptr<uint32_t>(hdr.data() + 12);
         header_.bucket_count_value = codec::read_le_ptr<uint32_t>(hdr.data() + 16);
         header_.next_overflow_page = codec::read_le_ptr<uint64_t>(hdr.data() + 20);
-        if (header_.page_size_value != page_size ||
-            header_.bucket_count_value == 0) {
+        if (header_.page_size_value != page_size || header_.bucket_count_value == 0) {
             throw std::runtime_error("disk_hash_table: incompatible header");
         }
         if (header_.next_overflow_page < 1 + header_.bucket_count_value) {
@@ -371,21 +370,13 @@ namespace services::index {
         }
     }
 
-    uint64_t disk_hash_table_t::data_page_count() const {
-        return file_ ? (file_->file_size() / page_size) : 0;
-    }
+    uint64_t disk_hash_table_t::data_page_count() const { return file_ ? (file_->file_size() / page_size) : 0; }
 
-    uint64_t disk_hash_table_t::page_offset(uint64_t page_id) const {
-        return page_id * page_size;
-    }
+    uint64_t disk_hash_table_t::page_offset(uint64_t page_id) const { return page_id * page_size; }
 
-    uint64_t disk_hash_table_t::bucket_primary_page_id(uint32_t bucket_id) const {
-        return 1 + bucket_id;
-    }
+    uint64_t disk_hash_table_t::bucket_primary_page_id(uint32_t bucket_id) const { return 1 + bucket_id; }
 
-    uint32_t disk_hash_table_t::hash_key(std::string_view key) {
-        return fnv1a_32(key);
-    }
+    uint32_t disk_hash_table_t::hash_key(std::string_view key) { return fnv1a_32(key); }
 
     uint32_t disk_hash_table_t::bucket_id_for_key(std::string_view key) const {
         return hash_key(key) % header_.bucket_count_value;
@@ -488,7 +479,8 @@ namespace services::index {
         return static_cast<uint16_t>(static_cast<uint32_t>(page_size) - static_cast<uint32_t>(slot_size) * idx);
     }
 
-    disk_hash_table_t::decoded_entry_t disk_hash_table_t::decode_entry(const byte_buffer_t& page, const slot_t& slot) const {
+    disk_hash_table_t::decoded_entry_t disk_hash_table_t::decode_entry(const byte_buffer_t& page,
+                                                                       const slot_t& slot) const {
         if (slot.offset + slot.length > page_size || slot.length < (2 + 4 + 1 + 8 + 4 + 8)) {
             throw std::runtime_error("disk_hash_table: invalid entry slot");
         }
@@ -516,7 +508,8 @@ namespace services::index {
         if ((entry.entry_flags & entry_flag_truncated) == 0) {
             return query_key.size() == entry.full_key_len && query_key == entry.stored_key;
         }
-        if (query_key.size() < entry.stored_key.size() || query_key.substr(0, entry.stored_key.size()) != entry.stored_key) {
+        if (query_key.size() < entry.stored_key.size() ||
+            query_key.substr(0, entry.stored_key.size()) != entry.stored_key) {
             return false;
         }
         if (!key_loader) {
@@ -587,8 +580,10 @@ namespace services::index {
         return false;
     }
 
-    disk_hash_table_t::byte_buffer_t
-    disk_hash_table_t::make_entry_payload(std::string_view key, int64_t value, uint32_t log_file_id, uint64_t log_offset) const {
+    disk_hash_table_t::byte_buffer_t disk_hash_table_t::make_entry_payload(std::string_view key,
+                                                                           int64_t value,
+                                                                           uint32_t log_file_id,
+                                                                           uint64_t log_offset) const {
         const bool truncated = key.size() > inline_key_limit;
         const uint16_t stored_len =
             static_cast<uint16_t>(truncated ? std::min<size_t>(truncated_prefix_len, key.size()) : key.size());
@@ -629,6 +624,5 @@ namespace services::index {
             throw std::runtime_error("disk_hash_table: failed to write header page");
         }
     }
-
 
 } // namespace services::index

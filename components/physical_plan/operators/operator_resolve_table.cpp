@@ -306,8 +306,8 @@ namespace components::operators {
                     auto attrefcount_cell = chunk.value(6, i);
                     cand.attrefcount = attrefcount_cell.is_null() ? 0 : attrefcount_cell.value<std::int64_t>();
 
-                    std::string key = cand.attname + '\x1f' +
-                                      std::to_string(static_cast<unsigned>(cand.atttypid)) + '\x1f' + cand.atttypspec;
+                    std::string key = cand.attname + '\x1f' + std::to_string(static_cast<unsigned>(cand.atttypid)) +
+                                      '\x1f' + cand.atttypspec;
                     auto it = latest_any.find(key);
                     if (it == latest_any.end() || it->second.attversion < cand.attversion) {
                         latest_any[std::move(key)] = std::move(cand);

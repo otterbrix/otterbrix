@@ -1,15 +1,15 @@
 #include <atomic>
 #include <catch2/catch.hpp>
 #include <charconv>
+#include <core/result_wrapper.hpp>
 #include <fstream>
 #include <limits>
 #include <memory_resource>
 #include <mutex>
 #include <random>
-#include <set>
-#include <core/result_wrapper.hpp>
 #include <services/index/bitcask_index_disk.hpp>
 #include <services/index/btree_index_disk.hpp>
+#include <set>
 #include <thread>
 #include <unordered_set>
 
@@ -24,10 +24,10 @@ namespace {
     // Empty committed set: the segment-only fixtures below never recover a
     // txn-log, so the recover gate is never consulted — an empty set is the
     // correct value, not a fallback (a fresh dir has no txn-log to gate).
-    bitcask_index_disk_t make_test_index(const std::filesystem::path& path,
-                                         std::pmr::memory_resource* resource,
-                                         std::pmr::set<std::uint64_t> committed_txn_ids =
-                                             std::pmr::set<std::uint64_t>{}) {
+    bitcask_index_disk_t
+    make_test_index(const std::filesystem::path& path,
+                    std::pmr::memory_resource* resource,
+                    std::pmr::set<std::uint64_t> committed_txn_ids = std::pmr::set<std::uint64_t>{}) {
         return bitcask_index_disk_t(path,
                                     resource,
                                     test_flush_threshold,
@@ -165,8 +165,7 @@ TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen") {
     {
         // Segment-only fixture: no txn-log is written, so an empty committed
         // set is the correct value for this recover.
-        auto index =
-            bitcask_index_disk_t(path, &resource, test_flush_threshold, 1000, std::pmr::set<std::uint64_t>{});
+        auto index = bitcask_index_disk_t(path, &resource, test_flush_threshold, 1000, std::pmr::set<std::uint64_t>{});
         for (int i = 1; i <= 100; ++i) {
             index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
         }
@@ -181,8 +180,7 @@ TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen") {
     REQUIRE(count_bitcask_data_files(path) == 1);
 
     {
-        auto index =
-            bitcask_index_disk_t(path, &resource, test_flush_threshold, 1000, std::pmr::set<std::uint64_t>{});
+        auto index = bitcask_index_disk_t(path, &resource, test_flush_threshold, 1000, std::pmr::set<std::uint64_t>{});
 
         REQUIRE(index.find(logical_value_t(&resource, 1l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 1l)).front() == 1);
@@ -593,8 +591,7 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_throws_on_crc_mismatch"
     std::filesystem::create_directories(path);
 
     {
-        auto index =
-            bitcask_index_disk_t(path, &resource, test_flush_threshold, 2, std::pmr::set<std::uint64_t>{});
+        auto index = bitcask_index_disk_t(path, &resource, test_flush_threshold, 2, std::pmr::set<std::uint64_t>{});
         index.insert(logical_value_t(&resource, 1l), 11);
         index.insert(logical_value_t(&resource, 2l), 22);
         index.insert(logical_value_t(&resource, 100l), 100);
@@ -685,8 +682,11 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_crc_mismatch_does_not_d
     }
 
     {
-        auto res = bitcask_index_disk_t::create(
-            path, &resource, test_flush_threshold, test_segment_record_limit, std::pmr::set<std::uint64_t>{});
+        auto res = bitcask_index_disk_t::create(path,
+                                                &resource,
+                                                test_flush_threshold,
+                                                test_segment_record_limit,
+                                                std::pmr::set<std::uint64_t>{});
         REQUIRE(res.has_error());
         REQUIRE(res.error().type == core::error_code_t::index_create_fail);
     }

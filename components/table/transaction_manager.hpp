@@ -51,9 +51,7 @@ namespace components::table {
         };
         snapshot_t take_snapshot(std::pmr::memory_resource* resource) const;
 
-        uint64_t published_horizon() const noexcept {
-            return published_horizon_.load(std::memory_order_acquire);
-        }
+        uint64_t published_horizon() const noexcept { return published_horizon_.load(std::memory_order_acquire); }
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
 

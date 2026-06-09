@@ -48,7 +48,9 @@ static const collection_name_t collection_name_2 = "testcollection2";
             components::logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));                     \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
-            dispatcher->execute_plan(session, ins);                                                                    \
+            dispatcher->execute_plan(                                                                                  \
+                session,                                                                                               \
+                components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});                     \
         }                                                                                                              \
     } while (false)
 

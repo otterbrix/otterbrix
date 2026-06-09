@@ -19,10 +19,9 @@ namespace components::catalog::alter_column_validators {
         return core::error_t::no_error();
     }
 
-    core::error_t
-    validate_default_value_type(std::pmr::memory_resource* resource,
-                                const components::types::complex_logical_type& column_type,
-                                const std::optional<components::types::logical_value_t>& default_value) {
+    core::error_t validate_default_value_type(std::pmr::memory_resource* resource,
+                                              const components::types::complex_logical_type& column_type,
+                                              const std::optional<components::types::logical_value_t>& default_value) {
         if (!default_value.has_value()) {
             return core::error_t::no_error();
         }

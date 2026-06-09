@@ -38,6 +38,9 @@ namespace actor_zeta {
                     // state is only reachable via no_error()); the null-target branch yields a
                     // ready future carrying the no-error sentinel.
                     return {false, make_ready_future<value_type>(resource, core::error_t::no_error())};
+                } else if constexpr (std::is_constructible_v<value_type, std::pmr::memory_resource*> &&
+                                     !std::is_convertible_v<std::pmr::memory_resource*, value_type>) {
+                    return {false, make_ready_future<value_type>(resource, value_type{resource})};
                 } else {
                     return {false, make_ready_future<value_type>(resource)};
                 }

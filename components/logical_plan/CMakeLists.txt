@@ -2,6 +2,7 @@ project(logical_plan CXX)
 
 set(SOURCE_${PROJECT_NAME}
         forward.cpp
+        execution_plan.cpp
         node.cpp
         node_aggregate.cpp
         node_alter_column_add.cpp
@@ -58,6 +59,9 @@ set(SOURCE_${PROJECT_NAME}
         node_match.cpp
         node_select.cpp
         node_sort.cpp
+        node_union.cpp
+        node_recursive_cte.cpp
+        node_cte_scan.cpp
         node_update.cpp
         node_set_timezone.cpp
         node_vacuum.cpp

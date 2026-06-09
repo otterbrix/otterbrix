@@ -150,9 +150,7 @@ namespace components::sql::transform {
         return ref;
     }
 
-    bool is_jsonb_nav_operator(std::string_view op) {
-        return op == "->" || op == "->>" || op == "#>" || op == "#>>";
-    }
+    bool is_jsonb_nav_operator(std::string_view op) { return op == "->" || op == "->>" || op == "#>" || op == "#>>"; }
 
     bool jsonb_nav_returns_scalar(std::string_view op) { return op == "->>" || op == "#>>"; }
 

@@ -26,9 +26,25 @@ namespace components::sql::transform {
         }
     } // namespace
 
-    logical_plan::node_ptr transformer::transform_statement(Node& node, logical_plan::parameter_node_t* params) {
-        logical_plan::node_ptr log_node;
+    transform_result transformer::transform(Node& node) {
+        logical_plan::execution_plan_t plan(resource_);
 
+        plan.sub_queries.emplace_back(transform(node, &plan));
+
+        if (has_error()) {
+            return {resource_, std::move(error_)};
+        } else {
+            return {resource_,
+                    std::move(plan),
+                    std::move(parameter_map_),
+                    std::move(parameter_insert_map_),
+                    std::move(parameter_insert_rows_),
+                    std::move(deferred_limits_)};
+        }
+    }
+
+    logical_plan::node_ptr transformer::transform(Node& node, logical_plan::execution_plan_t* plan) {
+        logical_plan::node_ptr log_node = nullptr;
         switch (node.type) {
             case T_CreatedbStmt: {
                 auto& n = pg_cast<CreatedbStmt>(node);
@@ -63,7 +79,7 @@ namespace components::sql::transform {
                 log_node = transform_create_enum_type(pg_cast<CreateEnumStmt>(node));
                 break;
             case T_SelectStmt: {
-                log_node = transform_select(pg_cast<SelectStmt>(node), params);
+                log_node = transform_select(pg_cast<SelectStmt>(node), plan);
                 // Stamp the primary FROM-clause table as a catalog dependency.
                 // The transformer's aggregate wrapper at the root carries the
                 // (dbname, relname); a future patch can walk joins to add
@@ -75,13 +91,13 @@ namespace components::sql::transform {
                 break;
             }
             case T_UpdateStmt:
-                log_node = transform_update(pg_cast<UpdateStmt>(node), params);
+                log_node = transform_update(pg_cast<UpdateStmt>(node), plan);
                 break;
             case T_InsertStmt:
-                log_node = transform_insert(pg_cast<InsertStmt>(node), params);
+                log_node = transform_insert(pg_cast<InsertStmt>(node), plan);
                 break;
             case T_DeleteStmt:
-                log_node = transform_delete(pg_cast<DeleteStmt>(node), params);
+                log_node = transform_delete(pg_cast<DeleteStmt>(node), plan);
                 break;
             case T_IndexStmt:
                 // TODO: CREATE INDEX needs the parent table resolved — pull
@@ -103,7 +119,7 @@ namespace components::sql::transform {
             case T_CreateTableAsStmt: {
                 auto& cs = pg_cast<CreateTableAsStmt>(node);
                 if (cs.relkind == OBJECT_MATVIEW) {
-                    log_node = transform_create_matview(cs, params);
+                    log_node = transform_create_matview(cs, plan);
                 } else {
                     error_ = core::error_t(
                         core::error_code_t::sql_parse_error,
@@ -147,7 +163,7 @@ namespace components::sql::transform {
                 const std::string id = ext_node.extension_id ? ext_node.extension_id : "";
                 const auto* extension = extensions_ ? extensions_->find(id) : nullptr;
                 if (extension != nullptr && extension->transform != nullptr) {
-                    log_node = extension->transform(resource_, &ext_node, params);
+                    log_node = extension->transform(resource_, &ext_node, plan->parameters.get());
                 } else {
                     error_ = core::error_t(core::error_code_t::sql_parse_error,
                                            std::pmr::string{"no transformer extension for '" + id + "'", resource_});
@@ -161,23 +177,6 @@ namespace components::sql::transform {
         }
 
         return log_node;
-    }
-
-    transform_result transformer::transform(Node& node) {
-        auto params = logical_plan::make_parameter_node(resource_);
-        auto log_node = transform_statement(node, params.get());
-
-        if (has_error()) {
-            return {resource_, std::move(error_)};
-        } else {
-            return {resource_,
-                    std::move(log_node),
-                    std::move(params),
-                    std::move(parameter_map_),
-                    std::move(parameter_insert_map_),
-                    std::move(parameter_insert_rows_),
-                    std::move(deferred_limits_)};
-        }
     }
 
     bool transformer::has_error() const noexcept { return error_.contains_error(); }

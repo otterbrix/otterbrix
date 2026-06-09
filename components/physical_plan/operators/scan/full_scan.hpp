@@ -5,7 +5,7 @@
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/table/column_state.hpp>
 #include <core/result_wrapper.hpp>
-#include <expressions/compare_expression.hpp>
+#include <components/expressions/compare_expression.hpp>
 
 namespace components::operators {
 

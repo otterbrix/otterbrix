@@ -8,8 +8,8 @@
 
 #include <components/table/storage/buffer_handle.hpp>
 
-#include <expressions/forward.hpp>
-#include <types/logical_value.hpp>
+#include <components/expressions/forward.hpp>
+#include <components/types/logical_value.hpp>
 
 namespace components::table {
     class row_group_t;

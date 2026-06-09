@@ -44,7 +44,7 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::create_storage>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::create_storage_with_columns>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::create_storage_disk>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::drop_storage>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::drop_storage_many>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_types>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_total_rows>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_scan>,
@@ -54,17 +54,11 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_append>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_update>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_delete_rows>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_publish_commit>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_revert_append>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_publish_delete>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_publish_commits>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_publish_deletes>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_revert_appends>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_revert_deletes>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_namespace>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_table>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_type>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_function>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_function_by_name>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::list_namespaces>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::allocate_oids_batch>,
@@ -74,9 +68,10 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::update_pg_attribute_commit_id_fields>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::scan_by_keys>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::read_chunks_by_key>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::read_chunks_by_keys>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::compact_relkind_g_storage>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::on_horizon_advanced>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::mark_storage_dropped>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::mark_storage_dropped_many>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_dropped_committed>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_drop_aborted>,
         };
@@ -372,8 +367,8 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::create_storage_disk, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::drop_storage>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::drop_storage, msg);
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::drop_storage_many>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::drop_storage_many, msg);
                 break;
             }
             // Storage queries
@@ -415,18 +410,6 @@ namespace services::disk {
                 break;
             }
             // MVCC commit/revert
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_publish_commit>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_publish_commit, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_revert_append>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_revert_append, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_publish_delete>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_publish_delete, msg);
-                break;
-            }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_publish_commits>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_publish_commits, msg);
                 break;
@@ -446,18 +429,6 @@ namespace services::disk {
             // resolve + invalidation pull
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_namespace>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::resolve_namespace, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_table>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::resolve_table, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_type>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::resolve_type, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_function>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::resolve_function, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_function_by_name>: {
@@ -484,6 +455,10 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::read_chunks_by_key, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::read_chunks_by_keys>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::read_chunks_by_keys, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::delete_pg_catalog_rows>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::delete_pg_catalog_rows, msg);
                 break;
@@ -504,8 +479,8 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::on_horizon_advanced, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::mark_storage_dropped>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::mark_storage_dropped, msg);
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::mark_storage_dropped_many>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::mark_storage_dropped_many, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_dropped_committed>: {
@@ -558,7 +533,7 @@ namespace services::disk {
                                                        std::filesystem::path path,
                                                        std::pmr::vector<std::filesystem::path> sidecar_paths) {
         // Bootstrap-only (base_spaces catalog scan rebuild); runtime DROP uses the
-        // mark_storage_dropped mailbox handler below. Forwards an independent
+        // mark_storage_dropped_many mailbox handler below. Forwards an independent
         // deep-copy of path + sidecars into the owning agent's slice.
         if (!agents_.empty()) {
             const auto idx = pool_idx_for_oid(oid, agents_.size());
@@ -575,60 +550,57 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<void>
-    manager_disk_t::mark_storage_dropped(session_id_t /*session*/,
-                                         components::catalog::oid_t table_oid,
-                                         uint64_t dropped_at_commit_id) {
-        // Must run BEFORE the drop_storage send: it reads the still-live storage
-        // entry to derive the .otbx path + sidecars. The borrowed storage_entry_sync
-        // pointer is valid for this handler only (the agent mailbox serializes
-        // writes against this read); the GC entry is then fanned into the agent's
-        // slice via mailbox send.
+    manager_disk_t::mark_storage_dropped_many(session_id_t /*session*/,
+                                              std::pmr::vector<components::catalog::oid_t> table_oids,
+                                              uint64_t dropped_at_commit_id) {
+        // Partition oids per owning agent (pool_idx_for_oid), then fan out one
+        // mark_storage_dropped_many_inner per agent in PARALLEL (send all → await
+        // all) — N per-oid singular marks would cost N round-trips; here they cost
+        // one (at most num_agents parallel sends). The owning agent derives each
+        // .otbx path + sidecars from its OWN still-live slice and records the GC
+        // entry in mark_storage_dropped_many_inner — the manager no longer borrows
+        // the agent's storage_entry across the actor boundary. Every oid in one
+        // cascade shares the SAME dropped_at_commit_id (txn_id upper bound). Awaiting
+        // all keeps this handler ordered w.r.t. operator_dynamic_cascade_delete's
+        // subsequent drop_storage_many / cascade sends. Same partition-by-agent shape
+        // as drop_storage_many.
         trace(log_,
-              "manager_disk_t::mark_storage_dropped , oid : {} , commit_id : {}",
-              static_cast<unsigned>(table_oid),
+              "manager_disk_t::mark_storage_dropped_many , oids : {} , commit_id : {}",
+              table_oids.size(),
               dropped_at_commit_id);
-        std::filesystem::path otbx_path;
-        std::pmr::vector<std::filesystem::path> sidecars{resource()};
-        if (!agents_.empty()) {
-            const auto idx = pool_idx_for_oid(table_oid, agents_.size());
-            if (agents_[idx] != nullptr) {
-                if (const auto* entry = agents_[idx]->storage_entry_sync(table_oid);
-                    entry != nullptr) {
-                    otbx_path = entry->otbx_path;
-                    if (!otbx_path.empty()) {
-                        auto wal_id_sidecar = otbx_path;
-                        wal_id_sidecar += ".wal_id";
-                        sidecars.push_back(std::move(wal_id_sidecar));
-                        auto prev_sidecar = otbx_path;
-                        prev_sidecar += ".prev";
-                        sidecars.push_back(std::move(prev_sidecar));
-                    }
-                }
-            }
+        if (agents_.empty()) {
+            co_return;
         }
-        // IN_MEMORY storages leave otbx_path/sidecars empty, but we still record a
-        // GC entry so disk_has_dropped_ bookkeeping is uniform (agent sweep no-ops
-        // on the empty path).
-
-        // Deep-copy path + sidecars so the agent owns them independently; co_await
-        // keeps this handler ordered w.r.t. subsequent cascade-delete sends.
-        if (!agents_.empty()) {
-            const auto idx = pool_idx_for_oid(table_oid, agents_.size());
-            std::pmr::vector<std::filesystem::path> agent_sidecars{resource()};
-            agent_sidecars.reserve(sidecars.size());
-            for (const auto& sidecar : sidecars) {
-                agent_sidecars.push_back(sidecar);
+        std::pmr::vector<std::pmr::vector<components::catalog::oid_t>> per_agent{resource()};
+        per_agent.reserve(agents_.size());
+        for (std::size_t i = 0; i < agents_.size(); ++i) {
+            per_agent.emplace_back();
+        }
+        for (auto oid : table_oids) {
+            const std::size_t pool_idx = pool_idx_for_oid(oid, agents_.size());
+            per_agent[pool_idx].push_back(oid);
+        }
+        std::pmr::vector<unique_future<void>> agent_futures{resource()};
+        agent_futures.reserve(per_agent.size());
+        for (std::size_t i = 0; i < per_agent.size(); ++i) {
+            if (per_agent[i].empty()) {
+                continue;
             }
-            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agents_[idx]->address(),
-                                                                   &agent_disk_t::register_dropped_storage_inner,
-                                                                   table_oid,
-                                                                   dropped_at_commit_id,
-                                                                   std::move(otbx_path),
-                                                                   std::move(agent_sidecars));
+            auto& agent = agents_[i];
+            if (agent == nullptr) {
+                continue;
+            }
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                                   &agent_disk_t::mark_storage_dropped_many_inner,
+                                                                   std::move(per_agent[i]),
+                                                                   dropped_at_commit_id);
             if (needs_sched) {
-                scheduler_disk_->enqueue(agents_[idx].get());
+                scheduler_disk_->enqueue(agent.get());
             }
-            co_await std::move(fut);
+            agent_futures.emplace_back(std::move(fut));
+        }
+        for (auto& f : agent_futures) {
+            co_await std::move(f);
         }
         co_return;
     }

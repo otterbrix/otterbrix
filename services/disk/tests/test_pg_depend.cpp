@@ -1,5 +1,6 @@
 #include <catch2/catch.hpp>
 
+#include "catalog_probe.hpp"
 #include "disk_test_helpers.hpp"
 #include <actor-zeta/spawn.hpp>
 #include <components/catalog/catalog_codes.hpp>
@@ -102,7 +103,7 @@ TEST_CASE("services::disk::pg_depend::table_to_namespace_cascade") {
     disk_test_helpers::test_drop_table(fx, t_oid);
     disk_test_helpers::test_drop_namespace(fx, ns_oid);
     // Resolving the table afterwards must miss.
-    auto rt = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("t1"), std::uint64_t{0});
+    auto rt = test_probe::probe_table(fx, fx.ctx(), ns_oid, std::string("t1"));
     REQUIRE_FALSE(rt.found);
 }
 
@@ -113,7 +114,7 @@ TEST_CASE("services::disk::pg_depend::drop_namespace_restrict_blocks") {
     fixture fx;
     auto [ns_oid, t_oid] = fx.make_ns_table("ns_b", "t1");
     // Table must be resolvable before any drop.
-    auto rt_before = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("t1"), std::uint64_t{0});
+    auto rt_before = test_probe::probe_table(fx, fx.ctx(), ns_oid, std::string("t1"));
     REQUIRE(rt_before.found);
     REQUIRE(rt_before.oid == t_oid);
 }
@@ -132,7 +133,7 @@ TEST_CASE("services::disk::pg_depend::index_cascades_with_table") {
     disk_test_helpers::test_drop_table(fx, t_oid);
     disk_test_helpers::test_drop_index(fx, idx_oid);
     // Index gone too — pg_class entry for the index removed.
-    auto rt_idx = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("idx_id"), std::uint64_t{0});
+    auto rt_idx = test_probe::probe_table(fx, fx.ctx(), ns_oid, std::string("idx_id"));
     REQUIRE_FALSE(rt_idx.found);
 }
 
@@ -144,7 +145,7 @@ TEST_CASE("services::disk::pg_depend::type_cascades_with_namespace") {
     REQUIRE(type_oid >= FIRST_USER_OID);
     disk_test_helpers::test_drop_type(fx, type_oid);
     disk_test_helpers::test_drop_namespace(fx, ns_oid);
-    auto rr = fx.invoke(&manager_disk_t::resolve_type, fx.ctx(), ns_oid, std::string("widget_type"), std::uint64_t{0});
+    auto rr = test_probe::probe_type(fx, fx.ctx(), ns_oid, std::string("widget_type"));
     REQUIRE_FALSE(rr.found);
 }
 
@@ -190,8 +191,7 @@ TEST_CASE("services::disk::pg_depend::drop_type_restrict_no_deps") {
                   std::uint64_t{1000},
                   std::move(deletes_local));
     }
-    auto rr =
-        fx.invoke(&manager_disk_t::resolve_type, fx.ctx(), ns_oid, std::string("standalone_type"), std::uint64_t{0});
+    auto rr = test_probe::probe_type(fx, fx.ctx(), ns_oid, std::string("standalone_type"));
     REQUIRE_FALSE(rr.found);
 }
 
@@ -210,8 +210,8 @@ TEST_CASE("services::disk::pg_depend::multi_level_cascade") {
     disk_test_helpers::test_drop_table(fx, t_oid);
     disk_test_helpers::test_drop_namespace(fx, ns_oid);
     // All gone: namespace, table, index.
-    auto rt_t = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("t1"), std::uint64_t{0});
-    auto rt_i = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("idx_id"), std::uint64_t{0});
+    auto rt_t = test_probe::probe_table(fx, fx.ctx(), ns_oid, std::string("t1"));
+    auto rt_i = test_probe::probe_table(fx, fx.ctx(), ns_oid, std::string("idx_id"));
     REQUIRE_FALSE(rt_t.found);
     REQUIRE_FALSE(rt_i.found);
 }
@@ -230,7 +230,7 @@ TEST_CASE("services::disk::pg_depend::drop_table_restrict_vs_cascade") {
                                                               std::vector<catalog::oid_t>{});
     (void) idx_oid;
     disk_test_helpers::test_drop_table(fx, t_oid);
-    auto rt_after_r = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("t1"), std::uint64_t{0});
+    auto rt_after_r = test_probe::probe_table(fx, fx.ctx(), ns_oid, std::string("t1"));
     REQUIRE_FALSE(rt_after_r.found);
 }
 
@@ -327,7 +327,7 @@ TEST_CASE("services::disk::pg_depend::test_column_level_pg_depend_written") {
 
     // Drop table (helper issues committed delete for pg_class/pg_attribute/pg_depend).
     disk_test_helpers::test_drop_table(fx, t_oid);
-    auto rt = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("t_col"), std::uint64_t{0});
+    auto rt = test_probe::probe_table(fx, fx.ctx(), ns_oid, std::string("t_col"));
     REQUIRE_FALSE(rt.found);
 }
 
@@ -362,10 +362,8 @@ TEST_CASE("services::disk::pg_depend::cross_namespace_fk_restricts_parent_drop")
     REQUIRE(child_oid >= FIRST_USER_OID);
 
     // Both tables must be resolvable.
-    auto parent_resolve =
-        fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_a_oid, std::string("parent_xfk"), std::uint64_t{0});
+    auto parent_resolve = test_probe::probe_table(fx, fx.ctx(), ns_a_oid, std::string("parent_xfk"));
     REQUIRE(parent_resolve.found);
-    auto child_resolve =
-        fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_b_oid, std::string("child_xfk"), std::uint64_t{0});
+    auto child_resolve = test_probe::probe_table(fx, fx.ctx(), ns_b_oid, std::string("child_xfk"));
     REQUIRE(child_resolve.found);
 }

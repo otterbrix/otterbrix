@@ -136,7 +136,7 @@ namespace components::operators {
                                                exec_ctx,
                                                kPgDepend,
                                                std::move(rd_keys),
-                                               std::move(rd_vals));
+                                               components::operators::make_key_chunk(resource_, std::move(rd_vals)));
             auto dep_batches = co_await std::move(rdf);
 
             std::pmr::vector<catalog::dependency_t> deps(resource_);
@@ -208,39 +208,52 @@ namespace components::operators {
 
         // pg_class relkind probe: each storage step's read is keyed by its own
         // step.objid and only decides whether the oid is storage-backed, so no read
-        // feeds another iteration's read (probes are independent).
+        // feeds another iteration's read (probes are independent). plan.steps is fixed
+        // before this loop, so the probe oids are all known up front — gather the
+        // pg_class-keyed step oids in step order and run ONE batched read_chunks_by_keys
+        // keyed on "oid", then map result[i] back to the i-th probed step.
+        std::pmr::vector<catalog::oid_t> probe_oids(resource_);
+        std::pmr::vector<std::pmr::vector<types::logical_value_t>> probe_key_rows(resource_);
         for (const auto& step : plan.steps) {
             if (step.classid != catalog::well_known_oid::pg_class_table)
                 continue;
-
-            // Read pg_class row for this oid to inspect relkind: (oid, relname, relnamespace, relkind, ...)
-            // Storage routing is by table_oid only — relname/nspname are no longer needed.
-            types::logical_value_t pcoid_lv(resource_, step.objid);
+            probe_oids.push_back(step.objid);
+            std::pmr::vector<types::logical_value_t> row(resource_);
+            row.emplace_back(types::logical_value_t(resource_, step.objid));
+            probe_key_rows.push_back(std::move(row));
+        }
+        if (!probe_oids.empty()) {
+            // Read pg_class rows for these oids to inspect relkind: (oid, relname, relnamespace,
+            // relkind, ...). Storage routing is by table_oid only — relname/nspname are no longer
+            // needed. result[i] = matched chunks for probe_oids[i], in input order.
             std::pmr::vector<std::string> pc_keys(resource_);
             pc_keys.emplace_back("oid");
-            std::pmr::vector<types::logical_value_t> pc_vals(resource_);
-            pc_vals.emplace_back(pcoid_lv);
             auto [_pc, pcf] = actor_zeta::send(ctx->disk_address,
-                                               &services::disk::manager_disk_t::read_chunks_by_key,
+                                               &services::disk::manager_disk_t::read_chunks_by_keys,
                                                exec_ctx,
                                                kPgClass,
                                                std::move(pc_keys),
-                                               std::move(pc_vals));
-            std::pmr::vector<components::vector::data_chunk_t> pc_batches = co_await std::move(pcf);
-            if (pc_batches.empty() || pc_batches[0].size() == 0 || pc_batches[0].column_count() < 4)
-                continue;
+                                               components::operators::make_keys_chunk(resource_, probe_key_rows));
+            std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>> pc_results =
+                co_await std::move(pcf);
 
-            const auto rk = pc_batches[0].value(3, 0);
-            const auto rkv = rk.is_null() ? std::string_view{"r"} : rk.value<std::string_view>();
-            const char relkind = rkv.empty() ? catalog::relkind::regular : rkv[0];
+            for (std::size_t k = 0; k < probe_oids.size() && k < pc_results.size(); ++k) {
+                const auto& pc_batches = pc_results[k];
+                if (pc_batches.empty() || pc_batches[0].size() == 0 || pc_batches[0].column_count() < 4)
+                    continue;
 
-            // Only regular and computing tables back actual storage. Index/
-            // sequence/view/macro/composite-type entries are pure catalog
-            // bookkeeping: deleting the pg_class row is sufficient.
-            if (relkind != catalog::relkind::regular && relkind != catalog::relkind::computed)
-                continue;
+                const auto rk = pc_batches[0].value(3, 0);
+                const auto rkv = rk.is_null() ? std::string_view{"r"} : rk.value<std::string_view>();
+                const char relkind = rkv.empty() ? catalog::relkind::regular : rkv[0];
 
-            pending_storage_drops.push_back({step.objid});
+                // Only regular and computing tables back actual storage. Index/
+                // sequence/view/macro/composite-type entries are pure catalog
+                // bookkeeping: deleting the pg_class row is sufficient.
+                if (relkind != catalog::relkind::regular && relkind != catalog::relkind::computed)
+                    continue;
+
+                pending_storage_drops.push_back({probe_oids[k]});
+            }
         }
 
         // execute the catalog-row deletes in the planned order.
@@ -267,7 +280,7 @@ namespace components::operators {
         }
 
         // Mark the storage + index entry dropped per table, but DO NOT physically
-        // tear them down here. The mark_table_dropped / mark_storage_dropped
+        // tear them down here. The mark_table_dropped / mark_storage_dropped_many
         // tombstones record (oid, dropped_at) for the next horizon-advance GC
         // sweep; the actual drop_storage + unregister_collection now fire only at
         // COMMIT time (operator_commit_transaction, after the txn_publish barrier).
@@ -287,13 +300,17 @@ namespace components::operators {
         // txn=0 (auto-commit/bootstrap) records 0, matching catalog-scan rebuild.
         const uint64_t dropped_at = ctx->txn.transaction_id;
         bool any_storage_drop = false;
-        // Two-phase fan-out: send both mark messages per storage drop without
-        // awaiting in the loop, then await every future afterwards. No
-        // intra-target drop ordering is required (the marks have no ordered
-        // follow-up here; the physical drop_storage / unregister_collection run
-        // at COMMIT), so awaiting below is completion-sync only.
+        // Two-phase fan-out: send the per-table index mark (mark_table_dropped) without
+        // awaiting in the loop and collect the dropped storage oids; then issue ONE
+        // batched disk mark (mark_storage_dropped_many — every oid in this cascade shares
+        // the same dropped_at) and await every future afterwards. No intra-target drop
+        // ordering is required (the marks have no ordered follow-up here; the physical
+        // drop_storage / unregister_collection run at COMMIT), so awaiting below is
+        // completion-sync only and batching the disk mark cannot reorder anything.
         std::pmr::vector<actor_zeta::unique_future<void>> drop_futures(resource_);
-        drop_futures.reserve(pending_storage_drops.size() * 2);
+        drop_futures.reserve(pending_storage_drops.size() + 1);
+        std::pmr::vector<catalog::oid_t> dropped_storage_oids(resource_);
+        dropped_storage_oids.reserve(pending_storage_drops.size());
         for (auto& sd : pending_storage_drops) {
             any_storage_drop = true;
             // DROP back-channel: record the dropped storage oid for the COMMIT
@@ -311,10 +328,13 @@ namespace components::operators {
                                                      dropped_at);
                 drop_futures.push_back(std::move(mtif));
             }
+            dropped_storage_oids.push_back(sd.table_oid);
+        }
+        if (!dropped_storage_oids.empty()) {
             auto [_msd, msdf] = actor_zeta::send(ctx->disk_address,
-                                                 &services::disk::manager_disk_t::mark_storage_dropped,
+                                                 &services::disk::manager_disk_t::mark_storage_dropped_many,
                                                  ctx->session,
-                                                 sd.table_oid,
+                                                 std::move(dropped_storage_oids),
                                                  dropped_at);
             drop_futures.push_back(std::move(msdf));
         }

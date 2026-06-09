@@ -8,6 +8,7 @@
 #include <services/disk/manager_disk.hpp>
 
 #include <filesystem>
+#include <thread>
 #include <unistd.h>
 
 using namespace services::disk;
@@ -90,6 +91,18 @@ namespace {
             scheduler->stop();
             delete scheduler;
         }
+
+        // Drive a manager mailbox handler synchronously through the test scheduler.
+        template<typename Fn, typename... Args>
+        auto invoke(Fn fn, Args&&... args) {
+            auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::forward<Args>(args)...);
+            for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
+                scheduler->run(1000);
+                std::this_thread::yield();
+            }
+            REQUIRE(future.is_ready());
+            return std::move(future).take_ready();
+        }
     };
 } // namespace
 
@@ -146,7 +159,8 @@ TEST_CASE("services::disk::sysboot::bootstrap_is_idempotent") {
     cleanup_boot_dir();
 }
 
-// 3. Restart path: load_system_tables_sync picks up all 10 tables created by a prior bootstrap.
+// 3. Restart path: bootstrap_system_tables_sync's load path picks up all 10 tables
+//    created by a prior bootstrap.
 TEST_CASE("services::disk::sysboot::restart_loads_all_10") {
     cleanup_boot_dir();
     auto base = std::filesystem::path(boot_test_dir());
@@ -159,9 +173,9 @@ TEST_CASE("services::disk::sysboot::restart_loads_all_10") {
 
     {
         disk_only_fixture fx(base);
-        // Fresh manager — no in-memory state. Load picks up the persisted .otbx files.
-        // The call must not throw (each .otbx is a valid empty single-file block manager).
-        REQUIRE_NOTHROW(fx.manager->load_system_tables_sync());
+        // Fresh manager — no in-memory state. The load path picks up the persisted .otbx
+        // files. The call must not throw (each .otbx is a valid empty single-file block manager).
+        REQUIRE_NOTHROW(fx.manager->bootstrap_system_tables_sync());
     }
 
     cleanup_boot_dir();
@@ -177,7 +191,7 @@ TEST_CASE("services::disk::sysboot::no_path_is_safe_noop") {
     auto m = actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, c, log);
 
     REQUIRE_NOTHROW(m->bootstrap_system_tables_sync());
-    REQUIRE_NOTHROW(m->load_system_tables_sync());
+    REQUIRE_NOTHROW(m->bootstrap_system_tables_sync()); // idempotent re-run
     REQUIRE_NOTHROW(m->restore_oid_generator_sync());
 
     // Destroy the manager first: its dtor joins the internal loop thread, which may
@@ -187,9 +201,9 @@ TEST_CASE("services::disk::sysboot::no_path_is_safe_noop") {
     delete scheduler;
 }
 
-// 5. oid_gen() accessor returns a generator that allocates from FIRST_USER_OID by default.
-//    (Stub restore_oid_generator_sync should leave the generator at its default seed; M3 will
-//    teach it to scan pg_class etc. and seed to max+1.)
+// 5. The OID generator allocates from FIRST_USER_OID by default and hands out
+//    monotonically increasing OIDs. Observed through allocate_oids_batch (restore on an
+//    empty catalog should leave the generator at its default seed).
 TEST_CASE("services::disk::sysboot::oid_generator_default_seed") {
     cleanup_boot_dir();
     auto base = std::filesystem::path(boot_test_dir());
@@ -199,10 +213,10 @@ TEST_CASE("services::disk::sysboot::oid_generator_default_seed") {
     fx.manager->bootstrap_system_tables_sync();
     fx.manager->restore_oid_generator_sync();
 
-    oid_t first = fx.manager->oid_gen().allocate();
-    REQUIRE(first >= FIRST_USER_OID);
-    oid_t second = fx.manager->oid_gen().allocate();
-    REQUIRE(second == first + 1);
+    auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{2});
+    REQUIRE(oids.size() == 2);
+    REQUIRE(oids[0] >= FIRST_USER_OID);
+    REQUIRE(oids[1] == oids[0] + 1);
 
     cleanup_boot_dir();
 }
@@ -232,7 +246,7 @@ TEST_CASE("services::disk::sysboot::dir_layout_per_table") {
     cleanup_boot_dir();
 }
 
-// 8. After bootstrap+load, requesting load again on the same in-memory state is idempotent
+// 8. Re-running bootstrap on the same in-memory state is idempotent
 //    (does not throw, does not crash on already-loaded entries).
 TEST_CASE("services::disk::sysboot::load_after_bootstrap_in_same_process") {
     cleanup_boot_dir();
@@ -241,8 +255,8 @@ TEST_CASE("services::disk::sysboot::load_after_bootstrap_in_same_process") {
 
     disk_only_fixture fx(base);
     fx.manager->bootstrap_system_tables_sync();
-    REQUIRE_NOTHROW(fx.manager->load_system_tables_sync());
-    REQUIRE_NOTHROW(fx.manager->load_system_tables_sync()); // double-call
+    REQUIRE_NOTHROW(fx.manager->bootstrap_system_tables_sync());
+    REQUIRE_NOTHROW(fx.manager->bootstrap_system_tables_sync()); // double-call
 
     cleanup_boot_dir();
 }

@@ -14,6 +14,7 @@
 #include <core/executor.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <services/disk/manager_disk.hpp>
+#include <services/disk/tests/catalog_probe.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
 using namespace services;
@@ -71,6 +72,30 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
 
     void step() { scheduler_->run(10000); }
 
+    // Generic disk-actor invoke used by the catalog_probe adapter below.
+    template<typename Fn, typename... Args>
+    auto disk_invoke(Fn fn, Args&&... args) {
+        auto [_, fut] = actor_zeta::otterbrix::send(manager_disk_->address(), fn, std::forward<Args>(args)...);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
+            scheduler_->run(1000);
+            std::this_thread::yield();
+        }
+        REQUIRE(fut.is_ready());
+        return std::move(fut).take_ready();
+    }
+
+    // Adapter exposing the (resource, invoke) shape that test_probe helpers expect.
+    struct probe_fixture {
+        test_dispatcher* self;
+        std::pmr::memory_resource& resource;
+        template<typename Fn, typename... Args>
+        auto invoke(Fn fn, Args&&... args) {
+            return self->disk_invoke(fn, std::forward<Args>(args)...);
+        }
+    };
+    probe_fixture probe_fx() { return probe_fixture{this, *resource_}; }
+
     cursor_t_ptr take_result() {
         // execute_plan's future becomes ready asynchronously (the manager actors
         // self-drive on internal threads). Pump the child scheduler until ready,
@@ -110,24 +135,13 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         return std::move(fut).take_ready();
     }
 
-    // Resolve a table via disk actor under a given namespace oid.
-    resolve_table_result_t resolve_table(components::catalog::oid_t ns_oid, const std::string& tname) {
+    // Resolve a table via the live read_chunks_by_key path (catalog-read oracle).
+    test_probe::probe_table_result_t resolve_table(components::catalog::oid_t ns_oid, const std::string& tname) {
         components::execution_context_t ctx{components::session::session_id_t{},
                                             components::table::transaction_data{0, 0},
                                             {}};
-        auto [_, fut] = actor_zeta::otterbrix::send(manager_disk_->address(),
-                                                    &manager_disk_t::resolve_table,
-                                                    ctx,
-                                                    ns_oid,
-                                                    tname,
-                                                    std::uint64_t{0});
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-        while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
-            scheduler_->run(1000);
-            std::this_thread::yield();
-        }
-        REQUIRE(fut.is_ready());
-        return std::move(fut).take_ready();
+        auto adapter = probe_fx();
+        return test_probe::probe_table(adapter, ctx, ns_oid, tname);
     }
 
     void execute_sql(const std::string& query) {

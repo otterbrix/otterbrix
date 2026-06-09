@@ -71,7 +71,7 @@ namespace components::operators {
                                            exec_ctx,
                                            pg_attr_oid,
                                            std::move(pa_keys),
-                                           std::move(pa_vals));
+                                           components::operators::make_key_chunk(resource_, std::move(pa_vals)));
         std::pmr::vector<components::vector::data_chunk_t> attr_batches = co_await std::move(paf);
         std::int32_t next_attnum = 1;
         for (auto& chunk : attr_batches) {

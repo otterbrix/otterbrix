@@ -1266,7 +1266,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_drop_gc_removes_storage_file
     //   PRIMARY — drop_storage during the DROP statement removes .otbx +
     //   sidecars immediately (a surviving file would let WAL replay
     //   synthesise a phantom storage);
-    //   SECONDARY — mark_storage_dropped parks a tombstone keyed by the
+    //   SECONDARY — mark_storage_dropped_many parks a tombstone keyed by the
     //   dropping TXN-ID, the commit operator remaps it to the real commit_id
     //   (storage_dropped_committed), and the next commit's horizon broadcast
     //   (on_horizon_advanced, commit-id space) drains the queue. The drain is

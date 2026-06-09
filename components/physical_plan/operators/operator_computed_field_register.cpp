@@ -84,7 +84,7 @@ namespace components::operators {
                                              exec_ctx,
                                              pg_computed_column,
                                              std::move(r_keys),
-                                             std::move(r_vals));
+                                             components::operators::make_key_chunk(resource_, std::move(r_vals)));
             auto batches = co_await std::move(rf);
 
             std::int64_t max_version = -1;
@@ -141,7 +141,7 @@ namespace components::operators {
                                                      exec_ctx,
                                                      pg_type,
                                                      std::move(t_keys),
-                                                     std::move(t_vals));
+                                                     components::operators::make_key_chunk(resource_, std::move(t_vals)));
                     auto type_batches = co_await std::move(tf);
                     if (!type_batches.empty() && type_batches[0].size() != 0 &&
                         type_batches[0].column_count() > 0) {

@@ -134,83 +134,79 @@ namespace components::operators {
             }
             case 'n':   // SET NULL
             case 'd': { // SET DEFAULT
-                // Two-phase: fetch every referencing child row first, then update.
-                // Carry each fetch's source row index so the per-row child_ids stay
-                // paired with that row's fetched chunk when building the update.
-                std::pmr::vector<actor_zeta::unique_future<std::unique_ptr<components::vector::data_chunk_t>>>
-                    fetch_futures(resource_);
-                std::pmr::vector<std::size_t> fetch_rows(resource_);
-                fetch_futures.reserve(per_row_child_ids.size());
-                fetch_rows.reserve(per_row_child_ids.size());
-                for (std::size_t row = 0; row < per_row_child_ids.size(); ++row) {
-                    const auto& child_ids = per_row_child_ids[row];
-                    if (child_ids.empty())
-                        continue;
-                    components::vector::vector_t fetch_ids(resource_, types::logical_type::BIGINT, child_ids.size());
-                    for (std::size_t i = 0; i < child_ids.size(); ++i) {
-                        fetch_ids.data<int64_t>()[i] = child_ids[i];
+                // Mirror the CASCADE branch's flattening: aggregate EVERY referencing
+                // child row_id across all parent rows into ONE set, then do a single
+                // fetch + single update against the SAME child_table_oid (one owning
+                // agent). The SET NULL / SET DEFAULT transform is uniform across rows
+                // — it keys off per-COLUMN child_col_schema_indices / per-COLUMN
+                // child_col_default_specs, never off the parent row — so a single
+                // combined update chunk is value-correct. Each child row_id stays
+                // paired with its fetched chunk position because storage_fetch returns
+                // rows positionally aligned with the requested row_ids, and
+                // storage_update applies data[i] to row_ids[i] positionally.
+                std::pmr::vector<int64_t> all_child_ids(resource_);
+                for (const auto& child_ids : per_row_child_ids) {
+                    for (auto id : child_ids) {
+                        all_child_ids.push_back(id);
                     }
-                    auto [_f, ffut] = actor_zeta::send(ctx->disk_address,
-                                                       &services::disk::manager_disk_t::storage_fetch,
-                                                       ctx->session,
-                                                       fk_.child_table_oid,
-                                                       std::move(fetch_ids),
-                                                       static_cast<uint64_t>(child_ids.size()));
-                    fetch_futures.push_back(std::move(ffut));
-                    fetch_rows.push_back(row);
                 }
+                if (all_child_ids.empty())
+                    break;
+
+                // Single fetch for the whole set.
+                components::vector::vector_t fetch_ids(resource_, types::logical_type::BIGINT, all_child_ids.size());
+                for (std::size_t i = 0; i < all_child_ids.size(); ++i) {
+                    fetch_ids.data<int64_t>()[i] = all_child_ids[i];
+                }
+                auto [_f, ffut] = actor_zeta::send(ctx->disk_address,
+                                                   &services::disk::manager_disk_t::storage_fetch,
+                                                   ctx->session,
+                                                   fk_.child_table_oid,
+                                                   std::move(fetch_ids),
+                                                   static_cast<uint64_t>(all_child_ids.size()));
+                auto fetched = co_await std::move(ffut);
+                if (!fetched || fetched->size() == 0)
+                    break;
 
                 const bool is_set_null = (fk_.del_action == 'n');
-                // Await each fetch, build that row's update from the fetched chunk,
-                // and send all storage_update calls; await them in the final phase.
-                std::pmr::vector<actor_zeta::unique_future<std::pair<int64_t, uint64_t>>> update_futures(resource_);
-                update_futures.reserve(fetch_futures.size());
-                for (std::size_t fi = 0; fi < fetch_futures.size(); ++fi) {
-                    auto fetched = co_await std::move(fetch_futures[fi]);
-                    if (!fetched || fetched->size() == 0)
+                // Apply the uniform per-column transform to every fetched row.
+                for (std::size_t ci = 0; ci < fk_.child_col_schema_indices.size(); ++ci) {
+                    const auto schema_idx = fk_.child_col_schema_indices[ci];
+                    if (schema_idx == absent || schema_idx >= fetched->column_count())
                         continue;
-                    const auto& child_ids = per_row_child_ids[fetch_rows[fi]];
-
-                    for (std::size_t ci = 0; ci < fk_.child_col_schema_indices.size(); ++ci) {
-                        const auto schema_idx = fk_.child_col_schema_indices[ci];
-                        if (schema_idx == absent || schema_idx >= fetched->column_count())
-                            continue;
-                        if (is_set_null) {
-                            for (uint64_t r = 0; r < fetched->size(); ++r) {
+                    if (is_set_null) {
+                        for (uint64_t r = 0; r < fetched->size(); ++r) {
+                            fetched->data[schema_idx].validity().set_invalid(r);
+                        }
+                    } else {
+                        // SET DEFAULT: decode attdefspec; NULL default → same as SET NULL.
+                        const auto& spec = ci < fk_.child_col_default_specs.size() ? fk_.child_col_default_specs[ci]
+                                                                                   : std::string{};
+                        auto default_val =
+                            spec.empty() ? std::nullopt : components::catalog::decode_default_spec(resource_, spec);
+                        for (uint64_t r = 0; r < fetched->size(); ++r) {
+                            if (default_val.has_value()) {
+                                fetched->set_value(schema_idx, r, *default_val);
+                            } else {
                                 fetched->data[schema_idx].validity().set_invalid(r);
-                            }
-                        } else {
-                            // SET DEFAULT: decode attdefspec; NULL default → same as SET NULL.
-                            const auto& spec = ci < fk_.child_col_default_specs.size() ? fk_.child_col_default_specs[ci]
-                                                                                       : std::string{};
-                            auto default_val =
-                                spec.empty() ? std::nullopt : components::catalog::decode_default_spec(resource_, spec);
-                            for (uint64_t r = 0; r < fetched->size(); ++r) {
-                                if (default_val.has_value()) {
-                                    fetched->set_value(schema_idx, r, *default_val);
-                                } else {
-                                    fetched->data[schema_idx].validity().set_invalid(r);
-                                }
                             }
                         }
                     }
+                }
 
-                    components::vector::vector_t upd_ids(resource_, types::logical_type::BIGINT, child_ids.size());
-                    for (std::size_t i = 0; i < child_ids.size(); ++i) {
-                        upd_ids.data<int64_t>()[i] = child_ids[i];
-                    }
-                    execution_context_t upd_ctx{ctx->session, {}, {}};
-                    auto [_u, ufut] = actor_zeta::send(ctx->disk_address,
-                                                       &services::disk::manager_disk_t::storage_update,
-                                                       upd_ctx,
-                                                       fk_.child_table_oid,
-                                                       std::move(upd_ids),
-                                                       std::move(fetched));
-                    update_futures.push_back(std::move(ufut));
+                // Single update for the whole set.
+                components::vector::vector_t upd_ids(resource_, types::logical_type::BIGINT, all_child_ids.size());
+                for (std::size_t i = 0; i < all_child_ids.size(); ++i) {
+                    upd_ids.data<int64_t>()[i] = all_child_ids[i];
                 }
-                for (auto& ufut : update_futures) {
-                    co_await std::move(ufut);
-                }
+                execution_context_t upd_ctx{ctx->session, {}, {}};
+                auto [_u, ufut] = actor_zeta::send(ctx->disk_address,
+                                                   &services::disk::manager_disk_t::storage_update,
+                                                   upd_ctx,
+                                                   fk_.child_table_oid,
+                                                   std::move(upd_ids),
+                                                   std::move(fetched));
+                co_await std::move(ufut);
                 break;
             }
             default:

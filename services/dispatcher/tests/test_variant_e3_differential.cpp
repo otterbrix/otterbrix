@@ -14,6 +14,7 @@
 #include <core/executor.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <services/disk/manager_disk.hpp>
+#include <services/disk/tests/catalog_probe.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
 // Differential test scaffold: same SQL fixture, drive dispatcher::execute_plan
@@ -78,6 +79,30 @@ namespace {
 
         void step() { scheduler_->run(10000); }
 
+        // Generic disk-actor invoke used by the catalog_probe adapter below.
+        template<typename Fn, typename... Args>
+        auto disk_invoke(Fn fn, Args&&... args) {
+            auto [_, fut] = actor_zeta::otterbrix::send(manager_disk_->address(), fn, std::forward<Args>(args)...);
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
+                scheduler_->run(1000);
+                std::this_thread::yield();
+            }
+            REQUIRE(fut.is_ready());
+            return std::move(fut).take_ready();
+        }
+
+        // Adapter exposing the (resource, invoke) shape that test_probe helpers expect.
+        struct probe_fixture {
+            differential_fixture* self;
+            std::pmr::memory_resource& resource;
+            template<typename Fn, typename... Args>
+            auto invoke(Fn fn, Args&&... args) {
+                return self->disk_invoke(fn, std::forward<Args>(args)...);
+            }
+        };
+        probe_fixture probe_fx() { return probe_fixture{this, *resource_}; }
+
         cursor_t_ptr take_result() {
             // A plan can span a multi-actor co_await chain (e.g. SET TIMEZONE:
             // executor → dispatcher → disk → back). Each cross-actor co_await
@@ -115,23 +140,12 @@ namespace {
             return std::move(fut).take_ready();
         }
 
-        resolve_table_result_t resolve_table(components::catalog::oid_t ns_oid, const std::string& tname) {
+        test_probe::probe_table_result_t resolve_table(components::catalog::oid_t ns_oid, const std::string& tname) {
             components::execution_context_t ctx{components::session::session_id_t{},
                                                 components::table::transaction_data{0, 0},
                                                 {}};
-            auto [_, fut] = actor_zeta::otterbrix::send(manager_disk_->address(),
-                                                       &manager_disk_t::resolve_table,
-                                                       ctx,
-                                                       ns_oid,
-                                                       tname,
-                                                       std::uint64_t{0});
-            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-            while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
-                scheduler_->run(1000);
-                std::this_thread::yield();
-            }
-            REQUIRE(fut.is_ready());
-            return std::move(fut).take_ready();
+            auto adapter = probe_fx();
+            return test_probe::probe_table(adapter, ctx, ns_oid, tname);
         }
 
         // Post a parsed logical plan to manager_dispatcher's execute_plan handler.
@@ -406,8 +420,9 @@ TEST_CASE("variant-e3 differential: CREATE TYPE STRUCT") {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
         // Verified indirectly via the table below that uses the type: the
-        // column-spec parser resolves it through resolve_type_sync, which only
-        // succeeds if the pg_type row + its nested pg_attribute rows were written.
+        // column-spec parser resolves it through the catalog type-resolution path,
+        // which only succeeds if the pg_type row + its nested pg_attribute rows
+        // were written.
     }
 
     fx.execute_sql("CREATE DATABASE ve3_ty_db;");
@@ -511,7 +526,7 @@ TEST_CASE("variant-e3 differential: DROP DATABASE") {
 
 // CREATE TABLE → CREATE VIEW. A view lands a pg_class relkind='v' row plus a
 // pg_rewrite ev_action row carrying the body SQL. Proxy: resolve_table(view).
-// relkind=='v'. The pg_rewrite row isn't exposed by resolve_table_result_t but
+// relkind=='v'. The pg_rewrite row isn't exposed by the probe_table result but
 // is required for SELECT-on-view expansion (covered e2e elsewhere).
 TEST_CASE("variant-e3 differential: CREATE VIEW") {
     auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();

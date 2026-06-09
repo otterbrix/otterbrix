@@ -251,8 +251,13 @@ namespace components::operators {
         }
 
         // Flip MVCC state on the pg_catalog rows AND the base-table DML ranges
-        // drained above: one publish_commits / publish_deletes per category
-        // covers every table touched between BEGIN and COMMIT.
+        // drained above: ONE publish_commits + ONE publish_deletes cover every
+        // table touched between BEGIN and COMMIT. The swap (pg_catalog) and base
+        // (user-table DML) sets are merged into a single send each: the manager's
+        // storage_publish_commits / storage_publish_deletes partition their whole
+        // argument by pool_idx_for_oid internally and the per-agent inner handlers
+        // are idempotent for not-owned oids, so concatenation is value-correct and
+        // order-independent within one call (4 awaited sends → 2).
         // This in-memory MVCC flip happens BEFORE the WAL commit marker, yet
         // is crash-safe — durability of the flip comes from the WAL physical
         // records (already written by the DML operators) plus checkpoint, NOT from
@@ -264,37 +269,34 @@ namespace components::operators {
         if (txn_data.transaction_id != 0 && commit_id_ > 0 &&
             ctx->disk_address != actor_zeta::address_t::empty_address()) {
             components::execution_context_t swap_ctx{ctx->session, txn_data, {}};
-            if (!swap_appends.empty()) {
+            // Concatenate pg_catalog appends + base-table appends into one publish.
+            // Move both sources into a single ranges vector (both are
+            // std::vector<pg_catalog_append_range_t>, so a flat append preserves
+            // each range verbatim — the manager re-partitions per oid).
+            std::vector<components::pg_catalog_append_range_t> all_appends = std::move(swap_appends);
+            all_appends.insert(all_appends.end(),
+                               std::make_move_iterator(base_appends.begin()),
+                               std::make_move_iterator(base_appends.end()));
+            if (!all_appends.empty()) {
                 auto [_a, af] = actor_zeta::send(ctx->disk_address,
                                                  &services::disk::manager_disk_t::storage_publish_commits,
                                                  swap_ctx,
                                                  commit_id_,
-                                                 std::move(swap_appends));
+                                                 std::move(all_appends));
                 co_await std::move(af);
             }
-            if (!swap_deletes.empty()) {
+            // Concatenate pg_catalog deletes + base-table deletes into one publish
+            // (both are std::set<oid_t>; the union is the full set of dropped/
+            // deleted-from tables, deduped by the set, partitioned per oid).
+            std::set<components::catalog::oid_t> all_deletes = std::move(swap_deletes);
+            all_deletes.insert(base_delete_tables.begin(), base_delete_tables.end());
+            if (!all_deletes.empty()) {
                 auto [_d, df] = actor_zeta::send(ctx->disk_address,
                                                  &services::disk::manager_disk_t::storage_publish_deletes,
                                                  swap_ctx,
                                                  commit_id_,
-                                                 std::move(swap_deletes));
+                                                 std::move(all_deletes));
                 co_await std::move(df);
-            }
-            if (!base_appends.empty()) {
-                auto [_ba, baf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::storage_publish_commits,
-                                                   swap_ctx,
-                                                   commit_id_,
-                                                   std::move(base_appends));
-                co_await std::move(baf);
-            }
-            if (!base_delete_tables.empty()) {
-                auto [_bd, bdf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::storage_publish_deletes,
-                                                   swap_ctx,
-                                                   commit_id_,
-                                                   std::move(base_delete_tables));
-                co_await std::move(bdf);
             }
         }
 
@@ -337,36 +339,49 @@ namespace components::operators {
         // other sessions kept reading the table. Now that the txn is published —
         // the ProcArray barrier above has flipped every reader's snapshot past
         // this commit — physically tear them down. Per drained dropped oid:
-        // unregister_collection (manager_index) THEN drop_storage (manager_disk),
-        // in THAT order so no index consumer references a collection whose backing
-        // storage the disk actor is about to free. The two sends target distinct
-        // mailboxes, so FIFO gives no cross-mailbox ordering — we co_await the
-        // unregister BEFORE sending the drop to enforce index-before-disk per oid
-        // (two-phase per oid pair, acceptable: the pairs are independent so the
-        // serial per-pair await is the simplest correct shape). The DROP-GC remap
-        // (storage_dropped_committed / table_dropped_committed, above) already
-        // stamped the tombstones with commit_id so on_horizon_advanced reclaims
-        // any residue; this block does the eager removal of the now-committed drop.
+        // ALL unregister_collection (manager_index) THEN ONE drop_storage_many
+        // (manager_disk), in THAT order so no index consumer references a collection
+        // whose backing storage the disk actor is about to free. The two managers are
+        // distinct mailboxes, so FIFO gives no cross-mailbox ordering — we batch every
+        // unregister and AWAIT THEM ALL before issuing the batched disk drop. This is
+        // strictly stronger than the previous per-oid interleave: every index
+        // unregister completes BEFORE any disk drop, preserving the index-before-disk
+        // invariant globally. unregister_collection runs on the index MANAGER's own
+        // maps (not a per-oid router), so the N sends pipeline onto one mailbox;
+        // drop_storage_many partitions the oids per disk agent and fans out in
+        // parallel, collapsing N per-oid disk round-trips into one. The DROP-GC remap
+        // (storage_dropped_committed / table_dropped_committed, above) already stamped
+        // the tombstones with commit_id so on_horizon_advanced reclaims any residue;
+        // this block does the eager removal of the now-committed drop.
         // Gated on commit_id_ > 0 (mirrors the publish barrier / DROP-GC remap):
         // a DROP makes has_accumulated() true, so a txn with drops always gets a
         // real commit_id — but if commit_id_ is 0 (the empty-COMMIT abort, or a
         // missing txn) nothing committed, so nothing may be physically removed.
-        if (commit_id_ > 0) {
-            for (auto oid : dropped_storage_oids) {
-                if (ctx->index_address != actor_zeta::address_t::empty_address()) {
+        if (commit_id_ > 0 && !dropped_storage_oids.empty()) {
+            if (ctx->index_address != actor_zeta::address_t::empty_address()) {
+                std::pmr::vector<actor_zeta::unique_future<void>> unregister_futures{resource_};
+                unregister_futures.reserve(dropped_storage_oids.size());
+                for (auto oid : dropped_storage_oids) {
                     auto [_u, uf] = actor_zeta::send(ctx->index_address,
                                                      &services::index::manager_index_t::unregister_collection,
                                                      ctx->session,
                                                      oid);
+                    unregister_futures.push_back(std::move(uf));
+                }
+                // Await EVERY unregister before any disk drop (index-before-disk).
+                for (auto& uf : unregister_futures) {
                     co_await std::move(uf);
                 }
-                if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
-                    auto [_d, df] = actor_zeta::send(ctx->disk_address,
-                                                     &services::disk::manager_disk_t::drop_storage,
-                                                     ctx->session,
-                                                     oid);
-                    co_await std::move(df);
-                }
+            }
+            if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
+                std::pmr::vector<components::catalog::oid_t> drop_oids{dropped_storage_oids.begin(),
+                                                                      dropped_storage_oids.end(),
+                                                                      resource_};
+                auto [_d, df] = actor_zeta::send(ctx->disk_address,
+                                                 &services::disk::manager_disk_t::drop_storage_many,
+                                                 ctx->session,
+                                                 std::move(drop_oids));
+                co_await std::move(df);
             }
         }
 

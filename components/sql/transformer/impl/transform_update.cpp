@@ -152,7 +152,7 @@ namespace components::sql::transform {
         return nullptr;
     }
 
-    logical_plan::node_ptr transformer::transform_update(UpdateStmt& node, logical_plan::parameter_node_t* params) {
+    logical_plan::node_ptr transformer::transform_update(UpdateStmt& node, logical_plan::execution_plan_t* plan) {
         logical_plan::node_match_ptr match;
         std::pmr::vector<update_expr_ptr> updates(resource_);
         name_collection_t names;
@@ -177,7 +177,7 @@ namespace components::sql::transform {
                 auto res = pg_ptr_cast<ResTarget>(target.data);
                 if (res->indirection->lst.empty()) {
                     updates.emplace_back(new update_expr_set_t(expressions::key_t{resource_, res->name, side_t::left}));
-                    updates.back()->left() = transform_update_expr(res->val, names, params);
+                    updates.back()->left() = transform_update_expr(res->val, names, plan->parameters.get());
                 } else {
                     std::pmr::vector<std::pmr::string> path{resource_};
                     path.emplace_back(std::pmr::string{res->name, resource_});
@@ -190,7 +190,7 @@ namespace components::sql::transform {
                         }
                     }
                     updates.emplace_back(new update_expr_set_t(expressions::key_t{std::move(path), side_t::left}));
-                    updates.back()->left() = transform_update_expr(res->val, names, params);
+                    updates.back()->left() = transform_update_expr(res->val, names, plan->parameters.get());
                 }
             }
         }
@@ -199,9 +199,12 @@ namespace components::sql::transform {
         if (node.whereClause) {
             expressions::expression_ptr where_expr;
             if (nodeTag(node.whereClause) == T_NullTest) {
-                where_expr = transform_null_test(pg_ptr_cast<NullTest>(node.whereClause), names, params);
+                where_expr =
+                    transform_null_test(pg_ptr_cast<NullTest>(node.whereClause), names, plan->parameters.get());
+            } else if (nodeTag(node.whereClause) == T_SubLink) {
+                where_expr = transform_sublink_expr(pg_ptr_cast<SubLink>(node.whereClause), names, plan);
             } else {
-                where_expr = transform_a_expr(pg_ptr_cast<A_Expr>(node.whereClause), names, params);
+                where_expr = transform_a_expr(pg_ptr_cast<A_Expr>(node.whereClause), names, plan);
             }
             match = logical_plan::make_node_match(resource_,
                                                   core::dbname_t{names.left_name.dbname},

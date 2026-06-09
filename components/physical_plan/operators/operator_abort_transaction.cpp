@@ -133,11 +133,9 @@ namespace components::operators {
         //     deleted from. pg_catalog tables have no index engines, so they are
         //     correctly excluded from the index revert above but MUST be included
         //     here for the heap un-stamp.
-        if (txn_data.transaction_id != 0 &&
-            (!base_delete_tables.empty() || !pg_catalog_delete_tables.empty()) &&
+        if (txn_data.transaction_id != 0 && (!base_delete_tables.empty() || !pg_catalog_delete_tables.empty()) &&
             ctx->disk_address != actor_zeta::address_t::empty_address()) {
-            std::set<components::catalog::oid_t> revert_set{base_delete_tables.begin(),
-                                                           base_delete_tables.end()};
+            std::set<components::catalog::oid_t> revert_set{base_delete_tables.begin(), base_delete_tables.end()};
             revert_set.insert(pg_catalog_delete_tables.begin(), pg_catalog_delete_tables.end());
             std::vector<components::catalog::oid_t> revert_delete_tables{revert_set.begin(), revert_set.end()};
             components::execution_context_t rd_ctx{ctx->session, txn_data, ctx->session_tz};

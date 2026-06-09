@@ -2,9 +2,9 @@
 
 #include "alter_validators.hpp"
 
+#include <components/catalog/alter_column_validators.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/ddl_metadata_builder.hpp>
-#include <components/catalog/alter_column_validators.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -129,8 +129,7 @@ namespace components::operators {
         std::pmr::vector<components::vector::data_chunk_t> dep_batches = co_await std::move(pdf);
 
         std::size_t dep_row_count = 0;
-        for (const auto& chunk : dep_batches)
-            dep_row_count += chunk.size();
+        for (const auto& chunk : dep_batches) dep_row_count += chunk.size();
 
         // ABORT-on-error gate: validate dependents BEFORE the first mutating
         // delete/append below, so a rejected DROP leaves the catalog untouched.
@@ -266,10 +265,9 @@ namespace components::operators {
         ctx->pg_catalog_appends.push_back(std::move(rng));
         // Backfill dropped_at_commit_id on the tombstone, keyed by attoid (same
         // attoid as the live row — identity-preserving tombstone).
-        ctx->pg_attribute_commit_id_backfills.push_back(
-            components::pg_attribute_commit_id_backfill_t{
-                attoid,
-                components::pg_attribute_commit_id_backfill_t::kind_t::dropped_at});
+        ctx->pg_attribute_commit_id_backfills.push_back(components::pg_attribute_commit_id_backfill_t{
+            attoid,
+            components::pg_attribute_commit_id_backfill_t::kind_t::dropped_at});
 
         // Note: drop_column on a relkind='g' (computing) table is routed to
         // operator_computed_field_unregister_t in planner.cpp::rewrite_alter_table,

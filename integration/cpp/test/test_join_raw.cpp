@@ -78,7 +78,9 @@ namespace {
         swap_externals(plan, res, chunks_by_uid);
 
         auto session = otterbrix::session_id_t();
-        return dispatcher->execute_plan(session, plan, binder.params_ptr());
+        return dispatcher->execute_plan(
+            session,
+            logical_plan::execution_plan_t{dispatcher->resource(), plan, binder.params_ptr()});
     }
 } // namespace
 

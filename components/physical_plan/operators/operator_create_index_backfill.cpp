@@ -71,8 +71,7 @@ namespace components::operators {
         // the operator_create_collection storage back-channel; gated on a
         // non-zero txn id (autocommit/bootstrap txn 0 commits the index inline).
         if (ctx->txn.transaction_id != 0) {
-            ctx->created_indexes.push_back(
-                components::table::created_index_t{table_oid_, std::string{index_name_}});
+            ctx->created_indexes.push_back(components::table::created_index_t{table_oid_, std::string{index_name_}});
         }
 
         // WAL retention guard: register build_start_wal_position so a concurrent
@@ -213,11 +212,10 @@ namespace components::operators {
                 // run or returns empty (rows physically gone), forward nullptr:
                 // manager_index logs+skips and the convergence guard catches any
                 // persistent divergence next iteration.
-                const bool needs_old_chunk =
-                    (rec.record_type == services::wal::wal_record_type::PHYSICAL_DELETE ||
-                     rec.record_type == services::wal::wal_record_type::PHYSICAL_UPDATE) &&
-                    !rec.physical_row_ids.empty() &&
-                    ctx->disk_address != actor_zeta::address_t::empty_address();
+                const bool needs_old_chunk = (rec.record_type == services::wal::wal_record_type::PHYSICAL_DELETE ||
+                                              rec.record_type == services::wal::wal_record_type::PHYSICAL_UPDATE) &&
+                                             !rec.physical_row_ids.empty() &&
+                                             ctx->disk_address != actor_zeta::address_t::empty_address();
                 if (needs_old_chunk) {
                     components::vector::vector_t fetch_ids(resource_,
                                                            components::types::logical_type::BIGINT,
@@ -259,21 +257,20 @@ namespace components::operators {
                     rec.record_type == services::wal::wal_record_type::PHYSICAL_UPDATE) {
                     // INSERT, or NEW-insert half of UPDATE: forward the WAL NEW chunk.
                     std::pmr::vector<int64_t> row_ids(rec.physical_row_ids.begin(),
-                                                     rec.physical_row_ids.end(),
-                                                     resource_);
-                    auto [_a, af] =
-                        actor_zeta::send(ctx->index_address,
-                                         &services::index::manager_index_t::apply_wal_record_for_index,
-                                         ctx->session,
-                                         rec.table_oid,
-                                         index_oid_,
-                                         rec.id,
-                                         static_cast<uint8_t>(rec.record_type),
-                                         std::move(row_ids),
-                                         std::move(rec.physical_data),
-                                         rec.physical_row_start,
-                                         ctx->txn.transaction_id,
-                                         rec.session_tz);
+                                                      rec.physical_row_ids.end(),
+                                                      resource_);
+                    auto [_a, af] = actor_zeta::send(ctx->index_address,
+                                                     &services::index::manager_index_t::apply_wal_record_for_index,
+                                                     ctx->session,
+                                                     rec.table_oid,
+                                                     index_oid_,
+                                                     rec.id,
+                                                     static_cast<uint8_t>(rec.record_type),
+                                                     std::move(row_ids),
+                                                     std::move(rec.physical_data),
+                                                     rec.physical_row_start,
+                                                     ctx->txn.transaction_id,
+                                                     rec.session_tz);
                     apply_futures.push_back(std::move(af));
                 }
 
@@ -283,21 +280,21 @@ namespace components::operators {
                     // chunk forced to record_type PHYSICAL_DELETE so the handler
                     // routes through mark_delete_row.
                     std::pmr::vector<int64_t> row_ids(rec.physical_row_ids.begin(),
-                                                     rec.physical_row_ids.end(),
-                                                     resource_);
-                    auto [_a, af] = actor_zeta::send(
-                        ctx->index_address,
-                        &services::index::manager_index_t::apply_wal_record_for_index,
-                        ctx->session,
-                        rec.table_oid,
-                        index_oid_,
-                        rec.id,
-                        static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_DELETE),
-                        std::move(row_ids),
-                        std::move(old_chunks[r]),
-                        rec.physical_row_start,
-                        ctx->txn.transaction_id,
-                        rec.session_tz);
+                                                      rec.physical_row_ids.end(),
+                                                      resource_);
+                    auto [_a, af] =
+                        actor_zeta::send(ctx->index_address,
+                                         &services::index::manager_index_t::apply_wal_record_for_index,
+                                         ctx->session,
+                                         rec.table_oid,
+                                         index_oid_,
+                                         rec.id,
+                                         static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_DELETE),
+                                         std::move(row_ids),
+                                         std::move(old_chunks[r]),
+                                         rec.physical_row_start,
+                                         ctx->txn.transaction_id,
+                                         rec.session_tz);
                     apply_futures.push_back(std::move(af));
                 }
             }
@@ -326,13 +323,11 @@ namespace components::operators {
                 co_await std::move(uf);
                 build_start_registered = false;
             }
-            set_error(core::error_t{
-                core::error_code_t::index_create_fail,
-                std::pmr::string{
-                    "CREATE INDEX failed to converge after MAX_CATCHUP_ITERATIONS "
-                    "on high-write table. Retry during low-traffic window. "
-                    "Future: CREATE INDEX CONCURRENTLY (WAL-based).",
-                    resource_}});
+            set_error(core::error_t{core::error_code_t::index_create_fail,
+                                    std::pmr::string{"CREATE INDEX failed to converge after MAX_CATCHUP_ITERATIONS "
+                                                     "on high-write table. Retry during low-traffic window. "
+                                                     "Future: CREATE INDEX CONCURRENTLY (WAL-based).",
+                                                     resource_}});
             co_return;
         }
 

@@ -1,6 +1,6 @@
 #include <algorithm>
-#include <filesystem>
 #include <catch2/catch.hpp>
+#include <filesystem>
 
 #include "components/index/disk_hash_single_field_index.hpp"
 #include "components/index/hash_single_field_index.hpp"
@@ -14,13 +14,18 @@ using namespace components::index;
 using key = components::expressions::key_t;
 
 namespace {
-    enum class hash_index_mode { in_memory, on_disk };
+    enum class hash_index_mode
+    {
+        in_memory,
+        on_disk
+    };
 
-    std::unique_ptr<index_t> make_hash_index(std::pmr::memory_resource* resource,
-                                             const std::string& name,
-                                             hash_index_mode mode) {
+    std::unique_ptr<index_t>
+    make_hash_index(std::pmr::memory_resource* resource, const std::string& name, hash_index_mode mode) {
         if (mode == hash_index_mode::in_memory) {
-            return std::make_unique<hash_single_field_index_t>(resource, name, keys_base_storage_t{key(resource, "count")});
+            return std::make_unique<hash_single_field_index_t>(resource,
+                                                               name,
+                                                               keys_base_storage_t{key(resource, "count")});
         }
         const auto base = std::filesystem::path("/tmp/index_disk/components_hash_tests");
         std::filesystem::create_directories(base);
@@ -30,18 +35,19 @@ namespace {
             resource,
             name,
             keys_base_storage_t{key(resource, "count")},
-            std::make_unique<services::index::disk_hash_table_t>(file,
-                                                                 services::index::disk_hash_table_t::default_bucket_count,
-                                                                 true,
-                                                                 resource));
+            std::make_unique<services::index::disk_hash_table_t>(
+                file,
+                services::index::disk_hash_table_t::default_bucket_count,
+                true,
+                resource));
     }
 
     void run_base_contract(hash_index_mode mode) {
         auto resource = std::pmr::synchronized_pool_resource();
-        auto index = make_hash_index(&resource,
-                                     mode == hash_index_mode::in_memory ? "hash_count_ram" : "hash_count_disk",
-                                     mode);
-        std::vector<std::pair<int64_t, int64_t>> data = {{0, 0}, {1, 1}, {10, 2}, {5, 3}, {6, 4}, {2, 5}, {8, 6}, {13, 7}};
+        auto index =
+            make_hash_index(&resource, mode == hash_index_mode::in_memory ? "hash_count_ram" : "hash_count_disk", mode);
+        std::vector<std::pair<int64_t, int64_t>> data =
+            {{0, 0}, {1, 1}, {10, 2}, {5, 3}, {6, 4}, {2, 5}, {8, 6}, {13, 7}};
 
         for (const auto& [value, row_idx] : data) {
             components::types::logical_value_t val(&resource, value);
@@ -100,14 +106,15 @@ namespace {
             std::filesystem::create_directories(base);
             const auto file = base / "hash_count_disk.bin";
             std::filesystem::remove(file);
-            id = make_index<disk_hash_single_field_index_t>(index_engine,
-                                                            "hash_count",
-                                                            {key(&resource, "count")},
-                                                            std::make_unique<services::index::disk_hash_table_t>(
-                                                                file,
-                                                                services::index::disk_hash_table_t::default_bucket_count,
-                                                                true,
-                                                                &resource));
+            id =
+                make_index<disk_hash_single_field_index_t>(index_engine,
+                                                           "hash_count",
+                                                           {key(&resource, "count")},
+                                                           std::make_unique<services::index::disk_hash_table_t>(
+                                                               file,
+                                                               services::index::disk_hash_table_t::default_bucket_count,
+                                                               true,
+                                                               &resource));
         }
 
         auto* idx = search_index(index_engine, id);
@@ -130,21 +137,13 @@ namespace {
     }
 } // namespace
 
-TEST_CASE("hash_single_field_index:base") {
-    run_base_contract(hash_index_mode::in_memory);
-}
+TEST_CASE("hash_single_field_index:base") { run_base_contract(hash_index_mode::in_memory); }
 
-TEST_CASE("disk_single_field_index:base") {
-    run_base_contract(hash_index_mode::on_disk);
-}
+TEST_CASE("disk_single_field_index:base") { run_base_contract(hash_index_mode::on_disk); }
 
-TEST_CASE("hash_single_field_index:engine") {
-    run_engine_contract(hash_index_mode::in_memory);
-}
+TEST_CASE("hash_single_field_index:engine") { run_engine_contract(hash_index_mode::in_memory); }
 
-TEST_CASE("disk_single_field_index:engine") {
-    run_engine_contract(hash_index_mode::on_disk);
-}
+TEST_CASE("disk_single_field_index:engine") { run_engine_contract(hash_index_mode::on_disk); }
 
 TEST_CASE("disk_single_field_index:read_only_facade_direct_ops_do_not_materialize_committed_state") {
     auto resource = std::pmr::synchronized_pool_resource();
@@ -159,7 +158,8 @@ TEST_CASE("disk_single_field_index:read_only_facade_direct_ops_do_not_materializ
     const uint64_t txn_other = components::table::TRANSACTION_ID_START + 1002;
     index->insert(value, int64_t(2), txn_insert, {});
 
-    auto own_before_commit = index->search(components::expressions::compare_type::eq, value, txn_insert - 1, txn_insert, {});
+    auto own_before_commit =
+        index->search(components::expressions::compare_type::eq, value, txn_insert - 1, txn_insert, {});
     REQUIRE(own_before_commit.size() == 1);
     REQUIRE(own_before_commit[0] == 2);
 
@@ -183,10 +183,11 @@ TEST_CASE("disk_single_field_index:pending_insert_delete_and_txn_state") {
     index->insert(key, int64_t(700), txn_insert, {});
 
     std::vector<int64_t> pending_rows;
-    index->for_each_pending_insert(txn_insert, [&](const components::types::logical_value_t& pending_key, int64_t row_id) {
-        REQUIRE(pending_key == key);
-        pending_rows.push_back(row_id);
-    });
+    index->for_each_pending_insert(txn_insert,
+                                   [&](const components::types::logical_value_t& pending_key, int64_t row_id) {
+                                       REQUIRE(pending_key == key);
+                                       pending_rows.push_back(row_id);
+                                   });
     REQUIRE(pending_rows.size() == 1);
     REQUIRE(pending_rows.front() == 700);
 
@@ -197,10 +198,11 @@ TEST_CASE("disk_single_field_index:pending_insert_delete_and_txn_state") {
 
     index->mark_delete(key, 700, txn_delete, {});
     std::vector<int64_t> pending_delete_rows;
-    index->for_each_pending_delete(txn_delete, [&](const components::types::logical_value_t& pending_key, int64_t row_id) {
-        REQUIRE(pending_key == key);
-        pending_delete_rows.push_back(row_id);
-    });
+    index->for_each_pending_delete(txn_delete,
+                                   [&](const components::types::logical_value_t& pending_key, int64_t row_id) {
+                                       REQUIRE(pending_key == key);
+                                       pending_delete_rows.push_back(row_id);
+                                   });
     REQUIRE(pending_delete_rows.size() == 1);
     REQUIRE(pending_delete_rows.front() == 700);
 
@@ -262,16 +264,16 @@ TEST_CASE("disk_single_field_index:find_reads_disk_and_normalizes_integer_keys")
     const auto file = base / "hash_count_disk_normalize.bin";
     std::filesystem::remove(file);
 
-    auto table = std::make_unique<services::index::disk_hash_table_t>(file,
-                                                                       services::index::disk_hash_table_t::default_bucket_count,
-                                                                       true,
-                                                                       &resource);
+    auto table =
+        std::make_unique<services::index::disk_hash_table_t>(file,
+                                                             services::index::disk_hash_table_t::default_bucket_count,
+                                                             true,
+                                                             &resource);
     auto* table_raw = table.get();
-    auto index = std::make_unique<disk_hash_single_field_index_t>(
-        &resource,
-        "hash_count_disk_normalize",
-        keys_base_storage_t{key(&resource, "count")},
-        std::move(table));
+    auto index = std::make_unique<disk_hash_single_field_index_t>(&resource,
+                                                                  "hash_count_disk_normalize",
+                                                                  keys_base_storage_t{key(&resource, "count")},
+                                                                  std::move(table));
 
     // Persist committed row with BIGINT-encoded key.
     components::types::logical_value_t key_bigint(&resource, int64_t(42));

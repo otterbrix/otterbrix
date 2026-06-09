@@ -22,7 +22,11 @@ namespace components {
     // post-commit and patches the column in place. `kind` selects the column
     // (added_at = index 10 for ADD/RENAME, dropped_at = index 11 for DROP tombstone).
     struct pg_attribute_commit_id_backfill_t {
-        enum class kind_t : std::uint8_t { added_at, dropped_at };
+        enum class kind_t : std::uint8_t
+        {
+            added_at,
+            dropped_at
+        };
         catalog::oid_t attoid{catalog::INVALID_OID};
         kind_t kind{kind_t::added_at};
     };

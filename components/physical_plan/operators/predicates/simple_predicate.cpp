@@ -235,6 +235,79 @@ namespace components::operators::predicates {
                 return {new simple_predicate(
                     resource,
                     make_comparator<std::less_equal<>>(resource, function_registry, expr, parameters, session_tz))};
+            case compare_type::any:
+            case compare_type::all: {
+                auto inner_op = expr->inner_op();
+                if (inner_op == compare_type::invalid) {
+                    inner_op = compare_type::eq;
+                }
+                auto left_getter = impl::create_value_getter(resource, function_registry, expr->left(), parameters);
+                auto param_id = std::get<core::parameter_id_t>(expr->right());
+                const bool is_any = expr->type() == compare_type::any;
+                return {new simple_predicate(
+                    resource,
+                    [resource,
+                     left_getter = std::move(left_getter),
+                     param_id,
+                     parameters,
+                     inner_op,
+                     is_any,
+                     session_tz](const vector::data_chunk_t& chunk_left,
+                                 const vector::data_chunk_t& chunk_right,
+                                 size_t index_left,
+                                 size_t index_right) -> core::result_wrapper_t<bool> {
+                        auto left_val = left_getter(chunk_left, chunk_right, index_left, index_right);
+                        if (left_val.has_error()) {
+                            return left_val.convert_error<bool>();
+                        }
+                        if (left_val.value().is_null()) {
+                            return false;
+                        }
+                        const auto& arr = parameters->parameters.at(param_id).children();
+                        for (const auto& element : arr) {
+                            if (element.is_null()) {
+                                continue;
+                            }
+                            auto rhs = element.cast_as(left_val.value().type(), session_tz);
+                            if (rhs.is_null()) {
+                                continue;
+                            }
+                            core::result_wrapper_t<bool> cmp{false};
+                            switch (inner_op) {
+                                case compare_type::eq:
+                                    cmp = evaluate_comp<std::equal_to<>>(resource, left_val.value(), rhs);
+                                    break;
+                                case compare_type::ne:
+                                    cmp = evaluate_comp<std::not_equal_to<>>(resource, left_val.value(), rhs);
+                                    break;
+                                case compare_type::gt:
+                                    cmp = evaluate_comp<std::greater<>>(resource, left_val.value(), rhs);
+                                    break;
+                                case compare_type::lt:
+                                    cmp = evaluate_comp<std::less<>>(resource, left_val.value(), rhs);
+                                    break;
+                                case compare_type::gte:
+                                    cmp = evaluate_comp<std::greater_equal<>>(resource, left_val.value(), rhs);
+                                    break;
+                                case compare_type::lte:
+                                    cmp = evaluate_comp<std::less_equal<>>(resource, left_val.value(), rhs);
+                                    break;
+                                default:
+                                    break;
+                            }
+                            if (cmp.has_error()) {
+                                return cmp;
+                            }
+                            if (is_any && cmp.value()) {
+                                return true;
+                            }
+                            if (!is_any && !cmp.value()) {
+                                return false;
+                            }
+                        }
+                        return !is_any;
+                    })};
+            }
             case compare_type::regex:
                 return {new simple_predicate(
                     resource,

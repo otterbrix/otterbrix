@@ -14,8 +14,8 @@
 // error channel yet, so a scan-side failure degrades to an empty result and the
 // downstream pure validator reports the appropriate code.
 
-#include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/alter_column_validators.hpp>
+#include <components/catalog/catalog_oids.hpp>
 #include <components/context/context.hpp>
 #include <components/context/execution_context.hpp>
 #include <core/result_wrapper.hpp>

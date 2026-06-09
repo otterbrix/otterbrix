@@ -393,8 +393,7 @@ namespace services::wal {
         if (needs_auto_checkpoint() && !auto_checkpoint_in_flight_) {
             auto_checkpoint_in_flight_ = true;
             reset_auto_checkpoint_bytes();
-            auto [_ac, ac_fut] =
-                actor_zeta::send(address(), &manager_wal_replicate_t::run_auto_checkpoint, session);
+            auto [_ac, ac_fut] = actor_zeta::send(address(), &manager_wal_replicate_t::run_auto_checkpoint, session);
             // needs_sched is always false: enqueue_impl only pushes to inbox_ and
             // wakes the loop (no scheduler hop). Park the [[nodiscard]] future;
             // the loop drains it once ready (poll_auto_checkpoint_).
@@ -489,8 +488,7 @@ namespace services::wal {
     // gate reads. Truncating here cannot strand an index frame's commit decision.
     // -----------------------------------------------------------------------
 
-    manager_wal_replicate_t::unique_future<void>
-    manager_wal_replicate_t::run_auto_checkpoint(session_id_t session) {
+    manager_wal_replicate_t::unique_future<void> manager_wal_replicate_t::run_auto_checkpoint(session_id_t session) {
         // Always clear the in-flight guard on every exit path below so a future
         // threshold trip can launch the next checkpoint. enabled_ is implied: the
         // trigger only fires inside the enabled commit_txn path.
@@ -538,11 +536,10 @@ namespace services::wal {
     // Drop ready fire-and-forget auto-checkpoint futures (loop-thread only).
     // Mirrors manager_dispatcher_t::poll_pending() for pending_void_.
     void manager_wal_replicate_t::poll_auto_checkpoint_() {
-        pending_auto_checkpoint_.erase(
-            std::remove_if(pending_auto_checkpoint_.begin(),
-                           pending_auto_checkpoint_.end(),
-                           [](unique_future<void>& f) { return f.is_ready(); }),
-            pending_auto_checkpoint_.end());
+        pending_auto_checkpoint_.erase(std::remove_if(pending_auto_checkpoint_.begin(),
+                                                      pending_auto_checkpoint_.end(),
+                                                      [](unique_future<void>& f) { return f.is_ready(); }),
+                                       pending_auto_checkpoint_.end());
     }
 
     // -----------------------------------------------------------------------

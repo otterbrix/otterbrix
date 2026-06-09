@@ -19,9 +19,9 @@ namespace components::operators {
         // Multimap from a right-side key value → (chunk_idx, row_idx). A multimap
         // (not map) because equi-join keys need not be unique on the right side.
         using right_index_t = std::unordered_multimap<types::logical_value_t,
-                                                       std::pair<size_t, uint64_t>,
-                                                       lv_hash,
-                                                       std::equal_to<types::logical_value_t>>;
+                                                      std::pair<size_t, uint64_t>,
+                                                      lv_hash,
+                                                      std::equal_to<types::logical_value_t>>;
 
         // Build the probe table from `right_chunks[*][right_col]`. NULL right values
         // are skipped — they never join under SQL equi-join semantics.

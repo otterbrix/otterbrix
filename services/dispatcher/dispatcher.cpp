@@ -44,8 +44,7 @@ namespace services::dispatcher {
                 actor_zeta::msg_id<manager_dispatcher_t, Ptrs>...};
         };
 
-        constexpr auto kImplementedIds =
-            behavior_expected_ids_t<manager_dispatcher_t::dispatch_traits::methods>::value;
+        constexpr auto kImplementedIds = behavior_expected_ids_t<manager_dispatcher_t::dispatch_traits::methods>::value;
 
         constexpr std::array kBehaviorHandledIds{
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::execute_plan>,
@@ -188,18 +187,18 @@ namespace services::dispatcher {
                 // long executor operation is harmless (an empty handler run).
                 bool any_stale = false;
                 for (auto& e : in_flight)
-                    if (e.behavior && !e.behavior.done() && e.behavior.is_busy()
-                        && !e.behavior.is_awaited_ready() && e.stale_ticks > 20) {
+                    if (e.behavior && !e.behavior.done() && e.behavior.is_busy() && !e.behavior.is_awaited_ready() &&
+                        e.stale_ticks > 20) {
                         any_stale = true;
                         break;
                     }
                 if (any_stale) {
                     warn(log_,
-                         "dispatcher loop: stale await detected — poking executors (see docs/actor-zeta-lost-wakeup.md)");
+                         "dispatcher loop: stale await detected — poking executors (see "
+                         "docs/actor-zeta-lost-wakeup.md)");
                     for (auto& ex : executors_) {
                         if (ex) {
-                            auto [ns, f] = actor_zeta::send(ex.get(),
-                                                            &collection::executor::executor_t::poke_msg);
+                            auto [ns, f] = actor_zeta::send(ex.get(), &collection::executor::executor_t::poke_msg);
                             if (ns)
                                 scheduler_->enqueue(ex.get());
                             (void) f; // safe to drop: dealloc happens when the last of future/promise releases
@@ -255,8 +254,7 @@ namespace services::dispatcher {
 
     void manager_dispatcher_t::poll_pending() {
         pending_void_.erase(
-            std::remove_if(pending_void_.begin(), pending_void_.end(),
-                           [](auto& f) { return f.is_ready(); }),
+            std::remove_if(pending_void_.begin(), pending_void_.end(), [](auto& f) { return f.is_ready(); }),
             pending_void_.end());
     }
 
@@ -368,23 +366,19 @@ namespace services::dispatcher {
                 // poll_pending() drains it via is_ready(); dropping it instead
                 // would be memory-safe too.
                 auto disk_send_result =
-                    actor_zeta::send(disk_address_,
-                                     &services::disk::manager_disk_t::on_horizon_advanced,
-                                     new_lowest);
+                    actor_zeta::send(disk_address_, &services::disk::manager_disk_t::on_horizon_advanced, new_lowest);
                 pending_void_.emplace_back(std::move(disk_send_result.second));
             }
             if (index_has_dropped_ && index_address_ != actor_zeta::address_t::empty_address()) {
-                auto index_send_result =
-                    actor_zeta::send(index_address_,
-                                     &services::index::manager_index_t::on_horizon_advanced,
-                                     new_lowest);
+                auto index_send_result = actor_zeta::send(index_address_,
+                                                          &services::index::manager_index_t::on_horizon_advanced,
+                                                          new_lowest);
                 pending_void_.emplace_back(std::move(index_send_result.second));
             }
         }
     }
 
-    manager_dispatcher_t::unique_future<void>
-    manager_dispatcher_t::on_drop_resource_marked(uint8_t subscriber_kind) {
+    manager_dispatcher_t::unique_future<void> manager_dispatcher_t::on_drop_resource_marked(uint8_t subscriber_kind) {
         if (subscriber_kind == DISK_KIND) {
             disk_has_dropped_ = true;
         } else if (subscriber_kind == INDEX_KIND) {
@@ -393,8 +387,7 @@ namespace services::dispatcher {
         co_return;
     }
 
-    manager_dispatcher_t::unique_future<void>
-    manager_dispatcher_t::on_subscriber_empty(uint8_t subscriber_kind) {
+    manager_dispatcher_t::unique_future<void> manager_dispatcher_t::on_subscriber_empty(uint8_t subscriber_kind) {
         if (subscriber_kind == DISK_KIND) {
             disk_has_dropped_ = false;
         } else if (subscriber_kind == INDEX_KIND) {
@@ -415,22 +408,22 @@ namespace services::dispatcher {
 
     manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr>
     manager_dispatcher_t::execute_plan(components::session::session_id_t session,
-                                       components::logical_plan::node_ptr plan,
-                                       components::logical_plan::parameter_node_ptr params) {
-        trace(log_, "manager_dispatcher_t::execute_plan session: {}, {}", session.data(), plan->to_string());
+                                       components::logical_plan::execution_plan_t plan) {
+        trace(log_,
+              "manager_dispatcher_t::execute_plan session: {}, {}",
+              session.data(),
+              plan.sub_queries.back()->to_string());
 
         // Pure session-hash routing — no plan inspection: the executor owns
         // optimize/resolve/validate/enrich/rewrites and the commit tails. The
         // hash gives every session a sticky executor, deterministically.
         assert(!executors_.empty());
-        const std::size_t pool_idx =
-            std::hash<components::session::session_id_t>{}(session) % executors_.size();
+        const std::size_t pool_idx = std::hash<components::session::session_id_t>{}(session) % executors_.size();
         trace(log_, "manager_dispatcher_t::execute_plan: routing to executor[{}]", pool_idx);
         auto [needs_sched, future] = actor_zeta::otterbrix::send(executor_addresses_[pool_idx],
                                                                  &collection::executor::executor_t::execute_plan_full,
                                                                  session,
-                                                                 std::move(plan),
-                                                                 std::move(params));
+                                                                 std::move(plan));
         if (needs_sched && executors_[pool_idx]) {
             scheduler_->enqueue(executors_[pool_idx].get());
         }
@@ -775,8 +768,7 @@ namespace services::dispatcher {
         co_return;
     }
 
-    manager_dispatcher_t::unique_future<uint64_t>
-    manager_dispatcher_t::txn_publish_msg(uint64_t commit_id) {
+    manager_dispatcher_t::unique_future<uint64_t> manager_dispatcher_t::txn_publish_msg(uint64_t commit_id) {
         trace(log_, "manager_dispatcher_t::txn_publish_msg, commit_id: {}", commit_id);
         txn_manager_.publish(commit_id);
         // The committed txn left the active set at commit(); after the publish

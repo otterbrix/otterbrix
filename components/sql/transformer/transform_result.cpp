@@ -56,15 +56,13 @@ namespace components::sql::transform {
     } // namespace
 
     transform_result::transform_result(std::pmr::memory_resource* resource,
-                                       logical_plan::node_ptr&& node,
-                                       logical_plan::parameter_node_ptr&& params,
+                                       logical_plan::execution_plan_t&& plan,
                                        parameter_map_t&& param_map,
                                        insert_map_t&& param_insert_map,
                                        insert_rows_t&& param_insert_rows,
                                        std::vector<deferred_limit_t> deferred_limits)
         : resource_(resource)
-        , node_(std::move(node))
-        , params_(std::move(params))
+        , plan_(std::move(plan))
         , param_map_(std::move(param_map))
         , param_insert_map_(std::move(param_insert_map))
         , param_insert_rows_(std::move(param_insert_rows))
@@ -77,8 +75,9 @@ namespace components::sql::transform {
             return;
         }
 
-        taken_params_ = params_->take_parameters();
-        if (effective_consumer_type(node_) == logical_plan::node_type::insert_t) {
+        taken_params_ = plan_.parameters->take_parameters();
+        // TODO?: check all sub queries
+        if (effective_consumer_type(plan_.sub_queries.back()) == logical_plan::node_type::insert_t) {
             bound_flags_.reserve(param_insert_map_.size());
             for (auto& [id, _] : param_insert_map_) {
                 bound_flags_[id] = false;
@@ -93,6 +92,7 @@ namespace components::sql::transform {
 
     transform_result::transform_result(std::pmr::memory_resource* resource, core::error_t&& error)
         : resource_(resource)
+        , plan_(resource)
         , param_map_(resource)
         , param_insert_map_(resource)
         , param_insert_rows_(resource, {}, 0)
@@ -106,11 +106,13 @@ namespace components::sql::transform {
             return *this;
         }
 
+        // TODO?: check all sub queries
+        auto& node = plan_.sub_queries.back();
         bool prev_finalized = std::exchange(finalized_, false);
-        auto* consumer = (node_->type() == logical_plan::node_type::sequence_t && !node_->children().empty())
-                             ? node_->children().back().get()
-                             : node_.get();
-        if (effective_consumer_type(node_) == logical_plan::node_type::insert_t) {
+        auto* consumer = (node->type() == logical_plan::node_type::sequence_t && !node->children().empty())
+                             ? node->children().back().get()
+                             : node.get();
+        if (effective_consumer_type(node) == logical_plan::node_type::insert_t) {
             if (prev_finalized) {
                 const auto& rows =
                     reinterpret_cast<logical_plan::node_data_ptr&>(consumer->children().front())->data_chunk();
@@ -164,12 +166,12 @@ namespace components::sql::transform {
         return *this;
     }
 
-    logical_plan::node_ptr transform_result::node_ptr() const { return node_; }
+    logical_plan::node_ptr transform_result::node_ptr() const { return plan_.sub_queries.back(); }
 
-    logical_plan::parameter_node_ptr transform_result::params_ptr() const { return params_; }
+    logical_plan::parameter_node_ptr transform_result::params_ptr() const { return plan_.parameters; }
 
     size_t transform_result::parameter_count() const {
-        if (effective_consumer_type(node_) == logical_plan::node_type::insert_t) {
+        if (effective_consumer_type(plan_.sub_queries.back()) == logical_plan::node_type::insert_t) {
             return param_insert_map_.size();
         }
 
@@ -183,13 +185,13 @@ namespace components::sql::transform {
         });
     }
 
-    core::result_wrapper_t<result_view> transform_result::finalize() {
+    core::result_wrapper_t<logical_plan::execution_plan_t> transform_result::finalize() {
         if (last_error_.contains_error()) {
             return last_error_;
         }
 
         if (finalized_) {
-            return result_view{node_, params_};
+            return plan_;
         }
 
         if (!all_bound()) {
@@ -204,16 +206,17 @@ namespace components::sql::transform {
         }
 
         if (parameter_count()) {
-            params_->set_parameters(taken_params_);
+            plan_.parameters->set_parameters(taken_params_);
+            auto& node = plan_.sub_queries.back();
 
-            if (effective_consumer_type(node_) == logical_plan::node_type::insert_t) {
+            if (effective_consumer_type(node) == logical_plan::node_type::insert_t) {
                 // Reach the insert_t consumer through the sequence_t wrap (if present)
                 // and rewrite its data child with the bound row chunk.
-                auto* consumer = (node_->type() == logical_plan::node_type::sequence_t && !node_->children().empty())
-                                     ? node_->children().back().get()
-                                     : node_.get();
+                auto* consumer = (node->type() == logical_plan::node_type::sequence_t && !node->children().empty())
+                                     ? node->children().back().get()
+                                     : node.get();
                 consumer->children().front() =
-                    logical_plan::make_node_raw_data(node_->resource(), std::move(param_insert_rows_));
+                    logical_plan::make_node_raw_data(node->resource(), std::move(param_insert_rows_));
             }
         }
 
@@ -227,16 +230,15 @@ namespace components::sql::transform {
             if (deferred.limit_param) {
                 auto it = taken_params_.parameters.find(*deferred.limit_param);
                 if (it == taken_params_.parameters.end()) {
-                    last_error_ = core::error_t(
-                        core::error_code_t::sql_parse_error,
-                        std::pmr::string{"LIMIT parameter was not bound", resource_});
+                    last_error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                                std::pmr::string{"LIMIT parameter was not bound", resource_});
                     return last_error_;
                 }
                 auto resolved = try_value_to_int64(it->second);
                 if (!resolved) {
-                    last_error_ = core::error_t(
-                        core::error_code_t::sql_parse_error,
-                        std::pmr::string{"LIMIT parameter must be a non-NULL integer", resource_});
+                    last_error_ =
+                        core::error_t(core::error_code_t::sql_parse_error,
+                                      std::pmr::string{"LIMIT parameter must be a non-NULL integer", resource_});
                     return last_error_;
                 }
                 limit_val = *resolved;
@@ -245,16 +247,15 @@ namespace components::sql::transform {
             if (deferred.offset_param) {
                 auto it = taken_params_.parameters.find(*deferred.offset_param);
                 if (it == taken_params_.parameters.end()) {
-                    last_error_ = core::error_t(
-                        core::error_code_t::sql_parse_error,
-                        std::pmr::string{"OFFSET parameter was not bound", resource_});
+                    last_error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                                std::pmr::string{"OFFSET parameter was not bound", resource_});
                     return last_error_;
                 }
                 auto resolved = try_value_to_int64(it->second);
                 if (!resolved) {
-                    last_error_ = core::error_t(
-                        core::error_code_t::sql_parse_error,
-                        std::pmr::string{"OFFSET parameter must be a non-NULL integer", resource_});
+                    last_error_ =
+                        core::error_t(core::error_code_t::sql_parse_error,
+                                      std::pmr::string{"OFFSET parameter must be a non-NULL integer", resource_});
                     return last_error_;
                 }
                 offset_val = *resolved;
@@ -264,7 +265,7 @@ namespace components::sql::transform {
         }
 
         finalized_ = true;
-        return result_view{node_, params_};
+        return plan_;
     }
 
     bool transform_result::has_error() const noexcept { return last_error_.contains_error(); }

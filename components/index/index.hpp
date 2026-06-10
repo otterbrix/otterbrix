@@ -117,6 +117,12 @@ namespace components::index {
         void commit_insert(uint64_t txn_id, uint64_t commit_id);
         void commit_delete(uint64_t txn_id, uint64_t commit_id);
         void revert_insert(uint64_t txn_id);
+        // Mirror of revert_insert for the delete side: discards this txn's
+        // PENDING delete bucket and restores each touched entry's delete_id back
+        // to NOT_DELETED_ID (mark_delete only stamped delete_id=txn_id; the row
+        // itself was never removed, so reverting just un-stamps it). In-memory
+        // only — pending deletes never reach disk before commit_delete.
+        void revert_delete(uint64_t txn_id);
         void cleanup_versions(uint64_t lowest_active);
 
         // Iterate pending entries for disk mirroring (must be called before commit clears them)
@@ -150,6 +156,7 @@ namespace components::index {
         virtual void commit_insert_impl(uint64_t txn_id, uint64_t commit_id) = 0;
         virtual void commit_delete_impl(uint64_t txn_id, uint64_t commit_id) = 0;
         virtual void revert_insert_impl(uint64_t txn_id) = 0;
+        virtual void revert_delete_impl(uint64_t txn_id) = 0;
         virtual void cleanup_versions_impl(uint64_t lowest_active) = 0;
         virtual void for_each_pending_insert_impl(uint64_t txn_id,
                                                   const std::function<void(const value_t&, int64_t)>& fn) const = 0;

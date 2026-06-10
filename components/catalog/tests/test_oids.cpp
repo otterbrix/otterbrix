@@ -43,7 +43,7 @@ TEST_CASE("catalog::oid::well_known_distinct_and_stable") {
 }
 
 // 3. Sequential allocate() yields strictly increasing unique OIDs starting at FIRST_USER_OID.
-//    Doc test alias: test_oid_generation_uniqueness (catalog-migration-to-postgresql-style.md §14).
+//
 TEST_CASE("test_oid_generation_uniqueness") {
     oid_generator gen;
     std::unordered_set<oid_t> seen;
@@ -127,7 +127,7 @@ TEST_CASE("test_column_oid_assignment") {
 
 // 9. OIDs are immutable after first non-INVALID assignment: re-stamping the same value is
 //    idempotent, but assigning a different value raises std::logic_error. Covers Design Rule 1
-//    in catalog-migration-to-postgresql-style.md (§4 "OIDs are immutable after assignment").
+//    by the design rule "OIDs are immutable after assignment".
 TEST_CASE("test_oid_immutability") {
     std::pmr::synchronized_pool_resource resource;
 

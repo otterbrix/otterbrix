@@ -13,7 +13,7 @@ namespace services::disk {
 
         // ----------------------------------------------------------------------
         // Builtin seed rows for pg_catalog bootstrap.
-        // Previously in components/catalog/builtin_seed.{cpp,hpp}; inlined here
+        // Previously a standalone catalog builtin-seed unit; inlined here
         // since manager_disk_bootstrap.cpp is the only consumer.
         // ----------------------------------------------------------------------
 
@@ -149,8 +149,12 @@ namespace services::disk {
             const auto tbl_oid = well_known_oid_for_system_table(def.name);
             if (tbl_oid == catalog::INVALID_OID)
                 return false;
-            if (storages_.find(tbl_oid) != storages_.end())
-                return false; // already loaded
+            // agents_[0] (CATALOG agent) is the sole source of truth for
+            // pg_* system tables.
+            if (!agents_.empty() && agents_[0] != nullptr) {
+                if (agents_[0]->has_storage_sync(tbl_oid))
+                    return false;
+            }
             if (disk_backed) {
                 auto coll_dir = sys_dir / std::to_string(static_cast<unsigned>(tbl_oid));
                 std::filesystem::create_directories(coll_dir);
@@ -207,11 +211,21 @@ namespace services::disk {
 
         if (freshly_created.empty() ||
             freshly_created == std::unordered_set<catalog::oid_t>{catalog::well_known_oid::pg_settings_table}) {
-            // Only pg_settings was freshly created — still need to checkpoint it if disk-backed.
+            // Only pg_settings was freshly created — checkpoint it if disk-backed.
+            // storage_entry_sync returns nullptr for record-only markers, so we
+            // checkpoint against whichever holds the SFBM; table_storage_t::checkpoint
+            // is a no-op for IN_MEMORY, so the agent branch is harmless on a twin.
             if (disk_backed && freshly_created.count(catalog::well_known_oid::pg_settings_table)) {
-                auto it = storages_.find(catalog::well_known_oid::pg_settings_table);
-                if (it != storages_.end()) {
-                    it->second->table_storage.checkpoint();
+                constexpr auto settings_oid = catalog::well_known_oid::pg_settings_table;
+                const collection_storage_entry_t* entry = nullptr;
+                if (!agents_.empty() && agents_[0] != nullptr) {
+                    entry = agents_[0]->storage_entry_sync(settings_oid);
+                }
+                if (entry != nullptr) {
+                    // const_cast: checkpoint mutates the SFBM/free-list but
+                    // storage_entry_sync hands back a const pointer. Safe because the
+                    // agent thread is idle at this bootstrap-time call.
+                    const_cast<collection_storage_entry_t*>(entry)->table_storage.checkpoint();
                 }
             }
             if (freshly_created.size() <= 1)
@@ -276,15 +290,24 @@ namespace services::disk {
 
         if (disk_backed) {
             for (auto tbl_oid : freshly_created) {
-                auto it = storages_.find(tbl_oid);
-                if (it != storages_.end()) {
-                    it->second->table_storage.checkpoint();
+                // Checkpoint each fresh catalog table (same probe as the pg_settings
+                // branch above; checkpoint no-ops on IN_MEMORY twins).
+                const collection_storage_entry_t* entry = nullptr;
+                if (!agents_.empty() && agents_[0] != nullptr) {
+                    entry = agents_[0]->storage_entry_sync(tbl_oid);
+                }
+                if (entry != nullptr) {
+                    const_cast<collection_storage_entry_t*>(entry)->table_storage.checkpoint();
                 }
             }
         }
     }
 
     void manager_disk_t::load_system_tables_sync() {
+        // Walks sys_dir and re-hydrates every pg_* catalog table via
+        // load_storage_disk_sync, which constructs the SFBM on agents_[0]
+        // (catalog agent). Skip-if-present probe via has_storage_sync
+        // prevents double-load.
         if (config_.path.empty()) {
             return;
         }
@@ -297,8 +320,9 @@ namespace services::disk {
             const auto tbl_oid = well_known_oid_for_system_table(def.name);
             if (tbl_oid == catalog::INVALID_OID)
                 continue;
-            if (storages_.find(tbl_oid) != storages_.end()) {
-                continue;
+            if (!agents_.empty() && agents_[0] != nullptr) {
+                if (agents_[0]->has_storage_sync(tbl_oid))
+                    continue;
             }
             auto otbx = sys_dir / std::to_string(static_cast<unsigned>(tbl_oid)) / "table.otbx";
             if (!std::filesystem::exists(otbx)) {
@@ -313,8 +337,10 @@ namespace services::disk {
     }
 
     void manager_disk_t::restore_oid_generator_sync() {
-        if (storages_.empty()) {
-            trace(log_, "manager_disk_t::restore_oid_generator_sync : no storages, skipping");
+        // agents_[0] (catalog agent) owns all catalog SFBM entries.
+        // Pre-scheduler-start, single-threaded.
+        if (agents_.empty() || agents_[0] == nullptr) {
+            trace(log_, "manager_disk_t::restore_oid_generator_sync : no catalog agent, skipping");
             return;
         }
 
@@ -325,11 +351,11 @@ namespace services::disk {
             const auto tbl_oid = well_known_oid_for_system_table(tbl.name);
             if (tbl_oid == catalog::INVALID_OID)
                 continue;
-            auto it = storages_.find(tbl_oid);
-            if (it == storages_.end()) {
+            const collection_storage_entry_t* entry = agents_[0]->storage_entry_sync(tbl_oid);
+            if (entry == nullptr) {
                 continue;
             }
-            auto& table = it->second->table_storage.table();
+            auto& table = const_cast<collection_storage_entry_t*>(entry)->table_storage.table();
             if (table.column_count() == 0 || table.calculate_size() == 0) {
                 continue;
             }
@@ -367,16 +393,18 @@ namespace services::disk {
     }
 
     void manager_disk_t::load_user_table_storages_sync() {
+        // Walks ${config_.path}/${db_oid}/${tbl_oid} for every user-table
+        // directory and calls load_storage_disk_sync, which records the
+        // OID on the routed agent slice. Precondition: agents_ non-empty
+        // (base_spaces pre-scheduler-start ordering).
         if (config_.path.empty()) {
             return;
         }
         if (!std::filesystem::exists(config_.path)) {
             return;
         }
-        // Layout: ${config_.path}/${database_oid}/${table_oid}/table.otbx.
-        // System tables live under db_oid = main_database (4); user tables under
-        // their own db_oid (>= FIRST_USER_OID). bootstrap_system_tables_sync
-        // already loaded the system ones — here we walk the rest.
+        // Layout: ${config_.path}/${database_oid}/${table_oid}/table.otbx. System
+        // tables (db_oid = main_database) are already loaded; here we walk the rest.
         for (const auto& db_entry : std::filesystem::directory_iterator(config_.path)) {
             if (!db_entry.is_directory())
                 continue;
@@ -401,7 +429,8 @@ namespace services::disk {
                 const auto tbl_oid = static_cast<catalog::oid_t>(tbl_oid_raw);
                 if (tbl_oid < catalog::FIRST_USER_OID)
                     continue;
-                if (storages_.find(tbl_oid) != storages_.end())
+                // User-OID SFBM ownership lives on the routed agent slice.
+                if (has_storage(tbl_oid))
                     continue;
                 auto otbx = tbl_entry.path() / "table.otbx";
                 if (!std::filesystem::exists(otbx))
@@ -422,13 +451,276 @@ namespace services::disk {
         }
     }
 
+    std::unique_ptr<components::vector::data_chunk_t>
+    manager_disk_t::scan_storage_for_rebuild_sync(components::catalog::oid_t table_oid,
+                                                  std::pmr::memory_resource* resource) const {
+        if (agents_.empty())
+            return {};
+        const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
+        if (idx >= agents_.size() || agents_[idx] == nullptr)
+            return {};
+        const collection_storage_entry_t* entry = agents_[idx]->storage_entry_sync(table_oid);
+        if (entry == nullptr || entry->storage == nullptr)
+            return {};
+        const auto total = entry->storage->total_rows();
+        if (total == 0)
+            return {};
+        auto types = entry->storage->types();
+        // REGULAR scan (default transaction_data) so the visibility filter drops
+        // committed-deleted tombstones. scan_segment (COMMITTED_ROWS, no filter)
+        // would seed the index with deleted rows whose column data is still present,
+        // and index_scan + fetch + WHERE would then return them.
+        auto out = std::make_unique<components::vector::data_chunk_t>(resource, types, total);
+        entry->storage->scan(*out, /*filter=*/nullptr, /*limit=*/-1);
+        return out;
+    }
+
+    std::pmr::vector<components::catalog::oid_t> manager_disk_t::scan_live_table_oids_sync() const {
+        // See header. Pre-scheduler-start, single-threaded scan of pg_class on agents_[0].
+        std::pmr::vector<components::catalog::oid_t> live{resource_};
+        if (agents_.empty() || agents_[0] == nullptr) {
+            return live;
+        }
+        const collection_storage_entry_t* entry = agents_[0]->storage_entry_sync(pg_class_oid);
+        if (entry == nullptr) {
+            return live;
+        }
+        auto& table = const_cast<collection_storage_entry_t*>(entry)->table_storage.table();
+        if (table.column_count() < 4 || table.calculate_size() == 0) {
+            return live;
+        }
+        std::pmr::synchronized_pool_resource scan_resource;
+        // pg_class: 0=oid, 3=relkind. templated_scan writes into
+        // result.data[column.primary_index()] (by storage column index, not position
+        // in col_indices), so the chunk must have a slot at every storage index the
+        // scan touches. projected_cols ctor allocates buffers only for [0, 3].
+        std::vector<components::table::storage_index_t> col_indices;
+        col_indices.emplace_back(static_cast<int64_t>(0));
+        col_indices.emplace_back(static_cast<int64_t>(3));
+        components::table::table_scan_state scan_state(&scan_resource);
+        table.initialize_scan(scan_state, col_indices);
+        const auto& all_cols = table.columns();
+        std::pmr::vector<components::types::complex_logical_type> all_types(&scan_resource);
+        all_types.reserve(all_cols.size());
+        for (const auto& c : all_cols) {
+            all_types.push_back(c.type());
+        }
+        const std::vector<std::size_t> projected{0, 3};
+        while (true) {
+            components::vector::data_chunk_t chunk(&scan_resource,
+                                                   all_types,
+                                                   projected,
+                                                   components::vector::DEFAULT_VECTOR_CAPACITY);
+            table.scan(chunk, scan_state);
+            if (chunk.size() == 0)
+                break;
+            for (uint64_t i = 0; i < chunk.size(); ++i) {
+                auto oid_val = chunk.value(0, i);
+                auto kind_val = chunk.value(3, i);
+                if (oid_val.is_null() || kind_val.is_null())
+                    continue;
+                const auto seen = static_cast<catalog::oid_t>(oid_val.value<std::uint32_t>());
+                if (seen < catalog::FIRST_USER_OID)
+                    continue;
+                const auto kind = kind_val.value<std::string_view>();
+                if (kind.size() != 1)
+                    continue;
+                const char k = kind.front();
+                if (k != catalog::relkind::regular && k != catalog::relkind::materialized_view)
+                    continue;
+                live.push_back(seen);
+            }
+        }
+        return live;
+    }
+
+    std::pmr::vector<pg_index_row_t> manager_disk_t::scan_alive_pg_index_sync() const {
+        // Three single-pass catalog sweeps on agents_[0] (pg_index, then pg_class for
+        // names, then pg_attribute for indkey) instead of O(N_indexes × C) per-index
+        // rescans. Pre-scheduler-start, single-threaded.
+        std::pmr::vector<pg_index_row_t> result{resource_};
+        if (agents_.empty() || agents_[0] == nullptr) {
+            return result;
+        }
+        const collection_storage_entry_t* idx_entry = agents_[0]->storage_entry_sync(pg_index_oid);
+        if (idx_entry == nullptr) {
+            return result;
+        }
+        auto& idx_table = const_cast<collection_storage_entry_t*>(idx_entry)->table_storage.table();
+        if (idx_table.column_count() < 4 || idx_table.calculate_size() == 0) {
+            return result;
+        }
+
+        // Pass 1: scan pg_index. The raw indkey attoid CSV is stashed per-row and
+        // resolved against pg_attribute in pass 3.
+        std::pmr::vector<std::pmr::string> raw_indkeys{resource_};
+        {
+            std::pmr::synchronized_pool_resource scan_resource;
+            std::vector<components::table::storage_index_t> col_indices;
+            col_indices.emplace_back(static_cast<int64_t>(0)); // indexrelid
+            col_indices.emplace_back(static_cast<int64_t>(1)); // indrelid
+            col_indices.emplace_back(static_cast<int64_t>(2)); // indkey
+            col_indices.emplace_back(static_cast<int64_t>(3)); // indisvalid
+            components::table::table_scan_state scan_state(&scan_resource);
+            idx_table.initialize_scan(scan_state, col_indices);
+            std::pmr::vector<components::types::complex_logical_type> types(&scan_resource);
+            for (std::size_t idx : {0u, 1u, 2u, 3u}) {
+                types.push_back(idx_table.columns()[idx].type());
+            }
+            while (true) {
+                components::vector::data_chunk_t chunk(&scan_resource,
+                                                       types,
+                                                       components::vector::DEFAULT_VECTOR_CAPACITY);
+                idx_table.scan(chunk, scan_state);
+                if (chunk.size() == 0)
+                    break;
+                for (uint64_t i = 0; i < chunk.size(); ++i) {
+                    auto idxrelid_v = chunk.value(0, i);
+                    auto indrelid_v = chunk.value(1, i);
+                    auto indkey_v = chunk.value(2, i);
+                    auto indisvalid_v = chunk.value(3, i);
+                    if (idxrelid_v.is_null() || indrelid_v.is_null())
+                        continue;
+                    pg_index_row_t row{resource_};
+                    row.oid = static_cast<catalog::oid_t>(idxrelid_v.value<std::uint32_t>());
+                    row.table_oid = static_cast<catalog::oid_t>(indrelid_v.value<std::uint32_t>());
+                    // indisvalid → ready_since sentinel (1 = alive, 0 = skip; see pg_index_row_t).
+                    const bool valid = !indisvalid_v.is_null() && indisvalid_v.value<bool>();
+                    row.ready_since = valid ? std::uint64_t{1} : std::uint64_t{0};
+                    std::pmr::string raw_indkey{resource_};
+                    if (!indkey_v.is_null()) {
+                        auto sv = indkey_v.value<std::string_view>();
+                        raw_indkey.assign(sv.data(), sv.size());
+                    }
+                    raw_indkeys.push_back(std::move(raw_indkey));
+                    result.push_back(std::move(row));
+                }
+            }
+        }
+        if (result.empty()) {
+            return result;
+        }
+
+        // Pass 2: index names from pg_class.relname, keyed by indexrelid.
+        std::pmr::unordered_map<catalog::oid_t, std::pmr::string> class_names{resource_};
+        if (const collection_storage_entry_t* cls_entry = agents_[0]->storage_entry_sync(pg_class_oid)) {
+            auto& cls_table = const_cast<collection_storage_entry_t*>(cls_entry)->table_storage.table();
+            if (cls_table.column_count() >= 2 && cls_table.calculate_size() > 0) {
+                std::pmr::synchronized_pool_resource scan_resource;
+                std::vector<components::table::storage_index_t> col_indices;
+                col_indices.emplace_back(static_cast<int64_t>(0)); // oid
+                col_indices.emplace_back(static_cast<int64_t>(1)); // relname
+                components::table::table_scan_state scan_state(&scan_resource);
+                cls_table.initialize_scan(scan_state, col_indices);
+                std::pmr::vector<components::types::complex_logical_type> types(&scan_resource);
+                types.push_back(cls_table.columns()[0].type());
+                types.push_back(cls_table.columns()[1].type());
+                while (true) {
+                    components::vector::data_chunk_t chunk(&scan_resource,
+                                                           types,
+                                                           components::vector::DEFAULT_VECTOR_CAPACITY);
+                    cls_table.scan(chunk, scan_state);
+                    if (chunk.size() == 0)
+                        break;
+                    for (uint64_t i = 0; i < chunk.size(); ++i) {
+                        auto oid_v = chunk.value(0, i);
+                        auto name_v = chunk.value(1, i);
+                        if (oid_v.is_null() || name_v.is_null())
+                            continue;
+                        const auto cls_oid = static_cast<catalog::oid_t>(oid_v.value<std::uint32_t>());
+                        auto sv = name_v.value<std::string_view>();
+                        class_names.emplace(cls_oid, std::pmr::string{sv.data(), sv.size(), resource_});
+                    }
+                }
+            }
+        }
+        for (auto& row : result) {
+            auto it = class_names.find(row.oid);
+            if (it != class_names.end()) {
+                row.name = it->second;
+            }
+        }
+
+        // Pass 3: resolve the stashed indkey CSVs to attnames via one pg_attribute
+        // scan (build attoid → attname, then walk each row's CSV).
+        std::pmr::unordered_map<catalog::oid_t, std::pmr::string> attoid_to_name{resource_};
+        if (const collection_storage_entry_t* attr_entry = agents_[0]->storage_entry_sync(pg_attribute_oid)) {
+            auto& attr_table = const_cast<collection_storage_entry_t*>(attr_entry)->table_storage.table();
+            if (attr_table.column_count() >= 3 && attr_table.calculate_size() > 0) {
+                std::pmr::synchronized_pool_resource scan_resource;
+                // Sparse scan [attoid, attname] via the projected_cols ctor — same
+                // chunk-slot convention as scan_live_table_oids_sync above.
+                std::vector<components::table::storage_index_t> col_indices;
+                col_indices.emplace_back(static_cast<int64_t>(catalog::pg_attribute_col::attoid));
+                col_indices.emplace_back(static_cast<int64_t>(catalog::pg_attribute_col::attname));
+                components::table::table_scan_state scan_state(&scan_resource);
+                attr_table.initialize_scan(scan_state, col_indices);
+                const auto& all_cols = attr_table.columns();
+                std::pmr::vector<components::types::complex_logical_type> all_types(&scan_resource);
+                all_types.reserve(all_cols.size());
+                for (const auto& c : all_cols) {
+                    all_types.push_back(c.type());
+                }
+                const std::vector<std::size_t> projected{static_cast<std::size_t>(catalog::pg_attribute_col::attoid),
+                                                         static_cast<std::size_t>(catalog::pg_attribute_col::attname)};
+                while (true) {
+                    components::vector::data_chunk_t chunk(&scan_resource,
+                                                           all_types,
+                                                           projected,
+                                                           components::vector::DEFAULT_VECTOR_CAPACITY);
+                    attr_table.scan(chunk, scan_state);
+                    if (chunk.size() == 0)
+                        break;
+                    for (uint64_t i = 0; i < chunk.size(); ++i) {
+                        auto oid_v = chunk.value(catalog::pg_attribute_col::attoid, i);
+                        auto name_v = chunk.value(catalog::pg_attribute_col::attname, i);
+                        if (oid_v.is_null() || name_v.is_null())
+                            continue;
+                        const auto att_oid = static_cast<catalog::oid_t>(oid_v.value<std::uint32_t>());
+                        auto sv = name_v.value<std::string_view>();
+                        attoid_to_name.emplace(att_oid, std::pmr::string{sv.data(), sv.size(), resource_});
+                    }
+                }
+            }
+        }
+        for (std::size_t i = 0; i < result.size(); ++i) {
+            const auto& csv = raw_indkeys[i];
+            if (csv.empty())
+                continue;
+            // Parse CSV of attoids inline (avoid std::string allocation roundtrip).
+            std::size_t pos = 0;
+            while (pos < csv.size()) {
+                std::size_t end = csv.find(',', pos);
+                if (end == std::pmr::string::npos)
+                    end = csv.size();
+                std::uint64_t token = 0;
+                auto [ptr, ec] = std::from_chars(csv.data() + pos, csv.data() + end, token);
+                pos = end + 1;
+                if (ec != std::errc{})
+                    continue;
+                const auto att_oid = static_cast<catalog::oid_t>(token);
+                auto it = attoid_to_name.find(att_oid);
+                if (it == attoid_to_name.end())
+                    continue;
+                result[i].keys.emplace_back(resource_, std::string_view{it->second.data(), it->second.size()});
+            }
+        }
+
+        return result;
+    }
+
     std::unordered_set<components::catalog::oid_t> manager_disk_t::alive_user_oids_sync() const {
+        // agents_[0] (catalog agent) owns pg_class. Pre-scheduler-start,
+        // single-threaded (see header comment on storage_entry_sync).
         std::unordered_set<components::catalog::oid_t> alive;
-        auto it = storages_.find(pg_class_oid);
-        if (it == storages_.end()) {
+        if (agents_.empty() || agents_[0] == nullptr) {
             return alive;
         }
-        auto& table = it->second->table_storage.table();
+        const collection_storage_entry_t* entry = agents_[0]->storage_entry_sync(pg_class_oid);
+        if (entry == nullptr) {
+            return alive;
+        }
+        auto& table = const_cast<collection_storage_entry_t*>(entry)->table_storage.table();
         if (table.column_count() == 0 || table.calculate_size() == 0) {
             return alive;
         }
@@ -458,13 +750,79 @@ namespace services::disk {
         return alive;
     }
 
+    std::pmr::vector<std::pair<components::catalog::oid_t, std::uint64_t>> manager_disk_t::scan_dropped_oids_sync() {
+        // See header. Strategy: scan pg_class with COMMITTED_ROWS (includes
+        // tombstones) for every user OID ever recorded, then set-difference against
+        // alive_user_oids_sync (which omits permanently-deleted) to isolate the
+        // "DROP committed, GC pending" OIDs.
+        std::pmr::vector<std::pair<components::catalog::oid_t, std::uint64_t>> result{resource_};
+        if (agents_.empty() || agents_[0] == nullptr) {
+            return result;
+        }
+        const collection_storage_entry_t* entry = agents_[0]->storage_entry_sync(pg_class_oid);
+        if (entry == nullptr) {
+            return result;
+        }
+        auto& table = const_cast<collection_storage_entry_t*>(entry)->table_storage.table();
+        if (table.column_count() == 0 || table.calculate_size() == 0) {
+            return result;
+        }
+        std::pmr::synchronized_pool_resource scan_resource;
+        std::vector<components::table::storage_index_t> col_indices;
+        col_indices.emplace_back(static_cast<int64_t>(0)); // pg_class.oid
+
+        // create_index_scan exposes table_scan_type, so it can request COMMITTED_ROWS
+        // (incl. tombstones); the plain scan_committed/scan APIs are hard-wired to
+        // COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED.
+        std::unordered_set<components::catalog::oid_t> all_user_oids;
+        {
+            components::table::table_scan_state scan_state(&scan_resource);
+            table.initialize_scan(scan_state, col_indices);
+            std::pmr::vector<components::types::complex_logical_type> types(&scan_resource);
+            types.push_back(table.columns()[0].type());
+            while (true) {
+                components::vector::data_chunk_t chunk(&scan_resource,
+                                                       types,
+                                                       components::vector::DEFAULT_VECTOR_CAPACITY);
+                const bool produced =
+                    table.create_index_scan(scan_state, chunk, components::table::table_scan_type::COMMITTED_ROWS);
+                if (!produced) {
+                    break;
+                }
+                for (uint64_t i = 0; i < chunk.size(); ++i) {
+                    auto val = chunk.value(0, i);
+                    if (val.is_null())
+                        continue;
+                    const auto seen = static_cast<catalog::oid_t>(val.value<std::uint32_t>());
+                    if (seen >= catalog::FIRST_USER_OID) {
+                        all_user_oids.insert(seen);
+                    }
+                }
+            }
+        }
+
+        // dropped = all - alive. Sentinel delete_id = 1 — see header comment.
+        const auto alive = alive_user_oids_sync();
+        for (auto oid : all_user_oids) {
+            if (alive.count(oid) == 0) {
+                result.emplace_back(oid, static_cast<std::uint64_t>(1));
+            }
+        }
+        return result;
+    }
+
     std::string manager_disk_t::read_setting_sync(std::string_view name) {
+        // agents_[0] (catalog agent) owns pg_settings. Pre-scheduler-start,
+        // single-threaded.
         const auto settings_oid = catalog::well_known_oid::pg_settings_table;
-        auto it = storages_.find(settings_oid);
-        if (it == storages_.end()) {
+        if (agents_.empty() || agents_[0] == nullptr) {
             return {};
         }
-        auto& table = it->second->table_storage.table();
+        const collection_storage_entry_t* entry = agents_[0]->storage_entry_sync(settings_oid);
+        if (entry == nullptr) {
+            return {};
+        }
+        auto& table = const_cast<collection_storage_entry_t*>(entry)->table_storage.table();
         if (table.column_count() < 2 || table.calculate_size() == 0) {
             return {};
         }

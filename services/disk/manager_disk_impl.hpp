@@ -124,7 +124,7 @@ namespace services::disk {
                                                            all_types,
                                                            projected,
                                                            components::vector::DEFAULT_VECTOR_CAPACITY);
-                    table.scan_committed(chunk, state);
+                    table.scan(chunk, state);
                     if (chunk.size() == 0)
                         break;
                     for (uint64_t i = 0; i < chunk.size(); ++i) {
@@ -149,6 +149,30 @@ namespace services::disk {
                          std::pmr::memory_resource* resource,
                          Fn&& fn) {
             detail_impl_::inline_scan_range(table, col_indices, resource, std::forward<Fn>(fn));
+        }
+
+        // const overload: data_table_t::scan is read-only but not declared const,
+        // so the const_cast is safe.
+        template<typename Fn>
+        void inline_scan(const components::table::data_table_t& table,
+                         std::initializer_list<std::int64_t> col_indices,
+                         std::pmr::memory_resource* resource,
+                         Fn&& fn) {
+            detail_impl_::inline_scan_range(const_cast<components::table::data_table_t&>(table),
+                                            col_indices,
+                                            resource,
+                                            std::forward<Fn>(fn));
+        }
+
+        template<typename Fn>
+        void inline_scan(const components::table::data_table_t& table,
+                         const std::vector<std::int64_t>& col_indices,
+                         std::pmr::memory_resource* resource,
+                         Fn&& fn) {
+            detail_impl_::inline_scan_range(const_cast<components::table::data_table_t&>(table),
+                                            col_indices,
+                                            resource,
+                                            std::forward<Fn>(fn));
         }
 
         // ---------------------------------------------------------------------------

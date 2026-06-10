@@ -19,7 +19,7 @@ TEST_CASE("components::sql::checkpoint") {
         auto stmt = raw_parser(&arena_resource, "CHECKPOINT")->lst.front().data;
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE(!result.has_error());
-        auto node = result.value().node;
+        auto node = result.value().sub_queries.back();
         REQUIRE(node->type() == node_type::checkpoint_t);
         REQUIRE(node->to_string() == "$checkpoint");
     }
@@ -28,7 +28,7 @@ TEST_CASE("components::sql::checkpoint") {
         auto stmt = raw_parser(&arena_resource, "CHECKPOINT;")->lst.front().data;
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE(!result.has_error());
-        auto node = result.value().node;
+        auto node = result.value().sub_queries.back();
         REQUIRE(node->type() == node_type::checkpoint_t);
         REQUIRE(node->to_string() == "$checkpoint");
     }
@@ -43,7 +43,7 @@ TEST_CASE("components::sql::vacuum") {
         auto stmt = raw_parser(&arena_resource, "VACUUM")->lst.front().data;
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE(!result.has_error());
-        auto node = result.value().node;
+        auto node = result.value().sub_queries.back();
         REQUIRE(node->type() == node_type::vacuum_t);
         REQUIRE(node->to_string() == "$vacuum");
     }
@@ -52,7 +52,7 @@ TEST_CASE("components::sql::vacuum") {
         auto stmt = raw_parser(&arena_resource, "VACUUM;")->lst.front().data;
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE(!result.has_error());
-        auto node = result.value().node;
+        auto node = result.value().sub_queries.back();
         REQUIRE(node->type() == node_type::vacuum_t);
         REQUIRE(node->to_string() == "$vacuum");
     }

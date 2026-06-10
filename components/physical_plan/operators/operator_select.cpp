@@ -108,8 +108,15 @@ namespace components::operators {
 
     void operator_select_t::on_execute_impl(pipeline::context_t* pipeline_context) {
         if (!left_ || !left_->output()) {
-            // No input (no FROM clause): evaluate constants on a virtual single-row empty chunk.
-            if (!columns_.empty()) {
+            // No usable input. If every column is a constant or arithmetic expression
+            // (no field_ref that would require an actual row), evaluate on a virtual
+            // single-row empty chunk. Otherwise return empty — the FROM clause exists
+            // but produced no rows (e.g. a JOIN with an empty working set).
+            bool all_constant =
+                !columns_.empty() && std::all_of(columns_.begin(), columns_.end(), [](const select_column_t& col) {
+                    return col.type == select_column_t::kind::constant || col.type == select_column_t::kind::arithmetic;
+                });
+            if (all_constant) {
                 std::pmr::vector<types::complex_logical_type> empty_types(resource_);
                 vector::data_chunk_t virtual_input(resource_, empty_types, 1);
                 virtual_input.set_cardinality(1);

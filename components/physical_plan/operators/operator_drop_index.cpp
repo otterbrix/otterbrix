@@ -26,30 +26,30 @@ namespace components::operators {
     void operator_drop_index_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
 
     actor_zeta::unique_future<void> operator_drop_index_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // Step 1: scrub pg_class / pg_index / pg_depend rows that reference the
-        // dropped index. Order matches rewrite_drop_index: dependants first,
-        // then pg_class. Each delete is keyed by (oid_col_idx, target_oid) so
-        // partial-row rewrites in mixed catalogs (e.g. pg_depend has objid AND
-        // refobjid columns) hit only the correct row.
+        // Scrub catalog rows referencing the dropped index. Dependants are
+        // deleted before pg_class (order set by rewrite_drop_index). Each delete
+        // is keyed by (oid_col_idx, target_oid) so in a catalog with multiple oid
+        // columns (e.g. pg_depend's objid AND refobjid) only the right row is hit.
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
+            std::pmr::vector<services::disk::pg_catalog_delete_spec_t> specs(resource_);
+            specs.reserve(catalog_deletes_.size());
             for (auto& d : catalog_deletes_) {
-                auto [_, fut] = actor_zeta::send(ctx->disk_address,
-                                                 &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                                 exec_ctx,
-                                                 d.catalog_table_oid,
-                                                 d.oid_col_idx,
-                                                 d.target_oid);
-                co_await std::move(fut);
+                specs.push_back({d.catalog_table_oid, d.oid_col_idx, d.target_oid});
                 if (ctx->txn.transaction_id != 0)
                     ctx->pg_catalog_delete_tables.insert(d.catalog_table_oid);
             }
+            if (!specs.empty()) {
+                auto [_, fut] = actor_zeta::send(ctx->disk_address,
+                                                 &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
+                                                 exec_ctx,
+                                                 std::move(specs));
+                co_await std::move(fut);
+            }
         }
 
-        // Step 2: drop the in-memory index entry. Skipped when no index actor
-        // is wired (some test harnesses run without one). drop_index is
-        // tolerant of an unknown name → no error if the engine never saw the
-        // index (e.g. because the metadata existed but backfill never ran).
+        // Drop the in-memory index entry. Tolerant of an unknown name: no error
+        // if the engine never saw the index (metadata existed but backfill never ran).
         if (ctx->index_address != actor_zeta::address_t::empty_address()) {
             auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
                                                &services::index::manager_index_t::drop_index,

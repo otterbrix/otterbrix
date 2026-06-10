@@ -291,3 +291,10 @@ test_dynamic_schema/*
 # Local Rust integration (#492 Rust FFI)
 integration/rust/.cargo/
 **/target/
+
+CMakeUserPresets.json
+
+# local build trees (TSAN/ASAN side builds) and session-local agent settings
+build-tsan/
+build-*/
+.claude/

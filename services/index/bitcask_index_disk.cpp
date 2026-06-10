@@ -4,7 +4,9 @@
 #include <components/index/logical_value_binary_codec.hpp>
 
 #include <algorithm>
+#include <cassert>
 #include <charconv>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
@@ -25,8 +27,8 @@ namespace services::index {
     using core::filesystem::remove_file;
 
     namespace {
-        components::types::logical_value_t
-        normalize_hash_key(const components::types::logical_value_t& key, core::date::timezone_offset_t session_tz) {
+        components::types::logical_value_t normalize_hash_key(const components::types::logical_value_t& key,
+                                                              core::date::timezone_offset_t session_tz) {
             using namespace components::types;
             switch (key.type().type()) {
                 case logical_type::TINYINT:
@@ -140,12 +142,16 @@ namespace services::index {
             {
                 std::ofstream output(temp_path, std::ios::trunc);
                 if (!output.good()) {
-                    throw std::runtime_error("failed to write CURRENT temp file");
+                    // -fno-exceptions build: abort instead of throw on I/O failure.
+                    assert(false && "bitcask I/O failure");
+                    std::abort();
                 }
                 output << segment_id;
                 output.flush();
                 if (!output.good()) {
-                    throw std::runtime_error("failed to flush CURRENT temp file");
+                    // -fno-exceptions build: abort instead of throw on I/O failure.
+                    assert(false && "bitcask I/O failure");
+                    std::abort();
                 }
             }
             std::error_code ec;
@@ -176,14 +182,16 @@ namespace services::index {
     bitcask_index_disk_t::bitcask_index_disk_t(const path_t& path,
                                                std::pmr::memory_resource* resource,
                                                uint64_t flush_threshold,
-                                               uint64_t segment_record_limit)
+                                               uint64_t segment_record_limit,
+                                               std::pmr::set<std::uint64_t> committed_txn_ids)
         : index_disk_t(flush_threshold)
         , path_(path)
         , hash_index_file_path_(path_ / hash_index_file)
         , resource_(resource)
         , fs_(core::filesystem::local_file_system_t())
         , segment_record_limit_(segment_record_limit)
-        , task_executor_(std::make_unique<bitcask_task_executor_t>()) {
+        , task_executor_(std::make_unique<bitcask_task_executor_t>())
+        , committed_txn_ids_(committed_txn_ids.begin(), committed_txn_ids.end(), resource) {
         initialize_storage();
         // Keep file identity stable for the facade reader: rehash recreates
         // hash_index.bin and can leave other open handles on stale inode.
@@ -192,8 +200,62 @@ namespace services::index {
                                                           false,
                                                           resource_);
         load_from_disk();
+        if (crc_failure_) {
+            // Direct ctor aborts on corruption; only create() tolerates a CRC
+            // mismatch and turns it into a core::error_t.
+            assert(false && "bitcask I/O failure: direct ctor saw CRC mismatch");
+            std::abort();
+        }
         open_active_segment();
         recover_txn_log_unlocked();
+    }
+
+    core::result_wrapper_t<std::unique_ptr<bitcask_index_disk_t>>
+    bitcask_index_disk_t::create(const path_t& path,
+                                 std::pmr::memory_resource* resource,
+                                 uint64_t flush_threshold,
+                                 uint64_t segment_record_limit,
+                                 std::pmr::set<std::uint64_t> committed_txn_ids) {
+        // skip_load ctor does no I/O, so we can run load_from_disk() and check
+        // crc_failure_ before open_active_segment(). committed_txn_ids is stored
+        // by the skip_load ctor so the recover gate is armed before recovery.
+        auto instance = std::unique_ptr<bitcask_index_disk_t>(new bitcask_index_disk_t(path,
+                                                                                       resource,
+                                                                                       flush_threshold,
+                                                                                       segment_record_limit,
+                                                                                       std::move(committed_txn_ids),
+                                                                                       skip_load_tag{}));
+        instance->load_from_disk();
+        if (instance->crc_failure_) {
+            return core::error_t{core::error_code_t::index_create_fail,
+                                 std::pmr::string{"bitcask: CRC mismatch during recovery", resource}};
+        }
+        instance->open_active_segment();
+        instance->recover_txn_log_unlocked();
+        return instance;
+    }
+
+    bitcask_index_disk_t::bitcask_index_disk_t(const path_t& path,
+                                               std::pmr::memory_resource* resource,
+                                               uint64_t flush_threshold,
+                                               uint64_t segment_record_limit,
+                                               std::pmr::set<std::uint64_t> committed_txn_ids,
+                                               skip_load_tag)
+        : index_disk_t(flush_threshold)
+        , path_(path)
+        , hash_index_file_path_(path_ / hash_index_file)
+        , resource_(resource)
+        , fs_(core::filesystem::local_file_system_t())
+        , segment_record_limit_(segment_record_limit)
+        , task_executor_(std::make_unique<bitcask_task_executor_t>())
+        , committed_txn_ids_(committed_txn_ids.begin(), committed_txn_ids.end(), resource) {
+        initialize_storage();
+        hash_index_ = std::make_unique<disk_hash_table_t>(hash_index_file_path_,
+                                                          disk_hash_table_t::default_bucket_count,
+                                                          false,
+                                                          resource_);
+        // Caller (factory) is responsible for load_from_disk +
+        // open_active_segment + recover_txn_log_unlocked.
     }
 
     bitcask_index_disk_t::~bitcask_index_disk_t() { force_flush(); }
@@ -219,7 +281,9 @@ namespace services::index {
     uint32_t bitcask_index_disk_t::segment_id_from_path(const std::filesystem::path& path) {
         uint64_t id = 0;
         if (!parse_segment_id(path, id)) {
-            throw std::runtime_error("invalid bitcask segment path");
+            // -fno-exceptions build: abort instead of throw on I/O failure.
+            assert(false && "bitcask I/O failure");
+            std::abort();
         }
         return static_cast<uint32_t>(id);
     }
@@ -236,7 +300,9 @@ namespace services::index {
         for (auto& segment : segments) {
             auto f = open_file(fs_, segment.path, file_flags::READ, file_lock_type::NO_LOCK);
             if (!f) {
-                throw std::runtime_error("failed to open bitcask data file: " + segment.path.string());
+                // -fno-exceptions build: abort instead of throw on I/O failure.
+                assert(false && "bitcask I/O failure");
+                std::abort();
             }
             const auto file_size = f->file_size();
             uint64_t offset = 0;
@@ -257,14 +323,17 @@ namespace services::index {
                     !f->read(payload.data(), static_cast<uint64_t>(header.payload_size), payload_offset)) {
                     break;
                 }
-                absl::crc32c_t calc =
-                    absl::ComputeCrc32c(absl::string_view(reinterpret_cast<const char*>(&header.kind),
-                                                          sizeof(header) - sizeof(header.crc)));
+                absl::crc32c_t calc = absl::ComputeCrc32c(absl::string_view(reinterpret_cast<const char*>(&header.kind),
+                                                                            sizeof(header) - sizeof(header.crc)));
                 if (!payload.empty()) {
                     calc = absl::ExtendCrc32c(calc, absl::string_view(payload.data(), payload.size()));
                 }
                 if (static_cast<uint32_t>(calc) != header.crc) {
-                    throw std::runtime_error("CRC mismatch in segment " + std::to_string(segment.id));
+                    // Segment corruption: flag and return rather than abort, so
+                    // create() can report a core::error_t. The direct ctor checks
+                    // this flag post-load and asserts.
+                    crc_failure_ = true;
+                    return;
                 }
                 value_t key(resource_, nullptr);
                 row_ids_t rows(resource_);
@@ -334,7 +403,9 @@ namespace services::index {
                           file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                           file_lock_type::NO_LOCK);
         if (!file_) {
-            throw std::runtime_error("failed to open bitcask data file: " + active_data_file_path_.string());
+            // -fno-exceptions build: abort instead of throw on I/O failure.
+            assert(false && "bitcask I/O failure");
+            std::abort();
         }
         file_->seek(file_->file_size());
         write_current_segment_id(path_, active_segment_id_);
@@ -382,9 +453,8 @@ namespace services::index {
         if (header.payload_size != 0 && !f->read(payload.data(), header.payload_size, value_offset)) {
             return false;
         }
-        absl::crc32c_t calc =
-            absl::ComputeCrc32c(absl::string_view(reinterpret_cast<const char*>(&header.kind),
-                                                  sizeof(header) - sizeof(header.crc)));
+        absl::crc32c_t calc = absl::ComputeCrc32c(
+            absl::string_view(reinterpret_cast<const char*>(&header.kind), sizeof(header) - sizeof(header.crc)));
         if (!payload.empty()) {
             calc = absl::ExtendCrc32c(calc, absl::string_view(payload.data(), payload.size()));
         }
@@ -400,8 +470,8 @@ namespace services::index {
     }
 
     bool bitcask_index_disk_t::load_full_key_for_hash_ref(uint32_t log_file_id,
-                                                           uint64_t log_offset,
-                                                           std::string& out_key) const {
+                                                          uint64_t log_offset,
+                                                          std::string& out_key) const {
         row_ids_t rows(resource_);
         value_t key(resource_, nullptr);
         if (!read_rows_at(log_file_id, log_offset, rows, &key)) {
@@ -427,10 +497,9 @@ namespace services::index {
     }
 
     void bitcask_index_disk_t::erase_all_refs_for_key(std::string_view key_bytes) {
-        while (hash_index_->erase(key_bytes,
-                                  [this](uint32_t log_file_id, uint64_t log_offset, std::string& out_key) {
-                                      return load_full_key_for_hash_ref(log_file_id, log_offset, out_key);
-                                  })) {
+        while (hash_index_->erase(key_bytes, [this](uint32_t log_file_id, uint64_t log_offset, std::string& out_key) {
+            return load_full_key_for_hash_ref(log_file_id, log_offset, out_key);
+        })) {
         }
     }
 
@@ -445,9 +514,9 @@ namespace services::index {
                          rows.empty() ? -1 : static_cast<int64_t>(rows.back()),
                          static_cast<uint32_t>(active_segment_id_),
                          offset + sizeof(record_header_t),
-            [this](uint32_t log_file_id, uint64_t log_offset, std::string& out_key) {
-                return load_full_key_for_hash_ref(log_file_id, log_offset, out_key);
-            });
+                         [this](uint32_t log_file_id, uint64_t log_offset, std::string& out_key) {
+                             return load_full_key_for_hash_ref(log_file_id, log_offset, out_key);
+                         });
         ++active_segment_records_;
     }
 
@@ -474,28 +543,34 @@ namespace services::index {
         return in.fail() ? 0 : offset;
     }
 
-    void bitcask_index_disk_t::write_applied_log_offset(uint64_t offset) const {
+    core::error_t bitcask_index_disk_t::write_applied_log_offset(uint64_t offset) const {
         const auto applied_path = txn_applied_file_path();
         const auto temp_path = applied_path.string() + ".tmp";
         {
             std::ofstream out(temp_path, std::ios::trunc);
             if (!out.good()) {
-                throw std::runtime_error("failed to write txn applied temp file");
+                // M3.5: a failed sidecar open is a recoverable IO failure now —
+                // surface it instead of aborting the process.
+                return core::error_t{core::error_code_t::index_create_fail,
+                                     std::pmr::string{"bitcask: applied-offset sidecar open failed", resource_}};
             }
             out << offset;
             out.flush();
             if (!out.good()) {
-                throw std::runtime_error("failed to flush txn applied temp file");
+                return core::error_t{core::error_code_t::index_create_fail,
+                                     std::pmr::string{"bitcask: applied-offset sidecar flush failed", resource_}};
             }
         }
         std::error_code ec;
         std::filesystem::remove(applied_path, ec);
         std::filesystem::rename(temp_path, applied_path);
+        return core::error_t::no_error();
     }
 
-    void bitcask_index_disk_t::append_txn_record_unlocked(uint64_t txn_id,
-                                                           uint8_t op_kind,
-                                                           const std::vector<std::pair<value_t, size_t>>& values) {
+    core::error_t
+    bitcask_index_disk_t::append_txn_record_unlocked(uint64_t txn_id,
+                                                     uint8_t op_kind,
+                                                     const std::vector<std::pair<value_t, size_t>>& values) {
         std::pmr::string payload(resource_);
         components::index::codec::append_le<uint32_t>(payload, static_cast<uint32_t>(values.size()));
         for (const auto& [key, row_id] : values) {
@@ -509,9 +584,9 @@ namespace services::index {
         header.op_kind = op_kind;
         header.payload_size = static_cast<uint64_t>(payload.size());
 
-        absl::crc32c_t crc = absl::ComputeCrc32c(
-            absl::string_view(reinterpret_cast<const char*>(&header.txn_id),
-                              sizeof(header) - sizeof(header.magic) - sizeof(header.crc)));
+        absl::crc32c_t crc =
+            absl::ComputeCrc32c(absl::string_view(reinterpret_cast<const char*>(&header.txn_id),
+                                                  sizeof(header) - sizeof(header.magic) - sizeof(header.crc)));
         if (!payload.empty()) {
             crc = absl::ExtendCrc32c(crc, absl::string_view(payload.data(), payload.size()));
         }
@@ -523,7 +598,9 @@ namespace services::index {
                                       file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                                       file_lock_type::NO_LOCK);
             if (!txn_log_file_) {
-                throw std::runtime_error("failed to open bitcask txn log");
+                // M3.5: recoverable IO failure — surface, do not abort.
+                return core::error_t{core::error_code_t::index_create_fail,
+                                     std::pmr::string{"bitcask: txn-log open failed", resource_}};
             }
         }
         txn_log_file_->seek(txn_log_file_->file_size());
@@ -532,8 +609,19 @@ namespace services::index {
             txn_log_file_->write(payload.data(), payload.size());
         }
         txn_log_file_->sync();
+        return core::error_t::no_error();
     }
 
+    // Replay the index txn log, gated by the WAL committed-txn set (M1.1).
+    //
+    // Invariant: index txn-log frames are fsync'd durable BEFORE the WAL commit
+    // marker is written. A crash inside that window leaves durable index frames
+    // for a transaction whose WAL replay rejects (no COMMIT marker). Replaying
+    // such a frame would resurrect an uncommitted transaction's index entries
+    // (phantom entries). The gate therefore APPLIES a frame only when its txn_id
+    // is in committed_txn_ids_; every frame (applied or skipped) still advances
+    // write_applied_log_offset(frame_end) so the log is consumed monotonically.
+    // There is no txn_id==0 frame class — both writers are guarded txn_id!=0.
     void bitcask_index_disk_t::recover_txn_log_unlocked() {
         const auto log_path = txn_log_file_path();
         if (!std::filesystem::exists(log_path)) {
@@ -554,7 +642,9 @@ namespace services::index {
                 break;
             }
             if (header.magic != txn_magic) {
-                throw std::runtime_error("bitcask txn log corruption: bad magic");
+                // -fno-exceptions build: abort instead of throw on I/O failure.
+                assert(false && "bitcask I/O failure");
+                std::abort();
             }
             std::pmr::string payload(resource_);
             payload.resize(static_cast<size_t>(header.payload_size));
@@ -565,45 +655,77 @@ namespace services::index {
                 }
             }
 
-            absl::crc32c_t calc = absl::ComputeCrc32c(
-                absl::string_view(reinterpret_cast<const char*>(&header.txn_id),
-                                  sizeof(header) - sizeof(header.magic) - sizeof(header.crc)));
+            absl::crc32c_t calc =
+                absl::ComputeCrc32c(absl::string_view(reinterpret_cast<const char*>(&header.txn_id),
+                                                      sizeof(header) - sizeof(header.magic) - sizeof(header.crc)));
             if (!payload.empty()) {
                 calc = absl::ExtendCrc32c(calc, absl::string_view(payload.data(), payload.size()));
             }
             if (static_cast<uint32_t>(calc) != header.crc) {
-                throw std::runtime_error("bitcask txn log CRC mismatch");
+                // -fno-exceptions build: abort instead of throw on I/O failure.
+                assert(false && "bitcask I/O failure");
+                std::abort();
             }
 
-            size_t pos = 0;
-            const auto count = components::index::codec::read_le<uint32_t>(payload, pos);
-            for (uint32_t i = 0; i < count; ++i) {
-                auto key = components::index::codec::read_logical_value(resource_, payload, pos);
-                const auto row_id = static_cast<size_t>(components::index::codec::read_le<uint64_t>(payload, pos));
-                if (header.op_kind == 1) {
-                    insert(key, row_id);
-                } else if (header.op_kind == 2) {
-                    remove(key, row_id);
-                } else {
-                    throw std::runtime_error("bitcask txn log invalid op kind");
-                }
+            // Gate: apply only frames of committed transactions. A frame whose
+            // txn_id never committed (its WAL commit marker did not land) is
+            // skipped to avoid phantom index entries. op_kind is still validated
+            // for every frame so a corrupt log still aborts.
+            const bool committed = committed_txn_ids_.count(header.txn_id) > 0;
+            if (header.op_kind != 1 && header.op_kind != 2) {
+                // -fno-exceptions build: abort instead of throw on I/O failure.
+                assert(false && "bitcask I/O failure");
+                std::abort();
             }
-            force_flush_unlocked();
+            if (committed) {
+                size_t pos = 0;
+                const auto count = components::index::codec::read_le<uint32_t>(payload, pos);
+                for (uint32_t i = 0; i < count; ++i) {
+                    auto key = components::index::codec::read_logical_value(resource_, payload, pos);
+                    const auto row_id = static_cast<size_t>(components::index::codec::read_le<uint64_t>(payload, pos));
+                    if (header.op_kind == 1) {
+                        insert(key, row_id);
+                    } else {
+                        remove(key, row_id);
+                    }
+                }
+                force_flush_unlocked();
+            }
+            // Every frame — applied or skipped — advances the applied offset so
+            // the log is consumed monotonically and never re-replayed. This
+            // runs only inside ctor/factory recovery, which has no error
+            // channel: a sidecar IO failure mid-construction is terminal, so
+            // bind the result and abort on it rather than silently continuing
+            // (which would re-replay the frame on the next open).
             const auto frame_end_offset = static_cast<uint64_t>(in.tellg());
-            write_applied_log_offset(frame_end_offset);
+            const auto offset_err = write_applied_log_offset(frame_end_offset);
+            if (offset_err.contains_error()) {
+                // -fno-exceptions build: abort instead of throw on I/O failure.
+                assert(false && "bitcask I/O failure: applied-offset write during recovery");
+                std::abort();
+            }
         }
     }
 
-    void bitcask_index_disk_t::apply_txn_inserts(uint64_t txn_id, const std::vector<std::pair<value_t, size_t>>& values) {
+    core::error_t bitcask_index_disk_t::apply_txn_inserts(uint64_t txn_id,
+                                                          const std::vector<std::pair<value_t, size_t>>& values) {
         std::unique_lock lock(mutex_);
-        append_txn_record_unlocked(txn_id, 1, values);
+        // M3.5: a txn-log append/open/sidecar IO failure is recoverable — return
+        // it so the manager turns it into an index-side abort. The durable index
+        // frame is written BEFORE the data segments are touched, so bailing here
+        // leaves the data segments untouched and the frame is re-evaluated by the
+        // recover gate on the next open (gated on the WAL commit marker).
+        if (auto err = append_txn_record_unlocked(txn_id, 1, values); err.contains_error()) {
+            return err;
+        }
         if (!txn_log_file_) {
             txn_log_file_ = open_file(fs_,
                                       txn_log_file_path(),
                                       file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                                       file_lock_type::NO_LOCK);
             if (!txn_log_file_) {
-                throw std::runtime_error("failed to open bitcask txn log");
+                return core::error_t{core::error_code_t::index_create_fail,
+                                     std::pmr::string{"bitcask: txn-log open failed (inserts)", resource_}};
             }
         }
         const auto applied_offset = txn_log_file_->file_size();
@@ -617,19 +739,25 @@ namespace services::index {
             mark_operation_dirty();
         }
         force_flush_unlocked();
-        write_applied_log_offset(applied_offset);
+        return write_applied_log_offset(applied_offset);
     }
 
-    void bitcask_index_disk_t::apply_txn_deletes(uint64_t txn_id, const std::vector<std::pair<value_t, size_t>>& values) {
+    core::error_t bitcask_index_disk_t::apply_txn_deletes(uint64_t txn_id,
+                                                          const std::vector<std::pair<value_t, size_t>>& values) {
         std::unique_lock lock(mutex_);
-        append_txn_record_unlocked(txn_id, 2, values);
+        // M3.5: mirror of apply_txn_inserts — IO failure becomes a returned error
+        // rather than a process abort. Same frame-before-segments ordering.
+        if (auto err = append_txn_record_unlocked(txn_id, 2, values); err.contains_error()) {
+            return err;
+        }
         if (!txn_log_file_) {
             txn_log_file_ = open_file(fs_,
                                       txn_log_file_path(),
                                       file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                                       file_lock_type::NO_LOCK);
             if (!txn_log_file_) {
-                throw std::runtime_error("failed to open bitcask txn log");
+                return core::error_t{core::error_code_t::index_create_fail,
+                                     std::pmr::string{"bitcask: txn-log open failed (deletes)", resource_}};
             }
         }
         const auto applied_offset = txn_log_file_->file_size();
@@ -651,7 +779,7 @@ namespace services::index {
             mark_operation_dirty();
         }
         force_flush_unlocked();
-        write_applied_log_offset(applied_offset);
+        return write_applied_log_offset(applied_offset);
     }
 
     void bitcask_index_disk_t::insert(const value_t& key, size_t value) {
@@ -762,19 +890,24 @@ namespace services::index {
     }
 
     void bitcask_index_disk_t::lower_bound(const value_t& /*value*/, result& /*res*/) const {
-        throw "not supported"; // not supported
+        // Hashed index has no ordering — lower_bound/upper_bound are unreachable.
+        assert(false && "not supported");
+        std::abort();
     }
 
     bitcask_index_disk_t::result bitcask_index_disk_t::lower_bound(const value_t& /*value*/) const {
-        throw "not supported"; // not supported
+        assert(false && "not supported");
+        std::abort();
     }
 
     void bitcask_index_disk_t::upper_bound(const value_t& /*value*/, result& /*res*/) const {
-        throw "not supported"; // not supported
+        assert(false && "not supported");
+        std::abort();
     }
 
     bitcask_index_disk_t::result bitcask_index_disk_t::upper_bound(const value_t& /*value*/) const {
-        throw "not supported"; // not supported
+        assert(false && "not supported");
+        std::abort();
     }
 
     void bitcask_index_disk_t::merge_immutable_segments() {
@@ -800,7 +933,9 @@ namespace services::index {
                                      file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                                      file_lock_type::NO_LOCK);
         if (!merged_file) {
-            throw std::runtime_error("failed to create merged bitcask data file");
+            // -fno-exceptions build: abort instead of throw on I/O failure.
+            assert(false && "bitcask I/O failure");
+            std::abort();
         }
 
         struct merged_ref_t {
@@ -810,9 +945,7 @@ namespace services::index {
         };
 
         std::vector<disk_hash_table_t::value_ref_t> refs;
-        hash_index_->for_each([&](const disk_hash_table_t::value_ref_t& ref) {
-            refs.push_back(ref);
-        });
+        hash_index_->for_each([&](const disk_hash_table_t::value_ref_t& ref) { refs.push_back(ref); });
         std::vector<merged_ref_t> merged_refs;
         merged_refs.reserve(refs.size());
         for (const auto& ref : refs) {
@@ -827,15 +960,17 @@ namespace services::index {
             auto payload = serialize_payload(resource_, key, rows);
             const auto offset = merged_file->seek_position();
             write_record(*merged_file, static_cast<uint8_t>(record_kind_t::value), ++next_timestamp_, payload);
-            merged_refs.push_back(
-                merged_ref_t{key_bytes_for_hash(key), rows.empty() ? -1 : static_cast<int64_t>(rows.back()),
-                             offset + sizeof(record_header_t)});
+            merged_refs.push_back(merged_ref_t{key_bytes_for_hash(key),
+                                               rows.empty() ? -1 : static_cast<int64_t>(rows.back()),
+                                               offset + sizeof(record_header_t)});
         }
 
         merged_file->sync();
         merged_file.reset();
         if (!move_files(fs_, temp_path, merged_path)) {
-            throw std::runtime_error("failed to publish merged segment");
+            // -fno-exceptions build: abort instead of throw on I/O failure.
+            assert(false && "bitcask I/O failure");
+            std::abort();
         }
 
         for (const auto& merged_ref : merged_refs) {
@@ -852,6 +987,65 @@ namespace services::index {
         for (const auto& segment : immutable_segments) {
             remove_file(fs_, segment.path);
         }
+    }
+
+    void bitcask_index_disk_t::clear() {
+        // Wipe all stored data IN PLACE, keeping the instance alive and
+        // writable (re-initialized empty). Unlike drop(), the directory and a
+        // fresh active segment survive so the subsequent txn_id==0 re-inserts
+        // (direct, non-txn-log path) repopulate cleanly. Mirrors the ctor's
+        // construction sequence on a wiped directory.
+        //
+        // Drain the background merge executor first: a queued
+        // merge_immutable_segments() would otherwise race the wipe by reading
+        // segments we are about to remove.
+        if (task_executor_) {
+            task_executor_->stop();
+        }
+
+        std::unique_lock lock(mutex_);
+
+        // Close every open handle before unlinking so stale inodes are not held.
+        file_.reset();
+        txn_log_file_.reset();
+        hash_index_.reset();
+
+        // Remove all on-disk bitcask artifacts: data segments, the CURRENT
+        // pointer, the txn log and its applied-offset sidecar, and the shared
+        // hash_index.bin (the buckets the engine-side disk_hash facade reads).
+        // std::error_code overloads — no exceptions on a -fno-exceptions build.
+        for (const auto& segment : collect_segments()) {
+            remove_file(fs_, segment.path);
+        }
+        {
+            std::error_code ec;
+            std::filesystem::remove(current_segment_path(path_), ec);
+        }
+        remove_file(fs_, txn_log_file_path());
+        remove_file(fs_, txn_applied_file_path());
+        remove_file(fs_, hash_index_file_path_);
+
+        // Reset all in-memory cursors to the fresh-directory state.
+        reset_flush_state();
+        next_timestamp_ = 0;
+        next_segment_id_.store(1);
+        active_segment_id_ = 0;
+        active_segment_records_ = 0;
+        active_data_file_path_.clear();
+        bulk_mode_ = false;
+
+        // Recreate the backing exactly as the ctor does, but over the now-empty
+        // directory. A fresh executor replaces the stopped one.
+        task_executor_ = std::make_unique<bitcask_task_executor_t>();
+        initialize_storage();
+        hash_index_ = std::make_unique<disk_hash_table_t>(hash_index_file_path_,
+                                                          disk_hash_table_t::default_bucket_count,
+                                                          false,
+                                                          resource_);
+        load_from_disk();
+        open_active_segment();
+        // committed_txn_ids_ is intentionally left as-is: the txn log it gated
+        // is gone, and txn_id==0 re-inserts take the direct path (no gate).
     }
 
     void bitcask_index_disk_t::drop() {

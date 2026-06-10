@@ -44,6 +44,7 @@ namespace components::expressions {
     const param_storage& compare_expression_t::right() const { return right_; }
 
     const std::pmr::vector<expression_ptr>& compare_expression_t::children() const { return children_; }
+    std::pmr::vector<expression_ptr>& compare_expression_t::children() { return children_; }
 
     void compare_expression_t::set_type(compare_type type) { type_ = type; }
 
@@ -51,9 +52,16 @@ namespace components::expressions {
 
     bool compare_expression_t::is_union() const { return is_union_compare_condition(type_); }
 
+    compare_type compare_expression_t::inner_op() const noexcept { return inner_op_; }
+    void compare_expression_t::set_inner_op(compare_type op) noexcept { inner_op_ = op; }
+
+    bool compare_expression_t::do_not_fold() const noexcept { return do_not_fold_; }
+    void compare_expression_t::make_unfoldable() noexcept { do_not_fold_ = true; }
+
     hash_t compare_expression_t::hash_impl() const {
         hash_t hash_{0};
         boost::hash_combine(hash_, type_);
+        boost::hash_combine(hash_, inner_op_);
         boost::hash_combine(hash_, std::hash<param_storage>()(left_));
         boost::hash_combine(hash_, std::hash<param_storage>()(right_));
         for (const auto& child : children_) {
@@ -83,8 +91,8 @@ namespace components::expressions {
 
     bool compare_expression_t::equal_impl(const expression_i* rhs) const {
         auto* other = static_cast<const compare_expression_t*>(rhs);
-        return type_ == other->type_ && left_ == other->left_ && right_ == other->right_ &&
-               children_.size() == other->children_.size() &&
+        return type_ == other->type_ && inner_op_ == other->inner_op_ && left_ == other->left_ &&
+               right_ == other->right_ && children_.size() == other->children_.size() &&
                std::equal(children_.begin(), children_.end(), other->children_.begin());
     }
 

@@ -79,11 +79,13 @@ namespace {
                 c.path = path;
                 return c;
             }())
-            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
-            manager->set_run_fn([this] { scheduler->run(10000); });
-        }
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {}
 
         ~disk_only_fixture() {
+            // Destroy the manager first: its dtor joins the internal loop thread,
+            // which may still enqueue children onto the scheduler. Only then is it
+            // safe to stop/delete the scheduler.
+            manager.reset();
             scheduler->stop();
             delete scheduler;
         }
@@ -172,12 +174,14 @@ TEST_CASE("services::disk::sysboot::no_path_is_safe_noop") {
     configuration::config_disk c;
     c.path.clear(); // truly empty — config_disk default is current_path()/wal
     auto m = actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, c, log);
-    m->set_run_fn([&] { scheduler->run(10000); });
 
     REQUIRE_NOTHROW(m->bootstrap_system_tables_sync());
     REQUIRE_NOTHROW(m->load_system_tables_sync());
     REQUIRE_NOTHROW(m->restore_oid_generator_sync());
 
+    // Destroy the manager first: its dtor joins the internal loop thread, which may
+    // still enqueue children onto the scheduler. Only then stop/delete the scheduler.
+    m.reset();
     scheduler->stop();
     delete scheduler;
 }

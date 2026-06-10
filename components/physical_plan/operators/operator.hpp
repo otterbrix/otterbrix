@@ -40,6 +40,9 @@ namespace components::operators {
         hash_join,
         aggregate,
         raw_data,
+        union_op,
+        recursive_cte,
+        cte_scan,
         // Constraint operators
         check_constraint,
         fk_check,
@@ -63,6 +66,10 @@ namespace components::operators {
         // CHECKPOINT — flush indexes, snapshot wal-id, checkpoint_all on disk,
         // truncate WAL segments older than the recovery boundary.
         checkpoint,
+        // SET TIMEZONE — validates name, sends pg_settings ('TimeZone',<name>)
+        // row to disk; leaf operator. session_catalog_t mutation stays in the
+        // dispatcher post-success — operator does not touch shared state.
+        set_timezone,
         // VACUUM — cleanup_versions + compact across user tables (relkind 'r'/'g'),
         // cleanup index versions, rebuild and re-populate indexes per table.
         // Iterates pg_class to discover user tables (no dispatcher state).
@@ -82,12 +89,16 @@ namespace components::operators {
         // COMMIT / ROLLBACK — operator-pipeline replacement for inline
         // manager_dispatcher_t::{commit,abort}_transaction. The operator
         // drives txn_manager->{commit,abort}() and (for commit) the
-        // pg_catalog MVCC state swap on disk via storage_commit_appends /
+        // pg_catalog MVCC state swap on disk via storage_publish_commits /
         // storage_revert_appends. Invoked directly by the dispatcher
         // (mirrors operator_get_schema_t) since the manager-level state
         // (txn_manager_) lives outside the per-collection executor.
         commit_transaction,
         abort_transaction,
+        // BEGIN / START TRANSACTION: ensures an active transaction exists and
+        // marks it explicit, so DML accumulates for a batched COMMIT-time publish
+        // (see node_begin_transaction.hpp).
+        begin_transaction,
         // COMPUTED_FIELD_REGISTER / COMPUTED_FIELD_UNREGISTER —
         // maintain pg_computed_column rows for relkind='g' dynamic-schema
         // tables. register: per-column NEW / SAME-TYPE / TYPE-EVOLUTION
@@ -112,6 +123,10 @@ namespace components::operators {
         // data_chunk (col 0 = UINTEGER oid). Used by name-resolution
         // pipelines that need to avoid the dispatcher's cached catalog snapshot.
         resolve_namespace,
+        // RESOLVE_DATABASE — analogous leaf operator that scans
+        // pg_database (well_known_oid=19) by datname and emits the resolved
+        // database_oid. Routing key for multi-database WAL workers.
+        resolve_database,
         // RESOLVE_TYPE — leaf operator that scans pg_type by
         // (typname, typnamespace) and emits the matching row as a single-row
         // data_chunk_t (cols mirror pg_type_columns: oid, typname,
@@ -133,11 +148,9 @@ namespace components::operators {
         // onto the back-pointed logical node so enrich reads them via the
         // plan_resolve_index.
         resolve_constraint,
-        // ALLOCATE_OIDS — pipeline replacement for inline
-        // manager_disk_t::allocate_oids_batch from the dispatcher. At Pass 1
-        // execute time, sends one allocate batch request to the disk actor's
-        // oid_generator and stamps the resulting vector on the back-pointed
-        // node so the DDL planner can read it via oids().
+        // ALLOCATE_OIDS — sends one allocate-batch request to the disk actor's
+        // oid_generator and stamps the resulting vector on the back-pointed node
+        // so the DDL planner can read it via oids().
         allocate_oids,
         batch
     };
@@ -203,6 +216,10 @@ namespace components::operators {
         void take_output(ptr& src);
         void mark_executed();
         void mark_failed() noexcept { state_ = operator_state::failed; }
+        void reset_for_reuse() noexcept {
+            state_ = operator_state::created;
+            output_ = nullptr;
+        }
         void clear(); //todo: replace by copy
 
         void set_error(const core::error_t& error);

@@ -33,7 +33,6 @@ namespace services::wal {
     // -----------------------------------------------------------------------
 
     wal_worker_t::wal_worker_t(std::pmr::memory_resource* resource,
-                               manager_wal_replicate_t* /*manager*/,
                                log_t& log,
                                configuration::config_wal config,
                                components::catalog::oid_t database_oid)
@@ -212,26 +211,27 @@ namespace services::wal {
     wal_worker_t::unique_future<wal::id_t> wal_worker_t::commit_txn(session_id_t /*session*/,
                                                                     uint64_t transaction_id,
                                                                     wal_sync_mode sync_mode,
-                                                                    wal::id_t wal_id) {
+                                                                    wal::id_t wal_id,
+                                                                    uint64_t commit_id) {
         id_.store(wal_id, std::memory_order_relaxed);
 
         trace(log_,
-              "wal_worker::commit_txn , wal_id : {} , txn : {} , sync : {}",
+              "wal_worker::commit_txn , wal_id : {} , txn : {} , commit_id : {} , sync : {}",
               wal_id,
               transaction_id,
+              commit_id,
               static_cast<int>(sync_mode));
 
         if (sync_mode == wal_sync_mode::OFF) {
-            // OFF mode: encode the commit marker but do not write to disk.
-            // Update last_crc_ for chain continuity in case the mode changes later.
+            // OFF mode: encode but don't write — keeps last_crc_ chain continuity
+            // in case sync mode is turned on later.
             encode_buf_.clear();
-            last_crc_ = encode_commit(encode_buf_, last_crc_, wal_id, transaction_id);
+            last_crc_ = encode_commit(encode_buf_, last_crc_, wal_id, transaction_id, commit_id);
             co_return wal_id;
         }
 
-        // Encode commit marker.
         encode_buf_.clear();
-        last_crc_ = encode_commit(encode_buf_, last_crc_, wal_id, transaction_id);
+        last_crc_ = encode_commit(encode_buf_, last_crc_, wal_id, transaction_id, commit_id);
 
         ensure_writer();
         writer_->append(encode_buf_.data(), encode_buf_.size(), wal_id);
@@ -310,12 +310,10 @@ namespace services::wal {
     // Delete segment files where the highest wal_id in the file is
     // <= checkpoint_wal_id.
     //
-    // W-TORN contract (see docs/wal-analysis.md §7 lines 969–984): the caller
-    // (manager_dispatcher_t after checkpoint_all) must pass min(prev_checkpoint_wal_id_)
-    // across all DISK tables — NOT the latest committed wal_id. Truncating up to the
-    // latest wal_id would discard records still required if any table has to fall back
-    // to its .prev backup at next startup. Using min(prev) keeps WAL coverage for the
-    // worst-case .prev recovery while still trimming records older than every .prev.
+    // W-TORN contract: the caller (manager_dispatcher_t after checkpoint_all)
+    // must pass min(prev_checkpoint_wal_id_) across all DISK tables — NOT the
+    // latest committed wal_id. The latest wal_id would discard records still
+    // needed if any table falls back to its .prev backup at next startup.
     // -----------------------------------------------------------------------
 
     wal_worker_t::unique_future<void> wal_worker_t::truncate_before(session_id_t /*session*/,

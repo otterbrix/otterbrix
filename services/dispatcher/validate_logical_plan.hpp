@@ -1,14 +1,12 @@
 #pragma once
 
 #include <components/catalog/catalog_oids.hpp>
-#include <components/catalog/dependency_walker.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/forward.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/types/types.hpp>
-#include <components/types/user_type_walk.hpp>
 
 #include <span>
 #include <string_view>
@@ -17,10 +15,16 @@ namespace components::catalog {
     class table_id;
 }
 
+// Real type lives in services::catalog_resolve; impl::plan_resolve_index_t
+// below is an alias (see plan_resolve_index.hpp).
+namespace services::catalog_resolve {
+    struct plan_resolve_index_t;
+} // namespace services::catalog_resolve
+
 namespace services::dispatcher {
 
     namespace impl {
-        struct plan_resolve_index_t;
+        using ::services::catalog_resolve::plan_resolve_index_t;
     }
 
     using column_path = std::pmr::vector<size_t>;
@@ -52,10 +56,7 @@ namespace services::dispatcher {
                                                   const std::string& alias,
                                                   std::span<const std::string> search_dbnames = {});
 
-    // Walk a complex_logical_type tree and visit every nested UDT reference.
-    using ::components::types::walk_user_type_refs;
-
-    // Validate plan node types against the plan-tree idx (populated by Pass 1).
+    // Validate plan node types against the plan-tree idx.
     [[nodiscard]] core::error_t validate_types(std::pmr::memory_resource* resource,
                                                const impl::plan_resolve_index_t* idx,
                                                components::logical_plan::node_t* node,
@@ -66,20 +67,5 @@ namespace services::dispatcher {
                     const impl::plan_resolve_index_t* idx,
                     components::logical_plan::node_t* node,
                     const components::logical_plan::storage_parameters& parameters);
-
-    // validate_drop_restrict: check that no 'n'-type pg_depend rows block a RESTRICT drop.
-    // fetch_deps is a closure over the pg_depend snapshot (provided by caller from disk).
-    // Returns nullptr on success, error cursor on RESTRICT violation.
-    components::cursor::cursor_t_ptr validate_drop_restrict(std::pmr::memory_resource* resource,
-                                                            components::catalog::oid_t seed_classid,
-                                                            components::catalog::oid_t seed_oid,
-                                                            const components::catalog::fetch_deps_fn& fetch_deps);
-
-    // validate_type_recursion: for CREATE TABLE / CREATE TYPE nodes, detect circular user-
-    // defined type references (e.g. STRUCT A { b: B } and STRUCT B { a: A }).
-    // Returns nullptr on success, error cursor if a cycle is detected.
-    components::cursor::cursor_t_ptr validate_type_recursion(std::pmr::memory_resource* resource,
-                                                             const impl::plan_resolve_index_t* idx,
-                                                             const components::types::complex_logical_type& root_type);
 
 } // namespace services::dispatcher

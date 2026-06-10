@@ -6,16 +6,18 @@ namespace services::disk {
     namespace catalog = components::catalog;
     using namespace detail;
 
-    void manager_disk_t::sync(address_pack pack) {
-        constexpr static int manager_wal = 0;
-        manager_wal_ = std::get<manager_wal>(pack);
-    }
+    void manager_disk_t::sync(disk_sync_pack_t pack) { manager_wal_ = pack.wal; }
 
     void manager_disk_t::create_agent(int count_agents) {
+        // Roles align with pool_idx_for_oid: slot 0 = CATALOG (pg_* system
+        // tables); slots 1..N-1 = USER_POOL (user tables hashed by
+        // oid % (N-1)).
         for (int i = 0; i < count_agents; i++) {
-            auto name_agent = "agent_disk_" + std::to_string(agents_.size() + 1);
+            const std::size_t slot = agents_.size();
+            auto name_agent = "agent_disk_" + std::to_string(slot + 1);
             trace(log_, "manager_disk create_agent : {}", name_agent);
-            auto agent = actor_zeta::spawn<agent_disk_t>(resource(), this, config_.path, log_);
+            const agent_role_t role = (slot == 0) ? agent_role_t::CATALOG : agent_role_t::USER_POOL;
+            auto agent = actor_zeta::spawn<agent_disk_t>(resource(), this, config_.path, log_, role, slot);
             agents_.emplace_back(std::move(agent));
         }
     }
@@ -29,110 +31,48 @@ namespace services::disk {
                                                                             wal::id_t current_wal_id) {
         trace(log_, "manager_disk_t::checkpoint_all , session : {} , wal_id : {}", session.data(), current_wal_id);
 
+        // Fan checkpoint_inner to every agent; each returns
+        // min(prev_checkpoint_wal_id_) over its DISK entries, or max() sentinel when
+        // it owns no DISK entry.
+        std::pmr::vector<unique_future<wal::id_t>> agent_futures{resource()};
+        agent_futures.reserve(agents_.size());
+        for (auto& agent_ptr : agents_) {
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent_ptr->address(),
+                                                                  &agent_disk_t::checkpoint_inner,
+                                                                  session,
+                                                                  current_wal_id);
+            if (needs_sched) {
+                scheduler_disk_->enqueue(agent_ptr.get());
+            }
+            agent_futures.emplace_back(std::move(fut));
+        }
+
         wal::id_t min_prev_id = std::numeric_limits<wal::id_t>::max();
-        size_t disk_table_count = 0;
-        // System tables (well-known OIDs) must be checkpointed BEFORE user tables.
-        std::vector<std::pair<components::catalog::oid_t, collection_storage_entry_t*>> ordered;
-        ordered.reserve(storages_.size());
-        // System tables (well-known OIDs < FIRST_USER_OID).
-        for (auto& [oid, entry] : storages_) {
-            if (oid < components::catalog::FIRST_USER_OID) {
-                ordered.emplace_back(oid, entry.get());
-            }
-        }
-        // User tables.
-        for (auto& [oid, entry] : storages_) {
-            if (oid >= components::catalog::FIRST_USER_OID) {
-                ordered.emplace_back(oid, entry.get());
-            }
-        }
-        // Use the actual on-disk path captured at storage-creation time
-        // (entry->otbx_path). User-table sidecars must land under their own
-        // database_oid directory so WAL replay's sidecar filter can skip
-        // already-checkpointed records on restart.
-        for (auto& [tbl_oid, entry] : ordered) {
-            if (entry->table_storage.mode() == storage_mode_t::DISK) {
-                if (entry->otbx_path.empty()) {
-                    // DISK-mode entry with no stored path — created via a legacy
-                    // path or test fixture. Skip — we have nowhere reliable to put
-                    // the sidecar.
-                    continue;
-                }
-                trace(log_, "manager_disk_t::checkpoint_all checkpointing : oid={}", static_cast<unsigned>(tbl_oid));
-
-                const auto& otbx_path = entry->otbx_path;
-                auto prev_path = otbx_path;
-                prev_path += ".prev";
-
-                // Backup current checkpoint before overwriting (file stays open for block_manager)
-                std::error_code copy_error;
-                if (std::filesystem::exists(otbx_path)) {
-                    std::filesystem::copy_file(otbx_path,
-                                               prev_path,
-                                               std::filesystem::copy_options::overwrite_existing,
-                                               copy_error);
-                    if (copy_error) {
-                        warn(log_,
-                             "manager_disk_t::checkpoint_all , failed to copy {} to {} : {}",
-                             otbx_path.string(),
-                             prev_path.string(),
-                             copy_error.message());
-                    }
-                }
-
-                // Write new checkpoint (2 fsync inside checkpoint(wal_id))
-                entry->table_storage.table().compact();
-                entry->table_storage.checkpoint(current_wal_id);
-
-                // Persist checkpoint_wal_id to sidecar so WAL replay on next startup
-                // can filter records by wal_id > checkpoint_wal_id deterministically
-                // (replaces the row-count heuristic in base_spaces). Sidecar is written
-                // after the .otbx fsync — if the .otbx is the new good state but the
-                // sidecar write crashes, replay will conservatively replay all records
-                // (idempotent on disk-backed tables since rows are addressed by row_id).
-                {
-                    auto sidecar_path = otbx_path;
-                    sidecar_path += ".wal_id";
-                    auto tmp_path = sidecar_path;
-                    tmp_path += ".tmp";
-                    std::ofstream sidecar(tmp_path, std::ios::binary | std::ios::trunc);
-                    if (sidecar.is_open()) {
-                        auto v = static_cast<uint64_t>(current_wal_id);
-                        sidecar.write(reinterpret_cast<const char*>(&v), sizeof(v));
-                        sidecar.close();
-                        std::error_code rename_error;
-                        std::filesystem::rename(tmp_path, sidecar_path, rename_error);
-                        if (rename_error) {
-                            warn(log_,
-                                 "manager_disk_t::checkpoint_all sidecar rename failed: {}",
-                                 rename_error.message());
-                        }
-                    }
-                }
-
-                // Delete backup after successful checkpoint
-                if (std::filesystem::exists(prev_path)) {
-                    std::error_code remove_error;
-                    std::filesystem::remove(prev_path, remove_error);
-                }
-
-                ++disk_table_count;
-                // Tally min(prev_checkpoint_wal_id_) across DISK tables for safe WAL truncation.
-                min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
-            }
+        for (auto& f : agent_futures) {
+            auto agent_min = co_await std::move(f);
+            min_prev_id = std::min(min_prev_id, agent_min);
         }
 
         if (!agents_.empty()) {
-            // Persist WAL ID only if all tables are DISK mode.
-            // If any IN_MEMORY tables exist, WAL records are still needed for replay.
-            bool has_in_memory = false;
-            for (const auto& [name, entry] : storages_) {
-                if (entry->table_storage.mode() == storage_mode_t::IN_MEMORY) {
-                    has_in_memory = true;
+            // IN_MEMORY-twin WAL-seal suppression. The min() tally can't tell "no
+            // DISK entry + no IN_MEMORY twin" (safe to seal) from "no DISK entry +
+            // IN_MEMORY twin" (must NOT seal — those tables still need replay
+            // records). has_in_memory_inner_sync supplies the missing signal. The
+            // mailbox-free sync read is legal here: we just awaited every agent's
+            // mailbox, so agents are idle and the manager is their only writer.
+            bool any_in_memory = false;
+            for (const auto& agent_ptr : agents_) {
+                if (agent_ptr != nullptr && agent_ptr->has_in_memory_inner_sync()) {
+                    any_in_memory = true;
                     break;
                 }
             }
-            if (current_wal_id > 0 && !has_in_memory) {
+
+            // Seal only when some agent actually checkpointed a DISK entry (min_prev_id
+            // still max() => none did) AND no IN_MEMORY twin exists anywhere.
+            const bool all_disk_checkpointed = (min_prev_id != std::numeric_limits<wal::id_t>::max());
+            const bool safe_to_seal = all_disk_checkpointed && !any_in_memory;
+            if (current_wal_id > 0 && safe_to_seal) {
                 auto [needs_sched2, future2] =
                     actor_zeta::otterbrix::send(agent(), &agent_disk_t::fix_wal_id, wal::id_t{current_wal_id});
                 if (needs_sched2) {
@@ -142,9 +82,7 @@ namespace services::disk {
             }
 
             trace(log_, "manager_disk_t::checkpoint_all complete");
-            // W-TORN: return min(prev_checkpoint_wal_id_) across DISK tables, used as truncate_before lower bound.
-            // 0 if any IN_MEMORY table exists (their WAL records are still needed for replay) or if no DISK tables.
-            if (has_in_memory || disk_table_count == 0) {
+            if (!safe_to_seal) {
                 co_return wal::id_t{0};
             }
             co_return min_prev_id;
@@ -158,58 +96,64 @@ namespace services::disk {
                                                                    uint64_t lowest_active_start_time) {
         trace(log_, "manager_disk_t::vacuum_all , session : {}", session.data());
 
-        for (auto& [oid, entry] : storages_) {
-            trace(log_, "manager_disk_t::vacuum_all cleaning : oid={}", static_cast<unsigned>(oid));
-            auto& table = entry->table_storage.table();
-            table.cleanup_versions(lowest_active_start_time);
-            table.compact();
+        // Per-agent vacuum_inner runs the canonical cleanup_versions + compact.
+        std::pmr::vector<unique_future<void>> agent_futures{resource()};
+        agent_futures.reserve(agents_.size());
+        for (auto& agent_ptr : agents_) {
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent_ptr->address(),
+                                                                  &agent_disk_t::vacuum_inner,
+                                                                  session,
+                                                                  lowest_active_start_time);
+            if (needs_sched) {
+                scheduler_disk_->enqueue(agent_ptr.get());
+            }
+            agent_futures.emplace_back(std::move(fut));
+        }
+
+        for (auto& f : agent_futures) {
+            co_await std::move(f);
         }
 
         trace(log_, "manager_disk_t::vacuum_all complete");
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::maybe_cleanup(execution_context_t ctx,
-                                                                      uint64_t lowest_active_start_time) {
-        // ctx.table_oid identifies the table whose GC threshold the executor
-        // wants to check (typically the just-deleted DML target). INVALID_OID
-        // -> no-op (executor guards against this but be defensive).
-        if (ctx.table_oid == components::catalog::INVALID_OID) {
-            co_return;
-        }
-        auto it = storages_.find(ctx.table_oid);
-        if (it == storages_.end()) {
-            co_return;
-        }
-
-        auto& table = it->second->table_storage.table();
-        auto rg = table.row_group();
-        auto total = rg->total_rows();
-        if (total == 0) {
-            co_return;
-        }
-
-        auto committed = rg->committed_row_count();
-        auto deleted = total - committed;
-
-        static constexpr double gc_threshold = 0.3;
-        if (static_cast<double>(deleted) / static_cast<double>(total) > gc_threshold) {
-            if (lowest_active_start_time < components::table::TRANSACTION_ID_START) {
-                co_return;
+    manager_disk_t::unique_future<void>
+    manager_disk_t::maybe_cleanup_many(execution_context_t /*ctx*/,
+                                       std::pmr::vector<components::catalog::oid_t> table_oids,
+                                       uint64_t compact_gate) {
+        // Each table_oid routes to its owning agent's maybe_cleanup_inner so the
+        // threshold check + compact (row_group rebuild) is mailbox-serialized with
+        // every same-oid access. Running it manager-side via a storage_entry_sync
+        // borrow would duplicate the compact and race agent-side scans. INVALID_OID
+        // entries are skipped (callers guard against them but be defensive).
+        //
+        // Two-phase fan-out: send every per-oid message collecting futures, then
+        // await all. maybe_cleanup_inner is per-oid, so co-owned oids that hash to
+        // the same agent enqueue several messages; same-target mailbox FIFO
+        // preserves their order, so awaiting is completion-sync only.
+        std::pmr::vector<unique_future<void>> agent_futures{resource()};
+        agent_futures.reserve(table_oids.size());
+        for (const auto table_oid : table_oids) {
+            if (table_oid == components::catalog::INVALID_OID) {
+                continue;
             }
-            trace(log_,
-                  "manager_disk_t::maybe_cleanup: oid={}, deleted {}/{}, running compact",
-                  static_cast<unsigned>(ctx.table_oid),
-                  deleted,
-                  total);
-            // Compact reads via scan_committed(COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED) which
-            // depends on intact version metadata to filter tombstones. Calling cleanup_versions
-            // before compact strips that metadata and makes scan return 0 rows — the bug
-            // documented previously. Compact alone is correct: it rebuilds the row_group from
-            // currently-visible committed rows and finalizes them as committed-at-0.
-            // cleanup_versions afterwards is unnecessary because the new collection's rows
-            // are all txn{0,0} (no version chain to clean).
-            table.compact();
+            if (agents_.empty()) {
+                break;
+            }
+            const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
+            auto& agent = agents_[pool_idx];
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                                  &agent_disk_t::maybe_cleanup_inner,
+                                                                  table_oid,
+                                                                  compact_gate);
+            if (needs_sched) {
+                scheduler_disk_->enqueue(agent.get());
+            }
+            agent_futures.emplace_back(std::move(fut));
+        }
+        for (auto& f : agent_futures) {
+            co_await std::move(f);
         }
 
         co_return;
@@ -221,7 +165,20 @@ namespace services::disk {
                                                           components::catalog::oid_t /*database_oid*/,
                                                           std::vector<components::table::column_definition_t> columns) {
         trace(log_, "manager_disk_t::create_storage_with_columns_sync , oid : {}", static_cast<unsigned>(table_oid));
-        storages_.emplace(table_oid, std::make_unique<collection_storage_entry_t>(resource(), std::move(columns)));
+        // IN_MEMORY entry is constructed on the agent's resource() and ownership
+        // transferred via bootstrap_inner_sync (rvalue unique_ptr move).
+        if (!agents_.empty()) {
+            const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
+            auto& agent = agents_[pool_idx];
+            auto entry = std::make_unique<collection_storage_entry_t>(agent->resource(), std::move(columns));
+            const bool ok = agent->bootstrap_inner_sync(table_oid, std::move(entry));
+            if (!ok) {
+                trace(log_,
+                      "manager_disk_t::create_storage_with_columns_sync: agent[{}] already owned oid {}",
+                      pool_idx,
+                      static_cast<unsigned>(table_oid));
+            }
+        }
     }
 
     void manager_disk_t::create_storage_disk_sync(components::catalog::oid_t table_oid,
@@ -232,8 +189,26 @@ namespace services::disk {
               "manager_disk_t::create_storage_disk_sync , oid : {} , path : {}",
               static_cast<unsigned>(table_oid),
               otbx_path.string());
-        storages_.emplace(table_oid,
-                          std::make_unique<collection_storage_entry_t>(resource(), std::move(columns), otbx_path));
+        // SFBM is constructed on the agent thread via bootstrap_create_disk_inner_sync;
+        // the manager never opens .otbx (would race the exclusive WRITE_LOCK).
+        if (agents_.empty()) {
+            return;
+        }
+        const std::size_t pool_idx_c = pool_idx_for_oid(table_oid, agents_.size());
+        trace(log_,
+              "manager_disk_t::create_storage_disk_sync: create oid={} pool_idx={} path={}",
+              static_cast<unsigned>(table_oid),
+              pool_idx_c,
+              otbx_path.string());
+        auto& agent = agents_[pool_idx_c];
+        const bool ok = agent->bootstrap_create_disk_inner_sync(table_oid, std::move(columns), otbx_path);
+        if (!ok) {
+            trace(log_,
+                  "manager_disk_t::create_storage_disk_sync: agent[{}] already owns oid {} (path={})",
+                  pool_idx_c,
+                  static_cast<unsigned>(table_oid),
+                  otbx_path.string());
+        }
     }
 
     void manager_disk_t::load_storage_disk_sync(components::catalog::oid_t table_oid,
@@ -243,6 +218,57 @@ namespace services::disk {
               "manager_disk_t::load_storage_disk_sync , oid : {} , path : {}",
               static_cast<unsigned>(table_oid),
               otbx_path.string());
+
+        // The SFBM holds an exclusive posix WRITE_LOCK on the .otbx (per-process:
+        // closing either fd releases it for both). Double-constructing the same OID
+        // would race the lock and corrupt fsync/mmap pairing, so only the agent
+        // thread opens it.
+        const std::size_t pool_idx = agents_.empty() ? 0 : pool_idx_for_oid(table_oid, agents_.size());
+        trace(log_,
+              "manager_disk_t::load_storage_disk_sync: load oid={} pool_idx={} path={}",
+              static_cast<unsigned>(table_oid),
+              pool_idx,
+              otbx_path.string());
+
+        // Pre-read the sidecar wal_id BEFORE constructing the SFBM so
+        // bootstrap_disk_inner_sync can seed set_checkpoint_wal_id atomically on the
+        // agent thread. These filesystem-only steps (sidecar read, .prev rename) stay
+        // on the manager thread — pre-scheduler-start, no actor ownership.
+        auto read_sidecar_wal_id = [&](const std::filesystem::path& base) -> wal::id_t {
+            auto sidecar = base;
+            sidecar += ".wal_id";
+            if (!std::filesystem::exists(sidecar)) {
+                return wal::id_t{0};
+            }
+            std::ifstream f(sidecar, std::ios::binary);
+            uint64_t v = 0;
+            if (f.read(reinterpret_cast<char*>(&v), sizeof(v)) && f.gcount() == sizeof(v)) {
+                return wal::id_t{v};
+            }
+            return wal::id_t{0};
+        };
+
+        // Transfer to the agent, passing the sidecar wal_id so the SFBM picks up
+        // the checkpoint floor atomically.
+        auto transfer_to_agent = [&](const std::filesystem::path& path) -> bool {
+            if (agents_.empty()) {
+                return false;
+            }
+            auto& agent = agents_[pool_idx];
+            const auto sidecar_id = read_sidecar_wal_id(path);
+            const bool ok = agent->bootstrap_disk_inner_sync(table_oid, path, sidecar_id);
+            if (!ok) {
+                // Duplicate key: bootstrap_disk_inner_sync's pre-construction probe
+                // drops the incoming SFBM, so no WRITE_LOCK race occurs.
+                trace(log_,
+                      "manager_disk_t::load_storage_disk_sync: agent[{}] already owns oid {} (path={})",
+                      pool_idx,
+                      static_cast<unsigned>(table_oid),
+                      path.string());
+            }
+            return ok;
+        };
+
         auto prev_path = otbx_path;
         prev_path += ".prev";
         const bool otbx_exists = std::filesystem::exists(otbx_path);
@@ -255,12 +281,19 @@ namespace services::disk {
             if (ec) {
                 throw std::runtime_error("W-TORN promote .prev failed: " + ec.message());
             }
-            storages_.emplace(table_oid, std::make_unique<collection_storage_entry_t>(resource(), otbx_path));
+            transfer_to_agent(otbx_path);
             return;
         }
 
+        // Corrupt-recovery (rename .otbx → .broken, .prev → .otbx, retry) must detect
+        // SFBM-open failure, but bootstrap_disk_inner_sync is noexcept (its
+        // make_unique<> swallows the throw on corrupt files). So we probe-construct on
+        // the manager thread to catch the exception, then destroy the probe to release
+        // the WRITE_LOCK before the agent reopens (per-process lock: closing this fd
+        // frees it entirely). The close-reopen window is single-threaded, no race.
         try {
-            storages_.emplace(table_oid, std::make_unique<collection_storage_entry_t>(resource(), otbx_path));
+            auto probe = std::make_unique<collection_storage_entry_t>(resource(), otbx_path);
+            probe.reset(); // release WRITE_LOCK before agent reopens on agent thread
         } catch (const std::exception& e) {
             warn(log_, "load_storage_disk_sync: failed to load {} : {}", otbx_path.string(), e.what());
             if (!prev_exists) {
@@ -280,34 +313,28 @@ namespace services::disk {
             warn(log_,
                  "load_storage_disk_sync: recovered {} from .prev (corrupt original kept as .broken)",
                  otbx_path.string());
-            storages_.emplace(table_oid, std::make_unique<collection_storage_entry_t>(resource(), otbx_path));
+            transfer_to_agent(otbx_path);
             return;
         }
-
         if (prev_exists) {
             std::error_code ec;
             std::filesystem::remove(prev_path, ec);
         }
-
-        auto sidecar_path = otbx_path;
-        sidecar_path += ".wal_id";
-        if (std::filesystem::exists(sidecar_path)) {
-            std::ifstream sidecar(sidecar_path, std::ios::binary);
-            uint64_t v = 0;
-            if (sidecar.read(reinterpret_cast<char*>(&v), sizeof(v)) && sidecar.gcount() == sizeof(v)) {
-                auto it = storages_.find(table_oid);
-                if (it != storages_.end()) {
-                    it->second->table_storage.set_checkpoint_wal_id(wal::id_t{v});
-                }
-            }
-        }
+        transfer_to_agent(otbx_path);
     }
 
     wal::id_t manager_disk_t::peek_checkpoint_wal_id_from_disk(components::catalog::oid_t table_oid,
                                                                components::catalog::oid_t database_oid) const noexcept {
-        auto it = storages_.find(table_oid);
-        if (it != storages_.end()) {
-            return it->second->table_storage.checkpoint_wal_id();
+        // Probe the routed agent slice (canonical SFBM owner); if the agent
+        // has not yet loaded the entry, fall back to reading the sidecar
+        // directly (bootstrap path).
+        if (!agents_.empty()) {
+            const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
+            if (idx < agents_.size() && agents_[idx] != nullptr) {
+                if (const auto* entry = agents_[idx]->storage_entry_sync(table_oid); entry != nullptr) {
+                    return entry->table_storage.checkpoint_wal_id();
+                }
+            }
         }
         if (config_.path.empty() || table_oid == components::catalog::INVALID_OID ||
             database_oid == components::catalog::INVALID_OID) {

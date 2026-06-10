@@ -33,7 +33,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
     INFO("initialization") {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -50,7 +50,9 @@ TEST_CASE("integration::cpp::test_arithmetic") {
             logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_plan(session, ins);
+            auto cur = dispatcher->execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
         }
@@ -713,7 +715,7 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
     INFO("initialization") {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -735,7 +737,9 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
                 collection_name,
                 logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_plan(session, ins);
+            auto cur = dispatcher->execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
         }
@@ -807,7 +811,7 @@ TEST_CASE("integration::cpp::test_arithmetic::having") {
     INFO("initialization") {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -823,7 +827,9 @@ TEST_CASE("integration::cpp::test_arithmetic::having") {
             collection_name,
             logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_plan(session, ins);
+        auto cur =
+            dispatcher->execute_plan(session,
+                                     components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kNumInserts);
     }
@@ -877,7 +883,7 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
     INFO("initialization") {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -893,7 +899,9 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
             collection_name,
             logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_plan(session, ins);
+        auto cur =
+            dispatcher->execute_plan(session,
+                                     components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kNumInserts);
     }
@@ -983,7 +991,7 @@ TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
     INFO("initialization") {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -999,7 +1007,9 @@ TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
             collection_name,
             logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_plan(session, ins);
+        auto cur =
+            dispatcher->execute_plan(session,
+                                     components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kNumInserts);
     }
@@ -1051,7 +1061,7 @@ TEST_CASE("integration::cpp::test_arithmetic::interleaved_group_by") {
     INFO("initialization") {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1164,7 +1174,7 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     INFO("initialization") {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1180,7 +1190,9 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
             collection_name,
             logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_plan(session, ins);
+        auto cur =
+            dispatcher->execute_plan(session,
+                                     components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kNumInserts);
     }

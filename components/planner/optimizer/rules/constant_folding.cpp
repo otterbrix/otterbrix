@@ -121,7 +121,7 @@ namespace components::planner::optimizer {
             if (is_union_compare_condition(expr.type())) {
                 return;
             }
-            if (expr.type() == compare_type::all_true || expr.type() == compare_type::all_false) {
+            if (expr.type() == compare_type::all_true || expr.type() == compare_type::all_false || expr.do_not_fold()) {
                 return;
             }
 
@@ -199,8 +199,7 @@ namespace components::planner::optimizer {
             }
         }
 
-        void
-        fold_expression(std::pmr::memory_resource* resource, const expression_ptr& expr, parameter_node_t* parameters);
+        void fold_expression(std::pmr::memory_resource* resource, expression_ptr& expr, parameter_node_t* parameters);
 
         void
         fold_scalar(std::pmr::memory_resource* resource, scalar_expression_t* scalar, parameter_node_t* parameters) {
@@ -216,7 +215,7 @@ namespace components::planner::optimizer {
 
         void
         fold_compare(std::pmr::memory_resource* resource, compare_expression_t* comp, parameter_node_t* parameters) {
-            for (const auto& child : comp->children()) {
+            for (auto& child : comp->children()) {
                 fold_expression(resource, child, parameters);
             }
             if (std::holds_alternative<expression_ptr>(comp->left())) {
@@ -229,10 +228,24 @@ namespace components::planner::optimizer {
             }
             try_fold_compare(*comp, parameters);
             simplify_union(comp);
+            if (comp->type() == compare_type::union_and || comp->type() == compare_type::union_or) {
+                const auto neutral =
+                    (comp->type() == compare_type::union_and) ? compare_type::all_true : compare_type::all_false;
+                auto& ch = comp->children();
+                ch.erase(std::remove_if(ch.begin(),
+                                        ch.end(),
+                                        [neutral](const expression_ptr& child) {
+                                            if (child->group() != expression_group::compare) {
+                                                return false;
+                                            }
+                                            return static_cast<const compare_expression_t*>(child.get())->type() ==
+                                                   neutral;
+                                        }),
+                         ch.end());
+            }
         }
 
-        void
-        fold_expression(std::pmr::memory_resource* resource, const expression_ptr& expr, parameter_node_t* parameters) {
+        void fold_expression(std::pmr::memory_resource* resource, expression_ptr& expr, parameter_node_t* parameters) {
             if (!expr) {
                 return;
             }
@@ -240,6 +253,11 @@ namespace components::planner::optimizer {
                 fold_scalar(resource, static_cast<scalar_expression_t*>(expr.get()), parameters);
             } else if (expr->group() == expression_group::compare) {
                 fold_compare(resource, static_cast<compare_expression_t*>(expr.get()), parameters);
+                auto* comp = static_cast<compare_expression_t*>(expr.get());
+                if ((comp->type() == compare_type::union_and || comp->type() == compare_type::union_or) &&
+                    comp->children().size() == 1) {
+                    expr = comp->children().front();
+                }
             }
         }
 
@@ -268,7 +286,7 @@ namespace components::planner::optimizer {
             if ((*it)->type() != logical_plan::node_type::match_t) {
                 continue;
             }
-            for (const auto& expr : (*it)->expressions()) {
+            for (auto& expr : (*it)->expressions()) {
                 fold_expression(resource, expr, parameters);
             }
         }

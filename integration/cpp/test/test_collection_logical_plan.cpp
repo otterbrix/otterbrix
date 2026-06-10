@@ -86,7 +86,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
     INFO("initialization") {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, table_database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + table_database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -113,7 +113,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                    logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_plan(session, ins);
+            auto cur =
+                dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
         }
@@ -125,7 +126,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto agg = logical_plan::make_node_aggregate(dispatcher->resource(),
                                                          core::dbname_t{table_database_name},
                                                          core::relname_t{table_collection_name});
-            auto cur = dispatcher->execute_plan(session, agg);
+            auto cur =
+                dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), agg, nullptr});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
         }
@@ -145,7 +147,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                             std::move(expr)));
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 90));
-            auto cur = dispatcher->execute_plan(session, agg, params);
+            auto cur =
+                dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), agg, params});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 10);
         }
@@ -165,7 +168,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                             std::move(expr)));
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 90.0));
-            auto cur = dispatcher->execute_plan(session, agg, params);
+            auto cur =
+                dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), agg, params});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 10);
         }
@@ -214,7 +218,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         group->append_expression(std::move(avg_expr));
 
         aggregate->append_child(std::move(group));
-        auto cur = dispatcher->execute_plan(session, aggregate);
+        auto cur = dispatcher->execute_plan(session,
+                                            logical_plan::execution_plan_t{dispatcher->resource(), aggregate, nullptr});
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
 
@@ -242,7 +247,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         auto ins = WRAP_DML_TARGET(table_database_name, table_other_collection_name, ins_node);
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_plan(session, ins);
+            auto cur =
+                dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
         }
@@ -265,7 +271,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                             std::move(expr)));
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 90));
-            auto cur = dispatcher->execute_plan(session, agg, params);
+            auto cur =
+                dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), agg, params});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 10);
         }
@@ -286,7 +293,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                                 id_par{1}))));
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 90));
-            auto cur = dispatcher->execute_plan(session, del, params);
+            auto cur =
+                dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), del, params});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 10);
         }
@@ -306,7 +314,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                             std::move(expr)));
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 90));
-            auto cur = dispatcher->execute_plan(session, agg, params);
+            auto cur =
+                dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), agg, params});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 0);
         }
@@ -331,7 +340,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                                       std::move(expr))));
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_plan(session, del);
+            auto cur =
+                dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), del, nullptr});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 90);
         }
@@ -354,7 +364,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                             std::move(expr)));
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 20));
-            auto cur = dispatcher->execute_plan(session, agg, params);
+            auto cur =
+                dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), agg, params});
             REQUIRE(cur->size() == 19);
         }
         {
@@ -376,7 +387,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 20));
             params->add_parameter(id_par{2}, types::logical_value_t(dispatcher->resource(), 1000));
-            auto cur = dispatcher->execute_plan(session, upd, params);
+            auto cur =
+                dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), upd, params});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 19);
         }
@@ -396,7 +408,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                             std::move(expr)));
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 20));
-            auto cur = dispatcher->execute_plan(session, agg, params);
+            auto cur =
+                dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), agg, params});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 0);
         }
@@ -416,7 +429,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                             std::move(expr)));
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 1000));
-            auto cur = dispatcher->execute_plan(session, agg, params);
+            auto cur =
+                dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), agg, params});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 19);
         }
@@ -444,7 +458,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 1000));
             params->add_parameter(id_par{2}, types::logical_value_t(dispatcher->resource(), uint64_t{9999}));
-            auto cur = dispatcher->execute_plan(session, upd, params);
+            auto cur =
+                dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), upd, params});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 19);
         }
@@ -464,7 +479,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                             std::move(expr)));
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 1000));
-            auto cur = dispatcher->execute_plan(session, agg, params);
+            auto cur =
+                dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), agg, params});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 19);
             for (size_t i = 0; i < cur->size(); ++i) {
@@ -479,7 +495,9 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         auto scan_agg = logical_plan::make_node_aggregate(dispatcher->resource(),
                                                           core::dbname_t{table_database_name},
                                                           core::relname_t{table_other_collection_name});
-        auto scan_cur = dispatcher->execute_plan(scan_session, scan_agg);
+        auto scan_cur =
+            dispatcher->execute_plan(scan_session,
+                                     logical_plan::execution_plan_t{dispatcher->resource(), scan_agg, nullptr});
         REQUIRE(scan_cur->size() == 10);
         vector::data_chunk_t data = std::move(scan_cur->chunk_data());
         {
@@ -515,7 +533,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             update_inner->set_result_alias("initial_table");
             update_inner->children().back()->set_result_alias("from_table");
             auto update = WRAP_DML_TARGET(table_database_name, table_other_collection_name, update_inner);
-            auto cur = dispatcher->execute_plan(session, update, params);
+            auto cur = dispatcher->execute_plan(session,
+                                                logical_plan::execution_plan_t{dispatcher->resource(), update, params});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 10);
         }
@@ -524,7 +543,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto agg = logical_plan::make_node_aggregate(dispatcher->resource(),
                                                          core::dbname_t{table_database_name},
                                                          core::relname_t{table_other_collection_name});
-            auto cur = dispatcher->execute_plan(session, agg);
+            auto cur =
+                dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), agg, nullptr});
             REQUIRE(cur->size() == 10);
             for (size_t num = 0; num < cur->size(); ++num) {
                 REQUIRE(cur->chunk_data().value(0, num).value<int64_t>() == static_cast<int64_t>(91 + num) * 2);
@@ -554,7 +574,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                        logical_plan::make_node_delete(dispatcher->resource(), match, limit));
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 1000));
-            auto cur = dispatcher->execute_plan(session, del, params);
+            auto cur =
+                dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), del, params});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
         }
@@ -582,7 +603,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                        logical_plan::make_node_delete(dispatcher->resource(), match, limit));
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 1000));
-            auto cur = dispatcher->execute_plan(session, del, params);
+            auto cur =
+                dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), del, params});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 5);
         }
@@ -614,7 +636,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 1000));
             params->add_parameter(id_par{2}, types::logical_value_t(dispatcher->resource(), 2000));
-            auto cur = dispatcher->execute_plan(session, upd, params);
+            auto cur =
+                dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), upd, params});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
         }
@@ -646,7 +669,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 1000));
             params->add_parameter(id_par{2}, types::logical_value_t(dispatcher->resource(), 3000));
-            auto cur = dispatcher->execute_plan(session, upd, params);
+            auto cur =
+                dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), upd, params});
             REQUIRE(cur->is_success());
             // There were 18 rows with count==1000 after delete limit 1 removed 1, delete limit 5 removed 5, and update limit 1 changed 1
             // So 12 remain with count==1000, limit 5 should update 5
@@ -680,14 +704,18 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto ins_left = WRAP_DML_TARGET(table_database_name,
                                             table_collection_left,
                                             logical_plan::make_node_insert(dispatcher->resource(), chunk_left));
-            auto cur = dispatcher->execute_plan(session, ins_left);
+            auto cur =
+                dispatcher->execute_plan(session,
+                                         logical_plan::execution_plan_t{dispatcher->resource(), ins_left, nullptr});
         }
         {
             auto session = otterbrix::session_id_t();
             auto ins_right = WRAP_DML_TARGET(table_database_name,
                                              table_collection_right,
                                              logical_plan::make_node_insert(dispatcher->resource(), chunk_right));
-            auto cur = dispatcher->execute_plan(session, ins_right);
+            auto cur =
+                dispatcher->execute_plan(session,
+                                         logical_plan::execution_plan_t{dispatcher->resource(), ins_right, nullptr});
         }
         INFO("right is raw data") {
             auto session = otterbrix::session_id_t();
@@ -706,7 +734,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                          expressions::key_t{dispatcher->resource(), "key_1"},
                                                          expressions::key_t{dispatcher->resource(), "key"}));
             }
-            auto cur = dispatcher->execute_plan(session, join);
+            auto cur = dispatcher->execute_plan(session,
+                                                logical_plan::execution_plan_t{dispatcher->resource(), join, nullptr});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 26);
 
@@ -735,7 +764,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                          expressions::key_t{dispatcher->resource(), "key_1"},
                                                          expressions::key_t{dispatcher->resource(), "key"}));
             }
-            auto cur = dispatcher->execute_plan(session, join);
+            auto cur = dispatcher->execute_plan(session,
+                                                logical_plan::execution_plan_t{dispatcher->resource(), join, nullptr});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 26);
 
@@ -762,7 +792,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                     expressions::key_t{dispatcher->resource(), "key_1", side_t::left},
                     expressions::key_t{dispatcher->resource(), "key", side_t::right}));
             }
-            auto cur = dispatcher->execute_plan(session, join);
+            auto cur = dispatcher->execute_plan(session,
+                                                logical_plan::execution_plan_t{dispatcher->resource(), join, nullptr});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 26);
 
@@ -800,7 +831,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
 
                 join->append_expression(std::move(and_expr));
             }
-            auto cur = dispatcher->execute_plan(session, join, params);
+            auto cur =
+                dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), join, params});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 13);
 
@@ -897,7 +929,9 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                 }
                 aggregate->append_child(join);
             }
-            auto cur = dispatcher->execute_plan(session, aggregate, params);
+            auto cur =
+                dispatcher->execute_plan(session,
+                                         logical_plan::execution_plan_t{dispatcher->resource(), aggregate, params});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 13);
 
@@ -927,7 +961,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         INFO("just raw data") {
             auto session = otterbrix::session_id_t();
             auto node = logical_plan::make_node_raw_data(dispatcher->resource(), chunk_left);
-            auto cur = dispatcher->execute_plan(session, node);
+            auto cur = dispatcher->execute_plan(session,
+                                                logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == chunk_left.size());
             REQUIRE(cur->chunk_data().column_count() == chunk_left.column_count());

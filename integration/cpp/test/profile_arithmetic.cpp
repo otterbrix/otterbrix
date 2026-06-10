@@ -31,7 +31,7 @@ int main() {
     // Setup
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->create_database(s, database_name);
+        dispatcher->execute_sql(s, "CREATE DATABASE " + database_name + ";");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -48,7 +48,7 @@ int main() {
             collection_name,
             logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         auto s = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_plan(s, ins);
+        auto cur = dispatcher->execute_plan(s, logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
         if (!cur->is_success()) {
             std::cerr << "Insert failed\n";
             return 1;

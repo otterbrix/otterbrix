@@ -16,6 +16,9 @@ set(${PROJECT_NAME}_SOURCES
         impl/create_plan_update.cpp
         impl/create_plan_join.cpp
         impl/create_plan_hash_join.cpp
+        impl/create_plan_union.cpp
+        impl/create_plan_cte_scan.cpp
+        impl/create_plan_recursive_cte.cpp
         impl/create_plan_check_constraint.cpp
         impl/create_plan_fk_check.cpp
         impl/create_plan_fk_cascade.cpp
@@ -24,16 +27,18 @@ set(${PROJECT_NAME}_SOURCES
         impl/create_plan_primitive_delete.cpp
         impl/create_plan_dynamic_cascade_delete.cpp
         impl/create_plan_checkpoint.cpp
+        impl/create_plan_set_timezone.cpp
         impl/create_plan_vacuum.cpp
         impl/create_plan_create_matview.cpp
-        impl/create_plan_get_schema.cpp
         impl/create_plan_register_udf.cpp
         impl/create_plan_unregister_udf.cpp
         impl/create_plan_commit_transaction.cpp
         impl/create_plan_abort_transaction.cpp
+        impl/create_plan_begin_transaction.cpp
         impl/create_plan_computed_field_register.cpp
         impl/create_plan_computed_field_unregister.cpp
         impl/create_plan_resolve_namespace.cpp
+        impl/create_plan_resolve_database.cpp
         impl/create_plan_resolve_function.cpp
         impl/create_plan_resolve_table.cpp
         impl/create_plan_resolve_type.cpp
@@ -41,7 +46,7 @@ set(${PROJECT_NAME}_SOURCES
         impl/create_plan_allocate_oids.cpp
 )
 
-add_library(otterbrix_${PROJECT_NAME}
+add_library(otterbrix_${PROJECT_NAME} OBJECT
         ${${PROJECT_NAME}_HEADERS}
         ${${PROJECT_NAME}_SOURCES}
 )

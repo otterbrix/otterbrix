@@ -190,7 +190,7 @@ namespace {
 } // anonymous namespace
 
 namespace components::sql::transform {
-    logical_plan::node_ptr transformer::transform_insert(InsertStmt& node, logical_plan::parameter_node_t* params) {
+    logical_plan::node_ptr transformer::transform_insert(InsertStmt& node, logical_plan::execution_plan_t* plan) {
         auto fields = pg_ptr_cast<List>(node.cols)->lst;
         std::pmr::vector<expressions::key_t> key_translation(resource_);
         for (const auto& field : fields) {
@@ -208,7 +208,7 @@ namespace components::sql::transform {
         if (!node.selectStmt) {
             auto qn = rangevar_to_qualified_name(node.relation);
             auto res = logical_plan::make_node_insert(resource_);
-            res->append_child(transform_select(*pg_ptr_cast<SelectStmt>(node.selectStmt), params));
+            res->append_child(transform_select(*pg_ptr_cast<SelectStmt>(node.selectStmt), plan));
             res->key_translation() = key_translation;
             return maybe_wrap_with_catalog_resolve_table(resource_,
                                                          qn.dbname,
@@ -340,7 +340,7 @@ namespace components::sql::transform {
         } else {
             auto qn = rangevar_to_qualified_name(node.relation);
             auto res = logical_plan::make_node_insert(resource_);
-            res->append_child(transform_select(*pg_ptr_cast<SelectStmt>(node.selectStmt), params));
+            res->append_child(transform_select(*pg_ptr_cast<SelectStmt>(node.selectStmt), plan));
             res->key_translation() = key_translation;
             return maybe_wrap_with_catalog_resolve_table(resource_,
                                                          qn.dbname,

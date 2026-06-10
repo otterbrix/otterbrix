@@ -23,10 +23,10 @@ namespace services::planner::impl {
 
         components::operators::operator_ptr join =
             boost::intrusive_ptr(new components::operators::operator_hash_join_t(resource,
-                                                                                std::move(log),
-                                                                                hash_node->type(),
-                                                                                hash_node->left_col(),
-                                                                                hash_node->right_col()));
+                                                                                 std::move(log),
+                                                                                 hash_node->type(),
+                                                                                 hash_node->left_col(),
+                                                                                 hash_node->right_col()));
 
         // Push the LIMIT down to whichever side an outer join preserves (mirrors
         // create_plan_join). The hash path covers inner/left/right/full only.

@@ -32,7 +32,7 @@ TEST_CASE("components::sql::insert_into") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));
-        auto node = dml_consumer(result.node);
+        auto node = dml_consumer(result.sub_queries.back());
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
@@ -49,7 +49,7 @@ TEST_CASE("components::sql::insert_into") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));
-        auto node = dml_consumer(result.node);
+        auto node = dml_consumer(result.sub_queries.back());
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
@@ -66,7 +66,7 @@ TEST_CASE("components::sql::insert_into") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));
-        auto node = dml_consumer(result.node);
+        auto node = dml_consumer(result.sub_queries.back());
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
@@ -84,7 +84,7 @@ TEST_CASE("components::sql::insert_into") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));
-        auto node = dml_consumer(result.node);
+        auto node = dml_consumer(result.sub_queries.back());
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
@@ -100,7 +100,7 @@ TEST_CASE("components::sql::insert_into") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));
-        auto node = dml_consumer(result.node);
+        auto node = dml_consumer(result.sub_queries.back());
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
@@ -126,7 +126,7 @@ TEST_CASE("components::sql::insert_into") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));
-        auto node = dml_consumer(result.node);
+        auto node = dml_consumer(result.sub_queries.back());
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
@@ -148,7 +148,7 @@ WHERE condition = true;)_"));
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));
-        auto node = dml_consumer(result.node);
+        auto node = dml_consumer(result.sub_queries.back());
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         REQUIRE(
             static_cast<const std::string&>(

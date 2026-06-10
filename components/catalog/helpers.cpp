@@ -35,23 +35,4 @@ namespace components::catalog {
         return out;
     }
 
-    std::vector<std::string>
-    attoids_to_names(const std::pmr::vector<std::pmr::vector<components::types::logical_value_t>>& attr_rows,
-                     const std::vector<oid_t>& attoids) {
-        std::vector<std::string> out;
-        out.reserve(attoids.size());
-        for (const auto& wanted_oid : attoids) {
-            for (const auto& row : attr_rows) {
-                if (row.size() <= pg_attribute_col::attname)
-                    continue;
-                auto row_attoid = static_cast<oid_t>(row[pg_attribute_col::attoid].value<std::uint32_t>());
-                if (row_attoid == wanted_oid) {
-                    out.emplace_back(std::string(row[pg_attribute_col::attname].value<std::string_view>()));
-                    break;
-                }
-            }
-        }
-        return out;
-    }
-
 } // namespace components::catalog

@@ -229,17 +229,21 @@ namespace services::wal {
     // -----------------------------------------------------------------------
     // encode_commit
     //
-    // Compact layout (29 bytes total):
-    //   [size:4]  = 21
+    // Compact layout (37 bytes total):
+    //   [size:4]  = 29
     //   [last_crc32:4]
     //   [wal_id:8]
     //   [txn_id:8]
     //   [record_type:1]   = COMMIT (1)
+    //   [commit_id:8]
     //   [crc32:4]
     // -----------------------------------------------------------------------
-    crc32_t encode_commit(buffer_t& buffer, crc32_t last_crc32, id_t wal_id, uint64_t txn_id) {
-        static constexpr uint32_t COMMIT_BODY_SIZE = 4 + 8 + 8 + 1;      // = 21
-        static constexpr size_t COMMIT_TOTAL = 4 + COMMIT_BODY_SIZE + 4; // = 29
+    crc32_t encode_commit(buffer_t& buffer, crc32_t last_crc32, id_t wal_id, uint64_t txn_id, uint64_t commit_id) {
+        // commit_id is appended AFTER the type byte to preserve the type byte's
+        // offset, so DML decode (which reads only up to the type byte before
+        // branching) stays unaffected.
+        static constexpr uint32_t COMMIT_BODY_SIZE = 4 + 8 + 8 + 1 + 8;  // = 29
+        static constexpr size_t COMMIT_TOTAL = 4 + COMMIT_BODY_SIZE + 4; // = 37
 
         const size_t base = buffer.size();
         buffer.resize(base + COMMIT_TOTAL);
@@ -258,6 +262,8 @@ namespace services::wal {
         out += 8;
         *reinterpret_cast<uint8_t*>(out) = static_cast<uint8_t>(wal_record_type::COMMIT);
         out += 1;
+        write_le64(out, commit_id);
+        out += 8;
 
         assert(static_cast<size_t>(out - crc_start) == COMMIT_BODY_SIZE);
 
@@ -278,8 +284,8 @@ namespace services::wal {
         record_t rec;
         rec.is_corrupt = false;
 
-        // Minimum valid record is a COMMIT at 29 bytes.
-        if (len < 29) {
+        // Minimum valid record is a COMMIT at 37 bytes.
+        if (len < 37) {
             rec.is_corrupt = true;
             rec.size = 0;
             return rec;
@@ -321,8 +327,12 @@ namespace services::wal {
         rec.record_type = static_cast<wal_record_type>(*reinterpret_cast<const uint8_t*>(ptr));
         ptr += 1;
 
-        // COMMIT record has no further fields.
+        // commit_id is present only on COMMIT records. DML records leave it 0;
+        // replay back-fills them once the matching COMMIT (same transaction_id)
+        // is parsed.
         if (rec.record_type == wal_record_type::COMMIT) {
+            rec.commit_id = read_le64(ptr);
+            ptr += 8;
             return rec;
         }
 

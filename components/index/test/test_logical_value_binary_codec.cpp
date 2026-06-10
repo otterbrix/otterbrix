@@ -30,11 +30,11 @@ TEST_CASE("logical_value_binary_codec: roundtrip_supported_types") {
     values.emplace_back(&resource, core::date::time_t{core::date::microseconds{123456789}});
     values.emplace_back(&resource, core::date::timestamp_t{core::date::microseconds{7777777}});
     values.emplace_back(&resource, core::date::timestamptz_t{core::date::microseconds{-5555555}});
-    values.emplace_back(logical_value_t::create_decimal(&resource, complex_logical_type::create_decimal(18, 2), 123456789));
-    values.emplace_back(logical_value_t::create_decimal(
-        &resource,
-        complex_logical_type::create_decimal(38, 8),
-        components::types::int128_t{1234567890123456789LL}));
+    values.emplace_back(
+        logical_value_t::create_decimal(&resource, complex_logical_type::create_decimal(18, 2), 123456789));
+    values.emplace_back(logical_value_t::create_decimal(&resource,
+                                                        complex_logical_type::create_decimal(38, 8),
+                                                        components::types::int128_t{1234567890123456789LL}));
     for (const auto& input : values) {
         std::pmr::string encoded(&resource);
         append_logical_value(encoded, input);

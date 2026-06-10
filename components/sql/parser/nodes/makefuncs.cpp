@@ -140,3 +140,14 @@ FuncCall* makeFuncCall(std::pmr::memory_resource* resource, List* name, List* ar
     n->location = location;
     return n;
 }
+
+/*
+ * make_extension_node -
+ *		build an otterbrix extension node, with payload and tagged by extension_id
+ */
+Node* make_extension_node(std::pmr::memory_resource* resource, const char* extension_id, void* data) {
+    ExtensionNode* node = makeNode(resource, ExtensionNode);
+    node->extension_id = extension_id;
+    node->data = data;
+    return reinterpret_cast<Node*>(node);
+}

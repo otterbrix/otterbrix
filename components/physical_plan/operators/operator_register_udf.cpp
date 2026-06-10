@@ -9,7 +9,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -20,16 +19,14 @@ namespace components::operators {
 
     operator_register_udf_t::operator_register_udf_t(std::pmr::memory_resource* resource,
                                                      log_t log,
-                                                     std::shared_ptr<components::compute::function> function,
-                                                     std::size_t executor_count,
-                                                     executor_register_fn_t executor_register_fn)
+                                                     components::compute::function_ptr function,
+                                                     executor_uids_t executor_uids)
         : read_only_operator_t(resource, std::move(log), operator_type::register_udf)
         , function_(std::move(function))
-        , executor_count_(executor_count)
-        , executor_register_fn_(std::move(executor_register_fn)) {}
+        , executor_uids_(std::move(executor_uids)) {}
 
     void operator_register_udf_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
-        // All work is async (executor fan-out + pg_proc writes). Defer to
+        // All work is async (conflict-detection read + pg_proc writes). Defer to
         // await_async_and_resume.
         async_wait();
     }
@@ -47,9 +44,8 @@ namespace components::operators {
 
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
-        // 1. Cross-namespace conflict detection. Bail with success_=false on any
-        //    pre-existing pg_proc row sharing this function name (any namespace,
-        //    user or pg_catalog). Mirrors #41 Path 2 in the legacy dispatcher.
+        // 1. Cross-namespace conflict detection: bail on any pre-existing pg_proc
+        //    row with this function name, in any namespace (user or pg_catalog).
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             auto [_rfbn, rfbnf] = actor_zeta::send(ctx->disk_address,
                                                    &services::disk::manager_disk_t::resolve_function_by_name,
@@ -64,21 +60,14 @@ namespace components::operators {
             }
         }
 
-        // 2. Fan out to per-executor function_registry_'s. The dispatcher-
-        //    supplied callable owns scheduler enqueue concerns; the operator
-        //    only co_awaits each returned future.
-        std::vector<components::compute::function_uid> uids;
-        uids.reserve(executor_count_);
-        for (std::size_t i = 0; i < executor_count_; ++i) {
-            auto fut = executor_register_fn_(ctx->session, function_->get_copy(resource_), i);
-            auto res = co_await std::move(fut);
-            if (!res || res->has_error()) {
-                output_ = nullptr;
-                mark_executed();
-                co_return;
-            }
-            uids.push_back(res->value());
-        }
+        // 2. Validate the per-executor registration uids the dispatcher
+        //    pre-collected from its fan-out. The dispatcher issues the
+        //    per-executor register_udf sends, co_awaits every ack, drops any
+        //    executor that returned an error, and hands the resulting uids in.
+        //    An empty vector means there was nothing to mirror by uid; a
+        //    non-empty vector must agree on a single, non-invalid uid (the
+        //    "all executors agree" invariant) or the registration is rejected.
+        const auto& uids = executor_uids_;
         if (!uids.empty()) {
             const auto first_uid = uids.front();
             const bool agree = std::all_of(uids.begin(), uids.end(), [first_uid](components::compute::function_uid u) {
@@ -92,14 +81,11 @@ namespace components::operators {
         }
 
         // 3. Mirror into the global default registry so validate_logical_plan
-        //    lookups (which probe function_registry_t::get_default()) see the
-        //    UDF. Use the LOCAL-allocated UID (uids.front()) so validate-time
-        //    lookups against the global registry produce the same uid that
-        //    the per-executor registries will resolve at execute time.
-        //    Without this the local registries auto-allocate uid starting at
-        //    last-builtin+1, while the global registry's counter keeps growing
-        //    across tests → expr->function_uid() set from global doesn't match
-        //    any local entry, predicate gets a null function pointer at runtime.
+        //    lookups (which probe get_default()) see the UDF. MUST reuse the
+        //    LOCAL uid (uids.front()): otherwise the global counter (which keeps
+        //    growing across tests) and the per-executor counters diverge, so a
+        //    plan's function_uid() set from global matches no local entry and the
+        //    predicate gets a null function pointer at runtime.
         if (auto* def_reg = components::compute::function_registry_t::get_default()) {
             auto res = uids.empty() ? def_reg->add_function(function_->get_copy(resource_))
                                     : def_reg->add_function_with_uid(uids.front(), function_->get_copy(resource_));
@@ -110,9 +96,8 @@ namespace components::operators {
             }
         }
 
-        // 4. Persist to pg_proc — UDFs registered here are user-namespace
-        //    functions. We attach them to the first existing user namespace; if
-        //    none exists, the row lives in pg_catalog. Matches legacy semantics.
+        // 4. Persist to pg_proc, attached to the first existing user namespace;
+        //    if none exists, the row lives in pg_catalog.
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             catalog::oid_t target_ns = catalog::well_known_oid::pg_catalog_namespace;
             {
@@ -171,12 +156,21 @@ namespace components::operators {
                                                                    prouid,
                                                                    std::move(proargmatchers),
                                                                    std::move(prorettype));
+            // Two-phase: the pg_proc/pg_depend writes are independent (no
+            // iteration consumes the previous result), so send all rows first
+            // then await in order.
+            std::pmr::vector<actor_zeta::unique_future<components::pg_catalog_append_range_t>> fn_write_futures(
+                resource_);
+            fn_write_futures.reserve(fn_writes.size());
             for (auto& w : fn_writes) {
                 auto [_w, wf] = actor_zeta::send(ctx->disk_address,
                                                  &services::disk::manager_disk_t::append_pg_catalog_row,
                                                  exec_ctx,
                                                  w.table_oid,
                                                  std::move(w.row));
+                fn_write_futures.push_back(std::move(wf));
+            }
+            for (auto& wf : fn_write_futures) {
                 auto rng = co_await std::move(wf);
                 if (rng.count > 0)
                     ctx->pg_catalog_appends.push_back(std::move(rng));

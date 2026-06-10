@@ -97,7 +97,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, table_database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + table_database_name + ";");
         }
         create_collection(table_collection_name_simple, columns_simple);
         create_collection(table_collection_name_not_null, columns_not_null);
@@ -116,7 +116,9 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 collection,
                 logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_plan(session, ins);
+            auto cur = dispatcher->execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
         };
@@ -141,7 +143,9 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 collection,
                 logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_plan(session, ins);
+            auto cur = dispatcher->execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
         };
@@ -166,7 +170,9 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 collection,
                 logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_plan(session, ins);
+            auto cur = dispatcher->execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
         };
@@ -198,7 +204,9 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                                                std::move(chunk),
                                                std::pmr::vector<expressions::key_t>{fields}));
             auto session = otterbrix::session_id_t();
-            return dispatcher->execute_plan(session, ins);
+            return dispatcher->execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
         };
         auto select_all = [&](const collection_name_t& collection) {
             auto session = otterbrix::session_id_t();
@@ -265,8 +273,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 REQUIRE(cur->size() == kNumInserts);
                 // column[1] will be filled with 100 default values (PostgreSQL
                 // semantic: DEFAULT applies for omitted columns regardless of
-                // nullability — see test_persistence::disk_partial_insert and
-                // docs/remaining-5-tests-plan.md "Group 4 / Plan").
+                // nullability — see test_persistence::disk_partial_insert).
             }
             {
                 auto cur = select_all(table_collection_name_value_defaults);
@@ -324,7 +331,9 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                                                std::move(chunk),
                                                std::pmr::vector<expressions::key_t>{fields}));
             auto session = otterbrix::session_id_t();
-            return dispatcher->execute_plan(session, ins);
+            return dispatcher->execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
         };
         auto select_all = [&](const collection_name_t& collection) {
             auto session = otterbrix::session_id_t();
@@ -444,7 +453,9 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                                                std::move(chunk),
                                                std::pmr::vector<expressions::key_t>{fields}));
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_plan(session, ins);
+            auto cur = dispatcher->execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_error());
         };
 

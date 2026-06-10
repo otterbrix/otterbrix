@@ -24,7 +24,9 @@ set( ${PROJECT_NAME}_SOURCES
         test_column_projection.cpp
         test_computed_schema.cpp
         test_pushdown_filter.cpp
+        test_subqueries.cpp
         test_hash_join.cpp
+        test_parser_extension.cpp
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})
@@ -35,6 +37,7 @@ target_link_libraries(
         cpp_otterbrix
         non_thread_scheduler
 
+        otterbrix::demo_extension
         otterbrix::test_generaty
         otterbrix::log
         otterbrix::cursor

@@ -44,6 +44,7 @@ namespace core {
 
         arithmetics_failure,
         comparison_failure,
+        conversion_failure,
 
         index_create_fail,
         index_not_exists,

@@ -5,6 +5,7 @@
 #include <integration/cpp/otterbrix.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
 #include <components/logical_plan/node_catalog_resolve_namespace.hpp>
+#include <components/logical_plan/execution_plan.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
@@ -82,9 +83,11 @@ namespace otterbrix {
         if (result.has_error()) {
             return components::cursor::make_cursor(space->dispatcher()->resource(), result.error());
         }
-        auto view = std::move(result.value());
-        auto plan = std::move(view.node);
-        auto cursor = space->dispatcher()->execute_plan(session, plan, std::move(view.params));
+        auto plan = std::move(result).value();
+        // Keep the main-query root for the post-execute catalog scan below;
+        // the plan itself is consumed by execute_plan.
+        auto root = plan.sub_queries.back();
+        auto cursor = space->dispatcher()->execute_plan(session, std::move(plan));
 
         if (cursor->is_success()) {
             // CREATE TABLE plan is no longer a single create_collection node. It is wrapped in a sequence with a catalog_resolve_namespace node that holds the database name. Walk the plan to find the created collection and database. For queries without an explicit database, use the PostgreSQL default namespace "public" (same default as the engine search path).
@@ -104,7 +107,7 @@ namespace otterbrix {
                         scan(child);
                     }
                 };
-            scan(plan);
+            scan(root);
             if (created) {
                 if (dbname.empty()) {
                     dbname = "public";
@@ -123,12 +126,18 @@ namespace otterbrix {
         if (optimize) {
             node = components::planner::optimize(node->resource(), node, nullptr);
         }
-        return space->dispatcher()->execute_plan(session, node, ExpressionFactory::GetParams());
+        return space->dispatcher()->execute_plan(
+            session,
+            components::logical_plan::execution_plan_t{
+                node->resource(), node, ExpressionFactory::GetParams()});
     }
 
     cursor::cursor_t_ptr ConnectionEnvironment::QueryRelation(const components::logical_plan::node_ptr &rel) {
         auto session = otterbrix::session_id_t();
-        return space->dispatcher()->execute_plan(session, rel, ExpressionFactory::GetParams());
+        return space->dispatcher()->execute_plan(
+            session,
+            components::logical_plan::execution_plan_t{
+                space->dispatcher()->resource(), rel, ExpressionFactory::GetParams()});
     }
 
     bool ConnectionEnvironment::IsJupyter() {

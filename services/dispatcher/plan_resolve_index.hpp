@@ -3,7 +3,7 @@
 // Plan-tree catalog lookup index.
 //
 // The transformer wraps DML/DDL plans with catalog_resolve_*_t leaf nodes.
-// Pass 1 in the dispatcher runs those leaves through operator_resolve_*_t
+// The dispatcher/executor runs those leaves through operator_resolve_*_t
 // (which queries pg_catalog via the standard executor pipeline) and stamps
 // the resolved OID + metadata onto each leaf via back-pointer.
 //
@@ -27,7 +27,9 @@
 #include <string_view>
 #include <unordered_map>
 
-namespace services::dispatcher::impl {
+// Under `services::catalog_resolve` so both dispatcher and executor share the
+// same gather + lookup primitives; re-exported into `dispatcher::impl` below.
+namespace services::catalog_resolve {
 
     struct plan_resolve_index_t {
         // Namespace name -> ns_oid (from node_catalog_resolve_namespace_t
@@ -70,7 +72,7 @@ namespace services::dispatcher::impl {
 
     // Walk plan tree once; collect every node_catalog_resolve_*_t leaf
     // and populate the index. Leaves whose oid is still INVALID_OID
-    // (Pass 1 did not stamp them — name did not resolve) are skipped.
+    // (resolve operator did not stamp them — name did not resolve) are skipped.
     inline void gather_plan_resolve_index(components::logical_plan::node_t* root, plan_resolve_index_t& out) {
         using namespace components::logical_plan;
         if (!root)
@@ -231,4 +233,15 @@ namespace services::dispatcher::impl {
         return components::catalog::INVALID_OID;
     }
 
+} // namespace services::catalog_resolve
+
+// Lets dispatcher/validate/resolve_type keep spelling these as `impl::...`.
+namespace services::dispatcher::impl {
+    using catalog_resolve::gather_plan_resolve_index;
+    using catalog_resolve::ns_oid_for;
+    using catalog_resolve::ns_oid_for_dbname;
+    using catalog_resolve::plan_resolve_index_t;
+    using catalog_resolve::tbl_md_for;
+    using catalog_resolve::tbl_md_for_oid;
+    using catalog_resolve::type_md_for;
 } // namespace services::dispatcher::impl

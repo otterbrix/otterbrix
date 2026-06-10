@@ -1,5 +1,8 @@
 #include <catch2/catch.hpp>
 
+#include <chrono>
+#include <thread>
+
 #include <services/dispatcher/dispatcher.hpp>
 
 #include <actor-zeta/spawn.hpp>
@@ -47,14 +50,17 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         // Pass WAL address — disk's append_pg_catalog_row sends physical_insert to it.
         manager_disk_->sync(std::make_tuple(manager_wal_->address()));
 
-        manager_dispatcher_->set_run_fn([this] { scheduler_->run(10000); });
-        manager_disk_->set_run_fn([this] { scheduler_->run(10000); });
-
         // Bootstrap pg_catalog system tables so the disk-side catalog has tables to scan.
         manager_disk_->bootstrap_system_tables_sync();
     }
 
     ~test_dispatcher() {
+        // Destroy managers (self-driving on internal threads) before the
+        // scheduler to avoid use-after-free, in reverse dependency order:
+        // dispatcher, then wal, then disk.
+        manager_dispatcher_.reset();
+        manager_wal_.reset();
+        manager_disk_.reset();
         scheduler_->stop();
         std::filesystem::remove_all(disk_path_);
         delete scheduler_;
@@ -65,17 +71,21 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
     void step() { scheduler_->run(10000); }
 
     cursor_t_ptr take_result() {
-        // V4 execute_plan does extra co_awaits (collections_ rebuild via list_namespaces +
-        // pre-load namespace + DDL existence check). Run scheduler with enough iterations
-        // to drain the message queue before extracting the future.
-        step();
+        // execute_plan's future becomes ready asynchronously (the manager actors
+        // self-drive on internal threads). Pump the child scheduler until ready,
+        // bounded by a 5s wall-clock deadline.
         REQUIRE(pending_future_);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!pending_future_->is_ready() && std::chrono::steady_clock::now() < deadline) {
+            scheduler_->run(1000);
+            std::this_thread::yield();
+        }
         REQUIRE(pending_future_->valid());
-        auto result = std::move(*pending_future_).get();
+        REQUIRE(pending_future_->is_ready());
+        auto result = std::move(*pending_future_).take_ready();
         pending_future_.reset();
-        // Drain again to ensure executor's post-result DDL inline pipeline
-        // (catalog writes + flush + commit_txn + storage_commit_appends) completes
-        // before returning.
+        // Drain again so the executor's post-result DDL pipeline (catalog writes,
+        // flush, commit_txn, storage_publish_commits) finishes before returning.
         step();
         return result;
     }
@@ -90,8 +100,13 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
                                                     ctx,
                                                     name,
                                                     std::uint64_t{0});
-        scheduler_->run(10000);
-        return std::move(fut).get();
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
+            scheduler_->run(1000);
+            std::this_thread::yield();
+        }
+        REQUIRE(fut.is_ready());
+        return std::move(fut).take_ready();
     }
 
     // Resolve a table via disk actor under a given namespace oid.
@@ -105,8 +120,13 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
                                                     ns_oid,
                                                     tname,
                                                     std::uint64_t{0});
-        scheduler_->run(10000);
-        return std::move(fut).get();
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
+            scheduler_->run(1000);
+            std::this_thread::yield();
+        }
+        REQUIRE(fut.is_ready());
+        return std::move(fut).take_ready();
     }
 
     void execute_sql(const std::string& query) {

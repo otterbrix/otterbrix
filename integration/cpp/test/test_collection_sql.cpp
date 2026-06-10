@@ -25,7 +25,7 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
     INFO("initialization") {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -54,36 +54,6 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                 dispatcher->execute_sql(session,
                                         "CREATE TABLE TestDatabase.TestCollection1(field1 string, field2 int[10]);");
             REQUIRE(cur->is_success());
-        }
-        {
-            auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->get_schema(
-                session,
-                {std::make_pair("testdatabase", "testcollection"), std::make_pair("testdatabase", "testcollection1")});
-
-            REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 2);
-            auto computed = cur->type_data()[0];
-            auto stated = cur->type_data()[1];
-
-            REQUIRE(types::complex_logical_type::contains(computed, [](const types::complex_logical_type& type) {
-                return type.alias() == "name" && type.type() == types::logical_type::STRING_LITERAL;
-            }));
-            REQUIRE(types::complex_logical_type::contains(computed, [](const types::complex_logical_type& type) {
-                return type.alias() == "count" && type.type() == types::logical_type::BIGINT;
-            }));
-
-            REQUIRE(types::complex_logical_type::contains(stated, [](const types::complex_logical_type& type) {
-                return type.alias() == "field1" && type.type() == types::logical_type::STRING_LITERAL;
-            }));
-            REQUIRE(types::complex_logical_type::contains(stated, [](const types::complex_logical_type& type) {
-                if (type.type() != types::logical_type::ARRAY) {
-                    return false;
-                }
-                auto array = static_cast<types::array_logical_type_extension*>(type.extension());
-                return type.alias() == "field2" && array->internal_type() == types::logical_type::INTEGER &&
-                       array->size() == 10;
-            }));
         }
     }
 
@@ -444,7 +414,7 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
     INFO("initialization") {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -567,7 +537,7 @@ TEST_CASE("integration::cpp::test_collection::sql::index") {
     INFO("initialization") {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();

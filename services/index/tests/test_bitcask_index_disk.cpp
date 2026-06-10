@@ -5,6 +5,7 @@
 #include <limits>
 #include <mutex>
 #include <random>
+#include <core/result_wrapper.hpp>
 #include <services/index/bitcask_index_disk.hpp>
 #include <services/index/btree_index_disk.hpp>
 #include <thread>
@@ -577,7 +578,11 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_throws_on_crc_mismatch"
         REQUIRE(file.good());
     }
 
-    REQUIRE_THROWS_AS((make_test_index(path, &resource)), std::runtime_error);
+    {
+        auto res = bitcask_index_disk_t::create(path, &resource, test_flush_threshold, 2);
+        REQUIRE(res.has_error());
+        REQUIRE(res.error().type == core::error_code_t::index_create_fail);
+    }
 
     std::filesystem::copy_file(backup_path, file_path, std::filesystem::copy_options::overwrite_existing);
     std::filesystem::remove(backup_path);
@@ -636,7 +641,11 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_crc_mismatch_does_not_d
         REQUIRE(file.good());
     }
 
-    REQUIRE_THROWS_AS((make_test_index(path, &resource)), std::runtime_error);
+    {
+        auto res = bitcask_index_disk_t::create(path, &resource, test_flush_threshold, test_segment_record_limit);
+        REQUIRE(res.has_error());
+        REQUIRE(res.error().type == core::error_code_t::index_create_fail);
+    }
 
     const auto intact_after_failed_recovery = read_file_bytes(intact_segment);
     REQUIRE(intact_after_failed_recovery == intact_before);
@@ -871,6 +880,11 @@ TEST_CASE("services::index::bitcask_index_disk::concurrent_insert_remove_find_st
     constexpr size_t keys_per_thread = key_count / thread_count;
 
     std::atomic<size_t> find_count{0};
+    // Catch2's RunContext is not thread-safe — REQUIRE must not run on
+    // worker threads (TSAN flags the shared assertion counters/message
+    // scopes). Workers record violations here; the main thread REQUIREs
+    // zero after join.
+    std::atomic<size_t> duplicate_row_violations{0};
     std::array<std::unordered_set<size_t>, key_count> expected_after_stress;
 
     auto snapshot = [&](bitcask_index_disk_t& from) {
@@ -918,7 +932,9 @@ TEST_CASE("services::index::bitcask_index_disk::concurrent_insert_remove_find_st
                         for (auto r : rows) {
                             seen.insert(r);
                         }
-                        REQUIRE(seen.size() == rows.size());
+                        if (seen.size() != rows.size()) {
+                            duplicate_row_violations.fetch_add(1, std::memory_order_relaxed);
+                        }
                     }
                     find_count.fetch_add(1, std::memory_order_relaxed);
                 }
@@ -934,6 +950,7 @@ TEST_CASE("services::index::bitcask_index_disk::concurrent_insert_remove_find_st
             thread.join();
         }
 
+        REQUIRE(duplicate_row_violations.load(std::memory_order_relaxed) == 0);
         REQUIRE(find_count.load(std::memory_order_relaxed) > 0);
         index.force_flush();
         expected_after_stress = snapshot(index);

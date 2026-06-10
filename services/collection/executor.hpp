@@ -17,15 +17,32 @@
 
 #include <components/table/row_version_manager.hpp>
 #include <core/btree/btree.hpp>
+#include <core/date/date_types.hpp>
 #include <services/collection/context_storage.hpp>
 #include <stack>
 #include <string>
+#include <unordered_map>
 
 namespace components::table {
     class transaction_manager_t;
+    class collection_t;
 }
 
 namespace services::collection::executor {
+
+    // One range per (table, DML fragment), accumulated across sub-plans.
+    // Must accumulate, not overwrite: FK cascade DELETE on >=2 tables emits a
+    // range per child table, and a single last-wins field would silently drop
+    // the publishes for every non-last child.
+    struct dml_append_range_t {
+        components::catalog::oid_t table_oid;
+        int64_t row_start;
+        uint64_t row_count;
+    };
+    struct dml_delete_range_t {
+        components::catalog::oid_t table_oid;
+        uint64_t txn_id;
+    };
 
     struct execute_result_t {
         components::cursor::cursor_t_ptr cursor;
@@ -34,6 +51,25 @@ namespace services::collection::executor {
         // Dispatcher merges these into transaction_t when txn_id != 0.
         std::vector<components::pg_catalog_append_range_t> pg_catalog_appends{};
         std::set<components::catalog::oid_t> pg_catalog_delete_tables{};
+        // markers emitted by ALTER COLUMN ADD/DROP/RENAME. Dispatcher pushes
+        // them onto transaction_t so operator_commit_transaction can patch
+        // the rows after commit_id allocation.
+        std::vector<components::pg_attribute_commit_id_backfill_t> pg_attribute_commit_id_backfills{};
+        // Per-range DML accumulators for the dispatcher's commit/abort phase.
+        // Implicit (auto-commit) path: populated, and the dispatcher drives
+        // storage_publish_commit / commit_insert / publish() (or the abort
+        // mirror) per range. Explicit BEGIN/COMMIT path: EMPTY — ranges were
+        // drained into transaction_t and operator_commit_transaction_t
+        // publishes them in a batch.
+        std::vector<dml_append_range_t> dml_appends{};
+        std::vector<dml_delete_range_t> dml_deletes{};
+        // True when this DML executed under an explicit SQL BEGIN — the
+        // dispatcher must SKIP its DML commit/abort phase (ranges live on
+        // transaction_t; operator_commit_transaction_t handles publish).
+        bool explicit_txn_no_commit{false};
+        // Session timezone, so the dispatcher can build execution_context_t for
+        // the storage_publish_* / commit_* / revert_* sends without re-resolving it.
+        core::date::timezone_offset_t session_tz{};
     };
 
     using function_result_t = core::result_wrapper_t<components::compute::function_uid>;
@@ -54,21 +90,21 @@ namespace services::collection::executor {
     // Internal result with MVCC tracking (not exposed to dispatcher).
     // DML operators self-contain WAL/storage/index I/O and record swap-info on
     // pipeline::context_t::dml_*. execute_sub_plan_ drains those onto the
-    // dml_* fields below so execute_plan can drive storage_commit_append /
-    // storage_commit_delete uniformly.
+    // dml_* vectors below so execute_plan can drive storage_publish_commit /
+    // storage_publish_delete for every accumulated range.
     struct sub_plan_result_t {
         components::cursor::cursor_t_ptr cursor;
         components::operators::operator_write_data_t::updated_types_map_t updates;
-        int64_t dml_append_row_start{0};
-        uint64_t dml_append_row_count{0};
-        uint64_t dml_delete_txn_id{0};
-        components::catalog::oid_t dml_table_oid{components::catalog::INVALID_OID};
+        // Accumulating vectors (FK cascade correctness — see dml_append_range_t).
+        std::vector<dml_append_range_t> dml_appends;
+        std::vector<dml_delete_range_t> dml_deletes;
 
         // pg_catalog swap-info drained from each pipeline::context_t inside
         // execute_sub_plan_. execute_plan moves these into the outer
         // execute_result_t so the dispatcher can push them onto transaction_t.
         std::vector<components::pg_catalog_append_range_t> pg_catalog_appends;
         std::set<components::catalog::oid_t> pg_catalog_delete_tables;
+        std::vector<components::pg_attribute_commit_id_backfill_t> pg_attribute_commit_id_backfills;
     };
 
     class executor_t final : public actor_zeta::basic_actor<executor_t> {
@@ -91,10 +127,63 @@ namespace services::collection::executor {
                                                      services::context_storage_t context_storage,
                                                      components::table::transaction_data txn);
 
+        // Runs the full pipeline on an unrewritten logical_plan: catalog
+        // resolve loop, view splice, stamp + gather, validate, enrich,
+        // planner.rewrite, then delegates to execute_plan for the operator
+        // pipeline (which execute_plan runs on its own).
+        unique_future<execute_result_t>
+        execute_plan_full(components::session::session_id_t session,
+                          components::logical_plan::node_ptr logical_plan,
+                          components::logical_plan::storage_parameters parameters,
+                          services::context_storage_t context_storage,
+                          components::table::transaction_data txn);
+
         unique_future<std::unique_ptr<function_result_t>> register_udf(components::session::session_id_t session,
                                                                        components::compute::function_ptr function);
 
-        using dispatch_traits = actor_zeta::dispatch_traits<&executor_t::execute_plan, &executor_t::register_udf>;
+        // Dispatcher fans these out (single send, NOT broadcast) to the
+        // executor whose index == hash(oid) % executor_pool_size_ (= oid %
+        // 4). Each executor owns its slice of the global table map in
+        // `local_collections_`.
+        //
+        // The entry is a value-type POD (oid + database + schema + name) the
+        // executor copy-stores in its own map. NOT a `collection_t*` and NOT
+        // a `shared_ptr<collection_t>`: mutable `collection_t` must never
+        // cross actors. Cross-partition queries (JOIN of tables landing in
+        // different executor slices) fall back to the dispatcher's
+        // `collections_` set; intra-partition DML / DDL can probe
+        // `find_local_collection(oid)` before paying that mailbox hop.
+        struct local_collection_entry_t {
+            components::catalog::oid_t oid{components::catalog::INVALID_OID};
+            std::string database;
+            std::string schema;
+            std::string name;
+        };
+
+        using collection_ptr_t = local_collection_entry_t;
+
+        unique_future<void> register_collection_local(components::session::session_id_t session,
+                                                       components::catalog::oid_t table_oid,
+                                                       local_collection_entry_t entry);
+        unique_future<void> unregister_collection_local(components::session::session_id_t session,
+                                                         components::catalog::oid_t table_oid);
+
+        // Hot-path lookup for DML inside this actor's partition. Returns
+        // nullptr for oids whose hash routes to a different executor slice —
+        // callers must then fall through to the cross-partition path (today:
+        // dispatcher.collections_ + disk_address_ resolve). Single-actor
+        // private map, no synchronization needed.
+        const local_collection_entry_t*
+        find_local_collection(components::catalog::oid_t oid) const noexcept {
+            auto it = local_collections_.find(oid);
+            return it == local_collections_.end() ? nullptr : &it->second;
+        }
+
+        using dispatch_traits = actor_zeta::dispatch_traits<&executor_t::execute_plan,
+                                                            &executor_t::execute_plan_full,
+                                                            &executor_t::register_udf,
+                                                            &executor_t::register_collection_local,
+                                                            &executor_t::unregister_collection_local>;
 
         auto make_type() const noexcept -> const char*;
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
@@ -119,6 +208,12 @@ namespace services::collection::executor {
 
         // Keeps fire-and-forget WAL flush futures alive until they resolve.
         std::pmr::vector<unique_future<void>> pending_void_;
+
+        // This executor's collections_ partition slice: oids where
+        // (oid % executor_pool_size_) == own_index, populated/cleared by the
+        // register/unregister_collection_local handlers. By-value POD entries —
+        // no shared mutable state with the dispatcher.
+        std::pmr::unordered_map<components::catalog::oid_t, local_collection_entry_t> local_collections_;
 
         void poll_pending();
     };

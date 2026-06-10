@@ -1,45 +1,43 @@
 #include "row_version_manager.hpp"
 
 #include <cassert>
+#include <cstdlib>
 
 #include "collection.hpp"
 
 namespace components::table {
 
+    // ProcArray canonical visibility filter:
+    //   1. If id == this txn's own transaction_id → self-write, always visible.
+    //   2. If id >= TRANSACTION_ID_START → another txn's pending write, not visible.
+    //   3. If id > snapshot_horizon → committed after our snapshot, not visible.
+    //   4. If id is in in_flight_snapshot → committed at snapshot time but not yet
+    //      publish()-published, not visible.
+    //   5. Otherwise → committed-and-published before our snapshot, visible.
+    //
+    // use_deleted_version is the inverse: a delete-marker id "survives" (i.e. row
+    // remains alive) when use_inserted_version says it's NOT visible. NOT_DELETED_ID
+    // is huge (>> TRANSACTION_ID_START) so rule 2 implicitly handles it.
     struct transaction_version_operator {
-        static bool use_inserted_version(uint64_t start_time, uint64_t transaction_id, uint64_t id) {
-            return id < start_time || id == transaction_id;
+        static bool use_inserted_version(const transaction_data& txn, uint64_t id) {
+            if (txn.transaction_id != 0 && id == txn.transaction_id)
+                return true;
+            if (id >= TRANSACTION_ID_START)
+                return false;
+            if (id > txn.snapshot_horizon)
+                return false;
+            if (std::binary_search(txn.in_flight_snapshot.begin(), txn.in_flight_snapshot.end(), id))
+                return false;
+            return true;
         }
 
-        static bool use_deleted_version(uint64_t start_time, uint64_t transaction_id, uint64_t id) {
-            return !use_inserted_version(start_time, transaction_id, id);
-        }
-    };
-
-    struct committed_version_operator {
-        // A row is visible via a committed scan if it has already been committed
-        // (insert_id < TRANSACTION_ID_START) OR was inserted by the current transaction
-        // (the own-transaction case, handled via id == transaction_id).
-        // Rows with insert_id >= TRANSACTION_ID_START inserted by OTHER transactions are
-        // hidden until they commit — standard PostgreSQL MVCC semantics (spec §7).
-        static bool use_inserted_version(uint64_t /* start_time */, uint64_t transaction_id, uint64_t id) {
-            return id < TRANSACTION_ID_START || id == transaction_id;
-        }
-
-        // E2.1A: row is visible if (a) never deleted, (b) deleted by an uncommitted txn
-        // (other readers must NOT see another txn's tombstone before commit), or
-        // (c) deleted-after-snapshot. Previously the uncommitted case was excluded, hiding
-        // the row from ALL readers as soon as any txn issued a tombstone — the bug behind
-        // resolve_*'s incorrect view of pg_catalog during in-flight DDL.
-        static bool use_deleted_version(uint64_t min_start_time, uint64_t /* min_transaction_id */, uint64_t id) {
-            return id == NOT_DELETED_ID || id >= TRANSACTION_ID_START || id >= min_start_time;
+        static bool use_deleted_version(const transaction_data& txn, uint64_t id) {
+            return !use_inserted_version(txn, id);
         }
     };
 
-    static bool use_version(transaction_data transaction, uint64_t id) {
-        return transaction_version_operator::use_inserted_version(transaction.start_time,
-                                                                  transaction.transaction_id,
-                                                                  id);
+    static bool use_version(const transaction_data& transaction, uint64_t id) {
+        return transaction_version_operator::use_inserted_version(transaction, id);
     }
 
     bool chunk_info::cleanup(uint64_t /* lowest_transaction */, std::unique_ptr<chunk_info>& /* result */) const {
@@ -52,12 +50,10 @@ namespace components::table {
         , delete_id(NOT_DELETED_ID) {}
 
     template<class OP>
-    uint64_t chunk_constant_info::templated_indexing_vector(uint64_t start_time,
-                                                            uint64_t transaction_id,
+    uint64_t chunk_constant_info::templated_indexing_vector(const transaction_data& txn,
                                                             vector::indexing_vector_t&,
                                                             uint64_t max_count) const {
-        if (OP::use_inserted_version(start_time, transaction_id, insert_id) &&
-            OP::use_deleted_version(start_time, transaction_id, delete_id)) {
+        if (OP::use_inserted_version(txn, insert_id) && OP::use_deleted_version(txn, delete_id)) {
             return max_count;
         }
         return 0;
@@ -66,29 +62,18 @@ namespace components::table {
     uint64_t chunk_constant_info::indexing_vector(transaction_data transaction,
                                                   vector::indexing_vector_t& indexing_vector,
                                                   uint64_t max_count) {
-        return templated_indexing_vector<transaction_version_operator>(transaction.start_time,
-                                                                       transaction.transaction_id,
-                                                                       indexing_vector,
-                                                                       max_count);
+        return templated_indexing_vector<transaction_version_operator>(transaction, indexing_vector, max_count);
     }
 
-    uint64_t chunk_constant_info::committed_indexing_vector(uint64_t min_start_id,
-                                                            uint64_t min_transaction_id,
-                                                            vector::indexing_vector_t& indexing_vector,
-                                                            uint64_t max_count) {
-        return templated_indexing_vector<committed_version_operator>(min_start_id,
-                                                                     min_transaction_id,
-                                                                     indexing_vector,
-                                                                     max_count);
-    }
-
-    bool chunk_constant_info::fetch(transaction_data transaction, int64_t) {
+    bool chunk_constant_info::fetch(const transaction_data& transaction, int64_t) {
         return use_version(transaction, insert_id) && !use_version(transaction, delete_id);
     }
 
     void chunk_constant_info::commit_append(uint64_t commit_id, uint64_t start, uint64_t end) {
+        assert((start == 0 && end == vector::DEFAULT_VECTOR_CAPACITY) &&
+               "chunk_constant_info::commit_append does not cover whole range");
         if (start != 0 || end != vector::DEFAULT_VECTOR_CAPACITY) {
-            throw std::runtime_error("chunk_constant_info::commit_append does not cover whole range");
+            std::abort();
         }
         insert_id = commit_id;
     }
@@ -125,36 +110,34 @@ namespace components::table {
     }
 
     template<class OP>
-    uint64_t chunk_vector_info::templated_indexing_vector(uint64_t start_time,
-                                                          uint64_t transaction_id,
+    uint64_t chunk_vector_info::templated_indexing_vector(const transaction_data& txn,
                                                           vector::indexing_vector_t& indexing_vector,
                                                           uint64_t max_count) const {
         uint64_t count = 0;
         if (same_inserted_id && !any_deleted) {
-            if (OP::use_inserted_version(start_time, transaction_id, insert_id)) {
+            if (OP::use_inserted_version(txn, insert_id)) {
                 return max_count;
             } else {
                 return 0;
             }
         } else if (same_inserted_id) {
-            if (!OP::use_inserted_version(start_time, transaction_id, insert_id)) {
+            if (!OP::use_inserted_version(txn, insert_id)) {
                 return 0;
             }
             for (uint64_t i = 0; i < max_count; i++) {
-                if (OP::use_deleted_version(start_time, transaction_id, deleted[i])) {
+                if (OP::use_deleted_version(txn, deleted[i])) {
                     indexing_vector.set_index(count++, i);
                 }
             }
         } else if (!any_deleted) {
             for (uint64_t i = 0; i < max_count; i++) {
-                if (OP::use_inserted_version(start_time, transaction_id, inserted[i])) {
+                if (OP::use_inserted_version(txn, inserted[i])) {
                     indexing_vector.set_index(count++, i);
                 }
             }
         } else {
             for (uint64_t i = 0; i < max_count; i++) {
-                if (OP::use_inserted_version(start_time, transaction_id, inserted[i]) &&
-                    OP::use_deleted_version(start_time, transaction_id, deleted[i])) {
+                if (OP::use_inserted_version(txn, inserted[i]) && OP::use_deleted_version(txn, deleted[i])) {
                     indexing_vector.set_index(count++, i);
                 }
             }
@@ -162,33 +145,13 @@ namespace components::table {
         return count;
     }
 
-    uint64_t chunk_vector_info::indexing_vector(uint64_t start_time,
-                                                uint64_t transaction_id,
-                                                vector::indexing_vector_t& indexing_vector,
-                                                uint64_t max_count) const {
-        return templated_indexing_vector<transaction_version_operator>(start_time,
-                                                                       transaction_id,
-                                                                       indexing_vector,
-                                                                       max_count);
-    }
-
-    uint64_t chunk_vector_info::committed_indexing_vector(uint64_t min_start_id,
-                                                          uint64_t min_transaction_id,
-                                                          vector::indexing_vector_t& indexing_vector,
-                                                          uint64_t max_count) {
-        return templated_indexing_vector<committed_version_operator>(min_start_id,
-                                                                     min_transaction_id,
-                                                                     indexing_vector,
-                                                                     max_count);
-    }
-
     uint64_t chunk_vector_info::indexing_vector(transaction_data transaction,
                                                 vector::indexing_vector_t& indx_vector,
                                                 uint64_t max_count) {
-        return indexing_vector(transaction.start_time, transaction.transaction_id, indx_vector, max_count);
+        return templated_indexing_vector<transaction_version_operator>(transaction, indx_vector, max_count);
     }
 
-    bool chunk_vector_info::fetch(transaction_data transaction, int64_t row) {
+    bool chunk_vector_info::fetch(const transaction_data& transaction, int64_t row) {
         return use_version(transaction, inserted[row]) && !use_version(transaction, deleted[row]);
     }
 
@@ -197,11 +160,11 @@ namespace components::table {
 
         uint64_t deleted_tuples = 0;
         for (uint64_t i = 0; i < count; i++) {
-            if (deleted[rows[i]] == transaction_id) {
-                continue;
-            }
             if (deleted[rows[i]] != NOT_DELETED_ID) {
-                throw std::runtime_error("Conflict on tuple deletion!");
+                // Already deleted (by this txn, or a prior committed txn in a
+                // cascade-drop where the scan ignores MVCC visibility). Skip
+                // rather than abort: cascade DDL must be idempotent.
+                continue;
             }
             deleted[rows[i]] = transaction_id;
             rows[deleted_tuples] = rows[i];
@@ -369,20 +332,7 @@ namespace components::table {
         return chunk_info->indexing_vector(transaction, indexing_vector, max_count);
     }
 
-    uint64_t row_version_manager_t::committed_indexing_vector(uint64_t start_time,
-                                                              uint64_t transaction_id,
-                                                              uint64_t vector_idx,
-                                                              vector::indexing_vector_t& indexing_vector,
-                                                              uint64_t max_count) {
-        std::lock_guard l(version_lock_);
-        auto info = get_chunk_info(vector_idx);
-        if (!info) {
-            return max_count;
-        }
-        return info->committed_indexing_vector(start_time, transaction_id, indexing_vector, max_count);
-    }
-
-    bool row_version_manager_t::fetch(transaction_data transaction, uint64_t row) {
+    bool row_version_manager_t::fetch(const transaction_data& transaction, uint64_t row) {
         std::lock_guard lock(version_lock_);
         uint64_t vector_index = row / vector::DEFAULT_VECTOR_CAPACITY;
         auto info = get_chunk_info(vector_index);
@@ -435,8 +385,9 @@ namespace components::table {
                 } else if (vector_info_[vector_idx]->type == chunk_info_type::VECTOR_INFO) {
                     new_info = &vector_info_[vector_idx]->cast<chunk_vector_info>();
                 } else {
-                    throw std::logic_error("Error in row_version_manager_t::append_version_info - expected either a "
-                                           "chunk_vector_info or no version info");
+                    assert(false && "Error in row_version_manager_t::append_version_info - "
+                                    "expected either a chunk_vector_info or no version info");
+                    std::abort();
                 }
                 new_info->append(vector_start, vector_end, transaction.transaction_id);
             }

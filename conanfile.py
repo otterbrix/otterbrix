@@ -29,7 +29,7 @@ class OtterbrixConan(ConanFile):
         self.requires("zlib/1.3.1@")
         self.requires("bzip2/1.0.8@")
         self.requires("magic_enum/0.8.1@")
-        self.requires("actor-zeta/1.1.1@")
+        self.requires("actor-zeta/1.2.0@")
         self.requires("fast_float/8.1.0@")
 
     def config_options(self):

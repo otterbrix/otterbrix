@@ -4,7 +4,9 @@
 #include <components/index/logical_value_binary_codec.hpp>
 
 #include <algorithm>
+#include <cassert>
 #include <charconv>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
@@ -140,12 +142,16 @@ namespace services::index {
             {
                 std::ofstream output(temp_path, std::ios::trunc);
                 if (!output.good()) {
-                    throw std::runtime_error("failed to write CURRENT temp file");
+                    // -fno-exceptions build: abort instead of throw on I/O failure.
+                    assert(false && "bitcask I/O failure");
+                    std::abort();
                 }
                 output << segment_id;
                 output.flush();
                 if (!output.good()) {
-                    throw std::runtime_error("failed to flush CURRENT temp file");
+                    // -fno-exceptions build: abort instead of throw on I/O failure.
+                    assert(false && "bitcask I/O failure");
+                    std::abort();
                 }
             }
             std::error_code ec;
@@ -192,8 +198,54 @@ namespace services::index {
                                                           false,
                                                           resource_);
         load_from_disk();
+        if (crc_failure_) {
+            // Direct ctor aborts on corruption; only create() tolerates a CRC
+            // mismatch and turns it into a core::error_t.
+            assert(false && "bitcask I/O failure: direct ctor saw CRC mismatch");
+            std::abort();
+        }
         open_active_segment();
         recover_txn_log_unlocked();
+    }
+
+    core::result_wrapper_t<std::unique_ptr<bitcask_index_disk_t>>
+    bitcask_index_disk_t::create(const path_t& path,
+                                  std::pmr::memory_resource* resource,
+                                  uint64_t flush_threshold,
+                                  uint64_t segment_record_limit) {
+        // skip_load ctor does no I/O, so we can run load_from_disk() and check
+        // crc_failure_ before open_active_segment().
+        auto instance = std::unique_ptr<bitcask_index_disk_t>(
+            new bitcask_index_disk_t(path, resource, flush_threshold, segment_record_limit, skip_load_tag{}));
+        instance->load_from_disk();
+        if (instance->crc_failure_) {
+            return core::error_t{core::error_code_t::index_create_fail,
+                                 std::pmr::string{"bitcask: CRC mismatch during recovery", resource}};
+        }
+        instance->open_active_segment();
+        instance->recover_txn_log_unlocked();
+        return instance;
+    }
+
+    bitcask_index_disk_t::bitcask_index_disk_t(const path_t& path,
+                                                std::pmr::memory_resource* resource,
+                                                uint64_t flush_threshold,
+                                                uint64_t segment_record_limit,
+                                                skip_load_tag)
+        : index_disk_t(flush_threshold)
+        , path_(path)
+        , hash_index_file_path_(path_ / hash_index_file)
+        , resource_(resource)
+        , fs_(core::filesystem::local_file_system_t())
+        , segment_record_limit_(segment_record_limit)
+        , task_executor_(std::make_unique<bitcask_task_executor_t>()) {
+        initialize_storage();
+        hash_index_ = std::make_unique<disk_hash_table_t>(hash_index_file_path_,
+                                                          disk_hash_table_t::default_bucket_count,
+                                                          false,
+                                                          resource_);
+        // Caller (factory) is responsible for load_from_disk +
+        // open_active_segment + recover_txn_log_unlocked.
     }
 
     bitcask_index_disk_t::~bitcask_index_disk_t() { force_flush(); }
@@ -219,7 +271,9 @@ namespace services::index {
     uint32_t bitcask_index_disk_t::segment_id_from_path(const std::filesystem::path& path) {
         uint64_t id = 0;
         if (!parse_segment_id(path, id)) {
-            throw std::runtime_error("invalid bitcask segment path");
+            // -fno-exceptions build: abort instead of throw on I/O failure.
+            assert(false && "bitcask I/O failure");
+            std::abort();
         }
         return static_cast<uint32_t>(id);
     }
@@ -236,7 +290,9 @@ namespace services::index {
         for (auto& segment : segments) {
             auto f = open_file(fs_, segment.path, file_flags::READ, file_lock_type::NO_LOCK);
             if (!f) {
-                throw std::runtime_error("failed to open bitcask data file: " + segment.path.string());
+                // -fno-exceptions build: abort instead of throw on I/O failure.
+                assert(false && "bitcask I/O failure");
+                std::abort();
             }
             const auto file_size = f->file_size();
             uint64_t offset = 0;
@@ -264,7 +320,11 @@ namespace services::index {
                     calc = absl::ExtendCrc32c(calc, absl::string_view(payload.data(), payload.size()));
                 }
                 if (static_cast<uint32_t>(calc) != header.crc) {
-                    throw std::runtime_error("CRC mismatch in segment " + std::to_string(segment.id));
+                    // Segment corruption: flag and return rather than abort, so
+                    // create() can report a core::error_t. The direct ctor checks
+                    // this flag post-load and asserts.
+                    crc_failure_ = true;
+                    return;
                 }
                 value_t key(resource_, nullptr);
                 row_ids_t rows(resource_);
@@ -334,7 +394,9 @@ namespace services::index {
                           file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                           file_lock_type::NO_LOCK);
         if (!file_) {
-            throw std::runtime_error("failed to open bitcask data file: " + active_data_file_path_.string());
+            // -fno-exceptions build: abort instead of throw on I/O failure.
+            assert(false && "bitcask I/O failure");
+            std::abort();
         }
         file_->seek(file_->file_size());
         write_current_segment_id(path_, active_segment_id_);
@@ -480,12 +542,16 @@ namespace services::index {
         {
             std::ofstream out(temp_path, std::ios::trunc);
             if (!out.good()) {
-                throw std::runtime_error("failed to write txn applied temp file");
+                // -fno-exceptions build: abort instead of throw on I/O failure.
+                assert(false && "bitcask I/O failure");
+                std::abort();
             }
             out << offset;
             out.flush();
             if (!out.good()) {
-                throw std::runtime_error("failed to flush txn applied temp file");
+                // -fno-exceptions build: abort instead of throw on I/O failure.
+                assert(false && "bitcask I/O failure");
+                std::abort();
             }
         }
         std::error_code ec;
@@ -523,7 +589,9 @@ namespace services::index {
                                       file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                                       file_lock_type::NO_LOCK);
             if (!txn_log_file_) {
-                throw std::runtime_error("failed to open bitcask txn log");
+                // -fno-exceptions build: abort instead of throw on I/O failure.
+                assert(false && "bitcask I/O failure");
+                std::abort();
             }
         }
         txn_log_file_->seek(txn_log_file_->file_size());
@@ -554,7 +622,9 @@ namespace services::index {
                 break;
             }
             if (header.magic != txn_magic) {
-                throw std::runtime_error("bitcask txn log corruption: bad magic");
+                // -fno-exceptions build: abort instead of throw on I/O failure.
+                assert(false && "bitcask I/O failure");
+                std::abort();
             }
             std::pmr::string payload(resource_);
             payload.resize(static_cast<size_t>(header.payload_size));
@@ -572,7 +642,9 @@ namespace services::index {
                 calc = absl::ExtendCrc32c(calc, absl::string_view(payload.data(), payload.size()));
             }
             if (static_cast<uint32_t>(calc) != header.crc) {
-                throw std::runtime_error("bitcask txn log CRC mismatch");
+                // -fno-exceptions build: abort instead of throw on I/O failure.
+                assert(false && "bitcask I/O failure");
+                std::abort();
             }
 
             size_t pos = 0;
@@ -585,7 +657,9 @@ namespace services::index {
                 } else if (header.op_kind == 2) {
                     remove(key, row_id);
                 } else {
-                    throw std::runtime_error("bitcask txn log invalid op kind");
+                    // -fno-exceptions build: abort instead of throw on I/O failure.
+                    assert(false && "bitcask I/O failure");
+                    std::abort();
                 }
             }
             force_flush_unlocked();
@@ -603,7 +677,9 @@ namespace services::index {
                                       file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                                       file_lock_type::NO_LOCK);
             if (!txn_log_file_) {
-                throw std::runtime_error("failed to open bitcask txn log");
+                // -fno-exceptions build: abort instead of throw on I/O failure.
+                assert(false && "bitcask I/O failure");
+                std::abort();
             }
         }
         const auto applied_offset = txn_log_file_->file_size();
@@ -629,7 +705,9 @@ namespace services::index {
                                       file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                                       file_lock_type::NO_LOCK);
             if (!txn_log_file_) {
-                throw std::runtime_error("failed to open bitcask txn log");
+                // -fno-exceptions build: abort instead of throw on I/O failure.
+                assert(false && "bitcask I/O failure");
+                std::abort();
             }
         }
         const auto applied_offset = txn_log_file_->file_size();
@@ -762,19 +840,24 @@ namespace services::index {
     }
 
     void bitcask_index_disk_t::lower_bound(const value_t& /*value*/, result& /*res*/) const {
-        throw "not supported"; // not supported
+        // Hashed index has no ordering — lower_bound/upper_bound are unreachable.
+        assert(false && "not supported");
+        std::abort();
     }
 
     bitcask_index_disk_t::result bitcask_index_disk_t::lower_bound(const value_t& /*value*/) const {
-        throw "not supported"; // not supported
+        assert(false && "not supported");
+        std::abort();
     }
 
     void bitcask_index_disk_t::upper_bound(const value_t& /*value*/, result& /*res*/) const {
-        throw "not supported"; // not supported
+        assert(false && "not supported");
+        std::abort();
     }
 
     bitcask_index_disk_t::result bitcask_index_disk_t::upper_bound(const value_t& /*value*/) const {
-        throw "not supported"; // not supported
+        assert(false && "not supported");
+        std::abort();
     }
 
     void bitcask_index_disk_t::merge_immutable_segments() {
@@ -800,7 +883,9 @@ namespace services::index {
                                      file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                                      file_lock_type::NO_LOCK);
         if (!merged_file) {
-            throw std::runtime_error("failed to create merged bitcask data file");
+            // -fno-exceptions build: abort instead of throw on I/O failure.
+            assert(false && "bitcask I/O failure");
+            std::abort();
         }
 
         struct merged_ref_t {
@@ -835,7 +920,9 @@ namespace services::index {
         merged_file->sync();
         merged_file.reset();
         if (!move_files(fs_, temp_path, merged_path)) {
-            throw std::runtime_error("failed to publish merged segment");
+            // -fno-exceptions build: abort instead of throw on I/O failure.
+            assert(false && "bitcask I/O failure");
+            std::abort();
         }
 
         for (const auto& merged_ref : merged_refs) {

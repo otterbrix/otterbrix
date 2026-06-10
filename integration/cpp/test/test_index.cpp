@@ -26,7 +26,7 @@ constexpr int kDocuments = 100;
     do {                                                                                                               \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
-            dispatcher->create_database(session, database_name);                                                       \
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");                                \
         }                                                                                                              \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
@@ -84,7 +84,7 @@ constexpr int kDocuments = 100;
 #define DROP_INDEX(INDEX_NAME)                                                                                         \
     do {                                                                                                               \
         auto session = otterbrix::session_id_t();                                                                      \
-        /* drop_index carries no names; wrap with resolve_table siblings so Pass 1 stamps OIDs. */                     \
+        /* drop_index carries no names; wrap with resolve_table siblings so resolve stamps OIDs. */                    \
         auto node = components::logical_plan::make_node_drop_index(dispatcher->resource());                            \
         std::vector<std::pair<std::string, std::string>> targets;                                                      \
         targets.emplace_back(database_name, collection_name);                                                          \

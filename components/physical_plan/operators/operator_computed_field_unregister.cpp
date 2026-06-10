@@ -54,10 +54,9 @@ namespace components::operators {
         // attoid (the pre-existing attoid path remains a fast path for
         // callers that do stamp it).
 
-        // Step 1: scan pg_computed_column rows for this relid (table is small
-        // per-table, perf OK), filter by attoid in-callback. Cannot read by
-        // attoid alone because the same logical (relid, attoid) row may have
-        // multiple version entries; we still need max(attversion).
+        // Scan by relid and filter by attoid in-callback: a keyed (relid, attoid)
+        // read won't do because the same column can have multiple version rows
+        // and we need max(attversion).
         // pg_computed_column layout: 0=relid 1=attoid 2=attname
         // 3=atttypid 4=atttypspec 5=attversion 6=attrefcount.
         types::logical_value_t toid_lv(resource_, table_oid_);
@@ -73,7 +72,7 @@ namespace components::operators {
                                          std::move(r_vals));
         auto rows = co_await std::move(rf);
 
-        // Step 2: pick the latest live row matching attoid_ (max attversion AND attrefcount > 0).
+        // pick the latest live row matching attoid_ (max attversion AND attrefcount > 0).
         std::int64_t max_version = -1;
         catalog::oid_t live_attoid = catalog::INVALID_OID;
         catalog::oid_t live_atttypid = catalog::INVALID_OID;
@@ -113,10 +112,8 @@ namespace components::operators {
             co_return;
         }
 
-        // Step 3: append a tombstone row (same attoid + same atttypid, version =
-        // max + 1, refcount = 0). Reusing the live attoid keeps any pg_depend
-        // attrefs valid; the reader filters this row out via the refcount<=0
-        // gate.
+        // Tombstone row: version = max+1, refcount = 0, same attoid so any
+        // pg_depend attrefs stay valid; readers drop it via the refcount<=0 gate.
         auto cc_row = catalog::build_pg_computed_column_row(resource_,
                                                             table_oid_,
                                                             live_attoid,

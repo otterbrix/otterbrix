@@ -17,10 +17,16 @@ namespace components::catalog {
     class table_id;
 }
 
+// Real type lives in services::catalog_resolve; impl::plan_resolve_index_t
+// below is an alias (see plan_resolve_index.hpp).
+namespace services::catalog_resolve {
+    struct plan_resolve_index_t;
+} // namespace services::catalog_resolve
+
 namespace services::dispatcher {
 
     namespace impl {
-        struct plan_resolve_index_t;
+        using ::services::catalog_resolve::plan_resolve_index_t;
     }
 
     using column_path = std::pmr::vector<size_t>;
@@ -55,7 +61,7 @@ namespace services::dispatcher {
     // Walk a complex_logical_type tree and visit every nested UDT reference.
     using ::components::types::walk_user_type_refs;
 
-    // Validate plan node types against the plan-tree idx (populated by Pass 1).
+    // Validate plan node types against the plan-tree idx.
     [[nodiscard]] core::error_t validate_types(std::pmr::memory_resource* resource,
                                                const impl::plan_resolve_index_t* idx,
                                                components::logical_plan::node_t* node,

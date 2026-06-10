@@ -148,23 +148,17 @@ namespace services::planner::impl {
         // This is critical for INSERT-then-register semantics where register depends
         // on insert having processed the chunk first.
         if (!node->children().empty()) {
-            // Skip catalog_resolve_*_t children when they appear alongside
-            // a non-resolve consumer (DML/SELECT). Pass 1 has already run
-            // them and stamped OIDs on the logical nodes (visible to
-            // validate/enrich via plan-tree gather). Putting them in the
-            // executor's left-chain would chain a resolve operator as
-            // `left_` of the DML consumer — operator_insert reads
-            // `left_->output()` for its data input, and would get a
-            // resolve metadata chunk instead of the VALUES chunk, so
-            // storage_append gets the wrong shape and inserts 0 rows.
-            //
-            // EXCEPTION: when the sequence_t contains ONLY resolve nodes
-            // (Pass 1's own sub-plan), don't skip — we'd produce an empty
-            // chain. Pass 1 explicitly wants the resolves executed.
+            // Skip catalog_resolve_*_t children when a non-resolve consumer
+            // (DML/SELECT) is present: they already ran upstream and stamped OIDs
+            // on the logical nodes. Chaining a resolve as the DML consumer's left_
+            // would make operator_insert read left_->output() and get the resolve
+            // metadata chunk instead of the VALUES chunk — wrong shape, 0 rows.
+            // EXCEPTION: a resolve-only sub-plan must NOT skip, or the chain is
+            // empty; the caller explicitly wants those resolves executed.
             auto is_catalog_resolve = [](node_type t) {
-                return t == node_type::catalog_resolve_namespace_t || t == node_type::catalog_resolve_table_t ||
-                       t == node_type::catalog_resolve_type_t || t == node_type::catalog_resolve_function_t ||
-                       t == node_type::catalog_resolve_constraint_t;
+                return t == node_type::catalog_resolve_namespace_t || t == node_type::catalog_resolve_database_t ||
+                       t == node_type::catalog_resolve_table_t || t == node_type::catalog_resolve_type_t ||
+                       t == node_type::catalog_resolve_function_t || t == node_type::catalog_resolve_constraint_t;
             };
             bool has_non_resolve_child = false;
             for (const auto& child : node->children()) {

@@ -313,6 +313,9 @@ namespace components::operators {
 
             // Phase 3: Aggregate per group + build result chunk
             auto result = calc_aggregate_values(pipeline_context, in_chunks);
+            if (has_error()) {
+                return;
+            }
 
             // Post-aggregate arithmetic (columnar)
             size_t size_before_post = result.data.size();
@@ -709,6 +712,10 @@ namespace components::operators {
             aggregator->clear();
             aggregator->set_children(make_operator_batch(resource_, std::move(group_chunks)));
             aggregator->on_execute(pipeline_context);
+            if (aggregator->has_error()) {
+                set_error(aggregator->get_error());
+                return vector::data_chunk_t(resource_, std::pmr::vector<types::complex_logical_type>{resource_}, 1);
+            }
 
             auto datum = aggregator->take_batch_values();
 
@@ -717,6 +724,9 @@ namespace components::operators {
                 for (auto& v : vals) {
                     v.set_alias(std::string(value.name));
                     results.push_back(std::move(v));
+                }
+                while (results.size() < num_groups) {
+                    results.emplace_back(resource_, types::logical_type::NA);
                 }
             } else {
                 // data_chunk_t — each row corresponds to a group
@@ -766,10 +776,14 @@ namespace components::operators {
                 }
             }
         }
+        // One column per aggregate, unconditionally: the fill loop below writes
+        // every aggregate at the fixed position key_count + agg_idx, so a
+        // skipped type here would shift all later columns and write past the
+        // chunk's column array. An aggregate with no results gets an NA-typed
+        // column filled with NULLs.
         for (size_t a = 0; a < values_.size(); a++) {
-            if (!agg_results[a].empty()) {
-                out_types.push_back(agg_results[a][0].type());
-            }
+            out_types.push_back(agg_results[a].empty() ? types::complex_logical_type(types::logical_type::NA)
+                                                       : agg_results[a][0].type());
         }
 
         // Create result chunk
@@ -787,7 +801,13 @@ namespace components::operators {
         // Fill aggregate columns
         for (size_t agg_idx = 0; agg_idx < values_.size(); agg_idx++) {
             for (size_t group_idx = 0; group_idx < num_groups; group_idx++) {
-                result.set_value(key_count + agg_idx, group_idx, std::move(agg_results[agg_idx][group_idx]));
+                if (group_idx < agg_results[agg_idx].size()) {
+                    result.set_value(key_count + agg_idx, group_idx, std::move(agg_results[agg_idx][group_idx]));
+                } else {
+                    result.set_value(key_count + agg_idx,
+                                     group_idx,
+                                     types::logical_value_t(resource_, types::logical_type::NA));
+                }
             }
         }
 

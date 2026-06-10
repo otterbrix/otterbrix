@@ -138,31 +138,30 @@ namespace services::dispatcher {
             size_t key_order;
         };
 
-        // JOIN merge: keep both same-named columns when they come from different
-        // tables; only drop entries that are truly identical (same alias AND same result_alias).
+        // JOIN schema = pure concatenation of both sides. The runtime join
+        // operators (join_utils.hpp: res_types = left.types() + all right
+        // types) emit every column of both inputs, including same-named join
+        // keys. Dropping a duplicate here desynchronizes the validator's
+        // column indices from the runtime chunk layout: every key path
+        // resolved after the dropped column points one column to the left
+        // (wrong values for same-typed columns, kernel errors or worse for
+        // mismatched ones). Notably both sides carry an empty result_alias
+        // when they are raw node_data inputs, so a same-named join key used
+        // to be deduplicated exactly there.
         named_schema merge_schemas(std::pmr::memory_resource* resource, named_schema lhs, named_schema rhs) {
             named_schema merged(resource);
+            merged.reserve(lhs.size() + rhs.size());
             for (auto&& type : lhs) {
-                auto it = std::find_if(merged.begin(), merged.end(), [&type](const auto& t) {
-                    return t.type.alias() == type.type.alias() && t.result_alias == type.result_alias;
-                });
-                if (it == merged.end()) {
-                    if (type.side == side_t::undefined) {
-                        type.side = side_t::left;
-                    }
-                    merged.emplace_back(std::move(type));
+                if (type.side == side_t::undefined) {
+                    type.side = side_t::left;
                 }
+                merged.emplace_back(std::move(type));
             }
             for (auto&& type : rhs) {
-                auto it = std::find_if(merged.begin(), merged.end(), [&type](const auto& t) {
-                    return t.type.alias() == type.type.alias() && t.result_alias == type.result_alias;
-                });
-                if (it == merged.end()) {
-                    if (type.side == side_t::undefined) {
-                        type.side = side_t::right;
-                    }
-                    merged.emplace_back(std::move(type));
+                if (type.side == side_t::undefined) {
+                    type.side = side_t::right;
                 }
+                merged.emplace_back(std::move(type));
             }
             return merged;
         }
@@ -1539,17 +1538,21 @@ namespace services::dispatcher {
                         // them all (an EXPLICIT reference to such a name still errors
                         // as ambiguous in find_types and must use type selection).
                         // Duplicate names across JOIN'd tables are likewise legitimate
-                        // (PostgreSQL semantics). Reject only a truly-identical column:
-                        // same output alias AND same source name AND same physical type.
+                        // (PostgreSQL semantics) — including a self-join, where the
+                        // copies are distinguished by their join side. Reject only a
+                        // truly-identical column: same output alias AND same source
+                        // name AND same physical type AND same join side (multi-type
+                        // fields of one computing table all share one side).
                         struct column_key {
                             std::string result_alias;
                             std::string name;
                             logical_type type;
+                            side_t side;
                             auto operator<=>(const column_key&) const = default;
                         };
                         std::set<column_key> seen_cols;
                         for (const auto& col : incoming_schema) {
-                            column_key key{col.result_alias, std::string(col.type.alias()), col.type.type()};
+                            column_key key{col.result_alias, std::string(col.type.alias()), col.type.type(), col.side};
                             if (!seen_cols.insert(std::move(key)).second) {
                                 return core::error_t(
                                     core::error_code_t::schema_error,

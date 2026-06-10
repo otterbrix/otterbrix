@@ -25,6 +25,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_computed_schema.cpp
         test_subqueries.cpp
         test_hash_join.cpp
+        test_returning.cpp
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})

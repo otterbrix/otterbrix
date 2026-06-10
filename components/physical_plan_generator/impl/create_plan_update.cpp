@@ -1,5 +1,6 @@
 #include "create_plan_update.hpp"
 #include "create_plan_match.hpp"
+#include "create_plan_select.hpp"
 #include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/physical_plan/operators/operator_update.hpp>
@@ -10,8 +11,10 @@
 namespace services::planner::impl {
 
     components::operators::operator_ptr create_plan_update(const context_storage_t& context,
-                                                           const components::logical_plan::node_ptr& node) {
+                                                           const components::logical_plan::node_ptr& node,
+                                                           const components::logical_plan::storage_parameters* params) {
         const auto* node_update = static_cast<const components::logical_plan::node_update_t*>(node.get());
+        auto returning = build_returning_columns(context.resource, node_update->returning(), params);
 
         components::logical_plan::node_ptr node_match = nullptr;
         components::logical_plan::node_ptr node_limit = nullptr;
@@ -34,7 +37,8 @@ namespace services::planner::impl {
                                                                                         context.log.clone(),
                                                                                         table_oid,
                                                                                         node_update->updates(),
-                                                                                        node_update->upsert()));
+                                                                                        node_update->upsert(),
+                                                                                        std::move(returning)));
             plan->set_children(create_plan_match(context, node_match, limit));
 
             return plan;
@@ -44,6 +48,7 @@ namespace services::planner::impl {
                                                                                         table_oid,
                                                                                         node_update->updates(),
                                                                                         node_update->upsert(),
+                                                                                        std::move(returning),
                                                                                         node_match->expressions()[0]));
             if (node_raw_data) {
                 plan->set_children(boost::intrusive_ptr(new components::operators::full_scan(context.resource,

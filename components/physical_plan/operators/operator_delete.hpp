@@ -2,6 +2,7 @@
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/physical_plan/operators/operator.hpp>
+#include <components/physical_plan/operators/operator_select.hpp>
 #include <components/physical_plan/operators/predicates/predicate.hpp>
 #include <components/physical_plan/operators/resolved_table_metadata.hpp>
 
@@ -11,10 +12,11 @@ namespace components::operators {
 
     class operator_delete final : public read_write_operator_t {
     public:
-        explicit operator_delete(std::pmr::memory_resource* resource,
-                                 log_t log,
-                                 components::catalog::oid_t table_oid,
-                                 expressions::expression_ptr expr = nullptr);
+        operator_delete(std::pmr::memory_resource* resource,
+                        log_t log,
+                        components::catalog::oid_t table_oid,
+                        std::pmr::vector<select_column_t> returning,
+                        expressions::expression_ptr expr = nullptr);
 
         components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
 
@@ -35,6 +37,7 @@ namespace components::operators {
         components::catalog::oid_t table_oid_;
         expressions::expression_ptr expression_;
         std::optional<resolved_table_metadata_t> resolved_metadata_;
+        std::pmr::vector<select_column_t> returning_;
     };
 
 } // namespace components::operators

@@ -1,5 +1,6 @@
 #include "operator_insert.hpp"
 
+#include <algorithm>
 #include <components/context/context.hpp>
 #include <components/context/execution_context.hpp>
 #include <services/disk/manager_disk.hpp>
@@ -8,9 +9,13 @@
 
 namespace components::operators {
 
-    operator_insert::operator_insert(std::pmr::memory_resource* resource, log_t log, catalog::oid_t table_oid)
+    operator_insert::operator_insert(std::pmr::memory_resource* resource,
+                                     log_t log,
+                                     catalog::oid_t table_oid,
+                                     std::pmr::vector<select_column_t> returning)
         : read_write_operator_t(resource, log, operator_type::insert)
-        , table_oid_(table_oid) {}
+        , table_oid_(table_oid)
+        , returning_(std::move(returning)) {}
 
     void operator_insert::accept_resolved_metadata(resolved_table_metadata_t metadata) {
         // Capture metadata so await_async_and_resume can build a
@@ -122,10 +127,46 @@ namespace components::operators {
         ctx->dml_append_row_count = actual_count;
         ctx->dml_table_oid = table_oid_;
 
-        // 6. Build empty result chunk (output for downstream operators).
-        data_chunk_t res_chunk(resource_, {}, actual_count);
-        res_chunk.set_cardinality(actual_count);
-        set_output(make_operator_data(resource_, std::move(res_chunk)));
+        // 6. Build the result chunk.
+        if (returning_.empty()) {
+            // No RETURNING: emit a column-less chunk whose cardinality carries
+            // the affected-row count for the cursor.
+            data_chunk_t res_chunk(resource_, {}, actual_count);
+            res_chunk.set_cardinality(actual_count);
+            set_output(make_operator_data(resource_, std::move(res_chunk)));
+            mark_executed();
+            co_return;
+        }
+
+        // RETURNING: read the just-appended segment back from storage so that
+        // DB-applied DEFAULTs and generated columns (which storage_append fills
+        // on its own copy, not on out_chunk) are present in the projected rows.
+        // The projection's field paths were resolved against the full table
+        // schema, so a partial/reordered insert chunk would not line up — the
+        // canonical stored row does. Read in DEFAULT_VECTOR_CAPACITY windows so
+        // every projected chunk stays within the vector capacity bound.
+        chunks_vector_t projected(resource_);
+        for (uint64_t offset = 0; offset < actual_count; offset += vector::DEFAULT_VECTOR_CAPACITY) {
+            const uint64_t window = std::min<uint64_t>(vector::DEFAULT_VECTOR_CAPACITY, actual_count - offset);
+            auto [_s, sf] = actor_zeta::send(ctx->disk_address,
+                                             &services::disk::manager_disk_t::storage_scan_segment,
+                                             ctx->session,
+                                             table_oid_,
+                                             static_cast<int64_t>(start_row) + static_cast<int64_t>(offset),
+                                             window);
+            auto seg = co_await std::move(sf);
+            if (!seg || seg->size() == 0) {
+                continue;
+            }
+            auto proj = evaluate_projection(resource_, returning_, *seg, ctx->parameters, ctx->session_tz);
+            if (proj.has_error()) {
+                set_error(proj.error());
+                mark_executed();
+                co_return;
+            }
+            projected.emplace_back(std::move(proj.value()));
+        }
+        set_output(make_operator_data(resource_, std::move(projected)));
         mark_executed();
     }
 

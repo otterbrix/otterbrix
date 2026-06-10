@@ -5,6 +5,7 @@
 #include <components/expressions/update_expression.hpp>
 
 #include <components/physical_plan/operators/operator.hpp>
+#include <components/physical_plan/operators/operator_select.hpp>
 #include <components/physical_plan/operators/resolved_table_metadata.hpp>
 
 #include <optional>
@@ -18,6 +19,7 @@ namespace components::operators {
                         components::catalog::oid_t table_oid,
                         std::pmr::vector<expressions::update_expr_ptr> updates,
                         bool upsert,
+                        std::pmr::vector<select_column_t> returning,
                         expressions::expression_ptr expr = nullptr);
 
         components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
@@ -41,6 +43,7 @@ namespace components::operators {
         expressions::expression_ptr expr_;
         bool upsert_;
         std::optional<resolved_table_metadata_t> resolved_metadata_;
+        std::pmr::vector<select_column_t> returning_;
     };
 
 } // namespace components::operators

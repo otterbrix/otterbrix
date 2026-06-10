@@ -14,6 +14,9 @@ namespace components::logical_plan {
         std::pmr::vector<expressions::key_t>& key_translation();
         const std::pmr::vector<expressions::key_t>& key_translation() const;
 
+        std::pmr::vector<expressions::expression_ptr>& returning();
+        const std::pmr::vector<expressions::expression_ptr>& returning() const;
+
         // Catalog metadata attached by the dispatcher's enrich pass.
         void set_not_null_cols(std::vector<std::string> v) { not_null_cols_ = std::move(v); }
         const std::vector<std::string>& not_null_cols() const { return not_null_cols_; }
@@ -30,6 +33,7 @@ namespace components::logical_plan {
         std::string to_string_impl() const override;
 
         std::pmr::vector<expressions::key_t> key_translation_;
+        std::pmr::vector<expressions::expression_ptr> returning_;
 
         std::vector<std::string> not_null_cols_;
         std::vector<catalog::fk_info_t> outgoing_fks_;

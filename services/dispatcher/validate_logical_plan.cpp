@@ -958,6 +958,57 @@ namespace services::dispatcher {
             return named_schema{resource};
         }
 
+        // Resolve key paths in a DML node's RETURNING projection expressions
+        // against the schema of the affected rows (the target table's columns).
+        // Mirrors the node_select resolution: get_field keys and arithmetic
+        // operands get their column paths stamped; star_expand with a table
+        // qualifier is validated to expand; bare '*' and constants need nothing.
+        [[nodiscard]] core::error_t resolve_returning_columns(std::pmr::memory_resource* resource,
+                                                              std::pmr::vector<expression_ptr>* returning,
+                                                              const named_schema& schema) {
+            for (auto& expr : *returning) {
+                if (!expr || expr->group() != expression_group::scalar) {
+                    continue;
+                }
+                auto* scalar_expr = static_cast<scalar_expression_t*>(expr.get());
+                switch (scalar_expr->type()) {
+                    case scalar_type::get_field: {
+                        auto& key = scalar_expr->params().empty()
+                                        ? scalar_expr->key()
+                                        : std::get<components::expressions::key_t>(scalar_expr->params().front());
+                        if (key.path().empty()) {
+                            auto res = validate_key(resource, key, schema, schema, true);
+                            if (res.has_error()) {
+                                return res.error();
+                            }
+                        }
+                        break;
+                    }
+                    case scalar_type::star_expand: {
+                        // bare '*' carries an empty key (whole-row passthrough);
+                        // 'table.*' carries [table, '*'] and must resolve.
+                        if (!scalar_expr->key().storage().empty()) {
+                            auto res = find_types(resource, scalar_expr->key(), schema);
+                            if (res.has_error()) {
+                                return res.error();
+                            }
+                        }
+                        break;
+                    }
+                    case scalar_type::constant:
+                        break;
+                    default: {
+                        auto res = resolve_key_paths_in_group(resource, scalar_expr->params(), schema);
+                        if (res.has_error()) {
+                            return res.error();
+                        }
+                        break;
+                    }
+                }
+            }
+            return core::error_t::no_error();
+        }
+
     } // namespace impl
 
     // ---- V4 plan-tree idx-based check_*_exists ----
@@ -2124,6 +2175,16 @@ namespace services::dispatcher {
                             table_schema.emplace_back(type_from_t{target_relname_ins, column.type});
                         }
                     }
+                    // RETURNING references the target table's columns; the insert
+                    // operator reads the appended rows back from storage (full
+                    // table-ordered schema), so resolve the projection keys here.
+                    if (!insert_node->returning().empty() && !table_schema.empty()) {
+                        auto ret_err =
+                            impl::resolve_returning_columns(resource, &insert_node->returning(), table_schema);
+                        if (ret_err.contains_error()) {
+                            return ret_err;
+                        }
+                    }
                     // relkind='g' (dynamic-schema) tables accept INSERTs
                     // whose shape differs from the catalog's currently-registered columns,
                     // BUT only for simple types. Complex types (ARRAY/STRUCT/UNION/LIST)
@@ -2384,6 +2445,19 @@ namespace services::dispatcher {
                     }
                 }
                 // TODO: check updates for update_t
+                // RETURNING references the target table's columns (the affected
+                // rows the operator projects from); resolve the projection keys.
+                {
+                    auto* returning = node->type() == node_type::update_t
+                                          ? &reinterpret_cast<node_update_t*>(node)->returning()
+                                          : &reinterpret_cast<node_delete_t*>(node)->returning();
+                    if (!returning->empty() && !table_schema.empty()) {
+                        auto ret_err = impl::resolve_returning_columns(resource, returning, table_schema);
+                        if (ret_err.contains_error()) {
+                            return ret_err;
+                        }
+                    }
+                }
                 return result;
             }
             case node_type::create_index_t: {

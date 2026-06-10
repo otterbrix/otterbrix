@@ -179,6 +179,21 @@ namespace services::planner::impl {
 
     } // namespace
 
+    std::pmr::vector<components::operators::select_column_t>
+    build_returning_columns(std::pmr::memory_resource* resource,
+                            const std::pmr::vector<components::expressions::expression_ptr>& returning,
+                            const components::logical_plan::storage_parameters* params) {
+        std::pmr::vector<components::operators::select_column_t> columns(resource);
+        columns.reserve(returning.size());
+        for (const auto& expr : returning) {
+            if (expr && expr->group() == expression_group::scalar) {
+                auto* scalar_expr = static_cast<const components::expressions::scalar_expression_t*>(expr.get());
+                columns.push_back(make_select_column_scalar(resource, scalar_expr, params));
+            }
+        }
+        return columns;
+    }
+
     components::operators::operator_ptr create_plan_select(const context_storage_t& context,
                                                            const components::logical_plan::node_ptr& node,
                                                            const components::logical_plan::storage_parameters* params) {

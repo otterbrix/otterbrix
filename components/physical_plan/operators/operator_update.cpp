@@ -15,12 +15,14 @@ namespace components::operators {
                                      components::catalog::oid_t table_oid,
                                      std::pmr::vector<expressions::update_expr_ptr> updates,
                                      bool upsert,
+                                     std::pmr::vector<select_column_t> returning,
                                      expressions::expression_ptr expr)
         : read_write_operator_t(resource, log, operator_type::update)
         , table_oid_(table_oid)
         , updates_(std::move(updates))
         , expr_(std::move(expr))
-        , upsert_(upsert) {}
+        , upsert_(upsert)
+        , returning_(std::move(returning)) {}
 
     void operator_update::accept_resolved_metadata(resolved_table_metadata_t metadata) {
         // See operator_insert for the contract.
@@ -350,7 +352,30 @@ namespace components::operators {
         ctx->dml_delete_txn_id = ctx->txn.transaction_id;
         ctx->dml_table_oid = table_oid_;
 
-        // output_ already set by on_execute_impl (contains updated rows).
+        // RETURNING: project the requested columns from the updated rows.
+        // out_chunk is the merged updated-rows chunk (all table columns, in
+        // table order, matching the paths resolved by validate). Split it back
+        // into capacity-bounded batches and project each. Without RETURNING,
+        // output_ keeps the updated rows as set by on_execute_impl.
+        // TODO: keep the updated rows batched end-to-end instead of merging in
+        // data_chunk() and re-splitting here.
+        if (!returning_.empty()) {
+            chunks_vector_t projected(resource_);
+            auto batches = split_chunk_into_batches(resource_, std::move(out_chunk));
+            for (auto& batch : batches) {
+                if (batch.size() == 0) {
+                    continue;
+                }
+                auto proj = evaluate_projection(resource_, returning_, batch, ctx->parameters, ctx->session_tz);
+                if (proj.has_error()) {
+                    set_error(proj.error());
+                    mark_executed();
+                    co_return;
+                }
+                projected.emplace_back(std::move(proj.value()));
+            }
+            set_output(make_operator_data(resource_, std::move(projected)));
+        }
         mark_executed();
     }
 

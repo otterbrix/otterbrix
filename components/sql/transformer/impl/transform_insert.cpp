@@ -205,11 +205,25 @@ namespace components::sql::transform {
                 key_translation.emplace_back(std::move(key));
             }
         }
+        // RETURNING projection (references the target table's columns). Parsed
+        // once and attached to whichever insert node this statement lowers to.
+        std::pmr::vector<expressions::expression_ptr> returning(resource_);
+        if (node.returningList) {
+            name_collection_t rnames;
+            rnames.left_name = rangevar_to_qualified_name(node.relation);
+            rnames.left_alias = construct_alias(node.relation->alias);
+            returning = transform_returning(node.returningList, rnames, plan);
+            if (error_.contains_error()) {
+                return nullptr;
+            }
+        }
+
         if (!node.selectStmt) {
             auto qn = rangevar_to_qualified_name(node.relation);
             auto res = logical_plan::make_node_insert(resource_);
             res->append_child(transform_select(*pg_ptr_cast<SelectStmt>(node.selectStmt), plan));
             res->key_translation() = key_translation;
+            res->returning() = returning;
             return maybe_wrap_with_catalog_resolve_table(resource_,
                                                          qn.dbname,
                                                          qn.relname,
@@ -332,6 +346,7 @@ namespace components::sql::transform {
             } else {
                 ins = logical_plan::make_node_insert(resource_, std::move(chunk), std::move(key_translation));
             }
+            static_cast<logical_plan::node_insert_t*>(ins.get())->returning() = returning;
             return maybe_wrap_with_catalog_resolve_table(resource_,
                                                          qn.dbname,
                                                          qn.relname,
@@ -342,6 +357,7 @@ namespace components::sql::transform {
             auto res = logical_plan::make_node_insert(resource_);
             res->append_child(transform_select(*pg_ptr_cast<SelectStmt>(node.selectStmt), plan));
             res->key_translation() = key_translation;
+            res->returning() = returning;
             return maybe_wrap_with_catalog_resolve_table(resource_,
                                                          qn.dbname,
                                                          qn.relname,

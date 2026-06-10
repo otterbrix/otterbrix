@@ -101,6 +101,14 @@ namespace components::sql::transform {
                                      logical_plan::execution_plan_t* plan,
                                      logical_plan::node_ptr& group);
 
+        // Parse a RETURNING target list (List* of ResTarget) into scalar
+        // projection expressions. Supports column references (including * and
+        // table.*), constants/parameters, and arithmetic, each with an optional
+        // AS alias. On an unsupported construct sets error_ and returns the
+        // partial result — callers must check error_, not the return value.
+        std::pmr::vector<expressions::expression_ptr>
+        transform_returning(List* returning_list, const name_collection_t& names, logical_plan::execution_plan_t* plan);
+
         // Resolve SELECT operand — aggregates become separate group expressions
         expressions::param_storage resolve_select_operand(Node* node,
                                                           const name_collection_t& names,

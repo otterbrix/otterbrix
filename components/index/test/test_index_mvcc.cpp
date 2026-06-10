@@ -1,5 +1,5 @@
-#include <catch2/catch.hpp>
 #include <algorithm>
+#include <catch2/catch.hpp>
 #include <filesystem>
 
 #include "components/index/disk_hash_single_field_index.hpp"
@@ -16,14 +16,20 @@ using namespace components::expressions;
 using key = components::expressions::key_t;
 
 namespace {
-    enum class hash_index_mode { in_memory, on_disk };
+    enum class hash_index_mode
+    {
+        in_memory,
+        on_disk
+    };
 
     std::unique_ptr<index_t> make_hash_mvcc_index(std::pmr::memory_resource* resource,
                                                   const std::string& name,
                                                   const std::string& file_name,
                                                   hash_index_mode mode) {
         if (mode == hash_index_mode::in_memory) {
-            return std::make_unique<hash_single_field_index_t>(resource, name, keys_base_storage_t{key(resource, "val")});
+            return std::make_unique<hash_single_field_index_t>(resource,
+                                                               name,
+                                                               keys_base_storage_t{key(resource, "val")});
         }
         const auto base = std::filesystem::path("/tmp/index_disk/components_hash_mvcc_tests");
         std::filesystem::create_directories(base);
@@ -33,10 +39,11 @@ namespace {
             resource,
             name,
             keys_base_storage_t{key(resource, "val")},
-            std::make_unique<services::index::disk_hash_table_t>(file,
-                                                                 services::index::disk_hash_table_t::default_bucket_count,
-                                                                 true,
-                                                                 resource));
+            std::make_unique<services::index::disk_hash_table_t>(
+                file,
+                services::index::disk_hash_table_t::default_bucket_count,
+                true,
+                resource));
     }
 
     void run_txn_insert_search_contract(hash_index_mode mode) {
@@ -49,7 +56,7 @@ namespace {
             auto index = make_hash_mvcc_index(&resource,
                                               "test_hash_idx",
                                               mode == hash_index_mode::in_memory ? "txn_insert_search_mem_1.bin"
-                                                                                  : "txn_insert_search_disk_1.bin",
+                                                                                 : "txn_insert_search_disk_1.bin",
                                               mode);
             index->insert(val42, int64_t(0), txn1, {});
             auto result = index->search(compare_type::eq, val42, txn1 - 1, txn1, {});
@@ -61,7 +68,7 @@ namespace {
             auto index = make_hash_mvcc_index(&resource,
                                               "test_hash_idx",
                                               mode == hash_index_mode::in_memory ? "txn_insert_search_mem_2.bin"
-                                                                                  : "txn_insert_search_disk_2.bin",
+                                                                                 : "txn_insert_search_disk_2.bin",
                                               mode);
             index->insert(val42, int64_t(0), txn1, {});
             auto result = index->search(compare_type::eq, val42, txn1 - 1, txn2, {});
@@ -72,7 +79,7 @@ namespace {
             auto index = make_hash_mvcc_index(&resource,
                                               "test_hash_idx",
                                               mode == hash_index_mode::in_memory ? "txn_insert_search_mem_3.bin"
-                                                                                  : "txn_insert_search_disk_3.bin",
+                                                                                 : "txn_insert_search_disk_3.bin",
                                               mode);
             index->insert(val42, int64_t(0), txn1, {});
             index->commit_insert(txn1, 10);
@@ -90,7 +97,7 @@ namespace {
             auto index = make_hash_mvcc_index(&resource,
                                               "test_hash_idx",
                                               mode == hash_index_mode::in_memory ? "txn_insert_search_mem_4.bin"
-                                                                                  : "txn_insert_search_disk_4.bin",
+                                                                                 : "txn_insert_search_disk_4.bin",
                                               mode);
             index->insert(val42, int64_t(0), txn1, {});
             index->revert_insert(txn1);
@@ -104,7 +111,7 @@ namespace {
         auto index = make_hash_mvcc_index(&resource,
                                           "test_hash_idx",
                                           mode == hash_index_mode::in_memory ? "full_lifecycle_mem.bin"
-                                                                              : "full_lifecycle_disk.bin",
+                                                                             : "full_lifecycle_disk.bin",
                                           mode);
 
         uint64_t txn1 = TRANSACTION_ID_START + 1;
@@ -141,7 +148,7 @@ namespace {
         auto index = make_hash_mvcc_index(&resource,
                                           "test_hash_idx_pending_delete",
                                           mode == hash_index_mode::in_memory ? "pending_delete_mem.bin"
-                                                                              : "pending_delete_disk.bin",
+                                                                             : "pending_delete_disk.bin",
                                           mode);
 
         const uint64_t txn_insert = TRANSACTION_ID_START + 11;
@@ -178,7 +185,7 @@ namespace {
         auto index = make_hash_mvcc_index(&resource,
                                           "test_hash_idx_revert",
                                           mode == hash_index_mode::in_memory ? "revert_insert_mem.bin"
-                                                                              : "revert_insert_disk.bin",
+                                                                             : "revert_insert_disk.bin",
                                           mode);
         const uint64_t txn_insert = TRANSACTION_ID_START + 44;
         const uint64_t txn_other = TRANSACTION_ID_START + 55;
@@ -357,21 +364,13 @@ TEST_CASE("single_field_index:full_lifecycle") {
     REQUIRE(result.empty());
 }
 
-TEST_CASE("hash_single_field_index:txn_insert_search") {
-    run_txn_insert_search_contract(hash_index_mode::in_memory);
-}
+TEST_CASE("hash_single_field_index:txn_insert_search") { run_txn_insert_search_contract(hash_index_mode::in_memory); }
 
-TEST_CASE("hash_single_field_index:full_lifecycle") {
-    run_full_lifecycle_contract(hash_index_mode::in_memory);
-}
+TEST_CASE("hash_single_field_index:full_lifecycle") { run_full_lifecycle_contract(hash_index_mode::in_memory); }
 
-TEST_CASE("disk_single_field_index:txn_insert_search") {
-    run_txn_insert_search_contract(hash_index_mode::on_disk);
-}
+TEST_CASE("disk_single_field_index:txn_insert_search") { run_txn_insert_search_contract(hash_index_mode::on_disk); }
 
-TEST_CASE("disk_single_field_index:full_lifecycle") {
-    run_full_lifecycle_contract(hash_index_mode::on_disk);
-}
+TEST_CASE("disk_single_field_index:full_lifecycle") { run_full_lifecycle_contract(hash_index_mode::on_disk); }
 
 TEST_CASE("hash_single_field_index:pending_delete_visibility") {
     run_pending_delete_visibility_contract(hash_index_mode::in_memory);
@@ -381,13 +380,9 @@ TEST_CASE("disk_single_field_index:pending_delete_visibility") {
     run_pending_delete_visibility_contract(hash_index_mode::on_disk);
 }
 
-TEST_CASE("hash_single_field_index:revert_insert_contract") {
-    run_revert_insert_contract(hash_index_mode::in_memory);
-}
+TEST_CASE("hash_single_field_index:revert_insert_contract") { run_revert_insert_contract(hash_index_mode::in_memory); }
 
-TEST_CASE("disk_single_field_index:revert_insert_contract") {
-    run_revert_insert_contract(hash_index_mode::on_disk);
-}
+TEST_CASE("disk_single_field_index:revert_insert_contract") { run_revert_insert_contract(hash_index_mode::on_disk); }
 
 TEST_CASE("index_engine:txn_methods") {
     auto resource = std::pmr::synchronized_pool_resource();

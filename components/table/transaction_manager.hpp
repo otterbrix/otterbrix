@@ -27,6 +27,12 @@ namespace components::table {
         uint64_t lowest_active_start_time() const;
         bool has_active_transactions() const;
 
+        // Oldest snapshot_horizon among active transactions (published_horizon_
+        // when none are active). Commit-id value space — feeds the DROP-GC
+        // horizon broadcast whose sweep compares dropped_at_commit_id (also
+        // commit-id space after the dropped-committed remap) against it.
+        uint64_t lowest_active_snapshot_horizon() const;
+
         // ProcArray atomic publish barrier: moves a committed txn out of
         // in_flight_commits_ and advances published_horizon_. MUST be called at
         // the end of the commit pipeline (after WAL fsync + storage_publish_*),
@@ -45,9 +51,7 @@ namespace components::table {
         };
         snapshot_t take_snapshot(std::pmr::memory_resource* resource) const;
 
-        uint64_t published_horizon() const noexcept {
-            return published_horizon_.load(std::memory_order_acquire);
-        }
+        uint64_t published_horizon() const noexcept { return published_horizon_.load(std::memory_order_acquire); }
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
 

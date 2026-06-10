@@ -7,6 +7,7 @@
 #include <components/context/execution_context.hpp>
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>
+#include <components/vector/data_chunk.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
@@ -61,8 +62,10 @@ namespace {
             , wal(actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&resource, scheduler, wal_config, log))
             , disk(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
             std::filesystem::create_directories(dir);
-            wal->sync(std::make_tuple(actor_zeta::address_t(disk->address()), actor_zeta::address_t::empty_address()));
-            disk->sync(std::make_tuple(wal->address()));
+            wal->sync(services::wal::wal_sync_pack_t{actor_zeta::address_t(disk->address()),
+                                                     actor_zeta::address_t::empty_address(),
+                                                     actor_zeta::address_t::empty_address()});
+            disk->sync(services::disk::manager_disk_t::disk_sync_pack_t{wal->address()});
             if (bootstrap) {
                 disk->bootstrap_system_tables_sync();
             }
@@ -278,27 +281,34 @@ TEST_CASE("services::disk::recovery::dynamic_schema_persists_across_restart") {
         rk.emplace_back("relid");
         std::pmr::vector<components::types::logical_value_t> rv{&fx_reopen.resource};
         rv.emplace_back(toid_lv);
-        auto rows =
-            fx_reopen.invoke(&manager_disk_t::read_rows_by_key, fx_reopen.ctx(), pg_cc, std::move(rk), std::move(rv));
-        REQUIRE(rows.size() == 2);
+        auto batches =
+            fx_reopen.invoke(&manager_disk_t::read_chunks_by_key, fx_reopen.ctx(), pg_cc, std::move(rk), std::move(rv));
+        std::uint64_t total = 0;
+        for (const auto& c : batches) total += c.size();
+        REQUIRE(total == 2);
         bool saw_a = false;
         bool saw_b = false;
-        for (const auto& row : rows) {
-            REQUIRE(row.size() >= 7);
-            // pg_computed_column layout: [0]=relid, [1]=attoid, [2]=attname,
-            // [3]=atttypid, [4]=atttypspec, [5]=attversion, [6]=attrefcount.
-            const auto attname = row[2].is_null() ? std::string{} : std::string(row[2].value<std::string_view>());
-            const auto atttypid = row[3].is_null()
-                                      ? components::catalog::INVALID_OID
-                                      : static_cast<components::catalog::oid_t>(row[3].value<std::uint32_t>());
-            const auto refcount = row[6].value<std::int64_t>();
-            REQUIRE(refcount == 1);
-            if (attname == "a") {
-                REQUIRE(atttypid == components::catalog::well_known_oid::int64_type);
-                saw_a = true;
-            } else if (attname == "b") {
-                REQUIRE(atttypid == components::catalog::well_known_oid::string_type);
-                saw_b = true;
+        for (const auto& chunk : batches) {
+            REQUIRE(chunk.column_count() >= 7);
+            for (std::uint64_t i = 0; i < chunk.size(); ++i) {
+                // pg_computed_column layout: [0]=relid, [1]=attoid, [2]=attname,
+                // [3]=atttypid, [4]=atttypspec, [5]=attversion, [6]=attrefcount.
+                const auto attname = chunk.value(2, i).is_null()
+                                         ? std::string{}
+                                         : std::string(chunk.value(2, i).value<std::string_view>());
+                const auto atttypid =
+                    chunk.value(3, i).is_null()
+                        ? components::catalog::INVALID_OID
+                        : static_cast<components::catalog::oid_t>(chunk.value(3, i).value<std::uint32_t>());
+                const auto refcount = chunk.value(6, i).value<std::int64_t>();
+                REQUIRE(refcount == 1);
+                if (attname == "a") {
+                    REQUIRE(atttypid == components::catalog::well_known_oid::int64_type);
+                    saw_a = true;
+                } else if (attname == "b") {
+                    REQUIRE(atttypid == components::catalog::well_known_oid::string_type);
+                    saw_b = true;
+                }
             }
         }
         REQUIRE(saw_a);

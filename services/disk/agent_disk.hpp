@@ -6,11 +6,12 @@
 #include <actor-zeta/detail/future.hpp>
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/context/pg_catalog_swap.hpp>
 #include <components/log/log.hpp>
-#include <core/executor.hpp>
 #include <components/table/data_table.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <core/date/timezones.hpp>
+#include <core/executor.hpp>
 #include <core/file/file_handle.hpp>
 #include <core/file/local_file_system.hpp>
 #include <cstddef>
@@ -18,10 +19,9 @@
 #include <filesystem>
 #include <memory>
 #include <memory_resource>
-#include <string>
-#include <components/context/pg_catalog_swap.hpp>
 #include <services/wal/base.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
+#include <string>
 #include <unordered_map>
 
 namespace services::disk {
@@ -46,7 +46,7 @@ namespace services::disk {
     /// by table_oid). MUST align with manager_disk_t::pool_idx_for_oid: idx 0 ↔ CATALOG.
     enum class agent_role_t : std::uint8_t
     {
-        CATALOG = 0, // agent 0: pg_* system tables + oid_gen_ + stored_catalog_
+        CATALOG = 0,  // agent 0: pg_* system tables + oid_gen_ + stored_catalog_
         USER_POOL = 1 // agents 1..N-1: user tables routed by oid hash
     };
 
@@ -106,9 +106,8 @@ namespace services::disk {
         /// Bootstrap-only ownership-transfer: moves the rvalue entry into the
         /// storages_ slice keyed by `oid`. Returns false if `oid` was already present
         /// (caller logs and drops the duplicate; the existing entry keeps ownership).
-        [[nodiscard]] bool
-        bootstrap_inner_sync(components::catalog::oid_t oid,
-                             std::unique_ptr<collection_storage_entry_t> entry) noexcept;
+        [[nodiscard]] bool bootstrap_inner_sync(components::catalog::oid_t oid,
+                                                std::unique_ptr<collection_storage_entry_t> entry) noexcept;
 
         // DISK ownership constructors: build the SFBM-holding entry directly on the
         // agent thread. The SFBM holds an exclusive posix WRITE_LOCK on the .otbx
@@ -119,15 +118,13 @@ namespace services::disk {
         //   bootstrap_disk_inner_sync       — load existing .otbx; seeds
         //     checkpoint_wal_id from the caller-supplied sidecar_wal_id.
         //   bootstrap_create_disk_inner_sync — create new .otbx.
-        [[nodiscard]] bool
-        bootstrap_disk_inner_sync(components::catalog::oid_t oid,
-                                   const std::filesystem::path& otbx_path,
-                                   wal::id_t sidecar_wal_id) noexcept;
+        [[nodiscard]] bool bootstrap_disk_inner_sync(components::catalog::oid_t oid,
+                                                     const std::filesystem::path& otbx_path,
+                                                     wal::id_t sidecar_wal_id) noexcept;
 
-        [[nodiscard]] bool
-        bootstrap_create_disk_inner_sync(components::catalog::oid_t oid,
-                                          std::vector<components::table::column_definition_t> columns,
-                                          const std::filesystem::path& otbx_path) noexcept;
+        [[nodiscard]] bool bootstrap_create_disk_inner_sync(components::catalog::oid_t oid,
+                                                            std::vector<components::table::column_definition_t> columns,
+                                                            const std::filesystem::path& otbx_path) noexcept;
 
         /// Read-only role/pool introspection. Not a mailbox handler.
         [[nodiscard]] agent_role_t role() const noexcept { return role_; }
@@ -189,6 +186,12 @@ namespace services::disk {
                                                           uint64_t commit_id,
                                                           std::pmr::vector<components::catalog::oid_t> tables);
 
+        // storage_revert_deletes_inner — MVCC delete abort. Iterates `tables`
+        //   and calls revert_all_deletes(txn_id) per owned twin, un-stamping
+        //   this txn's pending delete marks back to NOT_DELETED_ID.
+        unique_future<void> storage_revert_deletes_inner(uint64_t txn_id,
+                                                         std::pmr::vector<components::catalog::oid_t> tables);
+
         // Abort-path + completion handlers (revert / update / delete / fetch).
         // Not-owned OIDs no-op (or return null for fetch).
 
@@ -198,9 +201,8 @@ namespace services::disk {
         storage_revert_appends_inner(std::pmr::vector<components::pg_catalog_append_range_t> ranges);
 
         // storage_revert_append_inner — single-OID abort (lone INSERT rollback).
-        unique_future<void> storage_revert_append_inner(components::catalog::oid_t table_oid,
-                                                        int64_t row_start,
-                                                        uint64_t count);
+        unique_future<void>
+        storage_revert_append_inner(components::catalog::oid_t table_oid, int64_t row_start, uint64_t count);
 
         // storage_update_inner — single-OID UPDATE mutation against the
         //   agent twin. Returns storage_t::update's (updated, appended)
@@ -221,9 +223,7 @@ namespace services::disk {
         // storage_fetch_inner — read-path mirror for point-fetches by row_id.
         //   Returns nullptr when the agent doesn't own the OID.
         unique_future<std::unique_ptr<components::vector::data_chunk_t>>
-        storage_fetch_inner(components::catalog::oid_t table_oid,
-                            components::vector::vector_t row_ids,
-                            uint64_t count);
+        storage_fetch_inner(components::catalog::oid_t table_oid, components::vector::vector_t row_ids, uint64_t count);
 
         // Read-path handlers (scan_batched / scan_segment / types / total_rows).
         // Not-owned OIDs return an empty/zero sentinel.
@@ -239,9 +239,22 @@ namespace services::disk {
 
         // storage_scan_segment_inner — start-offset / count window scan.
         unique_future<std::unique_ptr<components::vector::data_chunk_t>>
-        storage_scan_segment_inner(components::catalog::oid_t table_oid,
-                                   int64_t start,
-                                   uint64_t count);
+        storage_scan_segment_inner(components::catalog::oid_t table_oid, int64_t start, uint64_t count);
+
+        // scan_by_keys_inner — batched keyed scan for one owned table. Resolves the
+        //   key column NAMES to storage indices once, then loops the key-tuples of the
+        //   columnar `keys` chunk: per row i it builds an eq-AND filter over the shared
+        //   key columns (constant = keys.value(j, i)) and scans, collecting the matching
+        //   row_ids. result[i] == match row_ids for key-tuple i; result has one
+        //   (possibly empty) entry per key. A not-owned OID / unknown column / arity
+        //   mismatch yields a same-length result of empty rows (or empty when keys is
+        //   empty). The whole batch is one mailbox message so name resolution happens
+        //   once and every key scan is serialized against same-oid mutations.
+        unique_future<std::pmr::vector<std::pmr::vector<std::int64_t>>>
+        scan_by_keys_inner(components::catalog::oid_t table_oid,
+                           std::pmr::vector<std::string> key_col_names,
+                           components::vector::data_chunk_t keys,
+                           components::table::transaction_data txn);
 
         // storage_types_inner — schema metadata accessor.
         unique_future<std::pmr::vector<components::types::complex_logical_type>>
@@ -251,8 +264,7 @@ namespace services::disk {
         //   storage column index), so the manager can resolve name-keyed filters to
         //   indices without borrowing the agent's columns() across the boundary.
         //   Empty vector means "not owned" / record-only marker.
-        unique_future<std::pmr::vector<std::string>>
-        storage_column_names_inner(components::catalog::oid_t table_oid);
+        unique_future<std::pmr::vector<std::string>> storage_column_names_inner(components::catalog::oid_t table_oid);
 
         // storage_total_rows_inner — row-count metadata accessor. 0 means
         //   either "not owned" or "empty twin" — both equivalent for callers.
@@ -270,12 +282,16 @@ namespace services::disk {
         unique_future<void> vacuum_inner(session_id_t session, uint64_t lowest_active_start_time);
 
         // maybe_cleanup_inner — single-OID target. If deleted/total > 0.3 and
-        //   lowest_active_start_time is past TRANSACTION_ID_START, runs table.compact().
-        //   cleanup_versions is intentionally omitted: scan_committed needs intact
-        //   version metadata to filter tombstones, which cleanup_versions would strip
-        //   before compact rebuilds the row_group.
-        unique_future<void> maybe_cleanup_inner(components::catalog::oid_t table_oid,
-                                                 uint64_t lowest_active_start_time);
+        //   compact_gate != 0, runs table.compact(). compact_gate is a boolean 0/1
+        //   gate (NOT a horizon value): the dispatcher's txn_publish_msg returns 1
+        //   when no other txn is active and 0 otherwise, and the caller forwards that
+        //   verbatim. So compact_gate==0 means "another txn is still active, defer
+        //   reclaim". The gate is a tombstone-timing heuristic only; compact
+        //   correctness rests on the agent mailbox serializing the row_groups_ swap,
+        //   not on this gate. cleanup_versions is intentionally omitted: scan_committed
+        //   needs intact version metadata to filter tombstones, which cleanup_versions
+        //   would strip before compact rebuilds the row_group.
+        unique_future<void> maybe_cleanup_inner(components::catalog::oid_t table_oid, uint64_t compact_gate);
 
         // on_horizon_advanced_inner — sweeps dropped_storages_, removing entries whose
         //   dropped_at_commit_id < new_horizon. Exceptions FORBIDDEN: std::error_code
@@ -284,21 +300,41 @@ namespace services::disk {
         //   idempotently collapses N agent acks into one disk_has_dropped_ flip.
         unique_future<void> on_horizon_advanced_inner(uint64_t new_horizon);
 
+        // storage_dropped_committed_inner — DROP-GC value-space remap. A GC entry
+        //   recorded by register_dropped_storage_inner carries dropped_at_commit_id
+        //   in TXN-ID space (>= 2^62) because the cascade-delete operator only knew
+        //   the in-flight txn_id. on_horizon_advanced_inner compares against a
+        //   commit-id horizon, so the TXN-ID placeholder would never be reclaimed.
+        //   Once the transaction commits, manager_disk fans this out to every agent;
+        //   each rewrites its own dropped_storages_ entries whose dropped_at_commit_id
+        //   equals txn_id to the real commit_id, moving them into commit-id space.
+        unique_future<void> storage_dropped_committed_inner(uint64_t txn_id, uint64_t commit_id);
+
+        // storage_drop_aborted_inner — DROP-rollback un-mark. The abort mirror of
+        //   storage_dropped_committed_inner: instead of remapping a GC entry's
+        //   dropped_at_commit_id into commit-id space, it ERASES every
+        //   dropped_storages_ entry whose dropped_at_commit_id == txn_id. A DROP
+        //   TABLE inside a transaction records its GC entry in TXN-ID space via
+        //   register_dropped_storage_inner; if the transaction ABORTS the table must
+        //   survive, so manager_disk fans this out to every agent and each removes
+        //   the matching entries so on_horizon_advanced never reclaims the live .otbx.
+        unique_future<void> storage_drop_aborted_inner(uint64_t txn_id);
+
         // Pre-scheduler-start helper: push-back into dropped_storages_ (base_spaces
         // catalog rebuild via register_dropped_storage_sync). Not a mailbox handler.
         void register_dropped_storage_inner_sync(components::catalog::oid_t oid,
-                                                  uint64_t dropped_at_commit_id,
-                                                  std::filesystem::path path,
-                                                  std::pmr::vector<std::filesystem::path> sidecar_paths);
+                                                 uint64_t dropped_at_commit_id,
+                                                 std::filesystem::path path,
+                                                 std::pmr::vector<std::filesystem::path> sidecar_paths);
 
         // Runtime DROP path mailbox handler. manager_disk_t::mark_storage_dropped
         // forwards here so the per-agent slice gets the entry without sharing
         // mutable state across the actor boundary. Internally delegates to
         // register_dropped_storage_inner_sync.
         unique_future<void> register_dropped_storage_inner(components::catalog::oid_t oid,
-                                                            uint64_t dropped_at_commit_id,
-                                                            std::filesystem::path path,
-                                                            std::pmr::vector<std::filesystem::path> sidecar_paths);
+                                                           uint64_t dropped_at_commit_id,
+                                                           std::filesystem::path path,
+                                                           std::pmr::vector<std::filesystem::path> sidecar_paths);
 
         // Runtime DROP TABLE storages_ erase (sole owner of the canonical erase +
         // .otbx removal). Idempotent on a missing key; the SFBM WRITE_LOCK is
@@ -310,8 +346,7 @@ namespace services::disk {
         // table_storage and recreates the storage adapter on the agent's arena.
         // Idempotent re-issue logs "not found"; DISK is out-of-scope
         // (table_storage_t::drop_column returns false on DISK).
-        unique_future<void> drop_column_inner(components::catalog::oid_t table_oid,
-                                              std::pmr::string column_name);
+        unique_future<void> drop_column_inner(components::catalog::oid_t table_oid, std::pmr::string column_name);
 
         // Bootstrap-only: base_spaces wires the manager_dispatcher_t address into
         // every agent before scheduler.start. on_horizon_advanced_inner uses it to
@@ -325,6 +360,7 @@ namespace services::disk {
                                                             &agent_disk_t::storage_append_inner,
                                                             &agent_disk_t::storage_publish_commits_inner,
                                                             &agent_disk_t::storage_publish_deletes_inner,
+                                                            &agent_disk_t::storage_revert_deletes_inner,
                                                             &agent_disk_t::storage_revert_appends_inner,
                                                             &agent_disk_t::storage_revert_append_inner,
                                                             &agent_disk_t::storage_update_inner,
@@ -332,6 +368,7 @@ namespace services::disk {
                                                             &agent_disk_t::storage_fetch_inner,
                                                             &agent_disk_t::storage_scan_batched_inner,
                                                             &agent_disk_t::storage_scan_segment_inner,
+                                                            &agent_disk_t::scan_by_keys_inner,
                                                             &agent_disk_t::storage_types_inner,
                                                             &agent_disk_t::storage_column_names_inner,
                                                             &agent_disk_t::storage_total_rows_inner,
@@ -339,6 +376,8 @@ namespace services::disk {
                                                             &agent_disk_t::vacuum_inner,
                                                             &agent_disk_t::maybe_cleanup_inner,
                                                             &agent_disk_t::on_horizon_advanced_inner,
+                                                            &agent_disk_t::storage_dropped_committed_inner,
+                                                            &agent_disk_t::storage_drop_aborted_inner,
                                                             &agent_disk_t::register_dropped_storage_inner,
                                                             &agent_disk_t::drop_storage_inner,
                                                             &agent_disk_t::drop_column_inner>;

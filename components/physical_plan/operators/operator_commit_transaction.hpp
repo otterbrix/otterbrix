@@ -9,8 +9,11 @@ namespace components::operators {
 
     // COMMIT TRANSACTION operator.
     //
-    // RPC mode (default): snapshot txn_data + swap-info, txn_manager->commit()
-    // for a commit_id, then storage_publish_commits / storage_publish_deletes.
+    // RPC mode (default): one txn_commit_drain_msg round-trip to the dispatcher
+    // (sole owner of transaction_manager_t) returns the snapshotted txn_data,
+    // the drained swap-info and the allocated commit_id; then
+    // storage_publish_commits / storage_publish_deletes flip MVCC state, and a
+    // final txn_publish_msg advances the ProcArray barrier.
     //
     // DDL-commit mode (set_ddl_commit): prepends a flush durability barrier and
     // a WAL commit_txn record (with commit_id=0, since it isn't allocated yet)

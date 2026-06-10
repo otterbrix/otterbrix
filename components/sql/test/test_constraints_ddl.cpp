@@ -40,7 +40,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
-        auto node = ddl_consumer(result.node);
+        auto node = ddl_consumer(result.sub_queries.back());
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);
 
         const auto& col_defs = data->column_definitions();
@@ -59,7 +59,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
-        auto node = ddl_consumer(result.node);
+        auto node = ddl_consumer(result.sub_queries.back());
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);
 
         const auto& col_defs = data->column_definitions();
@@ -79,7 +79,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
-        auto node = ddl_consumer(result.node);
+        auto node = ddl_consumer(result.sub_queries.back());
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);
 
         const auto& col_defs = data->column_definitions();
@@ -98,7 +98,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
-        auto node = ddl_consumer(result.node);
+        auto node = ddl_consumer(result.sub_queries.back());
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);
 
         const auto& col_defs = data->column_definitions();
@@ -116,7 +116,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
-        auto node = ddl_consumer(result.node);
+        auto node = ddl_consumer(result.sub_queries.back());
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);
 
         const auto& constraints = data->constraints();
@@ -134,7 +134,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
-        auto node = ddl_consumer(result.node);
+        auto node = ddl_consumer(result.sub_queries.back());
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);
 
         const auto& constraints = data->constraints();
@@ -156,7 +156,7 @@ TEST_CASE("components::sql::sequence") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
-        auto node = ddl_consumer(result.node);
+        auto node = ddl_consumer(result.sub_queries.back());
         REQUIRE(node->type() == node_type::create_sequence_t);
         // CREATE SEQUENCE no longer carries db name in its to_string (namespace resolution is sibling-OID).
         REQUIRE(node->to_string() == "$create_sequence: my_seq");
@@ -168,7 +168,7 @@ TEST_CASE("components::sql::sequence") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
-        auto node = ddl_consumer(result.node);
+        auto node = ddl_consumer(result.sub_queries.back());
         REQUIRE(node->type() == node_type::create_sequence_t);
         auto seq = reinterpret_cast<node_create_sequence_ptr&>(node);
         REQUIRE(seq->start() == 10);
@@ -181,7 +181,7 @@ TEST_CASE("components::sql::sequence") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
-        auto node = result.node;
+        auto node = result.sub_queries.back();
         // DROP SEQUENCE is wrapped in sequence_t(resolve_ns, resolve_table, drop_sequence).
         REQUIRE(node->type() == node_type::sequence_t);
         REQUIRE(node->to_string() == "$sequence[3]");
@@ -199,7 +199,7 @@ TEST_CASE("components::sql::view") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
-        auto node = result.node;
+        auto node = result.sub_queries.back();
         REQUIRE(node->type() == node_type::sequence_t);
         REQUIRE(node->to_string() == "$sequence[2]");
     }
@@ -212,8 +212,8 @@ TEST_CASE("components::sql::view") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
-        REQUIRE(result.node->type() == node_type::sequence_t);
-        auto view_node = boost::static_pointer_cast<node_create_view_t>(result.node->children().back());
+        REQUIRE(result.sub_queries.back()->type() == node_type::sequence_t);
+        auto view_node = boost::static_pointer_cast<node_create_view_t>(result.sub_queries.back()->children().back());
         REQUIRE(view_node->type() == node_type::create_view_t);
         REQUIRE(view_node->query_sql() == "SELECT id, name FROM db.tbl WHERE id > 10");
     }
@@ -225,7 +225,7 @@ TEST_CASE("components::sql::view") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
-        auto node = result.node;
+        auto node = result.sub_queries.back();
         // DROP VIEW is wrapped in sequence_t(resolve_ns, resolve_table, drop_view).
         REQUIRE(node->type() == node_type::sequence_t);
         REQUIRE(node->to_string() == "$sequence[3]");
@@ -246,7 +246,7 @@ TEST_CASE("components::sql::check_constraint_whitelist") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
-        auto node = ddl_consumer(result.node);
+        auto node = ddl_consumer(result.sub_queries.back());
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);
         REQUIRE(data->constraints().size() == 1);
         REQUIRE(data->constraints()[0].check_expression == "x > 0");
@@ -258,7 +258,7 @@ TEST_CASE("components::sql::check_constraint_whitelist") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
-        auto node = ddl_consumer(result.node);
+        auto node = ddl_consumer(result.sub_queries.back());
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);
         REQUIRE(data->constraints().size() == 1);
         REQUIRE_FALSE(data->constraints()[0].check_expression.empty());
@@ -270,7 +270,7 @@ TEST_CASE("components::sql::check_constraint_whitelist") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
-        auto node = ddl_consumer(result.node);
+        auto node = ddl_consumer(result.sub_queries.back());
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);
         REQUIRE(data->constraints().size() == 1);
         REQUIRE_FALSE(data->constraints()[0].check_expression.empty());
@@ -301,7 +301,7 @@ TEST_CASE("components::sql::macro") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
-        auto node = result.node;
+        auto node = result.sub_queries.back();
         // DROP FUNCTION is wrapped in sequence_t(resolve_ns, resolve_table, drop_macro).
         REQUIRE(node->type() == node_type::sequence_t);
         REQUIRE(node->to_string() == "$sequence[3]");
@@ -313,7 +313,7 @@ TEST_CASE("components::sql::macro") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
-        auto node = result.node;
+        auto node = result.sub_queries.back();
         // No db prefix → only resolve_table sibling (no resolve_namespace), so 2 children.
         REQUIRE(node->type() == node_type::sequence_t);
     }
@@ -337,7 +337,7 @@ TEST_CASE("components::sql::if_not_exists") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
-        auto node = ddl_consumer(result.node);
+        auto node = ddl_consumer(result.sub_queries.back());
         auto& d = reinterpret_cast<node_create_database_ptr&>(node);
         REQUIRE_FALSE(d->if_not_exists());
     }
@@ -348,7 +348,7 @@ TEST_CASE("components::sql::if_not_exists") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
-        auto node = ddl_consumer(result.node);
+        auto node = ddl_consumer(result.sub_queries.back());
         auto& d = reinterpret_cast<node_create_database_ptr&>(node);
         REQUIRE(d->if_not_exists());
     }
@@ -359,7 +359,7 @@ TEST_CASE("components::sql::if_not_exists") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
-        auto node = ddl_consumer(result.node);
+        auto node = ddl_consumer(result.sub_queries.back());
         auto& cc = reinterpret_cast<node_create_collection_ptr&>(node);
         REQUIRE(cc->relname() == "tbl");
         REQUIRE(cc->if_not_exists());
@@ -371,7 +371,7 @@ TEST_CASE("components::sql::if_not_exists") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
-        auto node = ddl_consumer(result.node);
+        auto node = ddl_consumer(result.sub_queries.back());
         auto& cc = reinterpret_cast<node_create_collection_ptr&>(node);
         REQUIRE_FALSE(cc->if_not_exists());
     }

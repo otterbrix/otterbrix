@@ -249,6 +249,8 @@ namespace components::table {
         row_groups_->commit_all_deletes(txn_id, commit_id);
     }
 
+    void data_table_t::revert_all_deletes(uint64_t txn_id) { row_groups_->revert_all_deletes(txn_id); }
+
     void data_table_t::scan_table_segment(int64_t row_start,
                                           uint64_t count,
                                           const std::function<void(vector::data_chunk_t& chunk)>& function) {

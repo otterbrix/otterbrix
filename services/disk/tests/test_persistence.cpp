@@ -9,6 +9,7 @@
 #include <components/session/session.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/types/types.hpp>
+#include <components/vector/data_chunk.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <services/disk/manager_disk.hpp>
 
@@ -50,8 +51,7 @@ namespace {
                 c.path = path;
                 return c;
             }())
-            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
-        }
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {}
         ~fresh_disk() {
             // Destroy the manager first: its dtor joins the internal loop thread,
             // which may still enqueue children onto the scheduler. Only then is it
@@ -422,16 +422,22 @@ TEST_CASE("services::disk::persistence::test_sequence_persistence") {
         sk1.emplace_back("seqrelid");
         std::pmr::vector<components::types::logical_value_t> sv1{&fd.resource};
         sv1.emplace_back(components::types::logical_value_t(&fd.resource, seq_oid));
-        auto seq_rows = fd.invoke(&manager_disk_t::scan_by_key, fd.ctx(), pg_seq, std::move(sk1), std::move(sv1));
-        REQUIRE(seq_rows.size() == 1);
+        auto seq_batches =
+            fd.invoke(&manager_disk_t::read_chunks_by_key, fd.ctx(), pg_seq, std::move(sk1), std::move(sv1));
+        uint64_t seq_total = 0;
+        for (auto& c : seq_batches) seq_total += c.size();
+        REQUIRE(seq_total == 1);
         // AC #2: DROP removes the pg_sequence row.
         test_drop_sequence(fd, seq_oid);
         std::pmr::vector<std::string> sk2{&fd.resource};
         sk2.emplace_back("seqrelid");
         std::pmr::vector<components::types::logical_value_t> sv2{&fd.resource};
         sv2.emplace_back(components::types::logical_value_t(&fd.resource, seq_oid));
-        auto seq_rows_after = fd.invoke(&manager_disk_t::scan_by_key, fd.ctx(), pg_seq, std::move(sk2), std::move(sv2));
-        REQUIRE(seq_rows_after.empty());
+        auto seq_batches_after =
+            fd.invoke(&manager_disk_t::read_chunks_by_key, fd.ctx(), pg_seq, std::move(sk2), std::move(sv2));
+        uint64_t seq_total_after = 0;
+        for (auto& c : seq_batches_after) seq_total_after += c.size();
+        REQUIRE(seq_total_after == 0);
         // Re-create for restart test.
         seq_oid = test_create_sequence(fd, ns_oid, "counter2", 5, 1, 1, 500, false);
         fd.checkpoint();
@@ -451,8 +457,11 @@ TEST_CASE("services::disk::persistence::test_sequence_persistence") {
         sk3.emplace_back("seqrelid");
         std::pmr::vector<components::types::logical_value_t> sv3{&fd2.resource};
         sv3.emplace_back(components::types::logical_value_t(&fd2.resource, seq_oid));
-        auto seq_rows2 = fd2.invoke(&manager_disk_t::scan_by_key, fd2.ctx(), pg_seq2, std::move(sk3), std::move(sv3));
-        REQUIRE(seq_rows2.size() == 1);
+        auto seq_batches2 =
+            fd2.invoke(&manager_disk_t::read_chunks_by_key, fd2.ctx(), pg_seq2, std::move(sk3), std::move(sv3));
+        uint64_t seq_total2 = 0;
+        for (auto& c : seq_batches2) seq_total2 += c.size();
+        REQUIRE(seq_total2 == 1);
     }
     std::filesystem::remove_all(dir);
 }
@@ -478,18 +487,22 @@ TEST_CASE("services::disk::persistence::test_view_persistence") {
         rk1.emplace_back("ev_class");
         std::pmr::vector<components::types::logical_value_t> rv1{&fd.resource};
         rv1.emplace_back(components::types::logical_value_t(&fd.resource, view_oid));
-        auto rewrite_rows =
-            fd.invoke(&manager_disk_t::scan_by_key, fd.ctx(), pg_rewrite_tbl, std::move(rk1), std::move(rv1));
-        REQUIRE(rewrite_rows.size() == 1);
+        auto rewrite_batches =
+            fd.invoke(&manager_disk_t::read_chunks_by_key, fd.ctx(), pg_rewrite_tbl, std::move(rk1), std::move(rv1));
+        uint64_t rewrite_total = 0;
+        for (auto& c : rewrite_batches) rewrite_total += c.size();
+        REQUIRE(rewrite_total == 1);
         // AC #3: DROP removes the pg_rewrite row.
         test_drop_view(fd, view_oid);
         std::pmr::vector<std::string> rk2{&fd.resource};
         rk2.emplace_back("ev_class");
         std::pmr::vector<components::types::logical_value_t> rv2{&fd.resource};
         rv2.emplace_back(components::types::logical_value_t(&fd.resource, view_oid));
-        auto rewrite_rows_after =
-            fd.invoke(&manager_disk_t::scan_by_key, fd.ctx(), pg_rewrite_tbl, std::move(rk2), std::move(rv2));
-        REQUIRE(rewrite_rows_after.empty());
+        auto rewrite_batches_after =
+            fd.invoke(&manager_disk_t::read_chunks_by_key, fd.ctx(), pg_rewrite_tbl, std::move(rk2), std::move(rv2));
+        uint64_t rewrite_total_after = 0;
+        for (auto& c : rewrite_batches_after) rewrite_total_after += c.size();
+        REQUIRE(rewrite_total_after == 0);
         // Re-create for restart test.
         view_oid = test_create_view(fd, ns_oid, "my_view2", view_sql);
         fd.checkpoint();
@@ -509,9 +522,11 @@ TEST_CASE("services::disk::persistence::test_view_persistence") {
         rk3.emplace_back("ev_class");
         std::pmr::vector<components::types::logical_value_t> rv3{&fd2.resource};
         rv3.emplace_back(components::types::logical_value_t(&fd2.resource, view_oid));
-        auto rewrite_rows2 =
-            fd2.invoke(&manager_disk_t::scan_by_key, fd2.ctx(), pg_rewrite_tbl2, std::move(rk3), std::move(rv3));
-        REQUIRE(rewrite_rows2.size() == 1);
+        auto rewrite_batches2 =
+            fd2.invoke(&manager_disk_t::read_chunks_by_key, fd2.ctx(), pg_rewrite_tbl2, std::move(rk3), std::move(rv3));
+        uint64_t rewrite_total2 = 0;
+        for (auto& c : rewrite_batches2) rewrite_total2 += c.size();
+        REQUIRE(rewrite_total2 == 1);
     }
     std::filesystem::remove_all(dir);
 }
@@ -536,9 +551,11 @@ TEST_CASE("services::disk::persistence::test_macro_persistence") {
         mk1.emplace_back("ev_class");
         std::pmr::vector<components::types::logical_value_t> mv1{&fd.resource};
         mv1.emplace_back(components::types::logical_value_t(&fd.resource, macro_oid));
-        auto rewrite_rows_m =
-            fd.invoke(&manager_disk_t::scan_by_key, fd.ctx(), pg_rewrite_m, std::move(mk1), std::move(mv1));
-        REQUIRE(rewrite_rows_m.size() == 1);
+        auto rewrite_batches_m =
+            fd.invoke(&manager_disk_t::read_chunks_by_key, fd.ctx(), pg_rewrite_m, std::move(mk1), std::move(mv1));
+        uint64_t rewrite_total_m = 0;
+        for (auto& c : rewrite_batches_m) rewrite_total_m += c.size();
+        REQUIRE(rewrite_total_m == 1);
         fd.checkpoint();
     }
     {
@@ -554,9 +571,11 @@ TEST_CASE("services::disk::persistence::test_macro_persistence") {
         mk2.emplace_back("ev_class");
         std::pmr::vector<components::types::logical_value_t> mv2{&fd2.resource};
         mv2.emplace_back(components::types::logical_value_t(&fd2.resource, macro_oid));
-        auto rewrite_rows_m2 =
-            fd2.invoke(&manager_disk_t::scan_by_key, fd2.ctx(), pg_rewrite_m2, std::move(mk2), std::move(mv2));
-        REQUIRE(rewrite_rows_m2.size() == 1);
+        auto rewrite_batches_m2 =
+            fd2.invoke(&manager_disk_t::read_chunks_by_key, fd2.ctx(), pg_rewrite_m2, std::move(mk2), std::move(mv2));
+        uint64_t rewrite_total_m2 = 0;
+        for (auto& c : rewrite_batches_m2) rewrite_total_m2 += c.size();
+        REQUIRE(rewrite_total_m2 == 1);
     }
     std::filesystem::remove_all(dir);
 }
@@ -679,8 +698,11 @@ TEST_CASE("services::disk::persistence::test_check_constraint_persistence") {
         ck.emplace_back("conrelid");
         std::pmr::vector<components::types::logical_value_t> cv{&fd2.resource};
         cv.emplace_back(components::types::logical_value_t(&fd2.resource, table_oid));
-        auto check_rows = fd2.invoke(&manager_disk_t::scan_by_key, fd2.ctx(), pg_constr, std::move(ck), std::move(cv));
-        REQUIRE(check_rows.size() == 1);
+        auto check_batches =
+            fd2.invoke(&manager_disk_t::read_chunks_by_key, fd2.ctx(), pg_constr, std::move(ck), std::move(cv));
+        uint64_t check_total = 0;
+        for (auto& c : check_batches) check_total += c.size();
+        REQUIRE(check_total == 1);
     }
     std::filesystem::remove_all(dir);
 }

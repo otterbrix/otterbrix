@@ -72,34 +72,26 @@ namespace components::operators {
             auto matches = co_await std::move(rfbnf);
             constexpr components::catalog::oid_t pg_proc_coll = components::catalog::well_known_oid::pg_proc_table;
             constexpr components::catalog::oid_t pg_depend_coll = components::catalog::well_known_oid::pg_depend_table;
+            // Collect every (table, col, oid) delete across all matches into one
+            // batched call. matches was already awaited above, so no spec here
+            // depends on an intervening read.
+            std::pmr::vector<services::disk::pg_catalog_delete_spec_t> specs(resource_);
+            specs.reserve(matches.size() * 3);
             for (auto& m : matches) {
-                auto [_d1, d1f] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                                   exec_ctx,
-                                                   pg_proc_coll,
-                                                   std::int64_t{0},
-                                                   m.oid);
-                co_await std::move(d1f);
-                if (ctx->txn.transaction_id != 0)
+                specs.push_back({pg_proc_coll, std::int64_t{0}, m.oid});
+                specs.push_back({pg_depend_coll, std::int64_t{1}, m.oid});
+                specs.push_back({pg_depend_coll, std::int64_t{3}, m.oid});
+                if (ctx->txn.transaction_id != 0) {
                     ctx->pg_catalog_delete_tables.insert(pg_proc_coll);
-                auto [_d2, d2f] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                                   exec_ctx,
-                                                   pg_depend_coll,
-                                                   std::int64_t{1},
-                                                   m.oid);
-                co_await std::move(d2f);
-                if (ctx->txn.transaction_id != 0)
                     ctx->pg_catalog_delete_tables.insert(pg_depend_coll);
-                auto [_d3, d3f] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                                   exec_ctx,
-                                                   pg_depend_coll,
-                                                   std::int64_t{3},
-                                                   m.oid);
-                co_await std::move(d3f);
-                if (ctx->txn.transaction_id != 0)
-                    ctx->pg_catalog_delete_tables.insert(pg_depend_coll);
+                }
+            }
+            if (!specs.empty()) {
+                auto [_d, df] = actor_zeta::send(ctx->disk_address,
+                                                 &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
+                                                 exec_ctx,
+                                                 std::move(specs));
+                co_await std::move(df);
             }
         }
 

@@ -48,7 +48,7 @@ namespace components::logical_plan {
         }
 
         template<class Value>
-        core::parameter_id_t add_parameter(Value&& value) {
+        [[nodiscard]] core::parameter_id_t add_parameter(Value&& value) {
             auto id = next_id();
             add_parameter(id, std::forward<Value>(value));
             return id;

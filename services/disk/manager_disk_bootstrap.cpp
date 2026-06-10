@@ -661,9 +661,8 @@ namespace services::disk {
                 for (const auto& c : all_cols) {
                     all_types.push_back(c.type());
                 }
-                const std::vector<std::size_t> projected{
-                    static_cast<std::size_t>(catalog::pg_attribute_col::attoid),
-                    static_cast<std::size_t>(catalog::pg_attribute_col::attname)};
+                const std::vector<std::size_t> projected{static_cast<std::size_t>(catalog::pg_attribute_col::attoid),
+                                                         static_cast<std::size_t>(catalog::pg_attribute_col::attname)};
                 while (true) {
                     components::vector::data_chunk_t chunk(&scan_resource,
                                                            all_types,
@@ -703,8 +702,7 @@ namespace services::disk {
                 auto it = attoid_to_name.find(att_oid);
                 if (it == attoid_to_name.end())
                     continue;
-                result[i].keys.emplace_back(resource_,
-                                            std::string_view{it->second.data(), it->second.size()});
+                result[i].keys.emplace_back(resource_, std::string_view{it->second.data(), it->second.size()});
             }
         }
 
@@ -752,8 +750,7 @@ namespace services::disk {
         return alive;
     }
 
-    std::pmr::vector<std::pair<components::catalog::oid_t, std::uint64_t>>
-    manager_disk_t::scan_dropped_oids_sync() {
+    std::pmr::vector<std::pair<components::catalog::oid_t, std::uint64_t>> manager_disk_t::scan_dropped_oids_sync() {
         // See header. Strategy: scan pg_class with COMMITTED_ROWS (includes
         // tombstones) for every user OID ever recorded, then set-difference against
         // alive_user_oids_sync (which omits permanently-deleted) to isolate the
@@ -787,9 +784,8 @@ namespace services::disk {
                 components::vector::data_chunk_t chunk(&scan_resource,
                                                        types,
                                                        components::vector::DEFAULT_VECTOR_CAPACITY);
-                const bool produced = table.create_index_scan(scan_state,
-                                                              chunk,
-                                                              components::table::table_scan_type::COMMITTED_ROWS);
+                const bool produced =
+                    table.create_index_scan(scan_state, chunk, components::table::table_scan_type::COMMITTED_ROWS);
                 if (!produced) {
                     break;
                 }

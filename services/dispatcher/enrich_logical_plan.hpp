@@ -16,8 +16,8 @@
 #include <components/logical_plan/node_catalog_resolve_table.hpp>
 #include <components/logical_plan/node_catalog_resolve_type.hpp>
 #include <components/logical_plan/param_storage.hpp>
-#include <services/collection/context_storage.hpp>
 #include <memory_resource>
+#include <services/collection/context_storage.hpp>
 #include <span>
 #include <string>
 #include <string_view>
@@ -35,14 +35,12 @@ namespace services::dispatcher {
     // (resolved_table_metadata_t living on the resolve node) so enrich can
     // read columns / not-null / default specs through the plan-tree idx.
     struct enrich_resolve_idx_t {
-        // dbname → namespace_oid.
-        std::unordered_map<std::string, components::catalog::oid_t> ns_by_dbname;
         // "dbname|relname" → table_oid.
         std::unordered_map<std::string, components::catalog::oid_t> tbl_oid_by_qname;
         // "dbname|relname" → const resolved_table_metadata_t*. Points into the
         // resolve node's `resolved_metadata()` optional. Pointer stays valid
         // for the lifetime of the plan tree (intrusive_ptr keeps nodes alive
-        // through the dispatcher's coroutine).
+        // through the executor's coroutine).
         std::unordered_map<std::string, const components::logical_plan::resolved_table_metadata_t*> tbl_md_by_qname;
         // table_oid → const resolved_table_metadata_t*. Mirror for oid-keyed
         // table metadata probes.
@@ -55,10 +53,6 @@ namespace services::dispatcher {
             referencing_fks_by_oid;
         std::unordered_map<components::catalog::oid_t, std::vector<std::pair<std::string, std::string>>>
             check_exprs_by_oid;
-        // "dbname|typename" -> const resolved_type_metadata_t*. Mirrors
-        // plan_resolve_index_t::type_md_by_qname for enrich-only consumers
-        // (drop_type_t, create_collection_t column-type resolution).
-        std::unordered_map<std::string, const components::logical_plan::resolved_type_metadata_t*> type_md_by_qname;
     };
 
     // Walks the plan tree and fills catalog metadata fields into DML nodes
@@ -72,13 +66,14 @@ namespace services::dispatcher {
     // table_oid / namespace_oid without async catalog probes. When null,
     // enrich gathers a local index from `root` itself (recursive calls then
     // thread the gathered pointer through children).
-    actor_zeta::unique_future<void> enrich_plan(std::pmr::memory_resource* resource,
-                                                components::logical_plan::node_ptr root,
-                                                actor_zeta::address_t disk_address,
-                                                components::execution_context_t ctx,
-                                                actor_zeta::address_t index_address = actor_zeta::address_t::empty_address(),
-                                                services::context_storage_t* collections_ctx = nullptr,
-                                                const enrich_resolve_idx_t* idx = nullptr);
+    actor_zeta::unique_future<void>
+    enrich_plan(std::pmr::memory_resource* resource,
+                components::logical_plan::node_ptr root,
+                actor_zeta::address_t disk_address,
+                components::execution_context_t ctx,
+                actor_zeta::address_t index_address = actor_zeta::address_t::empty_address(),
+                services::context_storage_t* collections_ctx = nullptr,
+                const enrich_resolve_idx_t* idx = nullptr);
 
 } // namespace services::dispatcher
 
@@ -121,8 +116,7 @@ namespace services::catalog_resolve {
     // (i.e. need a fresh resolve round). Operates on direct children of
     // sequence_t roots; sub-plan splicing places them at the front so a
     // shallow scan suffices.
-    std::vector<components::logical_plan::node_ptr>
-    extract_unresolved_resolves(components::logical_plan::node_t* root);
+    std::vector<components::logical_plan::node_ptr> extract_unresolved_resolves(components::logical_plan::node_t* root);
 
     // When the SQL transformer wraps a DML/DDL plan in
     //   sequence_t(catalog_resolve_namespace_t, catalog_resolve_table_t, <real_root>)
@@ -132,16 +126,15 @@ namespace services::catalog_resolve {
     // all resolution-only prefix children). For non-sequence_t roots it returns
     // the node itself unchanged. Returns nullptr only when the input is null or
     // a sequence_t with no non-resolve children.
-    const components::logical_plan::node_t*
-    effective_root_node(const components::logical_plan::node_t* n);
+    const components::logical_plan::node_t* effective_root_node(const components::logical_plan::node_t* n);
     // Mutable-pointer overload, for call sites that mutate the consumer node.
     components::logical_plan::node_t* effective_root_node(components::logical_plan::node_t* n);
 
     // drop_* nodes no longer carry user-typed dbname/relname; their sibling
     // resolve_namespace / resolve_table nodes inside the wrapping sequence_t
     // do. Extract (db, rel) from the resolve siblings so routing code that
-    // still needs names (qualified_name_t for table_id, collections_ map
-    // keys, etc.) keeps working.
+    // still needs names (qualified_name_t for table_id, catalog-resolve
+    // lookups, etc.) keeps working.
     std::pair<std::string, std::string>
     drop_target_names_from_resolves(const components::logical_plan::node_t* plan_root);
 

@@ -32,16 +32,19 @@ namespace components::operators {
         // columns (e.g. pg_depend's objid AND refobjid) only the right row is hit.
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
+            std::pmr::vector<services::disk::pg_catalog_delete_spec_t> specs(resource_);
+            specs.reserve(catalog_deletes_.size());
             for (auto& d : catalog_deletes_) {
-                auto [_, fut] = actor_zeta::send(ctx->disk_address,
-                                                 &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                                 exec_ctx,
-                                                 d.catalog_table_oid,
-                                                 d.oid_col_idx,
-                                                 d.target_oid);
-                co_await std::move(fut);
+                specs.push_back({d.catalog_table_oid, d.oid_col_idx, d.target_oid});
                 if (ctx->txn.transaction_id != 0)
                     ctx->pg_catalog_delete_tables.insert(d.catalog_table_oid);
+            }
+            if (!specs.empty()) {
+                auto [_, fut] = actor_zeta::send(ctx->disk_address,
+                                                 &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
+                                                 exec_ctx,
+                                                 std::move(specs));
+                co_await std::move(fut);
             }
         }
 

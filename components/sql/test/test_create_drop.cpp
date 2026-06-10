@@ -15,7 +15,7 @@ using namespace components::sql::transform;
         auto stmt = raw_parser(&arena_resource, QUERY)->lst.front().data;                                              \
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();                                    \
         REQUIRE(!result.has_error());                                                                                  \
-        auto node = result.value().node;                                                                               \
+        auto node = result.value().sub_queries.back();                                                                 \
         REQUIRE(node->to_string() == EXPECTED);                                                                        \
     }
 
@@ -30,7 +30,7 @@ using namespace components::sql::transform;
         auto stmt = linitial(raw_parser(&arena_resource, QUERY));                                                      \
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();                                    \
         REQUIRE(!result.has_error());                                                                                  \
-        auto node = result.value().node;                                                                               \
+        auto node = result.value().sub_queries.back();                                                                 \
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);                                               \
         const auto& schema = data->schema();                                                                           \
         CHECK_FN(schema);                                                                                              \
@@ -55,7 +55,7 @@ TEST_CASE("components::sql::database") {
     TEST_TRANSFORMER_OK("CREATE DATABASE db_name; /* multiline\ncomments */", R"_($sequence[2])_");
     TEST_TRANSFORMER_OK("CREATE /* comment */ DATABASE db_name;", R"_($sequence[2])_");
     // DROP DATABASE is wrapped by the transformer in sequence_t(resolve_ns, drop)
-    // so result.node->to_string() returns the sequence wrapper. Underlying drop_database
+    // so result.sub_queries.back()->to_string() returns the sequence wrapper. Underlying drop_database
     // carries only namespace_oid (INVALID_OID/0 at parse time).
     TEST_TRANSFORMER_OK("DROP DATABASE db_name;", R"_($sequence[2])_");
 }
@@ -71,7 +71,7 @@ TEST_CASE("components::sql::table") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
-        REQUIRE(result.node->to_string() == R"_($sequence[2])_");
+        REQUIRE(result.sub_queries.back()->to_string() == R"_($sequence[2])_");
     }
 
     SECTION("create with schema") {
@@ -80,7 +80,7 @@ TEST_CASE("components::sql::table") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
-        REQUIRE(result.node->to_string() == R"_($sequence[2])_");
+        REQUIRE(result.sub_queries.back()->to_string() == R"_($sequence[2])_");
     }
 
     TEST_TRANSFORMER_OK("CREATE TABLE db_name.table_name()", R"_($sequence[2])_");
@@ -95,8 +95,8 @@ TEST_CASE("components::sql::table") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(drop)).finalize()));
-        // result.node is the wrapping sequence_t: 1 resolve_ns + 1 resolve_table + 1 drop = 3 children.
-        REQUIRE(result.node->to_string() == R"_($sequence[3])_");
+        // result.sub_queries.back() is the wrapping sequence_t: 1 resolve_ns + 1 resolve_table + 1 drop = 3 children.
+        REQUIRE(result.sub_queries.back()->to_string() == R"_($sequence[3])_");
     }
 
     SECTION("drop with schema") {
@@ -105,7 +105,7 @@ TEST_CASE("components::sql::table") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(drop)).finalize()));
-        REQUIRE(result.node->to_string() == R"_($sequence[3])_");
+        REQUIRE(result.sub_queries.back()->to_string() == R"_($sequence[3])_");
     }
 
     TEST_TRANSFORMER_OK("DROP TABLE db_name.table_name", R"_($sequence[3])_");
@@ -245,7 +245,7 @@ TEST_CASE("components::sql::index") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
-        REQUIRE(result.node->to_string() == R"_($sequence[3])_");
+        REQUIRE(result.sub_queries.back()->to_string() == R"_($sequence[3])_");
     }
 
     SECTION("create with schema") {
@@ -255,7 +255,7 @@ TEST_CASE("components::sql::index") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
-        REQUIRE(result.node->to_string() == R"_($sequence[3])_");
+        REQUIRE(result.sub_queries.back()->to_string() == R"_($sequence[3])_");
     }
 
     TEST_TRANSFORMER_OK("CREATE INDEX some_idx ON db.table (field);", R"_($sequence[3])_");
@@ -268,7 +268,7 @@ TEST_CASE("components::sql::index") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(drop)).finalize()));
-        REQUIRE(result.node->to_string() == R"_($sequence[4])_");
+        REQUIRE(result.sub_queries.back()->to_string() == R"_($sequence[4])_");
     }
 
     SECTION("drop with schema") {
@@ -277,7 +277,7 @@ TEST_CASE("components::sql::index") {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(drop)).finalize()));
-        REQUIRE(result.node->to_string() == R"_($sequence[4])_");
+        REQUIRE(result.sub_queries.back()->to_string() == R"_($sequence[4])_");
     }
 
     TEST_TRANSFORMER_OK("DROP INDEX db.table.some_idx", R"_($sequence[4])_");

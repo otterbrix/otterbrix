@@ -42,9 +42,7 @@ namespace components::operators {
         , name_(std::move(name))
         , target_node_(target_node) {}
 
-    void operator_resolve_database_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
-        async_wait();
-    }
+    void operator_resolve_database_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
 
     actor_zeta::unique_future<void> operator_resolve_database_t::await_async_and_resume(pipeline::context_t* ctx) {
         constexpr catalog::oid_t kPgDatabase = catalog::well_known_oid::pg_database_table;
@@ -73,21 +71,27 @@ namespace components::operators {
         std::pmr::vector<types::logical_value_t> db_vals(resource_);
         db_vals.emplace_back(name_lv);
         auto [_db, dbf] = actor_zeta::send(ctx->disk_address,
-                                           &services::disk::manager_disk_t::read_rows_by_key,
+                                           &services::disk::manager_disk_t::read_chunks_by_key,
                                            exec_ctx,
                                            kPgDatabase,
                                            std::move(db_keys),
                                            std::move(db_vals));
-        auto db_rows = co_await std::move(dbf);
+        auto db_batches = co_await std::move(dbf);
 
-        if (!db_rows.empty() && !db_rows[0].empty() && !db_rows[0][0].is_null()) {
-            const auto oid_val = static_cast<catalog::oid_t>(db_rows[0][0].value<std::uint32_t>());
-            out_chunk.set_cardinality(1);
-            set_uint32(out_chunk, 0, 0, static_cast<std::uint32_t>(oid_val));
-            if (target_node_) {
-                target_node_->set_database_oid(oid_val);
+        bool resolved = false;
+        if (!db_batches.empty() && db_batches[0].size() != 0 && db_batches[0].column_count() >= 1) {
+            auto db_oid_v = db_batches[0].value(0, 0);
+            if (!db_oid_v.is_null()) {
+                const auto oid_val = static_cast<catalog::oid_t>(db_oid_v.value<std::uint32_t>());
+                out_chunk.set_cardinality(1);
+                set_uint32(out_chunk, 0, 0, static_cast<std::uint32_t>(oid_val));
+                if (target_node_) {
+                    target_node_->set_database_oid(oid_val);
+                }
+                resolved = true;
             }
-        } else {
+        }
+        if (!resolved) {
             out_chunk.set_cardinality(0);
         }
 

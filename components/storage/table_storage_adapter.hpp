@@ -260,6 +260,8 @@ namespace components::storage {
             table_.commit_all_deletes(txn_id, commit_id);
         }
 
+        void revert_all_deletes(uint64_t txn_id) override { table_.revert_all_deletes(txn_id); }
+
         std::pmr::memory_resource* resource() const override { return resource_; }
 
         table::data_table_t& table() { return table_; }

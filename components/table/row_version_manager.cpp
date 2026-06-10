@@ -197,6 +197,21 @@ namespace components::table {
         }
     }
 
+    void chunk_vector_info::revert_all_deletes(uint64_t txn_id) {
+        // Mirror of commit_all_deletes: instead of stamping this txn's pending
+        // delete marks with a commit_id, un-stamp them back to NOT_DELETED_ID so
+        // an aborted DELETE leaves the rows visible again. any_deleted stays as-is
+        // (a conservative hint — indexing/cleanup re-check each slot).
+        if (!any_deleted) {
+            return;
+        }
+        for (uint64_t i = 0; i < vector::DEFAULT_VECTOR_CAPACITY; i++) {
+            if (deleted[i] == txn_id) {
+                deleted[i] = NOT_DELETED_ID;
+            }
+        }
+    }
+
     void chunk_vector_info::append(uint64_t start, uint64_t end, uint64_t commit_id) {
         if (start == 0) {
             insert_id = commit_id;
@@ -492,6 +507,15 @@ namespace components::table {
         for (auto& info : vector_info_) {
             if (info && info->type == chunk_info_type::VECTOR_INFO) {
                 info->cast<chunk_vector_info>().commit_all_deletes(txn_id, commit_id);
+            }
+        }
+    }
+
+    void row_version_manager_t::revert_all_deletes(uint64_t txn_id) {
+        std::lock_guard lock(version_lock_);
+        for (auto& info : vector_info_) {
+            if (info && info->type == chunk_info_type::VECTOR_INFO) {
+                info->cast<chunk_vector_info>().revert_all_deletes(txn_id);
             }
         }
     }

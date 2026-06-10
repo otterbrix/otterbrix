@@ -25,6 +25,7 @@
 #include <components/logical_plan/node_drop_index.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/session/session.hpp>
+#include <components/sql/parser/extension.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/types/logical_value.hpp>
 
@@ -64,8 +65,8 @@ namespace otterbrix {
         auto drop_collection(const session_id_t& session,
                              const database_name_t& database,
                              const collection_name_t& collection) -> components::cursor::cursor_t_ptr;
-        auto drop_database(const session_id_t& session,
-                           const database_name_t& database) -> components::cursor::cursor_t_ptr;
+        auto drop_database(const session_id_t& session, const database_name_t& database)
+            -> components::cursor::cursor_t_ptr;
         auto find(const session_id_t& session,
                   components::logical_plan::node_aggregate_ptr condition,
                   components::logical_plan::parameter_node_ptr params) -> components::cursor::cursor_t_ptr;
@@ -100,9 +101,7 @@ namespace otterbrix {
                           components::logical_plan::node_create_index_ptr node) -> components::cursor::cursor_t_ptr;
         auto drop_index(const session_id_t& session, components::logical_plan::node_drop_index_ptr node)
             -> components::cursor::cursor_t_ptr;
-        auto execute_plan(const session_id_t& session,
-                          components::logical_plan::node_ptr plan,
-                          components::logical_plan::parameter_node_ptr params = nullptr)
+        auto execute_plan(const session_id_t& session, components::logical_plan::execution_plan_t plan)
             -> components::cursor::cursor_t_ptr;
         auto execute_sql(const session_id_t& session, const std::string& query) -> components::cursor::cursor_t_ptr;
         auto execute_sql_with_params(const session_id_t& session,
@@ -111,11 +110,15 @@ namespace otterbrix {
             -> components::cursor::cursor_t_ptr;
         auto set_timezone(const session_id_t& session, std::string timezone_name) -> components::cursor::cursor_t_ptr;
 
+        auto add_parser_extension(components::sql::parser::parser_extension_t extension)
+            -> core::result_wrapper_t<const components::sql::parser::parser_extension_t*>;
+
     private:
         std::pmr::memory_resource* resource_;
         services::dispatcher::manager_dispatcher_t* manager_dispatcher_;
         actor_zeta::scheduler_raw scheduler_;
         log_t log_;
+        components::sql::parser::parser_extension_registry_t parser_extensions_;
         std::atomic_int i = 0;
 
         std::mutex event_loop_mutex_;
@@ -125,9 +128,8 @@ namespace otterbrix {
         T wait_future(unique_future<T>& future);
         void wait_future_void(unique_future<void>& future);
 
-        auto send_plan(const session_id_t& session,
-                       components::logical_plan::node_ptr node,
-                       components::logical_plan::parameter_node_ptr params) -> components::cursor::cursor_t_ptr;
+        auto send_plan(const session_id_t& session, components::logical_plan::execution_plan_t node)
+            -> components::cursor::cursor_t_ptr;
     };
 
     template<typename T>

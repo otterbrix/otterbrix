@@ -95,14 +95,17 @@ namespace components::operators {
                 std::pmr::vector<types::logical_value_t> ns_vals(resource_);
                 ns_vals.emplace_back(db_lv);
                 auto [_n, nf] = actor_zeta::send(ctx->disk_address,
-                                                 &services::disk::manager_disk_t::read_rows_by_key,
+                                                 &services::disk::manager_disk_t::read_chunks_by_key,
                                                  exec_ctx,
                                                  kPgNamespace,
                                                  std::move(ns_keys),
                                                  std::move(ns_vals));
-                auto ns_rows = co_await std::move(nf);
-                if (!ns_rows.empty() && !ns_rows[0].empty() && !ns_rows[0][0].is_null()) {
-                    namespace_oid_ = static_cast<catalog::oid_t>(ns_rows[0][0].value<std::uint32_t>());
+                auto ns_batches = co_await std::move(nf);
+                if (!ns_batches.empty() && ns_batches[0].size() != 0 && ns_batches[0].column_count() >= 1) {
+                    auto ns_oid_v = ns_batches[0].value(0, 0);
+                    if (!ns_oid_v.is_null()) {
+                        namespace_oid_ = static_cast<catalog::oid_t>(ns_oid_v.value<std::uint32_t>());
+                    }
                 }
             }
         }
@@ -119,24 +122,28 @@ namespace components::operators {
             typ_vals.emplace_back(name_lv);
             typ_vals.emplace_back(ns_lv);
             auto [_t, tf] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::read_rows_by_key,
+                                             &services::disk::manager_disk_t::read_chunks_by_key,
                                              exec_ctx,
                                              kPgType,
                                              std::move(typ_keys),
                                              std::move(typ_vals));
-            auto rows = co_await std::move(tf);
+            auto batches = co_await std::move(tf);
 
-            if (!rows.empty() && rows.front().size() >= 4) {
-                const auto& row = rows.front();
-                if (!row[0].is_null() && !row[1].is_null() && !row[2].is_null()) {
-                    set_uint32(chunk, 0, 0, row[0].value<std::uint32_t>());
-                    set_str(chunk, 1, 0, row[1].value<std::string_view>(), resource_);
-                    set_uint32(chunk, 2, 0, row[2].value<std::uint32_t>());
+            if (!batches.empty() && batches.front().size() != 0 && batches.front().column_count() >= 4) {
+                const auto& batch = batches.front();
+                auto v0 = batch.value(0, 0);
+                auto v1 = batch.value(1, 0);
+                auto v2 = batch.value(2, 0);
+                auto v3 = batch.value(3, 0);
+                if (!v0.is_null() && !v1.is_null() && !v2.is_null()) {
+                    set_uint32(chunk, 0, 0, v0.value<std::uint32_t>());
+                    set_str(chunk, 1, 0, v1.value<std::string_view>(), resource_);
+                    set_uint32(chunk, 2, 0, v2.value<std::uint32_t>());
                     // Preserve original behaviour: when typdefspec is null,
                     // still write an empty string (not a null cell) so any
                     // downstream consumer sees the same shape it used to.
-                    if (!row[3].is_null()) {
-                        set_str(chunk, 3, 0, row[3].value<std::string_view>(), resource_);
+                    if (!v3.is_null()) {
+                        set_str(chunk, 3, 0, v3.value<std::string_view>(), resource_);
                     } else {
                         set_str(chunk, 3, 0, std::string_view{}, resource_);
                     }
@@ -147,11 +154,11 @@ namespace components::operators {
                     // plan_resolve_index.
                     if (target_node_) {
                         components::logical_plan::resolved_type_metadata_t md;
-                        md.type_oid = static_cast<catalog::oid_t>(row[0].value<std::uint32_t>());
-                        md.namespace_oid = static_cast<catalog::oid_t>(row[2].value<std::uint32_t>());
-                        md.name = std::string(row[1].value<std::string_view>());
-                        if (!row[3].is_null()) {
-                            md.typdefspec = std::string(row[3].value<std::string_view>());
+                        md.type_oid = static_cast<catalog::oid_t>(v0.value<std::uint32_t>());
+                        md.namespace_oid = static_cast<catalog::oid_t>(v2.value<std::uint32_t>());
+                        md.name = std::string(v1.value<std::string_view>());
+                        if (!v3.is_null()) {
+                            md.typdefspec = std::string(v3.value<std::string_view>());
                         }
                         if (!md.typdefspec.empty()) {
                             md.type = catalog::decode_type_spec(resource_, md.typdefspec);

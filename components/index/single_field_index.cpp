@@ -146,6 +146,22 @@ namespace components::index {
         pending_inserts_.erase(it);
     }
 
+    void single_field_index_t::revert_delete_impl(uint64_t txn_id) {
+        auto it = pending_deletes_.find(txn_id);
+        if (it == pending_deletes_.end())
+            return;
+        for (const auto& [key, row_index] : it->second) {
+            auto range = storage_.equal_range(key);
+            for (auto sit = range.first; sit != range.second; ++sit) {
+                if (sit->second.row_index == row_index && sit->second.delete_id == txn_id) {
+                    sit->second.delete_id = table::NOT_DELETED_ID;
+                    break;
+                }
+            }
+        }
+        pending_deletes_.erase(it);
+    }
+
     void single_field_index_t::cleanup_versions_impl(uint64_t lowest_active) {
         for (auto it = storage_.begin(); it != storage_.end();) {
             if (it->second.delete_id < lowest_active && it->second.delete_id < table::TRANSACTION_ID_START) {

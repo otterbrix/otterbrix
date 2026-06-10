@@ -9,6 +9,7 @@
 #include <components/tests/generaty.hpp>
 
 #include <catch2/catch.hpp>
+#include <sstream>
 #include <unistd.h>
 
 using components::expressions::compare_type;
@@ -50,7 +51,9 @@ constexpr int kDocuments = 100;
             components::logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));                     \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
-            dispatcher->execute_plan(session, ins);                                                                    \
+            dispatcher->execute_plan(                                                                                  \
+                session,                                                                                               \
+                components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});                     \
         }                                                                                                              \
     } while (false)
 
@@ -92,7 +95,8 @@ constexpr int kDocuments = 100;
         auto plan = components::sql::transform::maybe_wrap_with_catalog_resolve_tables(dispatcher->resource(),         \
                                                                                        std::move(targets),             \
                                                                                        node);                          \
-        dispatcher->execute_plan(session, std::move(plan));                                                            \
+        dispatcher->execute_plan(session,                                                                              \
+                                 components::logical_plan::execution_plan_t{dispatcher->resource(), plan, nullptr});   \
     } while (false)
 
 #define CHECK_FIND_ALL()                                                                                               \
@@ -127,6 +131,17 @@ constexpr int kDocuments = 100;
     } while (false)
 
 #define CHECK_FIND_COUNT(COMPARE, SIDE, VALUE, COUNT) CHECK_FIND("count", COMPARE, SIDE, VALUE, COUNT)
+
+// SQL-driven assertion helper: run QUERY in a fresh per-statement session and
+// require it succeeds and returns COUNT rows. Used by the disk-index coherence
+// cases below that need CHECKPOINT / VACUUM statements (SQL-only verbs).
+#define CHECK_FIND_SQL(QUERY, COUNT)                                                                                   \
+    do {                                                                                                               \
+        auto session = otterbrix::session_id_t();                                                                      \
+        auto cur = dispatcher->execute_sql(session, QUERY);                                                            \
+        REQUIRE(cur->is_success());                                                                                    \
+        REQUIRE(cur->size() == static_cast<std::size_t>(COUNT));                                                       \
+    } while (false)
 
 // Index disk layout is oid-keyed (${path}/${table_oid}/${index_name}).
 // The test fixture creates exactly one user table, so we resolve the
@@ -354,7 +369,9 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
                                                                   id_par{1}))));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), 90));
-            auto cur = dispatcher->execute_plan(session, del, params);
+            auto cur = dispatcher->execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{dispatcher->resource(), del, params});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 10);
         }
@@ -387,7 +404,9 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), 50));
             params->add_parameter(id_par{2}, logical_value_t(dispatcher->resource(), 999));
-            auto cur = dispatcher->execute_plan(session, upd, params);
+            auto cur = dispatcher->execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{dispatcher->resource(), upd, params});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
         }
@@ -399,4 +418,141 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
         // count == 999 should return 1 row
         CHECK_FIND_COUNT(compare_type::eq, side_t::left, logical_value_t(dispatcher->resource(), 999), 1);
     }
+}
+
+// The CHECKPOINT compact path shifts storage_row ids of an indexed disk table
+// within a SINGLE running session (no restart). Without a
+// repopulate-on-compact, the on-disk index still holds the pre-compact ids
+// (btree duplicate-growth / disk_hash wrong-row), so a same-session index
+// lookup after the checkpoint returns stale or wrong rows. The clear-then-
+// repopulate (txn_id=0) handler must rebuild the index against the compacted
+// ids so equality lookups stay exact with no restart in between.
+TEST_CASE("integration::cpp::test_index::checkpoint_then_index_scan_same_session") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_index/checkpoint_then_index_scan_same_session");
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
+                                           "WITH (storage = 'disk');");
+        REQUIRE(cur->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "CREATE INDEX idx_count ON TestDatabase.TestCollection (count);");
+        REQUIRE(cur->is_success());
+    }
+
+    // INSERT 50 rows, count = 0..49.
+    {
+        auto session = otterbrix::session_id_t();
+        std::stringstream q;
+        q << "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
+        for (int i = 0; i < 50; ++i) {
+            q << "('row_" << i << "', " << i << ")" << (i == 49 ? ";" : ", ");
+        }
+        auto cur = dispatcher->execute_sql(session, q.str());
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 50);
+    }
+
+    // DELETE the lower half (count < 25): 25 rows go, so compact actually has to
+    // shift the surviving ids down (storage_row reuse is what corrupts the index).
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count < 25;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 25);
+    }
+
+    // CHECKPOINT compacts the heap (ids shift) and must repopulate the index.
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+        REQUIRE(cur->is_success());
+    }
+
+    // SAME SESSION-scope (no restart): index-path lookups must be exact.
+    CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 25);
+    // A surviving value resolves to exactly its one row (not a wrong/stale row).
+    CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 25;", 1);
+    CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 49;", 1);
+    // A deleted value must resolve to zero rows (no stale pre-compact id hit).
+    CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 0);
+    CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 24;", 0);
+}
+
+// VACUUM rebuilds the index. Entries inserted under a real txn id stay
+// PENDING-invisible unless that txn index-commits, and VACUUM never
+// index-commits, so a rebuild under ctx->txn would be invisible to every reader
+// (index-path SELECTs returning 0). VACUUM's rebuild must go through the
+// repopulate path (txn_id=0, committed-for-everyone) so post-VACUUM lookups
+// return the correct surviving rows.
+TEST_CASE("integration::cpp::test_index::vacuum_rebuild_visible") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_index/vacuum_rebuild_visible");
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
+                                           "WITH (storage = 'disk');");
+        REQUIRE(cur->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "CREATE INDEX idx_count ON TestDatabase.TestCollection (count);");
+        REQUIRE(cur->is_success());
+    }
+
+    // INSERT 50 rows, count = 0..49.
+    {
+        auto session = otterbrix::session_id_t();
+        std::stringstream q;
+        q << "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
+        for (int i = 0; i < 50; ++i) {
+            q << "('row_" << i << "', " << i << ")" << (i == 49 ? ";" : ", ");
+        }
+        auto cur = dispatcher->execute_sql(session, q.str());
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 50);
+    }
+
+    // DELETE > 30% (every count divisible by 3 in 0..49 → 17 rows) so VACUUM has
+    // real dead tuples to compact and the index must be rebuilt.
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count % 3 = 0;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 17);
+    }
+
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "VACUUM;");
+        REQUIRE(cur->is_success());
+    }
+
+    // After VACUUM the rebuilt index must be VISIBLE: surviving values return
+    // their rows.
+    CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 33);
+    CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 1;", 1);
+    CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 49;", 1);
+    CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count > 40;", 6);
+    // Deleted multiples of 3 stay gone via the rebuilt index.
+    CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 0);
+    CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 48;", 0);
 }

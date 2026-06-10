@@ -55,8 +55,7 @@ namespace components::table {
             assert(is_loaded_[c]);
             return *columns_[c];
         }
-        assert(column_pointers_.size() == columns_.size() &&
-               "Lazy loading a column but the pointer was not set");
+        assert(column_pointers_.size() == columns_.size() && "Lazy loading a column but the pointer was not set");
         assert(false && "row_group_t::get_column: unknown error");
         std::abort();
     }
@@ -304,10 +303,8 @@ namespace components::table {
             if (TYPE == table_scan_type::REGULAR) {
                 // REGULAR scans have no see-all fallback: state.txn must be a real
                 // transaction_data, as its snapshot fields drive MVCC visibility.
-                count = state.row_group->indexing_vector(state.txn,
-                                                         state.vector_index,
-                                                         state.valid_indexing,
-                                                         max_count);
+                count =
+                    state.row_group->indexing_vector(state.txn, state.vector_index, state.valid_indexing, max_count);
                 if (count == 0) {
                     next_vector(state);
                     continue;
@@ -643,6 +640,16 @@ namespace components::table {
         if (commit_id >= current_version_) {
             current_version_ = commit_id + 1;
         }
+    }
+
+    void row_group_t::revert_all_deletes(uint64_t txn_id) {
+        auto vinfo = version_info();
+        if (vinfo) {
+            vinfo->revert_all_deletes(txn_id);
+        }
+        // No current_version_ advance: revert un-marks pending deletes back to
+        // NOT_DELETED_ID, restoring visibility. Unlike commit there is no new
+        // commit_id to publish, so the version watermark stays where it was.
     }
 
     row_version_manager_t& row_group_t::get_or_create_version_info() {

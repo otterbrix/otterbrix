@@ -35,6 +35,9 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_sort.cpp
         operators/operator_join.cpp
         operators/operator_hash_join.cpp
+        operators/operator_union.cpp
+        operators/operator_cte_scan.cpp
+        operators/operator_recursive_cte.cpp
 
         operators/operator_check_constraint.cpp
         operators/operator_fk_check.cpp
@@ -74,7 +77,7 @@ set(${PROJECT_NAME}_SOURCES
         operators/arithmetic_eval.cpp
 )
 
-add_library(otterbrix_${PROJECT_NAME}
+add_library(otterbrix_${PROJECT_NAME} OBJECT
         ${${PROJECT_NAME}_HEADERS}
         ${${PROJECT_NAME}_SOURCES}
 )

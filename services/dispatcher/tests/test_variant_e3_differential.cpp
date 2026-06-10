@@ -17,7 +17,7 @@
 #include <services/wal/manager_wal_replicate.hpp>
 
 // Differential test scaffold: same SQL fixture, drive dispatcher::execute_plan
-// and compare cursor + side effects (pg_catalog state, collections_ map).
+// and compare cursor + side effects (pg_catalog state, executor-side storage).
 
 using namespace services;
 using namespace services::wal;
@@ -42,20 +42,21 @@ namespace {
             , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource, scheduler_, log_))
             , disk_config_(disk_path)
-            , manager_disk_(
-                  actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
+            , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
             , wal_config_([&]() {
                 configuration::config_wal c;
                 c.on = false;
                 return c;
             }())
             , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource, scheduler_, wal_config_, log_)) {
-            manager_dispatcher_->sync(std::make_tuple(manager_wal_->address(),
-                                                     manager_disk_->address(),
-                                                     actor_zeta::address_t::empty_address()));
-            manager_wal_->sync(std::make_tuple(actor_zeta::address_t(manager_disk_->address()),
-                                               manager_dispatcher_->address()));
-            manager_disk_->sync(std::make_tuple(manager_wal_->address()));
+            manager_dispatcher_->sync(
+                services::dispatcher::manager_dispatcher_t::sync_pack{manager_wal_->address(),
+                                                                      manager_disk_->address(),
+                                                                      actor_zeta::address_t::empty_address()});
+            manager_wal_->sync(services::wal::wal_sync_pack_t{actor_zeta::address_t(manager_disk_->address()),
+                                                              manager_dispatcher_->address(),
+                                                              actor_zeta::address_t::empty_address()});
+            manager_disk_->sync(services::disk::manager_disk_t::disk_sync_pack_t{manager_wal_->address()});
 
             manager_disk_->bootstrap_system_tables_sync();
         }
@@ -100,10 +101,10 @@ namespace {
                                                 components::table::transaction_data{0, 0},
                                                 {}};
             auto [_, fut] = actor_zeta::otterbrix::send(manager_disk_->address(),
-                                                       &manager_disk_t::resolve_namespace,
-                                                       ctx,
-                                                       name,
-                                                       std::uint64_t{0});
+                                                        &manager_disk_t::resolve_namespace,
+                                                        ctx,
+                                                        name,
+                                                        std::uint64_t{0});
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
             while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
                 scheduler_->run(1000);
@@ -118,11 +119,11 @@ namespace {
                                                 components::table::transaction_data{0, 0},
                                                 {}};
             auto [_, fut] = actor_zeta::otterbrix::send(manager_disk_->address(),
-                                                       &manager_disk_t::resolve_table,
-                                                       ctx,
-                                                       ns_oid,
-                                                       tname,
-                                                       std::uint64_t{0});
+                                                        &manager_disk_t::resolve_table,
+                                                        ctx,
+                                                        ns_oid,
+                                                        tname,
+                                                        std::uint64_t{0});
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
             while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
                 scheduler_->run(1000);
@@ -137,16 +138,15 @@ namespace {
             parser_arena_ = std::make_unique<std::pmr::monotonic_buffer_resource>(resource_);
             auto parse_result = linitial(raw_parser(parser_arena_.get(), query.c_str()));
             components::sql::transform::transformer local_transformer(resource_);
-            auto _wrap = local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_result))
-                             .finalize();
+            auto _wrap =
+                local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_result)).finalize();
             REQUIRE(!_wrap.has_error());
             auto view = _wrap.value();
 
             auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
-                                                          &manager_dispatcher_t::execute_plan,
-                                                          components::session::session_id_t{},
-                                                          std::move(view.node),
-                                                          std::move(view.params));
+                                                           &manager_dispatcher_t::execute_plan,
+                                                           components::session::session_id_t{},
+                                                           std::move(view));
             pending_future_ = std::make_unique<actor_zeta::unique_future<cursor_t_ptr>>(std::move(future));
         }
 
@@ -456,8 +456,7 @@ TEST_CASE("variant-e3 differential: INSERT relkind='g' computed-column adoption"
         REQUIRE(rt.columns.empty());
     }
 
-    fx.execute_sql(
-        "INSERT INTO ve3_cg.events (kind, payload) VALUES ('click', 'p1'), ('view', 'p2');");
+    fx.execute_sql("INSERT INTO ve3_cg.events (kind, payload) VALUES ('click', 'p1'), ('view', 'p2');");
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
@@ -524,8 +523,7 @@ TEST_CASE("variant-e3 differential: CREATE VIEW") {
         REQUIRE(cur->is_success());
     }
 
-    fx.execute_sql(
-        "CREATE VIEW ve3_view.v AS SELECT col_a FROM ve3_view.t WHERE col_b > 10;");
+    fx.execute_sql("CREATE VIEW ve3_view.v AS SELECT col_a FROM ve3_view.t WHERE col_b > 10;");
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
@@ -565,9 +563,8 @@ TEST_CASE("variant-e3 differential: CREATE CONSTRAINT FK") {
         REQUIRE(cur->is_success());
     }
 
-    fx.execute_sql(
-        "ALTER TABLE ve3_fk.employees ADD CONSTRAINT fk_dept "
-        "FOREIGN KEY (dept_id) REFERENCES ve3_fk.departments (id);");
+    fx.execute_sql("ALTER TABLE ve3_fk.employees ADD CONSTRAINT fk_dept "
+                   "FOREIGN KEY (dept_id) REFERENCES ve3_fk.departments (id);");
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
@@ -590,16 +587,14 @@ TEST_CASE("variant-e3 differential: CREATE CONSTRAINT FK") {
 
     // Proxy for pg_constraint+pg_depend presence: a valid FK reference is
     // accepted (only possible if the pg_constraint row was written) ...
-    fx.execute_sql(
-        "INSERT INTO ve3_fk.employees (id, dept_id, name) VALUES (1, 1, 'Alice');");
+    fx.execute_sql("INSERT INTO ve3_fk.employees (id, dept_id, name) VALUES (1, 1, 'Alice');");
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
     }
 
     // ... and an orphan reference is rejected by the same constraint.
-    fx.execute_sql(
-        "INSERT INTO ve3_fk.employees (id, dept_id, name) VALUES (2, 99, 'Bob');");
+    fx.execute_sql("INSERT INTO ve3_fk.employees (id, dept_id, name) VALUES (2, 99, 'Bob');");
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_error());
@@ -631,8 +626,7 @@ TEST_CASE("variant-e3 differential: CREATE MATERIALIZED VIEW") {
         REQUIRE(cur->is_success());
     }
 
-    fx.execute_sql(
-        "CREATE MATERIALIZED VIEW ve3_mv.mv AS SELECT col_a FROM ve3_mv.t WHERE col_b > 10;");
+    fx.execute_sql("CREATE MATERIALIZED VIEW ve3_mv.mv AS SELECT col_a FROM ve3_mv.t WHERE col_b > 10;");
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
@@ -666,8 +660,7 @@ TEST_CASE("variant-e3 differential: CREATE CONSTRAINT CHECK") {
         REQUIRE(cur->is_success());
     }
 
-    fx.execute_sql(
-        "ALTER TABLE ve3_chk.items ADD CONSTRAINT chk_age CHECK (age > 0);");
+    fx.execute_sql("ALTER TABLE ve3_chk.items ADD CONSTRAINT chk_age CHECK (age > 0);");
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
@@ -731,4 +724,3 @@ TEST_CASE("variant-e3 differential: SET TIME ZONE") {
         REQUIRE(cur->is_error());
     }
 }
-

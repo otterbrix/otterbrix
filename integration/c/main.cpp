@@ -94,8 +94,7 @@ namespace {
         try {
             return store_cursor(components::cursor::make_cursor(
                 resource,
-                core::error_t(core::error_code_t::other_error,
-                               std::pmr::string{"unknown C++ exception", resource})));
+                core::error_t(core::error_code_t::other_error, std::pmr::string{"unknown C++ exception", resource})));
         } catch (...) {
             return nullptr;
         }
@@ -155,10 +154,8 @@ extern "C" cursor_ptr execute_sql(otterbrix_ptr ptr, string_view_t query_raw) {
     }
 }
 
-extern "C" cursor_ptr execute_sql_params(otterbrix_ptr ptr,
-                                         string_view_t query_raw,
-                                         const sql_param_t* params,
-                                         size_t param_count) {
+extern "C" cursor_ptr
+execute_sql_params(otterbrix_ptr ptr, string_view_t query_raw, const sql_param_t* params, size_t param_count) {
     pod_space_t* pod_space = nullptr;
     try {
         pod_space = convert_otterbrix(ptr);
@@ -174,32 +171,31 @@ extern "C" cursor_ptr execute_sql_params(otterbrix_ptr ptr,
             }
             const size_t id = static_cast<size_t>(p.index);
             switch (p.kind) {
-            case SQL_PARAM_NULL:
-                bound.emplace_back(id, logical_value_t(resource, nullptr));
-                break;
-            case SQL_PARAM_BOOL:
-                bound.emplace_back(id, logical_value_t(resource, p.bool_value != 0));
-                break;
-            case SQL_PARAM_INT64:
-                bound.emplace_back(id, logical_value_t(resource, p.int64_value));
-                break;
-            case SQL_PARAM_UINT64:
-                bound.emplace_back(id, logical_value_t(resource, p.uint64_value));
-                break;
-            case SQL_PARAM_DOUBLE:
-                bound.emplace_back(id, logical_value_t(resource, p.double_value));
-                break;
-            case SQL_PARAM_STRING: {
-                std::string s = string_view_to_string(p.string_value);
-                bound.emplace_back(id, logical_value_t(resource, std::move(s)));
-                break;
-            }
-            default:
-                throw std::invalid_argument("sql_param_t: unknown kind");
+                case SQL_PARAM_NULL:
+                    bound.emplace_back(id, logical_value_t(resource, nullptr));
+                    break;
+                case SQL_PARAM_BOOL:
+                    bound.emplace_back(id, logical_value_t(resource, p.bool_value != 0));
+                    break;
+                case SQL_PARAM_INT64:
+                    bound.emplace_back(id, logical_value_t(resource, p.int64_value));
+                    break;
+                case SQL_PARAM_UINT64:
+                    bound.emplace_back(id, logical_value_t(resource, p.uint64_value));
+                    break;
+                case SQL_PARAM_DOUBLE:
+                    bound.emplace_back(id, logical_value_t(resource, p.double_value));
+                    break;
+                case SQL_PARAM_STRING: {
+                    std::string s = string_view_to_string(p.string_value);
+                    bound.emplace_back(id, logical_value_t(resource, std::move(s)));
+                    break;
+                }
+                default:
+                    throw std::invalid_argument("sql_param_t: unknown kind");
             }
         }
-        auto cursor =
-            pod_space->space->dispatcher()->execute_sql_with_params(session, query, bound);
+        auto cursor = pod_space->space->dispatcher()->execute_sql_with_params(session, query, bound);
         return store_cursor(std::move(cursor));
     } catch (const std::exception& ex) {
         return exception_cursor(pod_space, ex);
@@ -477,6 +473,4 @@ extern "C" char* value_get_string(value_ptr ptr) {
     }
 }
 
-extern "C" void otterbrix_free_string(char* str) {
-    delete[] str;
-}
+extern "C" void otterbrix_free_string(char* str) { delete[] str; }

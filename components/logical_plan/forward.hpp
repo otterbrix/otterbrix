@@ -34,6 +34,8 @@ namespace components::logical_plan {
         sort_t,
         update_t,
         union_t,
+        recursive_cte_t,
+        cte_scan_t,
         create_sequence_t,
         drop_sequence_t,
         create_view_t,

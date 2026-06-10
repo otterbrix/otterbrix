@@ -6,10 +6,7 @@ namespace services::disk {
     namespace catalog = components::catalog;
     using namespace detail;
 
-    void manager_disk_t::sync(address_pack pack) {
-        constexpr static int manager_wal = 0;
-        manager_wal_ = std::get<manager_wal>(pack);
-    }
+    void manager_disk_t::sync(disk_sync_pack_t pack) { manager_wal_ = pack.wal; }
 
     void manager_disk_t::create_agent(int count_agents) {
         // Roles align with pool_idx_for_oid: slot 0 = CATALOG (pg_* system
@@ -41,9 +38,9 @@ namespace services::disk {
         agent_futures.reserve(agents_.size());
         for (auto& agent_ptr : agents_) {
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent_ptr->address(),
-                                                                   &agent_disk_t::checkpoint_inner,
-                                                                   session,
-                                                                   current_wal_id);
+                                                                  &agent_disk_t::checkpoint_inner,
+                                                                  session,
+                                                                  current_wal_id);
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent_ptr.get());
             }
@@ -104,9 +101,9 @@ namespace services::disk {
         agent_futures.reserve(agents_.size());
         for (auto& agent_ptr : agents_) {
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent_ptr->address(),
-                                                                   &agent_disk_t::vacuum_inner,
-                                                                   session,
-                                                                   lowest_active_start_time);
+                                                                  &agent_disk_t::vacuum_inner,
+                                                                  session,
+                                                                  lowest_active_start_time);
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent_ptr.get());
             }
@@ -121,30 +118,42 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::maybe_cleanup(execution_context_t ctx,
-                                                                      uint64_t lowest_active_start_time) {
-        // ctx.table_oid identifies the table whose GC threshold the executor
-        // wants to check (typically the just-deleted DML target). INVALID_OID
-        // -> no-op (executor guards against this but be defensive).
-        if (ctx.table_oid == components::catalog::INVALID_OID) {
-            co_return;
-        }
-
-        // The threshold check + compact run in maybe_cleanup_inner so the
-        // row_group rebuild is mailbox-serialized with every same-oid access.
-        // Running it manager-side via a storage_entry_sync borrow would duplicate
-        // the compact and race agent-side scans.
-        if (!agents_.empty()) {
-            const std::size_t pool_idx = pool_idx_for_oid(ctx.table_oid, agents_.size());
+    manager_disk_t::unique_future<void>
+    manager_disk_t::maybe_cleanup_many(execution_context_t /*ctx*/,
+                                       std::pmr::vector<components::catalog::oid_t> table_oids,
+                                       uint64_t compact_gate) {
+        // Each table_oid routes to its owning agent's maybe_cleanup_inner so the
+        // threshold check + compact (row_group rebuild) is mailbox-serialized with
+        // every same-oid access. Running it manager-side via a storage_entry_sync
+        // borrow would duplicate the compact and race agent-side scans. INVALID_OID
+        // entries are skipped (callers guard against them but be defensive).
+        //
+        // Two-phase fan-out: send every per-oid message collecting futures, then
+        // await all. maybe_cleanup_inner is per-oid, so co-owned oids that hash to
+        // the same agent enqueue several messages; same-target mailbox FIFO
+        // preserves their order, so awaiting is completion-sync only.
+        std::pmr::vector<unique_future<void>> agent_futures{resource()};
+        agent_futures.reserve(table_oids.size());
+        for (const auto table_oid : table_oids) {
+            if (table_oid == components::catalog::INVALID_OID) {
+                continue;
+            }
+            if (agents_.empty()) {
+                break;
+            }
+            const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                   &agent_disk_t::maybe_cleanup_inner,
-                                                                   ctx.table_oid,
-                                                                   lowest_active_start_time);
+                                                                  &agent_disk_t::maybe_cleanup_inner,
+                                                                  table_oid,
+                                                                  compact_gate);
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }
-            co_await std::move(fut);
+            agent_futures.emplace_back(std::move(fut));
+        }
+        for (auto& f : agent_futures) {
+            co_await std::move(f);
         }
 
         co_return;
@@ -214,8 +223,7 @@ namespace services::disk {
         // closing either fd releases it for both). Double-constructing the same OID
         // would race the lock and corrupt fsync/mmap pairing, so only the agent
         // thread opens it.
-        const std::size_t pool_idx =
-            agents_.empty() ? 0 : pool_idx_for_oid(table_oid, agents_.size());
+        const std::size_t pool_idx = agents_.empty() ? 0 : pool_idx_for_oid(table_oid, agents_.size());
         trace(log_,
               "manager_disk_t::load_storage_disk_sync: load oid={} pool_idx={} path={}",
               static_cast<unsigned>(table_oid),

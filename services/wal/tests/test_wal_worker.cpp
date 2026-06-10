@@ -90,7 +90,9 @@ struct test_wal_worker {
         , manager_(actor_zeta::spawn<manager_wal_replicate_t>(&resource_, scheduler_.get(), config_, log_)) {
         std::filesystem::remove_all(path_);
         std::filesystem::create_directories(path_);
-        manager_->sync(std::make_tuple(actor_zeta::address_t::empty_address(), actor_zeta::address_t::empty_address()));
+        manager_->sync(wal_sync_pack_t{actor_zeta::address_t::empty_address(),
+                                       actor_zeta::address_t::empty_address(),
+                                       actor_zeta::address_t::empty_address()});
         scheduler_->start();
     }
 
@@ -158,9 +160,8 @@ struct test_wal_worker {
         return std::move(future);
     }
 
-    actor_zeta::unique_future<services::wal::id_t> send_commit(uint64_t txn_id,
-                                                               wal_sync_mode sync_mode = wal_sync_mode::NORMAL,
-                                                               uint64_t commit_id = 0) {
+    actor_zeta::unique_future<services::wal::id_t>
+    send_commit(uint64_t txn_id, wal_sync_mode sync_mode = wal_sync_mode::NORMAL, uint64_t commit_id = 0) {
         // commit_id is the MVCC version timestamp in the COMMIT record; tests
         // pass 0 unless they exercise snapshot-aware replay.
         auto [needs_sched, future] = actor_zeta::otterbrix::send(manager_->address(),
@@ -336,7 +337,9 @@ TEST_CASE("wal_worker::corruption_stop") {
         config.on = true;
 
         auto manager = actor_zeta::spawn<manager_wal_replicate_t>(&resource, scheduler.get(), config, log);
-        manager->sync(std::make_tuple(actor_zeta::address_t::empty_address(), actor_zeta::address_t::empty_address()));
+        manager->sync(wal_sync_pack_t{actor_zeta::address_t::empty_address(),
+                                      actor_zeta::address_t::empty_address(),
+                                      actor_zeta::address_t::empty_address()});
         scheduler->start();
 
         // Write several records in one transaction.
@@ -404,7 +407,9 @@ TEST_CASE("wal_worker::corruption_stop") {
     config.on = true;
 
     auto manager = actor_zeta::spawn<manager_wal_replicate_t>(&resource, scheduler.get(), config, log);
-    manager->sync(std::make_tuple(actor_zeta::address_t::empty_address(), actor_zeta::address_t::empty_address()));
+    manager->sync(wal_sync_pack_t{actor_zeta::address_t::empty_address(),
+                                  actor_zeta::address_t::empty_address(),
+                                  actor_zeta::address_t::empty_address()});
     scheduler->start();
 
     auto [needs_sched, fut_records] = actor_zeta::otterbrix::send(manager->address(),
@@ -453,7 +458,9 @@ TEST_CASE("wal_worker::crc_chain_startup") {
         config.on = true;
 
         auto manager = actor_zeta::spawn<manager_wal_replicate_t>(&resource, scheduler.get(), config, log);
-        manager->sync(std::make_tuple(actor_zeta::address_t::empty_address(), actor_zeta::address_t::empty_address()));
+        manager->sync(wal_sync_pack_t{actor_zeta::address_t::empty_address(),
+                                      actor_zeta::address_t::empty_address(),
+                                      actor_zeta::address_t::empty_address()});
         scheduler->start();
 
         {
@@ -502,7 +509,9 @@ TEST_CASE("wal_worker::crc_chain_startup") {
         config.on = true;
 
         auto manager = actor_zeta::spawn<manager_wal_replicate_t>(&resource, scheduler.get(), config, log);
-        manager->sync(std::make_tuple(actor_zeta::address_t::empty_address(), actor_zeta::address_t::empty_address()));
+        manager->sync(wal_sync_pack_t{actor_zeta::address_t::empty_address(),
+                                      actor_zeta::address_t::empty_address(),
+                                      actor_zeta::address_t::empty_address()});
         scheduler->start();
 
         // Load and verify records from the previous lifetime.
@@ -554,7 +563,9 @@ TEST_CASE("wal_worker::segment_rotation") {
     config.max_segment_size = 8192; // very small -- force rotation quickly
 
     auto manager = actor_zeta::spawn<manager_wal_replicate_t>(&resource, scheduler.get(), config, log);
-    manager->sync(std::make_tuple(actor_zeta::address_t::empty_address(), actor_zeta::address_t::empty_address()));
+    manager->sync(wal_sync_pack_t{actor_zeta::address_t::empty_address(),
+                                  actor_zeta::address_t::empty_address(),
+                                  actor_zeta::address_t::empty_address()});
     scheduler->start();
 
     // Write many records with enough data to exceed the small segment size.
@@ -661,7 +672,9 @@ TEST_CASE("wal_worker::fsync_full_mode") {
     config.on = true;
 
     auto manager = actor_zeta::spawn<manager_wal_replicate_t>(&resource, scheduler.get(), config, log);
-    manager->sync(std::make_tuple(actor_zeta::address_t::empty_address(), actor_zeta::address_t::empty_address()));
+    manager->sync(wal_sync_pack_t{actor_zeta::address_t::empty_address(),
+                                  actor_zeta::address_t::empty_address(),
+                                  actor_zeta::address_t::empty_address()});
     scheduler->start();
 
     // Write + commit.
@@ -727,7 +740,9 @@ TEST_CASE("wal_worker::fsync_off_mode") {
     // sync_mode::OFF is passed per-commit, not via config
 
     auto manager = actor_zeta::spawn<manager_wal_replicate_t>(&resource, scheduler.get(), config, log);
-    manager->sync(std::make_tuple(actor_zeta::address_t::empty_address(), actor_zeta::address_t::empty_address()));
+    manager->sync(wal_sync_pack_t{actor_zeta::address_t::empty_address(),
+                                  actor_zeta::address_t::empty_address(),
+                                  actor_zeta::address_t::empty_address()});
     scheduler->start();
 
     {

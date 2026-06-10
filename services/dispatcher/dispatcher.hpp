@@ -2,12 +2,8 @@
 
 #include <chrono>
 #include <condition_variable>
-#include <functional>
-#include <set>
 #include <string>
 #include <thread>
-#include <unordered_map>
-#include <variant>
 
 #include <actor-zeta.hpp>
 #include <actor-zeta/actor/actor_mixin.hpp>
@@ -30,16 +26,11 @@
 #include <components/compute/function.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/log/log.hpp>
-#include <components/logical_plan/node.hpp>
-#include <components/physical_plan/operators/operator_write_data.hpp>
+#include <components/logical_plan/execution_plan.hpp>
 #include <components/session/session.hpp>
 #include <components/table/transaction_manager.hpp>
-#include <services/collection/context_storage.hpp>
 #include <services/collection/executor.hpp>
-#include <services/disk/disk_contract.hpp>
-#include <services/wal/base.hpp>
-#include <services/wal/record.hpp>
-#include <services/wal/wal_contract.hpp>
+#include <services/dispatcher/txn_messages.hpp>
 
 namespace services::disk {
     class manager_disk_t;
@@ -47,14 +38,27 @@ namespace services::disk {
 
 namespace services::dispatcher {
 
+    // Thin router + txn-state mailbox service + executor-pool admin.
+    //
+    // Per-query work (optimize, resolve, validate, enrich, planner rewrites,
+    // the operator pipeline, and the DML/DDL commit tails) lives ENTIRELY in
+    // executor_t. The dispatcher owns exactly the state that must stay global:
+    //   - txn_manager_   (sole owner; commit_id allocation, the ProcArray
+    //                     publish horizon, and every transaction_t body) —
+    //                     reachable ONLY through the txn_*_msg handlers below;
+    //   - default_tz_cat_ (session timezone catalog);
+    //   - the executor pool and the DROP-GC subscriber flags.
     class manager_dispatcher_t final : public actor_zeta::actor::actor_mixin<manager_dispatcher_t> {
-        using collection_storage_t = std::pmr::set<qualified_name_t>;
-
     public:
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
 
-        using sync_pack = std::tuple<actor_zeta::address_t, actor_zeta::address_t, actor_zeta::address_t>;
+        // Bootstrap address bundle (plain named struct — no std::tuple).
+        struct sync_pack {
+            actor_zeta::address_t wal = actor_zeta::address_t::empty_address();
+            actor_zeta::address_t disk = actor_zeta::address_t::empty_address();
+            actor_zeta::address_t index = actor_zeta::address_t::empty_address();
+        };
 
         // One in-flight message in the event loop. behavior is created lazily;
         // pending_msg holds the message until the loop calls behavior(msg.get()).
@@ -66,10 +70,7 @@ namespace services::dispatcher {
             uint32_t stale_ticks{0};
         };
 
-        manager_dispatcher_t(
-            std::pmr::memory_resource*,
-            actor_zeta::scheduler_raw,
-            log_t& log);
+        manager_dispatcher_t(std::pmr::memory_resource*, actor_zeta::scheduler_raw, log_t& log);
         ~manager_dispatcher_t();
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
@@ -95,35 +96,51 @@ namespace services::dispatcher {
         void set_disk_has_dropped_sync(bool value) noexcept { disk_has_dropped_ = value; }
         void set_index_has_dropped_sync(bool value) noexcept { index_has_dropped_ = value; }
 
-        unique_future<components::cursor::cursor_t_ptr>
-        execute_plan(components::session::session_id_t session,
-                     components::logical_plan::node_ptr plan,
-                     components::logical_plan::parameter_node_ptr params);
+        unique_future<components::cursor::cursor_t_ptr> execute_plan(components::session::session_id_t session,
+                                                                     components::logical_plan::execution_plan_t plan);
         unique_future<bool> register_udf(components::session::session_id_t session,
                                          components::compute::function_ptr function);
         unique_future<bool> unregister_udf(components::session::session_id_t session,
                                            std::string function_name,
                                            std::pmr::vector<components::types::complex_logical_type> inputs);
 
-        // Transaction lifecycle (actor-callable by executor)
-        unique_future<components::table::transaction_data> begin_transaction(components::session::session_id_t session);
-        unique_future<uint64_t> commit_transaction(components::session::session_id_t session);
-        unique_future<void> abort_transaction(components::session::session_id_t session);
+        // ===== txn-state mailbox service =====
+        // The ONLY way any other actor (executors, the txn operators running
+        // inside them) reads or mutates transaction state. Every handler body
+        // is a pure co_return over intra-actor txn_manager_ calls — none of
+        // them awaits an executor (anti-deadlock invariant).
 
-        // Low-level transaction-manager wrappers for the executor. The executor
-        // currently dereferences a raw `transaction_manager_t*` shared from this
-        // dispatcher (anti-pattern — mutable state shared across actors). These
-        // handlers replay the same sync calls inside the dispatcher's own actor
-        // context, so the executor only ever communicates via the mailbox.
-        // Each is a thin pass-through to txn_manager_ with no operator-pipeline /
-        // WAL / disk side-effects; the heavier commit_transaction /
-        // abort_transaction handlers above still route DDL through their pipelines.
-        unique_future<components::table::transaction_data>
-        txn_begin_msg(components::session::session_id_t session);
-        unique_future<uint64_t> txn_commit_msg(components::session::session_id_t session);
+        // Session-context bundle fetched by the executor at plan start.
+        // Unconditionally (and idempotently) begins the session's txn, so an
+        // active txn exists before any operator runs — including the BEGIN
+        // statement's own plan.
+        unique_future<txn_session_context_t> txn_begin_session_msg(components::session::session_id_t session);
+        // begin (idempotent) THEN mark_explicit — never a no-op on a missing
+        // txn. Sent by operator_begin_transaction_t.
+        unique_future<void> txn_mark_explicit_msg(components::session::session_id_t session);
+        // Snapshot + drain every range parked on transaction_t + commit()
+        // (allocates the commit_id, leaving it in in_flight_commits_).
+        // INVARIANT: NO publish() here — the ProcArray barrier runs ONLY via
+        // txn_publish_msg, sent by the caller AFTER storage_publish_* / WAL.
+        unique_future<txn_commit_drain_t> txn_commit_drain_msg(components::session::session_id_t session);
+        // Drain the pg_catalog appends needing revert + abort().
+        unique_future<txn_abort_drain_t> txn_abort_drain_msg(components::session::session_id_t session);
+        // Park executor-produced ranges on the session's transaction_t
+        // (explicit-DML statements and the DDL swap-info merge — one message
+        // for both; implicit DML never sends it).
+        unique_future<void> txn_accumulate_msg(components::session::session_id_t session,
+                                               txn_accumulate_payload_t payload);
+        // Abort: executor error-path (after its local revert cascade) and the
+        // read-only release tail.
         unique_future<void> txn_abort_msg(components::session::session_id_t session);
-        unique_future<void> txn_publish_msg(uint64_t commit_id);
-        unique_future<uint64_t> txn_lowest_active_msg();
+        // ProcArray publish barrier — sent by operator_commit_transaction_t
+        // AFTER storage_publish_* / index commits / WAL. Returns the COMPACT-GATE
+        // boolean (compact-gate space, NOT the commit-id-space GC horizon that
+        // the on_horizon_advanced broadcast carries): 1 = the maybe_cleanup
+        // fan-out may run a compact (no other txn active), 0 = suppress (another
+        // txn's snapshot may still read versions a compact would drop). agent_disk
+        // maybe_cleanup_inner only compares this ==0, so a bare 0/1 suffices.
+        unique_future<uint64_t> txn_publish_msg(uint64_t commit_id);
 
         // Selective broadcast: DROP TABLE / DROP INDEX marks the owning
         // subscriber as having dropped resources pending GC; on_subscriber_empty
@@ -137,22 +154,24 @@ namespace services::dispatcher {
         using dispatch_traits = actor_zeta::dispatch_traits<&manager_dispatcher_t::execute_plan,
                                                             &manager_dispatcher_t::register_udf,
                                                             &manager_dispatcher_t::unregister_udf,
-                                                            &manager_dispatcher_t::begin_transaction,
-                                                            &manager_dispatcher_t::commit_transaction,
-                                                            &manager_dispatcher_t::abort_transaction,
-                                                            &manager_dispatcher_t::txn_begin_msg,
-                                                            &manager_dispatcher_t::txn_commit_msg,
+                                                            &manager_dispatcher_t::txn_begin_session_msg,
+                                                            &manager_dispatcher_t::txn_mark_explicit_msg,
+                                                            &manager_dispatcher_t::txn_commit_drain_msg,
+                                                            &manager_dispatcher_t::txn_abort_drain_msg,
+                                                            &manager_dispatcher_t::txn_accumulate_msg,
                                                             &manager_dispatcher_t::txn_abort_msg,
                                                             &manager_dispatcher_t::txn_publish_msg,
-                                                            &manager_dispatcher_t::txn_lowest_active_msg,
                                                             &manager_dispatcher_t::on_drop_resource_marked,
                                                             &manager_dispatcher_t::on_subscriber_empty>;
 
     private:
-        // Reads txn_manager_.lowest_active_start_time(); if it advanced past
+        // Reads txn_manager_.lowest_active_snapshot_horizon() (commit-id value
+        // space — matches the subscribers' dropped_at_commit_id sweep after
+        // the dropped-committed remap); if it advanced past
         // last_broadcast_horizon_, sends on_horizon_advanced(new) to each
         // subscriber whose drop-resource flag is set. Skips the send in the
         // common case (no drops outstanding), avoiding a message burst per commit.
+        // Called from every txn-completing handler (publish/abort).
         void try_trigger_cleanup_if_horizon_advanced() noexcept;
 
         std::pmr::memory_resource* resource_;
@@ -161,10 +180,6 @@ namespace services::dispatcher {
 
         static constexpr std::size_t executor_pool_size_ = 4;
 
-        // Fast-path membership cache for collections, and the source of truth
-        // for them. Loop-thread-private: only the event-loop thread (via
-        // execute_plan handlers) mutates or reads it, so no synchronization.
-        collection_storage_t collections_;
         std::pmr::vector<services::collection::executor::executor_ptr> executors_;
         std::pmr::vector<actor_zeta::address_t> executor_addresses_;
 
@@ -204,15 +219,6 @@ namespace services::dispatcher {
         core::date::timezone_offset_t session_tz(components::session::session_id_t /*session*/) const {
             return default_tz_cat_.timezone_offset;
         }
-
-        components::logical_plan::node_ptr create_logic_plan(components::logical_plan::node_ptr plan);
-
-        unique_future<services::collection::executor::execute_result_t>
-        execute_plan_impl(components::session::session_id_t session,
-                          components::logical_plan::node_ptr logical_plan,
-                          components::logical_plan::storage_parameters parameters,
-                          components::table::transaction_data txn,
-                          context_storage_t* collections_context_storage);
 
         // Fire-and-forget unique_future<void> GC list. Loop-thread-private —
         // only the event loop appends (broadcast/register sends) and drains it

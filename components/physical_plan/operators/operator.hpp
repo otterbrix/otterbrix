@@ -40,6 +40,9 @@ namespace components::operators {
         hash_join,
         aggregate,
         raw_data,
+        union_op,
+        recursive_cte,
+        cte_scan,
         // Constraint operators
         check_constraint,
         fk_check,
@@ -213,6 +216,10 @@ namespace components::operators {
         void take_output(ptr& src);
         void mark_executed();
         void mark_failed() noexcept { state_ = operator_state::failed; }
+        void reset_for_reuse() noexcept {
+            state_ = operator_state::created;
+            output_ = nullptr;
+        }
         void clear(); //todo: replace by copy
 
         void set_error(const core::error_t& error);

@@ -16,6 +16,9 @@ set(${PROJECT_NAME}_SOURCES
         impl/create_plan_update.cpp
         impl/create_plan_join.cpp
         impl/create_plan_hash_join.cpp
+        impl/create_plan_union.cpp
+        impl/create_plan_cte_scan.cpp
+        impl/create_plan_recursive_cte.cpp
         impl/create_plan_check_constraint.cpp
         impl/create_plan_fk_check.cpp
         impl/create_plan_fk_cascade.cpp
@@ -43,7 +46,7 @@ set(${PROJECT_NAME}_SOURCES
         impl/create_plan_allocate_oids.cpp
 )
 
-add_library(otterbrix_${PROJECT_NAME}
+add_library(otterbrix_${PROJECT_NAME} OBJECT
         ${${PROJECT_NAME}_HEADERS}
         ${${PROJECT_NAME}_SOURCES}
 )

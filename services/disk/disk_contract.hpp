@@ -30,6 +30,14 @@ namespace services::disk {
     using session_id_t = components::session::session_id_t;
     using execution_context_t = components::execution_context_t;
 
+    // One pg_catalog row-delete request for delete_pg_catalog_rows_many: deletes
+    // every row of `table_oid` where column[oid_col_idx] == target_oid.
+    struct pg_catalog_delete_spec_t {
+        components::catalog::oid_t table_oid;
+        std::int64_t oid_col_idx;
+        components::catalog::oid_t target_oid;
+    };
+
     struct disk_contract {
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
@@ -39,7 +47,13 @@ namespace services::disk {
         actor_zeta::unique_future<services::wal::id_t> checkpoint_all(session_id_t session,
                                                                       services::wal::id_t current_wal_id);
         actor_zeta::unique_future<void> vacuum_all(session_id_t session, uint64_t lowest_active_start_time);
-        actor_zeta::unique_future<void> maybe_cleanup(execution_context_t ctx, uint64_t lowest_active_start_time);
+        // Batched GC-threshold check + compact: routes each table_oid to its owning
+        // agent's maybe_cleanup_inner with the shared compact_gate (a boolean 0/1
+        // gate, NOT a horizon value — 1 = no other active txn).
+        // operator_commit_transaction sends one call covering all just-touched tables.
+        actor_zeta::unique_future<void> maybe_cleanup_many(execution_context_t ctx,
+                                                           std::pmr::vector<components::catalog::oid_t> table_oids,
+                                                           uint64_t compact_gate);
 
         // ddl_add_column / ddl_adopt_computing_schema replaced by pipeline operators.
 
@@ -74,32 +88,40 @@ namespace services::disk {
                                                                std::int64_t oid_col_idx,
                                                                components::catalog::oid_t target_oid);
 
-        // patch the pg_attribute row identified by
-        // `attoid` with `commit_id` written into the added_at or dropped_at column
-        // (selected by `kind`). Drained by operator_commit_transaction_t once the
-        // commit_id is allocated; pairs with a physical_update WAL record.
+        // Batched WAL-safe delete: loops the singular delete_pg_catalog_rows logic
+        // per spec, emitting the same WAL records as N singular calls.
+        actor_zeta::unique_future<void> delete_pg_catalog_rows_many(execution_context_t ctx,
+                                                                    std::pmr::vector<pg_catalog_delete_spec_t> specs);
+
+        // Patches each backfill's pg_attribute row with the shared `commit_id` written
+        // into the added_at or dropped_at column (selected by the marker's kind).
+        // Drained by operator_commit_transaction_t once the commit_id is allocated;
+        // each backfill pairs with its own physical_update WAL record.
         actor_zeta::unique_future<void>
-        update_pg_attribute_commit_id_field(execution_context_t ctx,
-                                            components::catalog::oid_t attoid,
-                                            components::pg_attribute_commit_id_backfill_t::kind_t kind,
-                                            std::uint64_t commit_id);
+        update_pg_attribute_commit_id_fields(execution_context_t ctx,
+                                             std::pmr::vector<components::pg_attribute_commit_id_backfill_t> backfills,
+                                             std::uint64_t commit_id);
 
-        // Pure storage scan: row_ids of committed+txn-visible rows in the table with
-        // the given OID where every key_col_names[i] == key_values[i].
-        actor_zeta::unique_future<std::pmr::vector<std::int64_t>>
-        scan_by_key(execution_context_t ctx,
-                    components::catalog::oid_t table_oid,
-                    std::pmr::vector<std::string> key_col_names,
-                    std::pmr::vector<components::types::logical_value_t> key_values);
+        // Batched keyed scan for one table: result[i] = match row_ids for key-tuple i.
+        // Keys are columnar: `keys` is a data_chunk whose column j holds key_col_names[j]
+        // and whose row i is the i-th key-tuple, so no row-major logical_value_t crosses
+        // the boundary. All keys share the same table_oid (and therefore the same owning
+        // agent), so the per-key loop runs intra-agent via a single scan_by_keys_inner.
+        actor_zeta::unique_future<std::pmr::vector<std::pmr::vector<std::int64_t>>>
+        scan_by_keys(execution_context_t ctx,
+                     components::catalog::oid_t table_oid,
+                     std::pmr::vector<std::string> key_col_names,
+                     components::vector::data_chunk_t keys);
 
-        // Pure row-data scan: returns the full column values for every txn-visible row
-        // in the table with the given OID where key_col_names[i] == key_values[i].
-        // Outer vector = rows, inner vector = column values in schema order.
-        actor_zeta::unique_future<std::pmr::vector<std::pmr::vector<components::types::logical_value_t>>>
-        read_rows_by_key(execution_context_t ctx,
-                         components::catalog::oid_t table_oid,
-                         std::pmr::vector<std::string> key_col_names,
-                         std::pmr::vector<components::types::logical_value_t> key_values);
+        // Columnar row-data scan: returns the txn-visible rows for key_col_names[i] ==
+        // key_values[i] as batched data_chunk_t (each chunk <= DEFAULT_VECTOR_CAPACITY
+        // rows). Callers read cells via chunk.value(col_idx, row_idx) without
+        // materializing a row-major vector.
+        actor_zeta::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+        read_chunks_by_key(execution_context_t ctx,
+                           components::catalog::oid_t table_oid,
+                           std::pmr::vector<std::string> key_col_names,
+                           std::pmr::vector<components::types::logical_value_t> key_values);
 
         // Physical column compaction for an IN_MEMORY relkind='g'
         // table_storage_t.
@@ -170,10 +192,10 @@ namespace services::disk {
 
         // MVCC commit/revert
         actor_zeta::unique_future<void> storage_publish_commit(execution_context_t ctx,
-                                                              components::catalog::oid_t table_oid,
-                                                              uint64_t commit_id,
-                                                              int64_t row_start,
-                                                              uint64_t count);
+                                                               components::catalog::oid_t table_oid,
+                                                               uint64_t commit_id,
+                                                               int64_t row_start,
+                                                               uint64_t count);
         actor_zeta::unique_future<void> storage_revert_append(execution_context_t ctx,
                                                               components::catalog::oid_t table_oid,
                                                               int64_t row_start,
@@ -184,13 +206,21 @@ namespace services::disk {
         // Batched MVCC swap. Each range carries its own table_oid.
         actor_zeta::unique_future<void>
         storage_publish_commits(execution_context_t ctx,
-                               uint64_t commit_id,
-                               std::vector<components::pg_catalog_append_range_t> ranges);
+                                uint64_t commit_id,
+                                std::vector<components::pg_catalog_append_range_t> ranges);
         actor_zeta::unique_future<void> storage_publish_deletes(execution_context_t ctx,
-                                                               uint64_t commit_id,
-                                                               std::set<components::catalog::oid_t> tables);
+                                                                uint64_t commit_id,
+                                                                std::set<components::catalog::oid_t> tables);
         actor_zeta::unique_future<void>
         storage_revert_appends(execution_context_t ctx, std::vector<components::pg_catalog_append_range_t> ranges);
+
+        // MVCC delete-revert (abort path). The mirror of storage_publish_deletes:
+        // instead of stamping this txn's pending delete marks with a commit_id, the
+        // owning agent un-stamps them back to NOT_DELETED_ID via
+        // data_table_t::revert_all_deletes(ctx.txn.transaction_id), restoring row
+        // visibility for an aborted DELETE. Routed per owning agent by oid.
+        actor_zeta::unique_future<void> storage_revert_deletes(execution_context_t ctx,
+                                                               std::vector<components::catalog::oid_t> tables);
 
         // Event-driven GC subscriber. Walks per-agent dropped_storages_
         // slices and physically removes entries whose
@@ -202,14 +232,33 @@ namespace services::disk {
         // pending GC entry (path + sidecars derived from the live storages_
         // map) before the file is removed by drop_storage. Pair with
         // manager_dispatcher_t::on_drop_resource_marked(DISK_KIND).
-        actor_zeta::unique_future<void> mark_storage_dropped(session_id_t session,
-                                                             components::catalog::oid_t table_oid,
-                                                             uint64_t dropped_at_commit_id);
+        actor_zeta::unique_future<void>
+        mark_storage_dropped(session_id_t session, components::catalog::oid_t table_oid, uint64_t dropped_at_commit_id);
+
+        // DROP-GC value-space remap. mark_storage_dropped records
+        // dropped_at_commit_id in TXN-ID space (>= 2^62) because the cascade-delete
+        // operator only knows the in-flight txn_id at the time. Once the transaction
+        // commits and a real commit_id is allocated, operator_commit_transaction
+        // sends this so the manager fans out to every agent and rewrites the GC
+        // entry's dropped_at_commit_id from the TXN-ID placeholder to the real
+        // commit_id, putting it in the same value space the on_horizon_advanced
+        // sweep compares against.
+        actor_zeta::unique_future<void>
+        storage_dropped_committed(session_id_t session, uint64_t txn_id, uint64_t commit_id);
+
+        // DROP-rollback un-mark. The mirror of storage_dropped_committed for the
+        // abort path: a DROP TABLE inside a transaction records its GC entry with
+        // dropped_at_commit_id in TXN-ID space via mark_storage_dropped, but if the
+        // transaction ABORTS the table must survive. operator_abort_transaction sends
+        // this so the manager fans out to every agent, and each agent ERASES (not
+        // remaps) its own dropped_storages_ entries whose dropped_at_commit_id == txn_id,
+        // un-marking the DROP so on_horizon_advanced never reclaims the still-live .otbx.
+        actor_zeta::unique_future<void> storage_drop_aborted(session_id_t session, uint64_t txn_id);
 
         using dispatch_traits = actor_zeta::dispatch_traits<&disk_contract::flush,
                                                             &disk_contract::checkpoint_all,
                                                             &disk_contract::vacuum_all,
-                                                            &disk_contract::maybe_cleanup,
+                                                            &disk_contract::maybe_cleanup_many,
                                                             // Storage management
                                                             &disk_contract::create_storage,
                                                             &disk_contract::create_storage_with_columns,
@@ -233,6 +282,7 @@ namespace services::disk {
                                                             &disk_contract::storage_publish_commits,
                                                             &disk_contract::storage_publish_deletes,
                                                             &disk_contract::storage_revert_appends,
+                                                            &disk_contract::storage_revert_deletes,
                                                             // resolve + invalidation pull
                                                             &disk_contract::resolve_namespace,
                                                             &disk_contract::resolve_table,
@@ -243,12 +293,15 @@ namespace services::disk {
                                                             &disk_contract::allocate_oids_batch,
                                                             &disk_contract::append_pg_catalog_row,
                                                             &disk_contract::delete_pg_catalog_rows,
-                                                            &disk_contract::update_pg_attribute_commit_id_field,
-                                                            &disk_contract::scan_by_key,
-                                                            &disk_contract::read_rows_by_key,
+                                                            &disk_contract::delete_pg_catalog_rows_many,
+                                                            &disk_contract::update_pg_attribute_commit_id_fields,
+                                                            &disk_contract::scan_by_keys,
+                                                            &disk_contract::read_chunks_by_key,
                                                             &disk_contract::compact_relkind_g_storage,
                                                             &disk_contract::on_horizon_advanced,
-                                                            &disk_contract::mark_storage_dropped>;
+                                                            &disk_contract::mark_storage_dropped,
+                                                            &disk_contract::storage_dropped_committed,
+                                                            &disk_contract::storage_drop_aborted>;
 
         disk_contract() = delete;
     };

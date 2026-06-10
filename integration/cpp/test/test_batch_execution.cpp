@@ -197,7 +197,8 @@ TEST_CASE("integration::cpp::test_batch_where") {
             collection_name,
             logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_plan(session, ins);
+        auto cur =
+            dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == N);
     }
@@ -299,7 +300,8 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
                 collection_name,
                 logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_plan(session, ins);
+            auto cur =
+                dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == N);
         }
@@ -628,7 +630,8 @@ TEST_CASE("integration::cpp::test_batch_edge_cases") {
             collection_name,
             logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_plan(session, ins);
+        auto cur =
+            dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
     }

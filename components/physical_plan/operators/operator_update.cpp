@@ -22,7 +22,8 @@ namespace components::operators {
         , updates_(std::move(updates))
         , expr_(std::move(expr))
         , upsert_(upsert)
-        , returning_(std::move(returning)) {}
+        , returning_(std::move(returning))
+        , returning_from_chunks_(resource) {}
 
     void operator_update::accept_resolved_metadata(resolved_table_metadata_t metadata) {
         // See operator_insert for the contract.
@@ -121,6 +122,7 @@ namespace components::operators {
                     vector::data_chunk_t right_chunk(resource, types_right, chunk_left.size());
                     size_t index = 0;
                     for (size_t i = 0; i < chunk_left.size(); ++i) {
+                        bool row_matched = false;
                         for (const auto& chunk_right : right_chunks) {
                             if (chunk_right.size() == 0) {
                                 continue;
@@ -145,6 +147,14 @@ namespace components::operators {
                                 ++index;
                                 vector::validate_chunk_capacity(out_chunk, index);
                                 vector::validate_chunk_capacity(right_chunk, index);
+                                // UPDATE ... FROM is a semi-join: a target row is
+                                // updated once regardless of how many FROM rows it
+                                // matches. Stop after the first matching FROM row.
+                                row_matched = true;
+                                break;
+                            }
+                            if (row_matched) {
+                                break;
                             }
                         }
                     }
@@ -161,6 +171,11 @@ namespace components::operators {
                                       modified_,
                                       no_modified_);
                         out_chunks.emplace_back(std::move(out_chunk));
+                        // Keep the matched FROM rows aligned with the updated rows
+                        // so RETURNING can project joined (right-side) columns.
+                        if (!returning_.empty()) {
+                            returning_from_chunks_.emplace_back(std::move(right_chunk));
+                        }
                     }
                 }
                 if (out_chunks.empty()) {
@@ -362,11 +377,24 @@ namespace components::operators {
         if (!returning_.empty()) {
             chunks_vector_t projected(resource_);
             auto batches = split_chunk_into_batches(resource_, std::move(out_chunk));
-            for (auto& batch : batches) {
+
+            // UPDATE ... FROM: the matched FROM rows were gathered in lockstep with
+            // the updated rows. Merge them the same way out_chunk was merged and
+            // split identically, so batch b of each side covers the same matches.
+            chunks_vector_t right_batches(resource_);
+            if (!returning_from_chunks_.empty()) {
+                auto right_data = make_operator_data(resource_, std::move(returning_from_chunks_));
+                right_batches = split_chunk_into_batches(resource_, std::move(right_data->data_chunk()));
+            }
+
+            for (size_t b = 0; b < batches.size(); b++) {
+                auto& batch = batches[b];
                 if (batch.size() == 0) {
                     continue;
                 }
-                auto proj = evaluate_projection(resource_, returning_, batch, ctx->parameters, ctx->session_tz);
+                data_chunk_t* right_batch = b < right_batches.size() ? &right_batches[b] : nullptr;
+                auto proj =
+                    evaluate_projection(resource_, returning_, &batch, ctx->parameters, ctx->session_tz, right_batch);
                 if (proj.has_error()) {
                     set_error(proj.error());
                     mark_executed();

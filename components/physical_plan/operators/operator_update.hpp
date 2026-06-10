@@ -44,6 +44,9 @@ namespace components::operators {
         bool upsert_;
         std::optional<resolved_table_metadata_t> resolved_metadata_;
         std::pmr::vector<select_column_t> returning_;
+        // UPDATE ... FROM RETURNING: the matched FROM rows, gathered in lockstep
+        // with the updated rows so a joined RETURNING column reads the right chunk.
+        chunks_vector_t returning_from_chunks_;
     };
 
 } // namespace components::operators

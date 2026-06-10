@@ -41,6 +41,10 @@ namespace services::planner::impl {
                                      : std::get<components::expressions::key_t>(expr->params().front());
                     col.key.type = components::operators::group_key_t::kind::column;
                     col.key.full_path = field.path();
+                    // Validation always resolves a concrete side; carry it so a
+                    // joined DELETE/UPDATE RETURNING can pick the correct input
+                    // chunk. (Ignored when the operator feeds a single chunk.)
+                    col.key.side = field.side();
                     // If alias was set but name is still empty, use field name
                     if (col.key.name.empty() && !field.storage().empty()) {
                         col.key.name = std::pmr::string(field.storage().back(), resource);

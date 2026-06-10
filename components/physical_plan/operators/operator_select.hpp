@@ -45,9 +45,10 @@ namespace components::operators {
     // Shared by operator_select_t and the DML operators' RETURNING path.
     core::result_wrapper_t<vector::data_chunk_t> evaluate_projection(std::pmr::memory_resource* resource,
                                                                      const std::pmr::vector<select_column_t>& columns,
-                                                                     vector::data_chunk_t& input,
+                                                                     vector::data_chunk_t* left_input,
                                                                      const logical_plan::storage_parameters& parameters,
-                                                                     core::date::timezone_offset_t session_tz);
+                                                                     core::date::timezone_offset_t session_tz,
+                                                                     vector::data_chunk_t* right_input = nullptr);
 
     // operator_select_t — always the last operator before DISTINCT.
     // Processes rows one-by-one (evaluation mode): output row count equals input row count.

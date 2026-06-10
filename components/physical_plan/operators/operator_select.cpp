@@ -12,11 +12,20 @@ namespace components::operators {
         types::logical_value_t extract_select_value(std::pmr::memory_resource* resource,
                                                     const group_key_t& key,
                                                     const vector::data_chunk_t& chunk,
-                                                    size_t row_idx) {
+                                                    size_t row_idx,
+                                                    const vector::data_chunk_t* right_chunk) {
+            // A right-side column reads from the right chunk. Validation only
+            // stamps a key right when its data physically lives there, so the
+            // caller must supply right_chunk — a joined DELETE/UPDATE RETURNING
+            // passes the gathered USING/FROM rows, a SELECT over a JOIN passes its
+            // merged chunk. A missing right_chunk here is a validation/wiring bug.
+            const bool from_right = key.side == expressions::side_t::right;
+            assert((!from_right || right_chunk != nullptr) && "right-side column requires a right chunk");
+            const vector::data_chunk_t& src = from_right ? *right_chunk : chunk;
             switch (key.type) {
                 case group_key_t::kind::column: {
                     assert(!key.full_path.empty() && "field_ref path must be resolved before execution");
-                    auto val = chunk.value(key.full_path, row_idx);
+                    auto val = src.value(key.full_path, row_idx);
                     val.set_alias(std::string{key.name});
                     return val;
                 }
@@ -29,8 +38,8 @@ namespace components::operators {
                                 return val;
                             }
                         } else {
-                            if (!chunk.data[entry.col_index].is_null(row_idx)) {
-                                auto val = chunk.value(entry.col_index, row_idx);
+                            if (!src.data[entry.col_index].is_null(row_idx)) {
+                                auto val = src.value(entry.col_index, row_idx);
                                 val.set_alias(std::string{key.name});
                                 return val;
                             }
@@ -43,7 +52,7 @@ namespace components::operators {
                 }
                 case group_key_t::kind::case_when: {
                     for (const auto& clause : key.case_clauses) {
-                        auto cond_val = chunk.value(clause.condition_col, row_idx);
+                        auto cond_val = src.value(clause.condition_col, row_idx);
                         auto cmp_result = cond_val.compare(clause.condition_value);
                         bool matches = false;
                         switch (clause.cmp) {
@@ -73,7 +82,7 @@ namespace components::operators {
                             types::logical_value_t result_val =
                                 (clause.res_type == group_key_t::case_clause::result_source::constant)
                                     ? clause.res_constant
-                                    : chunk.value(clause.res_col, row_idx);
+                                    : src.value(clause.res_col, row_idx);
                             result_val.set_alias(std::string{key.name});
                             return result_val;
                         }
@@ -82,7 +91,7 @@ namespace components::operators {
                     types::logical_value_t else_val = [&]() -> types::logical_value_t {
                         switch (key.else_type) {
                             case group_key_t::else_source::column:
-                                return chunk.value(key.else_col, row_idx);
+                                return src.value(key.else_col, row_idx);
                             case group_key_t::else_source::constant:
                                 return key.else_constant;
                             case group_key_t::else_source::null_value:
@@ -146,10 +155,11 @@ namespace components::operators {
 
     core::result_wrapper_t<vector::data_chunk_t> evaluate_projection(std::pmr::memory_resource* resource,
                                                                      const std::pmr::vector<select_column_t>& columns,
-                                                                     vector::data_chunk_t& input,
+                                                                     vector::data_chunk_t* input,
                                                                      const logical_plan::storage_parameters& parameters,
-                                                                     core::date::timezone_offset_t session_tz) {
-        const auto num_rows = input.size();
+                                                                     core::date::timezone_offset_t session_tz,
+                                                                     vector::data_chunk_t* right_input) {
+        const auto num_rows = input->size();
         const uint64_t cap = num_rows > 0 ? num_rows : 1;
 
         // Assemble the output chunk directly: one column per projection entry
@@ -169,7 +179,7 @@ namespace components::operators {
                     std::pmr::vector<types::logical_value_t> values(resource);
                     values.reserve(num_rows);
                     for (uint64_t row = 0; row < num_rows; ++row) {
-                        auto val = extract_select_value(resource, col.key, input, row);
+                        auto val = extract_select_value(resource, col.key, *input, row, right_input);
                         if (col_type.type() == types::logical_type::NA) {
                             col_type = val.type();
                         }
@@ -185,7 +195,7 @@ namespace components::operators {
                 }
                 case select_column_t::kind::arithmetic: {
                     auto result_vec =
-                        evaluate_arithmetic(resource, col.arith_op, col.operands, input, parameters, session_tz);
+                        evaluate_arithmetic(resource, col.arith_op, col.operands, *input, parameters, session_tz);
                     if (result_vec.has_error()) {
                         return result_vec.error();
                     }
@@ -203,9 +213,11 @@ namespace components::operators {
                     break;
                 }
                 case select_column_t::kind::star_expand: {
-                    // Expand all columns from input chunk.
-                    for (size_t ci = 0; ci < input.column_count(); ++ci) {
-                        result.data.push_back(input.data[ci]);
+                    // Bare '*' — expand all columns of the input chunk. Qualified
+                    // 'table.*' is pre-expanded to get_field columns at validation,
+                    // so it never reaches here.
+                    for (size_t ci = 0; ci < input->column_count(); ++ci) {
+                        result.data.push_back(input->data[ci]);
                     }
                     break;
                 }
@@ -218,8 +230,16 @@ namespace components::operators {
 
     vector::data_chunk_t operator_select_t::evaluate(pipeline::context_t* pipeline_context,
                                                      vector::data_chunk_t& input) {
-        auto result =
-            evaluate_projection(resource_, columns_, input, pipeline_context->parameters, pipeline_context->session_tz);
+        // A SELECT over a JOIN receives one merged chunk holding both sides'
+        // columns, yet projection keys keep their resolved side. Pass that chunk as
+        // both input and right_input so a right-side key has a chunk to read from
+        // (its full_path indexes the merged chunk either way).
+        auto result = evaluate_projection(resource_,
+                                          columns_,
+                                          &input,
+                                          pipeline_context->parameters,
+                                          pipeline_context->session_tz,
+                                          &input);
         if (result.has_error()) {
             set_error(result.error());
             return vector::data_chunk_t(resource_, {}, 0);

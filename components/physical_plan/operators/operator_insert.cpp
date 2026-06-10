@@ -158,7 +158,7 @@ namespace components::operators {
             if (!seg || seg->size() == 0) {
                 continue;
             }
-            auto proj = evaluate_projection(resource_, returning_, *seg, ctx->parameters, ctx->session_tz);
+            auto proj = evaluate_projection(resource_, returning_, &*seg, ctx->parameters, ctx->session_tz);
             if (proj.has_error()) {
                 set_error(proj.error());
                 mark_executed();

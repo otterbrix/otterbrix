@@ -38,6 +38,11 @@ namespace components::operators {
         vector::indexing_vector_t returning_indexing(resource_);
         size_t returning_count = 0;
         const vector::data_chunk_t* returning_source = nullptr;
+        // Right (USING) side for joined RETURNING: the chosen right-row index per
+        // matched target row, gathered in lockstep with returning_indexing so the
+        // projection reads joined columns from the same matched pair.
+        vector::indexing_vector_t returning_indexing_right(resource_);
+        const vector::data_chunk_t* returning_source_right = nullptr;
         // Predicate matching only — table.delete_rows() is now handled by
         // await_async_and_resume via send(disk_address_, &manager_disk_t::storage_delete_rows).
         if (left_ && left_->output() && right_ && right_->output()) {
@@ -47,6 +52,8 @@ namespace components::operators {
             if (collect_returning) {
                 returning_source = &chunk_left;
                 returning_indexing.reset(chunk_left.size());
+                returning_source_right = &chunk_right;
+                returning_indexing_right.reset(chunk_left.size());
             }
             auto types_left = chunk_left.types();
             auto types_right = chunk_right.types();
@@ -68,7 +75,9 @@ namespace components::operators {
                     if (!check_result.has_error() && check_result.value()) {
                         ids.data<int64_t>()[index++] = static_cast<int64_t>(i);
                         if (collect_returning) {
-                            returning_indexing.set_index(returning_count++, i);
+                            returning_indexing.set_index(returning_count, i);
+                            returning_indexing_right.set_index(returning_count, j);
+                            returning_count++;
                         }
                         if (index >= ids_capacity) {
                             ids.resize(ids_capacity, ids_capacity * 2);
@@ -142,15 +151,29 @@ namespace components::operators {
                 vector::data_chunk_t affected(resource_, returning_source->types(), returning_count);
                 returning_source->copy(affected, returning_indexing, returning_count);
                 auto batches = split_chunk_into_batches(resource_, std::move(affected));
-                for (auto& batch : batches) {
+
+                // Joined RETURNING (DELETE ... USING): gather the matched right
+                // (USING) rows in lockstep and split identically — same row count,
+                // same windows — so batch b of each side covers the same pairs.
+                chunks_vector_t batches_right(resource_);
+                if (returning_source_right != nullptr) {
+                    vector::data_chunk_t affected_right(resource_, returning_source_right->types(), returning_count);
+                    returning_source_right->copy(affected_right, returning_indexing_right, returning_count);
+                    batches_right = split_chunk_into_batches(resource_, std::move(affected_right));
+                }
+
+                for (size_t b = 0; b < batches.size(); b++) {
+                    auto& batch = batches[b];
                     if (batch.size() == 0) {
                         continue;
                     }
+                    vector::data_chunk_t* right_batch = b < batches_right.size() ? &batches_right[b] : nullptr;
                     auto proj = evaluate_projection(resource_,
                                                     returning_,
-                                                    batch,
+                                                    &batch,
                                                     pipeline_context->parameters,
-                                                    pipeline_context->session_tz);
+                                                    pipeline_context->session_tz,
+                                                    right_batch);
                     if (proj.has_error()) {
                         set_error(proj.error());
                         return;

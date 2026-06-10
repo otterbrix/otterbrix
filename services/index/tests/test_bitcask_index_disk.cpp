@@ -202,7 +202,7 @@ TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen_large_datas
     std::filesystem::create_directories(path);
 
     {
-        auto index = bitcask_index_disk_t(path, &resource, test_flush_threshold, 1000);
+        auto index = bitcask_index_disk_t(path, &resource, test_flush_threshold, 1000, std::pmr::set<std::uint64_t>{});
         for (int i = 1; i <= 2500; ++i) {
             index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
         }
@@ -210,7 +210,7 @@ TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen_large_datas
     }
 
     {
-        auto reopened = bitcask_index_disk_t(path, &resource, test_flush_threshold, 1000);
+        auto reopened = bitcask_index_disk_t(path, &resource, test_flush_threshold, 1000, std::pmr::set<std::uint64_t>{});
         for (int key : {1, 42, 872, 1500, 2499, 2500}) {
             auto rows = reopened.find(logical_value_t(&resource, int64_t(key)));
             REQUIRE(rows.size() == 1);

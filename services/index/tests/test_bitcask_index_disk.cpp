@@ -827,7 +827,7 @@ TEST_CASE("services::index::bitcask_index_disk::find_invokes_key_loader_for_trun
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
-    auto shared_table = boost::intrusive_ptr(new services::index::disk_hash_table_t>(
+    auto shared_table = boost::intrusive_ptr(new services::index::disk_hash_table_t(
         path / "hash_index.bin",
         services::index::disk_hash_table_t::default_bucket_count,
         &resource));

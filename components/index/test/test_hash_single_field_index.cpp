@@ -264,7 +264,7 @@ TEST_CASE("disk_single_field_index:find_reads_disk_and_normalizes_integer_keys")
     const auto file = base / "hash_count_disk_normalize.bin";
     std::filesystem::remove(file);
 
-    auto table = boost::intrusive_ptr(new services::index::disk_hash_table_t>(file,
+    auto table = boost::intrusive_ptr(new services::index::disk_hash_table_t(file,
                                                                               services::index::disk_hash_table_t::default_bucket_count,
                                                                               &resource));
     auto* table_raw = table.get();

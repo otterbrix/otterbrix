@@ -410,7 +410,7 @@ namespace services::index {
                                                components::index::keys_base_storage_t keys,
                                                actor_zeta::address_t disk_agent_addr,
                                                index_agent_disk_ptr disk_agent_owned,
-                                               std::shared_ptr<disk_hash_table_t> shared_hash_storage) {
+                                               disk_hash_table_ptr shared_hash_storage) {
         // Steady-state equivalent of create_index below, minus the mailbox send
         // (see the declaration). base_spaces runs bootstrap_engine_sync for every
         // live oid first, so a missing engine here is a bootstrap-order bug:
@@ -465,9 +465,9 @@ namespace services::index {
                             engine,
                             index_name,
                             keys,
-                            std::make_shared<services::index::disk_hash_table_t>(base / "hash_index.bin",
-                                                                                 services::index::disk_hash_table_t::default_bucket_count,
-                                                                                 resource_));
+                            boost::intrusive_ptr(new services::index::disk_hash_table_t(base / "hash_index.bin",
+                                                                                        services::index::disk_hash_table_t::default_bucket_count,
+                                                                                        resource_)));
                     } catch (const std::exception& e) {
                         trace(log_,
                               "manager_index_t::bootstrap_index_sync: disk hash storage init failed, "
@@ -621,7 +621,7 @@ namespace services::index {
         }
 
         uint32_t id_index = components::index::INDEX_ID_UNDEFINED;
-        std::shared_ptr<services::index::disk_hash_table_t> shared_hash_storage;
+        services::index::disk_hash_table_ptr shared_hash_storage;
         switch (type) {
             case components::logical_plan::index_type::single: {
                 id_index =
@@ -637,10 +637,10 @@ namespace services::index {
                     const auto base = path_db_ / std::to_string(static_cast<unsigned>(table_oid)) / index_name;
                     std::filesystem::create_directories(base);
                     try {
-                        shared_hash_storage = std::make_shared<services::index::disk_hash_table_t>(
+                        shared_hash_storage = boost::intrusive_ptr(new services::index::disk_hash_table_t(
                             base / "hash_index.bin",
                             services::index::disk_hash_table_t::default_bucket_count,
-                            resource_);
+                            resource_));
                         id_index = components::index::make_index<components::index::disk_hash_single_field_index_t>(
                             engine,
                             index_name,
@@ -721,7 +721,7 @@ namespace services::index {
                                                               bitcask_index_disk_t::default_segment_record_limit_,
                                                               btree_index_disk_t::default_flush_threshold_,
                                                               log_,
-                                                              std::pmr::set<std::uint64_t>(resource_));
+                                                              std::pmr::set<std::uint64_t>(resource_),
                                                               shared_hash_storage);
 
                     // Link disk agent with in-memory index

@@ -827,12 +827,17 @@ TEST_CASE("services::index::bitcask_index_disk::find_invokes_key_loader_for_trun
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
-    auto shared_table = std::make_shared<services::index::disk_hash_table_t>(
+    auto shared_table = boost::intrusive_ptr(new services::index::disk_hash_table_t>(
         path / "hash_index.bin",
         services::index::disk_hash_table_t::default_bucket_count,
-        &resource);
+        &resource));
 
-    bitcask_index_disk_t index(path, &resource, test_flush_threshold, test_segment_record_limit, shared_table);
+    bitcask_index_disk_t index(path,
+                               &resource,
+                               test_flush_threshold,
+                               test_segment_record_limit,
+                               std::pmr::set<std::uint64_t>{&resource},
+                               shared_table);
 
     const auto real_loader = services::index::make_bitcask_hash_key_loader(index);
     size_t loader_calls = 0;

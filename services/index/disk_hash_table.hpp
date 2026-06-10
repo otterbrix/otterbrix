@@ -4,6 +4,8 @@
 #include <core/file/file_handle.hpp>
 #include <core/file/local_file_system.hpp>
 
+#include <boost/smart_ptr/intrusive_ptr.hpp>
+
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
@@ -158,5 +160,7 @@ namespace services::index {
         std::atomic<bool> suppress_auto_rehash_{false};
         std::pmr::memory_resource* memory_resource_{nullptr};
     };
+
+    using disk_hash_table_ptr = boost::intrusive_ptr<disk_hash_table_t>;
 
 } // namespace services::index

@@ -40,9 +40,9 @@ namespace {
             resource,
             name,
             keys_base_storage_t{key(resource, "val")},
-            std::make_shared<services::index::disk_hash_table_t>(file,
-                                                                 services::index::disk_hash_table_t::default_bucket_count,
-                                                                 resource));
+            boost::intrusive_ptr(new services::index::disk_hash_table_t(file,
+                                                                        services::index::disk_hash_table_t::default_bucket_count,
+                                                                        resource)));
     }
 
     void run_txn_insert_search_contract(hash_index_mode mode) {

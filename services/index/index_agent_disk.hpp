@@ -66,7 +66,7 @@ namespace services::index {
                            uint64_t btree_flush_threshold,
                            log_t& log,
                            std::pmr::set<std::uint64_t> committed_txn_ids,
-                           std::shared_ptr<disk_hash_table_t> shared_hash_index);
+                           disk_hash_table_ptr shared_hash_index);
         ~index_agent_disk_t();
 
         components::catalog::oid_t table_oid() const { return table_oid_; }

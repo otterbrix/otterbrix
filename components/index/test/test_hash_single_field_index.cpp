@@ -39,9 +39,9 @@ namespace {
             resource,
             name,
             keys_base_storage_t{key(resource, "count")},
-            std::make_shared<services::index::disk_hash_table_t>(file,
-                                                                 services::index::disk_hash_table_t::default_bucket_count,
-                                                                 resource));
+            boost::intrusive_ptr(new services::index::disk_hash_table_t(file,
+                                                                        services::index::disk_hash_table_t::default_bucket_count,
+                                                                        resource)));
     }
 
     void run_base_contract(hash_index_mode mode) {
@@ -111,10 +111,10 @@ namespace {
             id = make_index<disk_hash_single_field_index_t>(index_engine,
                                                             "hash_count",
                                                             {key(&resource, "count")},
-                                                            std::make_shared<services::index::disk_hash_table_t>(
+                                                            boost::intrusive_ptr(new services::index::disk_hash_table_t(
                                                                 file,
                                                                 services::index::disk_hash_table_t::default_bucket_count,
-                                                                &resource));
+                                                                &resource)));
         }
 
         auto* idx = search_index(index_engine, id);
@@ -264,9 +264,9 @@ TEST_CASE("disk_single_field_index:find_reads_disk_and_normalizes_integer_keys")
     const auto file = base / "hash_count_disk_normalize.bin";
     std::filesystem::remove(file);
 
-    auto table = std::make_shared<services::index::disk_hash_table_t>(file,
-                                                                       services::index::disk_hash_table_t::default_bucket_count,
-                                                                       &resource);
+    auto table = boost::intrusive_ptr(new services::index::disk_hash_table_t>(file,
+                                                                              services::index::disk_hash_table_t::default_bucket_count,
+                                                                              &resource));
     auto* table_raw = table.get();
     auto index = std::make_unique<disk_hash_single_field_index_t>(&resource,
                                                                   "hash_count_disk_normalize",

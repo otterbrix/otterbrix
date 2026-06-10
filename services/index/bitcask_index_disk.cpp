@@ -185,7 +185,7 @@ namespace services::index {
                                                uint64_t flush_threshold,
                                                uint64_t segment_record_limit,
                                                std::pmr::set<std::uint64_t> committed_txn_ids,
-                                               std::shared_ptr<disk_hash_table_t> shared_hash_index)
+                                               disk_hash_table_ptr shared_hash_index)
         : index_disk_t(flush_threshold)
         , path_(path)
         , hash_index_file_path_(path_ / hash_index_file)
@@ -198,9 +198,9 @@ namespace services::index {
         if (shared_hash_index) {
             hash_index_ = std::move(shared_hash_index);
         } else {
-            hash_index_ = std::make_shared<disk_hash_table_t>(hash_index_file_path_,
-                                                              disk_hash_table_t::default_bucket_count,
-                                                              resource_);
+            hash_index_ = boost::intrusive_ptr(new disk_hash_table_t(hash_index_file_path_,
+                                                                     disk_hash_table_t::default_bucket_count,
+                                                                     resource_));
         }
         install_hash_key_loader();
         load_from_disk();
@@ -254,9 +254,9 @@ namespace services::index {
         , task_executor_(std::make_unique<bitcask_task_executor_t>())
         , committed_txn_ids_(committed_txn_ids.begin(), committed_txn_ids.end(), resource) {
         initialize_storage();
-        hash_index_ = std::make_shared<disk_hash_table_t>(hash_index_file_path_,
-                                                          disk_hash_table_t::default_bucket_count,
-                                                          resource_);
+        hash_index_ = boost::intrusive_ptr(new disk_hash_table_t(hash_index_file_path_,
+                                                                 disk_hash_table_t::default_bucket_count,
+                                                                 resource_));
         install_hash_key_loader();
         // Caller (factory) is responsible for load_from_disk +
         // open_active_segment + recover_txn_log_unlocked.
@@ -1097,10 +1097,9 @@ namespace services::index {
         // directory. A fresh executor replaces the stopped one.
         task_executor_ = std::make_unique<bitcask_task_executor_t>();
         initialize_storage();
-        hash_index_ = std::make_unique<disk_hash_table_t>(hash_index_file_path_,
-                                                          disk_hash_table_t::default_bucket_count,
-                                                          false,
-                                                          resource_);
+        hash_index_ = boost::intrusive_ptr(new disk_hash_table_t(hash_index_file_path_,
+                                                                 disk_hash_table_t::default_bucket_count,
+                                                                 resource_));
         load_from_disk();
         open_active_segment();
         // committed_txn_ids_ is intentionally left as-is: the txn log it gated

@@ -8,7 +8,7 @@ namespace components::index {
     disk_hash_single_field_index_t::disk_hash_single_field_index_t(std::pmr::memory_resource* resource,
                                                                    std::string name,
                                                                    const keys_base_storage_t& keys,
-                                                                   std::shared_ptr<disk_hash_storage_t> storage)
+                                                                   disk_hash_storage_ptr storage)
         : index_t(resource, logical_plan::index_type::hashed, std::move(name), keys)
         , disk_table_(std::move(storage))
         , scratch_results_(resource)

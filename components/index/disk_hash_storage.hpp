@@ -1,5 +1,8 @@
 #pragma once
 
+#include <boost/smart_ptr/intrusive_ptr.hpp>
+#include <boost/smart_ptr/intrusive_ref_counter.hpp>
+
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -9,7 +12,7 @@
 
 namespace components::index {
 
-    class disk_hash_storage_t {
+    class disk_hash_storage_t : public boost::intrusive_ref_counter<disk_hash_storage_t> {
     public:
         struct value_ref_t {
             int64_t value{0};
@@ -32,5 +35,7 @@ namespace components::index {
         virtual bool erase(std::string_view key, int64_t value, bool lock_bitcask = true) = 0;
         virtual void sync() = 0;
     };
+
+    using disk_hash_storage_ptr = boost::intrusive_ptr<disk_hash_storage_t>;
 
 } // namespace components::index

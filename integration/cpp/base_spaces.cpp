@@ -459,15 +459,15 @@ namespace otterbrix {
             // equivalent to one from the runtime DDL path. Ctor takes a non-pmr
             // index_name_t (std::string) but row.name is pmr::string, hence the copy.
             const auto index_name = std::string(row.name.data(), row.name.size());
-            std::shared_ptr<services::index::disk_hash_table_t> shared_hash_storage;
+            services::index::disk_hash_table_ptr shared_hash_storage;
             if (row.type == components::logical_plan::index_type::hashed && !disk_config.path.empty()) {
                 const auto base = disk_config.path / std::to_string(static_cast<unsigned>(row.table_oid)) / index_name;
                 std::filesystem::create_directories(base);
                 try {
-                    shared_hash_storage = std::make_shared<services::index::disk_hash_table_t>(
+                    shared_hash_storage = boost::intrusive_ptr(new services::index::disk_hash_table_t(
                         base / "hash_index.bin",
                         services::index::disk_hash_table_t::default_bucket_count,
-                        &resource);
+                        &resource));
                 } catch (const std::exception& e) {
                     trace(log_,
                           "bootstrap_indexes_sync: disk hash storage init failed for {}: {}",

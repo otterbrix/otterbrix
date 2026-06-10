@@ -13,7 +13,7 @@ namespace services::index {
                                                       uint64_t bitcask_segment_record_limit,
                                                       uint64_t btree_flush_threshold,
                                                       std::pmr::set<std::uint64_t> committed_txn_ids,
-                                                      std::shared_ptr<disk_hash_table_t> shared_hash_index) {
+                                                      disk_hash_table_ptr shared_hash_index) {
             // index_type::hashed → bitcask LSM. Everything else (single / composite /
             // multikey / wildcard) → ordered B+tree.
             //
@@ -41,7 +41,7 @@ namespace services::index {
                                            uint64_t btree_flush_threshold,
                                            log_t& log,
                                            std::pmr::set<std::uint64_t> committed_txn_ids,
-                                           std::shared_ptr<disk_hash_table_t> shared_hash_index)
+                                           disk_hash_table_ptr shared_hash_index)
         : actor_zeta::basic_actor<index_agent_disk_t>(resource)
         , log_(log.clone())
         , index_disk_(make_index_disk(path_db / std::to_string(static_cast<unsigned>(table_oid)) / index_name,

@@ -122,7 +122,7 @@ namespace services::index {
                                   components::index::keys_base_storage_t keys,
                                   actor_zeta::address_t disk_agent_addr,
                                   index_agent_disk_ptr disk_agent_owned,
-                                  std::shared_ptr<disk_hash_table_t> shared_hash_storage = nullptr);
+                                  disk_hash_table_ptr shared_hash_storage = nullptr);
 
         // Restore a dropped-table entry from pg_class.delete_id (alias of
         // mark_table_dropped_sync).

@@ -36,7 +36,7 @@ namespace services::index {
                              uint64_t flush_threshold,
                              uint64_t segment_record_limit,
                              std::pmr::set<std::uint64_t> committed_txn_ids,
-                             std::shared_ptr<disk_hash_table_t> shared_hash_index = nullptr);
+                             disk_hash_table_ptr shared_hash_index = nullptr);
         ~bitcask_index_disk_t() override;
 
         // Factory returning the instance, or a core::error_t when on-disk
@@ -154,7 +154,7 @@ namespace services::index {
         mutable core::filesystem::local_file_system_t fs_;
         std::unique_ptr<core::filesystem::file_handle_t> file_;
         std::unique_ptr<core::filesystem::file_handle_t> txn_log_file_;
-        std::shared_ptr<disk_hash_table_t> hash_index_;
+        disk_hash_table_ptr hash_index_;
         uint64_t next_timestamp_{0};
         std::atomic<uint64_t> next_segment_id_{1};
         uint64_t active_segment_id_{0};

@@ -74,6 +74,8 @@ namespace components::operators {
                             ids.resize(ids_capacity, ids_capacity * 2);
                             ids_capacity *= 2;
                         }
+                        // Match found, no need to scan further
+                        break;
                     }
                 }
             }

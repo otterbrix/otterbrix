@@ -309,6 +309,9 @@ namespace components::operators {
                 group_keys_.push_back({});
             } else {
                 create_list_rows(in_chunks);
+                if (has_error()) {
+                    return;
+                }
             }
 
             // Phase 3: Aggregate per group + build result chunk
@@ -364,6 +367,10 @@ namespace components::operators {
                 value.aggregator->clear();
                 value.aggregator->set_children(make_operator_batch(resource_, std::move(empty_chunks)));
                 value.aggregator->on_execute(pipeline_context);
+                if (value.aggregator->has_error()) {
+                    set_error(value.aggregator->get_error());
+                    return;
+                }
                 auto datum = value.aggregator->take_batch_values();
                 std::pmr::vector<types::logical_value_t> results(resource_);
                 if (std::holds_alternative<std::pmr::vector<types::logical_value_t>>(datum)) {
@@ -407,6 +414,20 @@ namespace components::operators {
     void operator_group_t::create_list_rows(const chunks_vector_t& in_chunks) {
         if (in_chunks.empty()) {
             return;
+        }
+
+        // Column keys must arrive with a resolved full_path: extract_key_value
+        // reads chunk.value(key.full_path, ...) and an empty path is UB there
+        // (its assert is compiled out in Release). Surface a clean operator
+        // error instead of relying on the assert.
+        for (const auto& key : keys_) {
+            if (key.type == group_key_t::kind::column && key.full_path.empty()) {
+                std::pmr::string msg{"group key '", resource_};
+                msg += key.name;
+                msg += "' has no resolved column path";
+                set_error(core::error_t(core::error_code_t::schema_error, std::move(msg)));
+                return;
+            }
         }
 
         // Try fast path: all keys are simple column type with resolved col_index
@@ -764,11 +785,38 @@ namespace components::operators {
             for (size_t k = 0; k < key_count; k++) {
                 const auto& key = keys_[k];
                 bool got = false;
-                if (key.type == group_key_t::kind::column && key.full_path.size() == 1 && !in_chunks.empty()) {
+                if (key.type == group_key_t::kind::column && !key.full_path.empty() && !in_chunks.empty()) {
                     const auto col_idx = key.full_path.front();
                     if (col_idx < in_chunks.front().column_count()) {
-                        out_types.push_back(in_chunks.front().data[col_idx].type());
-                        got = true;
+                        // Walk the remaining path components through the nested
+                        // type (STRUCT fields by index, ARRAY/LIST element type)
+                        // so multi-part paths get their source type too; fall
+                        // back to the value type when a component cannot be
+                        // resolved.
+                        const auto* walked = &in_chunks.front().data[col_idx].type();
+                        bool ok = true;
+                        for (auto it = std::next(key.full_path.begin()); ok && it != key.full_path.end(); ++it) {
+                            switch (walked->type()) {
+                                case types::logical_type::ARRAY:
+                                case types::logical_type::LIST:
+                                    walked = &walked->child_type();
+                                    break;
+                                case types::logical_type::STRUCT:
+                                    if (*it < walked->child_types().size()) {
+                                        walked = &walked->child_types()[*it];
+                                    } else {
+                                        ok = false;
+                                    }
+                                    break;
+                                default:
+                                    ok = false;
+                                    break;
+                            }
+                        }
+                        if (ok) {
+                            out_types.push_back(*walked);
+                            got = true;
+                        }
                     }
                 }
                 if (!got) {

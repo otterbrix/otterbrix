@@ -20,6 +20,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_udfs.cpp
         test_batch_execution.cpp
         test_group_by_node_data.cpp
+        test_group_operator_contracts.cpp
         test_arithmetic.cpp
         test_clean_break_startup.cpp
         test_column_projection.cpp

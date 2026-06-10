@@ -50,7 +50,7 @@ namespace services::index {
                                       bitcask_flush_threshold,
                                       bitcask_segment_record_limit,
                                       btree_flush_threshold,
-                                      std::move(committed_txn_ids)),
+                                      std::move(committed_txn_ids),
                                       std::move(shared_hash_index)))
         , table_oid_(table_oid) {
         trace(log_, "index_agent_disk::create {} (table_oid={})", index_name, static_cast<unsigned>(table_oid));

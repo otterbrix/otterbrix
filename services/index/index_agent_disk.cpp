@@ -12,7 +12,8 @@ namespace services::index {
                                                       uint64_t bitcask_flush_threshold,
                                                       uint64_t bitcask_segment_record_limit,
                                                       uint64_t btree_flush_threshold,
-                                                      std::pmr::set<std::uint64_t> committed_txn_ids) {
+                                                      std::pmr::set<std::uint64_t> committed_txn_ids,
+                                                      std::shared_ptr<disk_hash_table_t> shared_hash_index) {
             // index_type::hashed → bitcask LSM. Everything else (single / composite /
             // multikey / wildcard) → ordered B+tree.
             //
@@ -23,7 +24,8 @@ namespace services::index {
                                                               resource,
                                                               bitcask_flush_threshold,
                                                               bitcask_segment_record_limit,
-                                                              std::move(committed_txn_ids));
+                                                              std::move(committed_txn_ids),
+                                                              std::move(shared_hash_index));
             }
             return std::make_unique<btree_index_disk_t>(path, resource, btree_flush_threshold);
         }
@@ -38,7 +40,8 @@ namespace services::index {
                                            uint64_t bitcask_segment_record_limit,
                                            uint64_t btree_flush_threshold,
                                            log_t& log,
-                                           std::pmr::set<std::uint64_t> committed_txn_ids)
+                                           std::pmr::set<std::uint64_t> committed_txn_ids,
+                                           std::shared_ptr<disk_hash_table_t> shared_hash_index)
         : actor_zeta::basic_actor<index_agent_disk_t>(resource)
         , log_(log.clone())
         , index_disk_(make_index_disk(path_db / std::to_string(static_cast<unsigned>(table_oid)) / index_name,
@@ -47,7 +50,8 @@ namespace services::index {
                                       bitcask_flush_threshold,
                                       bitcask_segment_record_limit,
                                       btree_flush_threshold,
-                                      std::move(committed_txn_ids)))
+                                      std::move(committed_txn_ids)),
+                                      std::move(shared_hash_index)))
         , table_oid_(table_oid) {
         trace(log_, "index_agent_disk::create {} (table_oid={})", index_name, static_cast<unsigned>(table_oid));
     }
@@ -126,7 +130,11 @@ namespace services::index {
         // btree / txn_id==0 direct path stays assert+abort terminal: there is no
         // recoverable failure to surface, so a clean run returns no_error().
         for (const auto& [key, row_id] : values) {
-            index_disk_->insert(key, row_id);
+            if (bitcask) {
+                bitcask->insert_bulk_unchecked(key, row_id);
+            } else {
+                index_disk_->insert(key, row_id);
+            }
         }
         if (bitcask) {
             bitcask->force_flush();

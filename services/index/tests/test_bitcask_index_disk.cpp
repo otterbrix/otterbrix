@@ -7,8 +7,11 @@
 #include <memory_resource>
 #include <mutex>
 #include <random>
+#include <core/result_wrapper.hpp>
+#include <services/index/bitcask_hash_key_loader.hpp>
 #include <services/index/bitcask_index_disk.hpp>
 #include <services/index/btree_index_disk.hpp>
+#include <services/index/disk_hash_table.hpp>
 #include <set>
 #include <thread>
 #include <unordered_set>
@@ -188,6 +191,32 @@ TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen") {
         REQUIRE(index.find(logical_value_t(&resource, 99l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 99l)).front() == 99);
         REQUIRE(index.find(logical_value_t(&resource, 100l)).empty());
+    }
+}
+
+TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen_large_dataset") {
+    auto resource = std::pmr::synchronized_pool_resource();
+
+    std::filesystem::path path{"/tmp/index_disk/bitcask_persist_reopen_large"};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    {
+        auto index = bitcask_index_disk_t(path, &resource, test_flush_threshold, 1000);
+        for (int i = 1; i <= 2500; ++i) {
+            index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
+        }
+        index.force_flush();
+    }
+
+    {
+        auto reopened = bitcask_index_disk_t(path, &resource, test_flush_threshold, 1000);
+        for (int key : {1, 42, 872, 1500, 2499, 2500}) {
+            auto rows = reopened.find(logical_value_t(&resource, int64_t(key)));
+            REQUIRE(rows.size() == 1);
+            REQUIRE(rows.front() == static_cast<size_t>(key));
+        }
+        REQUIRE(reopened.find(logical_value_t(&resource, int64_t(2600))).empty());
     }
 }
 
@@ -789,6 +818,38 @@ TEST_CASE("services::index::bitcask_index_disk::string_key_with_embedded_null_pe
         REQUIRE(rows.size() == 1);
         REQUIRE(rows.front() == 77);
     }
+}
+
+TEST_CASE("services::index::bitcask_index_disk::find_invokes_key_loader_for_truncated_key") {
+    auto resource = std::pmr::synchronized_pool_resource();
+
+    std::filesystem::path path{"/tmp/index_disk/bitcask_find_loader_invoked"};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    auto shared_table = std::make_shared<services::index::disk_hash_table_t>(
+        path / "hash_index.bin",
+        services::index::disk_hash_table_t::default_bucket_count,
+        &resource);
+
+    bitcask_index_disk_t index(path, &resource, test_flush_threshold, test_segment_record_limit, shared_table);
+
+    const auto real_loader = services::index::make_bitcask_hash_key_loader(index);
+    size_t loader_calls = 0;
+    shared_table->set_full_key_loader([&](uint32_t segment_id, uint64_t value_offset, std::string& out_key, bool lock_bitcask) {
+        ++loader_calls;
+        return real_loader(segment_id, value_offset, out_key, lock_bitcask);
+    });
+
+    const std::string long_key(200, 'q');
+    index.insert(logical_value_t(&resource, long_key), 4242);
+    index.force_flush();
+    loader_calls = 0;
+
+    const auto rows = index.find(logical_value_t(&resource, long_key));
+    REQUIRE(rows.size() == 1);
+    REQUIRE(rows.front() == 4242);
+    REQUIRE(loader_calls >= 1);
 }
 
 TEST_CASE("services::index::bitcask_index_disk::very_long_string_key_persists") {

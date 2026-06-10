@@ -1,126 +1,18 @@
 #!/usr/bin/env python3
 import argparse
-import csv
-import os
-import random
 import shutil
-import subprocess
-import sys
-import time
 from pathlib import Path
 
-
-def die(msg: str) -> None:
-    print(f"ERROR: {msg}", file=sys.stderr)
-    sys.exit(1)
-
-
-def run_process(args: list[str], cwd: Path, suppress_output: bool) -> None:
-    if suppress_output:
-        proc = subprocess.run(
-            args,
-            cwd=str(cwd),
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        if proc.returncode != 0:
-            raise subprocess.CalledProcessError(proc.returncode, args, output=proc.stdout)
-        return
-    subprocess.run(args, cwd=str(cwd), check=True)
-
-
-def generate_csv(csv_path: Path, rows: int, payload_bytes: int, shuffle_ids: bool) -> None:
-    if rows <= 0:
-        die("--rows must be > 0")
-    payload = "x" * payload_bytes
-    with csv_path.open("w", encoding="utf-8", newline="") as f:
-        f.write("id,payload\n")
-        if shuffle_ids:
-            step = rows - 1
-            for i in range(rows):
-                row_id = ((i * step) % rows) + 1
-                f.write(f"{row_id},{payload}\n")
-        else:
-            for i in range(rows):
-                f.write(f"{i + 1},{payload}\n")
-
-
-def generate_lookup_sql(path: Path, db_name: str, rows: int, seed: int) -> None:
-    rng = random.Random(seed)
-    key = rng.randrange(1, rows + 1)
-    path.write_text(
-        "-- @expected_rows 1\n" f"SELECT * FROM {db_name}.kv WHERE id = {key};\n",
-        encoding="utf-8",
-    )
-
-
-def create_scenario(path: Path, setup_sql: str, lookup_sql: str) -> None:
-    path.mkdir(parents=True, exist_ok=True)
-    (path / "_setup.sql").write_text(setup_sql + "\n", encoding="utf-8")
-    (path / "lookup.sql").write_text(lookup_sql, encoding="utf-8")
-
-
-def read_runner_csv(csv_path: Path) -> tuple[float, float, str, float]:
-    rows: list[dict[str, str]] = []
-    with csv_path.open("r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            rows.append(row)
-    if not rows:
-        die(f"Cannot parse benchmark output: {csv_path}")
-    avg_ms = sum(float(r["avg_ms"]) for r in rows) / len(rows)
-    median_ms = sum(float(r["median_ms"]) for r in rows) / len(rows)
-    timed_total_ms = sum(float(r["avg_ms"]) * float(r["nruns"]) for r in rows)
-    verified = "OK" if all(r["verified"] == "OK" for r in rows) else "FAIL"
-    return avg_ms, median_ms, verified, timed_total_ms
-
-
-def bench_lookup(runner: Path, scenario_dir: Path, runs: int, suppress_output: bool) -> tuple[float, float, str, float, float]:
-    out_csv = scenario_dir / "lookup_result.csv"
-    cmd = [str(runner), "--file=lookup.sql", f"--runs={runs}", "--disk", f"--out={out_csv}"]
-    wall_start = time.perf_counter()
-    run_process(cmd, scenario_dir, suppress_output)
-    wall_ms = (time.perf_counter() - wall_start) * 1000.0
-    avg_ms, median_ms, verified, timed_total_ms = read_runner_csv(out_csv)
-    overhead_ms = max(0.0, wall_ms - timed_total_ms)
-    return avg_ms, median_ms, verified, wall_ms, overhead_ms
-
-
-def bench_restart_startup(
-    runner: Path,
-    scenario_dir: Path,
-    runs: int,
-    suppress_output: bool,
-) -> tuple[float, float, str, float, float, float]:
-    load_cmd = [str(runner), "--file=lookup.sql", "--disk", "--load-only"]
-    t0 = time.perf_counter()
-    run_process(load_cmd, scenario_dir, suppress_output)
-    load_shutdown_ms = (time.perf_counter() - t0) * 1000.0
-
-    out_csv = scenario_dir / "restart_result.csv"
-    restart_cmd = [
-        str(runner),
-        "--file=lookup.sql",
-        f"--runs={runs}",
-        "--disk",
-        "--skip-load",
-        f"--out={out_csv}",
-    ]
-    t1 = time.perf_counter()
-    run_process(restart_cmd, scenario_dir, suppress_output)
-    restart_wall_ms = (time.perf_counter() - t1) * 1000.0
-
-    avg_ms, median_ms, verified, timed_total_ms = read_runner_csv(out_csv)
-    startup_overhead_ms = max(0.0, restart_wall_ms - timed_total_ms)
-    return load_shutdown_ms, avg_ms, median_ms, verified, restart_wall_ms, startup_overhead_ms
-
-
-def ratio(base: float, cur: float) -> str:
-    if cur <= 0.0:
-        return "n/a"
-    return f"{base / cur:.2f}x"
+from benchlib import QUANTILE_PCTS
+from benchlib import STANDARD_SCENARIO_NAMES
+from benchlib import choose_lookup_key
+from benchlib import generate_csv
+from benchlib import lookup_sql
+from benchlib import make_bench_db_name
+from benchlib import measure_lookup
+from benchlib import measure_restart
+from benchlib import speedup
+from benchlib import write_standard_lookup_scenarios
 
 
 def main() -> None:
@@ -136,11 +28,18 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=1234567, help="Random seed.")
     parser.add_argument("--shuffle-ids", action="store_true", help="Use pseudo-random id permutation.")
     parser.add_argument("--show-runner-output", action="store_true")
+    parser.add_argument(
+        "--checkpoint-mb",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Forward --csv-checkpoint-mb=N to benchmark_runner during load (0=off, periodic CHECKPOINT every N MiB).",
+    )
     args = parser.parse_args()
 
     runner = Path(args.runner).resolve()
     if not runner.exists():
-        die(f"runner does not exist: {runner}")
+        raise RuntimeError(f"runner does not exist: {runner}")
 
     workspace = Path(args.workspace)
     if workspace.exists():
@@ -152,60 +51,79 @@ def main() -> None:
         print(f"Generating dataset: rows={args.rows}, payload_bytes={args.payload_bytes}")
         generate_csv(csv_path, args.rows, args.payload_bytes, args.shuffle_ids)
 
-        bench_tag = f"{int(time.time())}_{os.getpid()}"
-        db_name = f"benchdb_{bench_tag}"
-        key = random.Random(args.seed).randrange(1, args.rows + 1)
-        lookup_sql = f"-- @expected_rows 1\nSELECT * FROM {db_name}.kv WHERE id = {key};\n"
-        common_setup = (
-            f"-- @database {db_name}\n"
-            "CREATE TABLE kv (id INTEGER, payload STRING) WITH (storage = 'disk');\n"
-            f"-- @load_csv {csv_path} kv ,"
+        db_name = make_bench_db_name()
+        scenario_dirs = write_standard_lookup_scenarios(
+            workspace,
+            db_name,
+            csv_path,
+            lookup_sql(db_name, choose_lookup_key(args.rows, args.seed)),
+            storage_disk=True,
         )
-
-        scenarios = [
-            ("no_index", common_setup),
-            ("single_field_index", common_setup + f"\nCREATE INDEX idx_id ON {db_name}.kv (id);"),
-            ("hash_single_field_index", common_setup + f"\nCREATE INDEX idx_id_hash ON {db_name}.kv USING hash (id);"),
-        ]
-
-        scenario_dirs: dict[str, Path] = {}
-        for name, setup_sql in scenarios:
-            p = workspace / f"scenario_{name}"
-            create_scenario(p, setup_sql, lookup_sql)
-            scenario_dirs[name] = p
 
         suppress_output = not args.show_runner_output
 
-        lookup_metrics: dict[str, tuple[float, float, str, float, float]] = {}
-        restart_metrics: dict[str, tuple[float, float, float, str, float, float]] = {}
-        for name, _ in scenarios:
-            lookup_metrics[name] = bench_lookup(runner, scenario_dirs[name], args.lookup_runs, suppress_output)
-            restart_metrics[name] = bench_restart_startup(
-                runner, scenario_dirs[name], args.restart_runs, suppress_output
+        lookup_metrics = {}
+        restart_metrics = {}
+        for name in STANDARD_SCENARIO_NAMES:
+            lookup_metrics[name] = measure_lookup(
+                runner,
+                scenario_dirs[name],
+                query_file="lookup.sql",
+                runs=args.lookup_runs,
+                out_name="lookup_result.csv",
+                checkpoint_mb=args.checkpoint_mb,
+                suppress_output=suppress_output,
+            )
+            restart_metrics[name] = measure_restart(
+                runner,
+                scenario_dirs[name],
+                query_file="lookup.sql",
+                restart_runs=args.restart_runs,
+                restart_out_name="restart_result.csv",
+                checkpoint_mb=args.checkpoint_mb,
+                suppress_output=suppress_output,
             )
 
-        base_lookup = lookup_metrics["no_index"][0]
-        base_restart = restart_metrics["no_index"][1]
+        base_lookup = lookup_metrics["no_index"].avg_ms
+        base_restart = restart_metrics["no_index"].restart_avg_ms
 
         print("\n=== Lookup Metrics ===")
-        print("scenario                  avg_ms    median_ms   wall_ms    overhead_ms   speedup_vs_no_index   status")
-        for name, _ in scenarios:
-            avg_ms, median_ms, status, wall_ms, overhead_ms = lookup_metrics[name]
+        quantile_header = " ".join(f"{'p' + str(p):>8}" for p in QUANTILE_PCTS)
+        print(
+            "scenario                  avg_ms    median_ms   "
+            f"{quantile_header}   wall_ms    query_ops_s   overhead_ms   speedup_vs_no_index   status"
+        )
+        for name in STANDARD_SCENARIO_NAMES:
+            m = lookup_metrics[name]
+            query_ops_s = args.lookup_runs / max(1e-9, m.wall_ms / 1000.0)
+            quantile_vals = " ".join(
+                f"{m.quantiles_ms.get(p, float('nan')):>8.3f}" for p in QUANTILE_PCTS
+            )
             print(
-                f"{name:<24} {avg_ms:>8.3f} {median_ms:>11.3f} {wall_ms:>9.3f} {overhead_ms:>12.3f}"
-                f" {ratio(base_lookup, avg_ms):>20} {status:>8}"
+                f"{name:<24} {m.avg_ms:>8.3f} {m.median_ms:>11.3f} {quantile_vals}"
+                f" {m.wall_ms:>9.3f} {query_ops_s:>12.2f} {m.overhead_ms:>12.3f}"
+                f" {speedup(base_lookup, m.avg_ms):>20} {m.verified:>8}"
             )
 
         print("\n=== Restart Startup Metrics ===")
+        restart_quantile_header = " ".join(f"{'p' + str(p):>8}" for p in QUANTILE_PCTS)
         print(
-            "scenario                  load+shutdown_ms  restart_avg_ms  restart_median_ms  restart_wall_ms"
-            "  startup_overhead_ms  speedup_vs_no_index  status"
+            "scenario                  load+shutdown_ms  insert_ops_s  restart_avg_ms  restart_median_ms  "
+            f"{restart_quantile_header}  restart_wall_ms  restart_query_ops_s  startup_overhead_ms  speedup_vs_no_index  status"
         )
-        for name, _ in scenarios:
-            load_ms, avg_ms, median_ms, status, wall_ms, startup_overhead_ms = restart_metrics[name]
+        for name in STANDARD_SCENARIO_NAMES:
+            m = restart_metrics[name]
+            insert_ops_s = args.rows / max(1e-9, m.load_shutdown_ms / 1000.0)
+            restart_query_ops_s = args.restart_runs / max(1e-9, m.restart_wall_ms / 1000.0)
+            restart_quantile_vals = " ".join(
+                f"{m.restart_quantiles_ms.get(p, float('nan')):>8.3f}" for p in QUANTILE_PCTS
+            )
             print(
-                f"{name:<24} {load_ms:>16.3f} {avg_ms:>15.3f} {median_ms:>18.3f} {wall_ms:>15.3f}"
-                f" {startup_overhead_ms:>20.3f} {ratio(base_restart, avg_ms):>19} {status:>7}"
+                f"{name:<24} {m.load_shutdown_ms:>16.3f} {insert_ops_s:>12.2f} {m.restart_avg_ms:>15.3f}"
+                f" {m.restart_median_ms:>18.3f} {restart_quantile_vals}"
+                f" {m.restart_wall_ms:>15.3f} {restart_query_ops_s:>18.2f}"
+                f" {m.startup_overhead_ms:>20.3f}"
+                f" {speedup(base_restart, m.restart_avg_ms):>19} {m.verified:>7}"
             )
     finally:
         shutil.rmtree(workspace, ignore_errors=True)

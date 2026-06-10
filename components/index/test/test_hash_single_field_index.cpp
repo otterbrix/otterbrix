@@ -1,4 +1,6 @@
 #include <algorithm>
+#include <filesystem>
+#include <memory>
 #include <catch2/catch.hpp>
 #include <filesystem>
 
@@ -8,6 +10,8 @@
 #include "components/index/logical_value_binary_codec.hpp"
 #include "components/index/single_field_index.hpp"
 #include "components/tests/generaty.hpp"
+#include "services/index/bitcask_hash_key_loader.hpp"
+#include "services/index/bitcask_index_disk.hpp"
 #include "services/index/disk_hash_table.hpp"
 
 using namespace components::index;
@@ -35,11 +39,9 @@ namespace {
             resource,
             name,
             keys_base_storage_t{key(resource, "count")},
-            std::make_unique<services::index::disk_hash_table_t>(
-                file,
-                services::index::disk_hash_table_t::default_bucket_count,
-                true,
-                resource));
+            std::make_shared<services::index::disk_hash_table_t>(file,
+                                                                 services::index::disk_hash_table_t::default_bucket_count,
+                                                                 resource));
     }
 
     void run_base_contract(hash_index_mode mode) {
@@ -106,15 +108,13 @@ namespace {
             std::filesystem::create_directories(base);
             const auto file = base / "hash_count_disk.bin";
             std::filesystem::remove(file);
-            id =
-                make_index<disk_hash_single_field_index_t>(index_engine,
-                                                           "hash_count",
-                                                           {key(&resource, "count")},
-                                                           std::make_unique<services::index::disk_hash_table_t>(
-                                                               file,
-                                                               services::index::disk_hash_table_t::default_bucket_count,
-                                                               true,
-                                                               &resource));
+            id = make_index<disk_hash_single_field_index_t>(index_engine,
+                                                            "hash_count",
+                                                            {key(&resource, "count")},
+                                                            std::make_shared<services::index::disk_hash_table_t>(
+                                                                file,
+                                                                services::index::disk_hash_table_t::default_bucket_count,
+                                                                &resource));
         }
 
         auto* idx = search_index(index_engine, id);
@@ -264,11 +264,9 @@ TEST_CASE("disk_single_field_index:find_reads_disk_and_normalizes_integer_keys")
     const auto file = base / "hash_count_disk_normalize.bin";
     std::filesystem::remove(file);
 
-    auto table =
-        std::make_unique<services::index::disk_hash_table_t>(file,
-                                                             services::index::disk_hash_table_t::default_bucket_count,
-                                                             true,
-                                                             &resource);
+    auto table = std::make_shared<services::index::disk_hash_table_t>(file,
+                                                                       services::index::disk_hash_table_t::default_bucket_count,
+                                                                       &resource);
     auto* table_raw = table.get();
     auto index = std::make_unique<disk_hash_single_field_index_t>(&resource,
                                                                   "hash_count_disk_normalize",

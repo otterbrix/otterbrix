@@ -9,6 +9,7 @@
 // fold the first error into their returned core::error_t.
 
 #include "index_disk.hpp"
+#include "disk_hash_table.hpp"
 
 #include <core/result_wrapper.hpp>
 
@@ -28,6 +29,7 @@
 #include <core/btree/btree.hpp>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <memory_resource>
 #include <set>
 
@@ -63,7 +65,8 @@ namespace services::index {
                            uint64_t bitcask_segment_record_limit,
                            uint64_t btree_flush_threshold,
                            log_t& log,
-                           std::pmr::set<std::uint64_t> committed_txn_ids);
+                           std::pmr::set<std::uint64_t> committed_txn_ids,
+                           std::shared_ptr<disk_hash_table_t> shared_hash_index);
         ~index_agent_disk_t();
 
         components::catalog::oid_t table_oid() const { return table_oid_; }

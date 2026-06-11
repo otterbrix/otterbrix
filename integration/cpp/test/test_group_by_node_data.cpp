@@ -140,6 +140,24 @@ TEST_CASE("group by over node_data: integer key (control, passes)") {
     REQUIRE(cursor);
     REQUIRE_FALSE(cursor->is_error());
     REQUIRE(cursor->size() == 2);
+
+    // Both aggregates must carry the correct per-group values. The join is
+    // 1:1 (campaign_id 1,2 ↔ product_id 1,2 with price 100.5, 201.0), so each
+    // group has COUNT == 1 and AVG(price) == that row's own price. ORDER BY
+    // product_count DESC leaves the order between equal counts unspecified —
+    // assert per key, not per row position.
+    auto& chunk = cursor->chunk_data();
+    REQUIRE(chunk.column_count() == 3); // campaign_name, product_count, avg_product_price
+    bool seen_campaign[2] = {false, false};
+    for (uint64_t row = 0; row < cursor->size(); ++row) {
+        auto key = chunk.value(0, row).value<int32_t>();
+        REQUIRE((key == 1 || key == 2));
+        REQUIRE(chunk.value(1, row).value<uint64_t>() == 1);
+        REQUIRE(chunk.value(2, row).value<double>() == Approx(key == 1 ? 100.5 : 201.0));
+        seen_campaign[key - 1] = true;
+    }
+    REQUIRE(seen_campaign[0]);
+    REQUIRE(seen_campaign[1]);
 }
 
 TEST_CASE("group by over node_data: string key (SIGSEGV before the fix)") {

@@ -362,10 +362,13 @@ namespace components::operators {
             // Run each aggregator over zero rows and emit one result row.
             std::pmr::vector<std::pmr::vector<types::logical_value_t>> agg_results(resource_);
             agg_results.reserve(values_.size());
+            // One shared zero-row batch for every aggregator — same sharing
+            // contract as the gather-once fallback below.
+            chunks_vector_t empty_chunks(resource_);
+            auto shared_batch = make_operator_batch(resource_, std::move(empty_chunks));
             for (const auto& value : values_) {
-                chunks_vector_t empty_chunks(resource_);
                 value.aggregator->clear();
-                value.aggregator->set_children(make_operator_batch(resource_, std::move(empty_chunks)));
+                value.aggregator->set_children(shared_batch);
                 value.aggregator->on_execute(pipeline_context);
                 if (value.aggregator->has_error()) {
                     set_error(value.aggregator->get_error());
@@ -719,19 +722,28 @@ namespace components::operators {
         std::pmr::vector<std::pmr::vector<types::logical_value_t>> agg_results(resource_);
         agg_results.reserve(values_.size());
 
+        // Gather the per-group subchunks ONCE and share a single batch operator
+        // across all aggregators. Every group aggregator is an operator_func_t
+        // whose aggregate_batch_impl reads the batch without consuming it
+        // (build_arg_chunk references the argument columns; appended expression
+        // columns are removed after use), and aggregator->clear() only drops the
+        // aggregator's own child pointer — the batch itself stays intact. This
+        // collapses the per-aggregate regather from
+        // O(aggregates × groups × rows) copies down to O(groups × rows).
+        chunks_vector_t group_chunks(resource_);
+        group_chunks.reserve(num_groups);
+        for (size_t i = 0; i < num_groups; i++) {
+            group_chunks.emplace_back(gather_group(row_refs_per_group_[i]));
+        }
+        auto shared_batch = make_operator_batch(resource_, std::move(group_chunks));
+
         for (const auto& value : values_) {
             auto& aggregator = value.aggregator;
             std::pmr::vector<types::logical_value_t> results(resource_);
             results.reserve(num_groups);
 
-            chunks_vector_t group_chunks(resource_);
-            group_chunks.reserve(num_groups);
-            for (size_t i = 0; i < num_groups; i++) {
-                group_chunks.emplace_back(gather_group(row_refs_per_group_[i]));
-            }
-
             aggregator->clear();
-            aggregator->set_children(make_operator_batch(resource_, std::move(group_chunks)));
+            aggregator->set_children(shared_batch);
             aggregator->on_execute(pipeline_context);
             if (aggregator->has_error()) {
                 set_error(aggregator->get_error());

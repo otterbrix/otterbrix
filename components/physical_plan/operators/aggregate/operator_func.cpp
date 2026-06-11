@@ -129,7 +129,7 @@ namespace components::operators::aggregate {
 
     core::result_wrapper_t<types::logical_value_t>
     operator_func_t::aggregate_impl(pipeline::context_t* pipeline_context) {
-        auto result = types::logical_value_t(std::pmr::null_memory_resource(), types::logical_type::NA);
+        auto result = types::logical_value_t(resource_, types::logical_type::NA);
         if (left_ && left_->output()) {
             auto& chunk = left_->output()->data_chunk();
 

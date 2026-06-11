@@ -14,8 +14,7 @@ namespace components::operators::aggregate {
     protected:
         operator_aggregate_t(std::pmr::memory_resource* resource, log_t log);
 
-        types::logical_value_t aggregate_result_{std::pmr::null_memory_resource(),
-                                                 types::complex_logical_type{types::logical_type::NA}};
+        types::logical_value_t aggregate_result_;
         compute::datum_t batch_results_{std::pmr::vector<types::logical_value_t>{resource_}};
 
         virtual core::result_wrapper_t<types::logical_value_t>

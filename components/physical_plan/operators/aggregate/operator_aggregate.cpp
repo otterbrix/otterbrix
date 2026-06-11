@@ -7,7 +7,8 @@
 namespace components::operators::aggregate {
 
     operator_aggregate_t::operator_aggregate_t(std::pmr::memory_resource* resource, log_t log)
-        : read_only_operator_t(resource, log, operator_type::aggregate) {}
+        : read_only_operator_t(resource, log, operator_type::aggregate)
+        , aggregate_result_(resource, types::complex_logical_type{types::logical_type::NA}) {}
 
     void operator_aggregate_t::on_execute_impl(pipeline::context_t* pipeline_context) {
         if (left_ && left_->type() == operator_type::batch) {

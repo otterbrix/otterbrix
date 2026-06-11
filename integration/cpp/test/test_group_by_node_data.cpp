@@ -9,6 +9,7 @@
 #include <components/sql/transformer/utils.hpp>
 
 #include <deque>
+#include <memory_resource>
 
 using namespace components;
 
@@ -73,7 +74,10 @@ namespace {
             INNER JOIN pgdb.products p ON p.campaign_id = c.campaign_id
             GROUP BY c.campaign_name ORDER BY product_count DESC;)";
 
-        auto* raw = raw_parser(resource, sql);
+        // The raw AST lives in an arena — raw_parser allocations are never
+        // freed individually (mirrors how embedders manage parser memory).
+        std::pmr::monotonic_buffer_resource arena(resource);
+        auto* raw = raw_parser(&arena, sql);
         REQUIRE(raw != nullptr);
         auto* res = reinterpret_cast<::Node*>(linitial(raw));
         auto binder = transformer.transform(sql::transform::pg_cell_to_node_cast(res));

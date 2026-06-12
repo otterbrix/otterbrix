@@ -28,6 +28,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_subqueries.cpp
         test_hash_join.cpp
         test_parser_extension.cpp
+        test_engine_lifecycle.cpp
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})

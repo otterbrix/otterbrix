@@ -1142,18 +1142,17 @@ namespace services::disk {
     }
 
     agent_disk_t::unique_future<checkpoint_result_t> agent_disk_t::checkpoint_inner(session_id_t /*session*/,
-                                                                                   wal::id_t current_wal_id) {
-        trace(log_,
-              "agent_disk[{}]::checkpoint_inner: {} entries in local slice",
-              pool_idx_,
-              storages_.size());
+                                                                                     wal::id_t current_wal_id,
+                                                                                     uint64_t compact_watermark) {
+        trace(log_, "agent_disk[{}]::checkpoint_inner: {} entries in local slice", pool_idx_, storages_.size());
         // Per DISK entry, crash-safe checkpoint sequence (order matters):
-        //   backup .otbx → .prev, compact + checkpoint(wal_id), persist the
-        //   .wal_id sidecar via tmp+rename, then delete the .prev backup on success.
-        //   Tally min(prev_checkpoint_wal_id_) for the manager's cross-agent std::min.
-        // IN_MEMORY twins and null entries are skipped for checkpointing, but an
-        // IN_MEMORY twin flips has_in_memory so checkpoint_all can gate WAL-floor
-        // sealing without a separate sync slice read (folded from has_in_memory_inner_sync).
+        //   compact (MVCC-gated), backup .otbx → .prev, checkpoint(wal_id), persist
+        //   the .wal_id sidecar via tmp+rename, then delete the .prev backup on
+        //   success. Tally min(prev_checkpoint_wal_id_) for the manager's
+        //   cross-agent std::min. IN_MEMORY twins and null entries are skipped
+        //   for checkpointing, but an IN_MEMORY twin flips has_in_memory so
+        //   checkpoint_all can gate WAL-floor sealing without a separate sync
+        //   slice read (folded from has_in_memory_inner_sync).
         wal::id_t min_prev_id = std::numeric_limits<wal::id_t>::max();
         bool has_in_memory = false;
         for (auto& [tbl_oid, entry] : storages_) {
@@ -1169,6 +1168,25 @@ namespace services::disk {
             if (entry->otbx_path.empty()) {
                 continue;
             }
+
+            // MVCC gate FIRST: compact() refuses the rebuild when any version
+            // stamp is above the watermark (an active snapshot or an in-flight
+            // commit still needs the history, or a positional commit_append is
+            // pending). Persisting a non-compacted table would resurrect dead /
+            // uncommitted rows on recovery (.otbx has no version metadata), so
+            // the entry's checkpoint is deferred to a later round; the WAL keeps
+            // its replay records because the old sidecar/prev ids stay in the min.
+            if (!entry->table_storage.table().compact(compact_watermark)) {
+                trace(log_,
+                      "agent_disk[{}]::checkpoint_inner oid={} has version stamps above watermark {} — "
+                      "skipping this round",
+                      pool_idx_,
+                      static_cast<unsigned>(tbl_oid),
+                      compact_watermark);
+                min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
+                continue;
+            }
+
             trace(log_,
                   "agent_disk[{}]::checkpoint_inner checkpointing oid={}",
                   pool_idx_,
@@ -1195,7 +1213,6 @@ namespace services::disk {
                 }
             }
 
-            entry->table_storage.table().compact();
             entry->table_storage.checkpoint(current_wal_id);
 
             // Persist sidecar wal_id atomically (tmp + rename).
@@ -1232,24 +1249,24 @@ namespace services::disk {
     }
 
     agent_disk_t::unique_future<void> agent_disk_t::vacuum_inner(session_id_t /*session*/,
-                                                                  uint64_t lowest_active_start_time) {
-        trace(log_,
-              "agent_disk[{}]::vacuum_inner: {} entries in local slice",
-              pool_idx_,
-              storages_.size());
+                                                                 uint64_t lowest_active_start_time,
+                                                                 uint64_t compact_watermark) {
+        trace(log_, "agent_disk[{}]::vacuum_inner: {} entries in local slice", pool_idx_, storages_.size());
         for (auto& [oid, entry] : storages_) {
             if (entry == nullptr) {
                 continue;
             }
             auto& table = entry->table_storage.table();
             table.cleanup_versions(lowest_active_start_time);
-            table.compact();
+            // MVCC-gated: a no-op when any version stamp is above the watermark
+            // (concurrent snapshot / in-flight commit still needs the history).
+            table.compact(compact_watermark);
         }
         co_return;
     }
 
     agent_disk_t::unique_future<void> agent_disk_t::maybe_cleanup_inner(components::catalog::oid_t table_oid,
-                                                                         uint64_t compact_gate) {
+                                                                        uint64_t compact_watermark) {
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
             trace(log_,
@@ -1279,28 +1296,23 @@ namespace services::disk {
 
         static constexpr double gc_threshold = 0.3;
         if (static_cast<double>(deleted) / static_cast<double>(total) > gc_threshold) {
-            // compact_gate is a boolean 0/1 gate, NOT a horizon value: the dispatcher
-            // returns 1 only when no other txn is active. 0 means another txn is still
-            // active; skip the compact in that case. This is a tombstone-timing
-            // heuristic only — it avoids reclaiming versions that a concurrent snapshot
-            // might still need. Compact correctness itself does NOT rest on this gate:
-            // compact swaps row_groups_ on this same agent thread, and the agent
-            // mailbox serializes that swap against every other storage handler, so the
-            // gate only delays reclaim, never guards against a data race.
-            if (compact_gate == 0) {
-                co_return;
-            }
             trace(log_,
-                  "agent_disk[{}]::maybe_cleanup_inner: oid={}, deleted {}/{}, running compact",
+                  "agent_disk[{}]::maybe_cleanup_inner: oid={}, deleted {}/{}, running compact (watermark {})",
                   pool_idx_,
                   static_cast<unsigned>(table_oid),
                   deleted,
-                  total);
+                  total,
+                  compact_watermark);
+            // compact() refuses the rebuild when any version stamp is above the
+            // watermark (concurrent snapshot / in-flight commit still needs the
+            // history); reclaim is merely deferred to a later commit. The agent
+            // mailbox serializing the row_groups_ swap covers the data-race
+            // side; the watermark covers version visibility.
             // Compact alone (no preceding cleanup_versions): scan_committed
             // depends on intact version metadata to filter tombstones;
             // cleanup_versions would strip it before compact rebuilds the
             // row_group.
-            table.compact();
+            table.compact(compact_watermark);
         }
 
         co_return;

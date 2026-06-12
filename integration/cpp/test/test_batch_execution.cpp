@@ -185,7 +185,7 @@ TEST_CASE("integration::cpp::test_batch_where") {
             for (const auto& type : types) {
                 columns.emplace_back(type.alias(), type);
             }
-            dispatcher->create_collection(session, database_name, collection_name, columns);
+            test_create_collection(dispatcher, session, database_name, collection_name, columns);
         }
     }
 
@@ -287,7 +287,7 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
             for (const auto& type : types) {
                 columns.emplace_back(type.alias(), type);
             }
-            dispatcher->create_collection(session, database_name, collection_name, columns);
+            test_create_collection(dispatcher, session, database_name, collection_name, columns);
         }
     }
 
@@ -618,7 +618,7 @@ TEST_CASE("integration::cpp::test_batch_edge_cases") {
             for (const auto& type : types) {
                 columns.emplace_back(type.alias(), type);
             }
-            dispatcher->create_collection(session, database_name, collection_name, columns);
+            test_create_collection(dispatcher, session, database_name, collection_name, columns);
         }
     }
 
@@ -714,7 +714,7 @@ TEST_CASE("integration::cpp::test_batch_boundaries") {
     }
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->create_collection(session, database_name, collection_name);
+        test_create_collection(dispatcher, session, database_name, collection_name);
     }
     {
         auto session = otterbrix::session_id_t();

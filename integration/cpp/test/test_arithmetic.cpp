@@ -37,7 +37,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name, columns);
+            test_create_collection(dispatcher, session, database_name, collection_name, columns);
         }
     }
 
@@ -719,7 +719,7 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name, columns);
+            test_create_collection(dispatcher, session, database_name, collection_name, columns);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -815,7 +815,7 @@ TEST_CASE("integration::cpp::test_arithmetic::having") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name, columns);
+            test_create_collection(dispatcher, session, database_name, collection_name, columns);
         }
     }
 
@@ -887,7 +887,7 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name, columns);
+            test_create_collection(dispatcher, session, database_name, collection_name, columns);
         }
     }
 
@@ -995,7 +995,7 @@ TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name, columns);
+            test_create_collection(dispatcher, session, database_name, collection_name, columns);
         }
     }
 
@@ -1178,7 +1178,7 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name, columns);
+            test_create_collection(dispatcher, session, database_name, collection_name, columns);
         }
     }
 

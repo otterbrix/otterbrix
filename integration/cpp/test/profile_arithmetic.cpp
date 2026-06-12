@@ -35,7 +35,7 @@ int main() {
     }
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->create_collection(s, database_name, collection_name, columns);
+        test_create_collection(dispatcher, s, database_name, collection_name, columns);
     }
 
     // Insert 1000 rows

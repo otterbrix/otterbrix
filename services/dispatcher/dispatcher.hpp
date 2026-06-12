@@ -134,13 +134,18 @@ namespace services::dispatcher {
         // read-only release tail.
         unique_future<void> txn_abort_msg(components::session::session_id_t session);
         // ProcArray publish barrier — sent by operator_commit_transaction_t
-        // AFTER storage_publish_* / index commits / WAL. Returns the COMPACT-GATE
-        // boolean (compact-gate space, NOT the commit-id-space GC horizon that
-        // the on_horizon_advanced broadcast carries): 1 = the maybe_cleanup
-        // fan-out may run a compact (no other txn active), 0 = suppress (another
-        // txn's snapshot may still read versions a compact would drop). agent_disk
-        // maybe_cleanup_inner only compares this ==0, so a bare 0/1 suffices.
+        // AFTER storage_publish_* / index commits / WAL. Returns the
+        // COMPACT-WATERMARK (txn_manager_.compact_watermark(), commit-id value
+        // space): the visible-to-all horizon the maybe_cleanup fan-out hands to
+        // data_table_t::compact(). Any version stamp above it (another txn's
+        // snapshot, an in-flight commit) makes the compact a no-op.
         unique_future<uint64_t> txn_publish_msg(uint64_t commit_id);
+        // Read-only fetch of txn_manager_.compact_watermark() for the
+        // checkpoint/vacuum paths (operator_checkpoint, operator_vacuum and the
+        // WAL auto-checkpoint), whose compact runs outside the commit pipeline.
+        // Stale-safe: the watermark is monotone, an earlier value never
+        // green-lights a compact a later value would refuse.
+        unique_future<uint64_t> txn_compact_watermark_msg();
 
         // Selective broadcast: DROP TABLE / DROP INDEX marks the owning
         // subscriber as having dropped resources pending GC; on_subscriber_empty
@@ -161,6 +166,7 @@ namespace services::dispatcher {
                                                             &manager_dispatcher_t::txn_accumulate_msg,
                                                             &manager_dispatcher_t::txn_abort_msg,
                                                             &manager_dispatcher_t::txn_publish_msg,
+                                                            &manager_dispatcher_t::txn_compact_watermark_msg,
                                                             &manager_dispatcher_t::on_drop_resource_marked,
                                                             &manager_dispatcher_t::on_subscriber_empty>;
 

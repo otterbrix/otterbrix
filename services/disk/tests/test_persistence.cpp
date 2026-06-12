@@ -81,7 +81,10 @@ namespace {
             auto [_, cf] = actor_zeta::otterbrix::send(manager->address(),
                                                        &manager_disk_t::checkpoint_all,
                                                        session_id_t{},
-                                                       services::wal::id_t{0});
+                                                       services::wal::id_t{0},
+                                                       // No concurrent snapshots in this fixture —
+                                                       // everything is visible-to-all, compact may run.
+                                                       std::numeric_limits<uint64_t>::max());
             for (int i = 0; i < 100000 && !cf.is_ready(); ++i) {
                 scheduler->run(1000);
                 std::this_thread::yield();

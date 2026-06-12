@@ -143,7 +143,8 @@ TEST_CASE("integration::clean_break_startup::oid_generator_seeded_max_plus_1") {
         auto [_, cf] = actor_zeta::otterbrix::send(fd.manager->address(),
                                                    &manager_disk_t::checkpoint_all,
                                                    session_id_t{},
-                                                   services::wal::id_t{0});
+                                                   services::wal::id_t{0},
+                                                   std::numeric_limits<uint64_t>::max());
         poll_ready(fd.scheduler, cf);
         (void) std::move(cf).take_ready();
     }
@@ -170,7 +171,8 @@ TEST_CASE("integration::clean_break_startup::namespace_round_trip") {
         auto [_, cf] = actor_zeta::otterbrix::send(fd.manager->address(),
                                                    &manager_disk_t::checkpoint_all,
                                                    session_id_t{},
-                                                   services::wal::id_t{0});
+                                                   services::wal::id_t{0},
+                                                   std::numeric_limits<uint64_t>::max());
         poll_ready(fd.scheduler, cf);
         (void) std::move(cf).take_ready();
     }
@@ -211,7 +213,8 @@ TEST_CASE("integration::clean_break_startup::table_round_trip_with_columns") {
         auto [_, cf] = actor_zeta::otterbrix::send(fd.manager->address(),
                                                    &manager_disk_t::checkpoint_all,
                                                    session_id_t{},
-                                                   services::wal::id_t{0});
+                                                   services::wal::id_t{0},
+                                                   std::numeric_limits<uint64_t>::max());
         poll_ready(fd.scheduler, cf);
         (void) std::move(cf).take_ready();
     }
@@ -260,7 +263,8 @@ TEST_CASE("integration::clean_break_startup::index_round_trip") {
         auto [_c, cf] = actor_zeta::otterbrix::send(fd.manager->address(),
                                                     &manager_disk_t::checkpoint_all,
                                                     session_id_t{},
-                                                    services::wal::id_t{0});
+                                                    services::wal::id_t{0},
+                                                    std::numeric_limits<uint64_t>::max());
         poll_ready(fd.scheduler, cf);
         (void) std::move(cf).take_ready();
     }
@@ -295,7 +299,8 @@ TEST_CASE("integration::clean_break_startup::resolve_after_restart") {
         auto [_, cf] = actor_zeta::otterbrix::send(fd.manager->address(),
                                                    &manager_disk_t::checkpoint_all,
                                                    session_id_t{},
-                                                   services::wal::id_t{0});
+                                                   services::wal::id_t{0},
+                                                   std::numeric_limits<uint64_t>::max());
         poll_ready(fd.scheduler, cf);
         (void) std::move(cf).take_ready();
     }
@@ -337,7 +342,8 @@ TEST_CASE("integration::clean_break_startup::sequence_view_macro_via_pg_class") 
         auto [_, cf] = actor_zeta::otterbrix::send(fd.manager->address(),
                                                    &manager_disk_t::checkpoint_all,
                                                    session_id_t{},
-                                                   services::wal::id_t{0});
+                                                   services::wal::id_t{0},
+                                                   std::numeric_limits<uint64_t>::max());
         poll_ready(fd.scheduler, cf);
         (void) std::move(cf).take_ready();
     }

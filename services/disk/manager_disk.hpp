@@ -490,15 +490,20 @@ namespace services::disk {
 
         unique_future<void> flush(session_id_t session, wal::id_t wal_id);
 
-        unique_future<wal::id_t> checkpoint_all(session_id_t session, wal::id_t current_wal_id);
-        unique_future<void> vacuum_all(session_id_t session, uint64_t lowest_active_start_time);
+        // compact_watermark (here and below): the dispatcher's visible-to-all
+        // horizon (txn_compact_watermark_msg / txn_publish_msg return) handed to
+        // data_table_t::compact(); any version stamp above it makes the compact
+        // a no-op, and checkpoint_inner then skips that entry for the round.
+        unique_future<wal::id_t>
+        checkpoint_all(session_id_t session, wal::id_t current_wal_id, uint64_t compact_watermark);
+        unique_future<void>
+        vacuum_all(session_id_t session, uint64_t lowest_active_start_time, uint64_t compact_watermark);
         // Batched GC-threshold check + compact. Routes each table_oid to its owning
-        // agent's maybe_cleanup_inner with the shared compact_gate (a boolean 0/1
-        // gate, NOT a horizon value — 1 = no other active txn), grouped per agent and
-        // dispatched two-phase (send all, then await all).
+        // agent's maybe_cleanup_inner with the shared compact_watermark, grouped per
+        // agent and dispatched two-phase (send all, then await all).
         unique_future<void> maybe_cleanup_many(execution_context_t ctx,
                                                std::pmr::vector<components::catalog::oid_t> table_oids,
-                                               uint64_t compact_gate);
+                                               uint64_t compact_watermark);
 
         // Event-driven GC subscriber. Manager fans out to every agent; each
         // agent's on_horizon_advanced_inner walks its OWN dropped_storages_ slice,

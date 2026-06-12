@@ -38,8 +38,13 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<wal::id_t> manager_disk_t::checkpoint_all(session_id_t session,
-                                                                            wal::id_t current_wal_id) {
-        trace(log_, "manager_disk_t::checkpoint_all , session : {} , wal_id : {}", session.data(), current_wal_id);
+                                                                            wal::id_t current_wal_id,
+                                                                            uint64_t compact_watermark) {
+        trace(log_,
+              "manager_disk_t::checkpoint_all , session : {} , wal_id : {} , compact_watermark : {}",
+              session.data(),
+              current_wal_id,
+              compact_watermark);
 
         // Fan checkpoint_inner to every agent; each returns a checkpoint_result_t with
         // min(prev_checkpoint_wal_id_) over its DISK entries (max() sentinel when it owns
@@ -52,7 +57,8 @@ namespace services::disk {
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent_ptr->address(),
                                                                   &agent_disk_t::checkpoint_inner,
                                                                   session,
-                                                                  current_wal_id);
+                                                                  current_wal_id,
+                                                                  uint64_t{compact_watermark});
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent_ptr.get());
             }
@@ -100,7 +106,8 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<void> manager_disk_t::vacuum_all(session_id_t session,
-                                                                   uint64_t lowest_active_start_time) {
+                                                                   uint64_t lowest_active_start_time,
+                                                                   uint64_t compact_watermark) {
         trace(log_, "manager_disk_t::vacuum_all , session : {}", session.data());
 
         // Per-agent vacuum_inner runs the canonical cleanup_versions + compact.
@@ -110,7 +117,8 @@ namespace services::disk {
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent_ptr->address(),
                                                                   &agent_disk_t::vacuum_inner,
                                                                   session,
-                                                                  lowest_active_start_time);
+                                                                  lowest_active_start_time,
+                                                                  uint64_t{compact_watermark});
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent_ptr.get());
             }
@@ -128,7 +136,7 @@ namespace services::disk {
     manager_disk_t::unique_future<void>
     manager_disk_t::maybe_cleanup_many(execution_context_t /*ctx*/,
                                        std::pmr::vector<components::catalog::oid_t> table_oids,
-                                       uint64_t compact_gate) {
+                                       uint64_t compact_watermark) {
         // Each table_oid routes to its owning agent's maybe_cleanup_inner so the
         // threshold check + compact (row_group rebuild) is mailbox-serialized with
         // every same-oid access. Running it manager-side via a storage_entry_sync
@@ -153,7 +161,7 @@ namespace services::disk {
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
                                                                   &agent_disk_t::maybe_cleanup_inner,
                                                                   table_oid,
-                                                                  compact_gate);
+                                                                  uint64_t{compact_watermark});
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }

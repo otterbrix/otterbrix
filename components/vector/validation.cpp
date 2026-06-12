@@ -35,7 +35,9 @@ namespace components::vector {
             validity_data_ = nullptr;
             validity_mask_ = nullptr;
         } else {
-            validity_data_ = std::make_shared<validity_data_t>(resource_, other.validity_mask_, count_);
+            validity_data_ = std::make_shared<validity_data_t>(resource_,
+                                                               other.validity_mask_,
+                                                               validity_data_t::entry_count(count_));
             validity_mask_ = validity_data_->data();
         }
     }
@@ -47,7 +49,9 @@ namespace components::vector {
             validity_data_ = nullptr;
             validity_mask_ = nullptr;
         } else {
-            validity_data_ = std::make_shared<validity_data_t>(resource_, other.validity_mask_, count_);
+            validity_data_ = std::make_shared<validity_data_t>(resource_,
+                                                               other.validity_mask_,
+                                                               validity_data_t::entry_count(count_));
             validity_mask_ = validity_data_->data();
         }
         return *this;
@@ -261,7 +265,9 @@ namespace components::vector {
         }
         if (all_valid()) {
             // 1 & Y = Y
-            validity_data_ = std::make_shared<validity_data_t>(resource_, other.validity_mask_, count_);
+            validity_data_ = std::make_shared<validity_data_t>(resource_,
+                                                               other.validity_mask_,
+                                                               validity_data_t::entry_count(count_));
             validity_mask_ = validity_data_->data();
             return;
         }
@@ -270,7 +276,8 @@ namespace components::vector {
             return;
         }
 
-        validity_data_ = std::make_shared<validity_data_t>(resource_, validity_mask_, count_);
+        validity_data_ =
+            std::make_shared<validity_data_t>(resource_, validity_mask_, validity_data_t::entry_count(count_));
         validity_mask_ = validity_data_->data();
 
         auto entry_count = validity_data_t::entry_count(count);

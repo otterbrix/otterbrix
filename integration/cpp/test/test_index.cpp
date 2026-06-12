@@ -50,7 +50,7 @@ constexpr int kDocuments = 100;
             for (const auto& type : types) {                                                                           \
                 columns.emplace_back(type.alias(), type);                                                              \
             }                                                                                                          \
-            dispatcher->create_collection(session, database_name, collection_name, columns);                           \
+            test_create_collection(dispatcher, session, database_name, collection_name, columns);                      \
         }                                                                                                              \
     } while (false)
 
@@ -77,7 +77,12 @@ constexpr int kDocuments = 100;
                                                                      core::indexname_t{INDEX_NAME},                    \
                                                                      components::logical_plan::index_type::single);    \
         node->keys().emplace_back(dispatcher->resource(), KEY);                                                        \
-        dispatcher->create_index(session, database_name, collection_name, node);                                       \
+        auto plan = components::sql::transform::maybe_wrap_with_catalog_resolve_table(dispatcher->resource(),          \
+                                                                                      database_name,                   \
+                                                                                      collection_name,                 \
+                                                                                      node);                           \
+        dispatcher->execute_plan(session,                                                                              \
+                                 components::logical_plan::execution_plan_t{dispatcher->resource(), plan, nullptr});   \
     } while (false)
 
 #define CREATE_EXISTED_INDEX(INDEX_NAME, KEY)                                                                          \
@@ -87,7 +92,14 @@ constexpr int kDocuments = 100;
                                                                      core::indexname_t{INDEX_NAME},                    \
                                                                      components::logical_plan::index_type::single);    \
         node->keys().emplace_back(dispatcher->resource(), KEY);                                                        \
-        auto res = dispatcher->create_index(session, database_name, collection_name, node);                            \
+        auto plan = components::sql::transform::maybe_wrap_with_catalog_resolve_table(dispatcher->resource(),          \
+                                                                                      database_name,                   \
+                                                                                      collection_name,                 \
+                                                                                      node);                           \
+        auto res = dispatcher->execute_plan(session,                                                                   \
+                                            components::logical_plan::execution_plan_t{dispatcher->resource(),         \
+                                                                                       plan,                           \
+                                                                                       nullptr});                      \
         REQUIRE(res->is_error() == true);                                                                              \
         /* DML operators self-contain their I/O; the executor wraps any */                                             \
         /* operator-level set_error into create_physical_plan_error with the */                                        \
@@ -118,8 +130,12 @@ constexpr int kDocuments = 100;
         auto plan = components::logical_plan::make_node_aggregate(dispatcher->resource(),                              \
                                                                   core::dbname_t{database_name},                       \
                                                                   core::relname_t{collection_name});                   \
-        auto c =                                                                                                       \
-            dispatcher->find(session, plan, components::logical_plan::make_parameter_node(dispatcher->resource()));    \
+        auto c = dispatcher->execute_plan(                                                                             \
+            session,                                                                                                   \
+            components::logical_plan::execution_plan_t{dispatcher->resource(),                                         \
+                                                       plan,                                                           \
+                                                       components::logical_plan::make_parameter_node(                  \
+                                                           dispatcher->resource())});                                  \
         REQUIRE(c->size() == kDocuments);                                                                              \
     } while (false)
 
@@ -139,7 +155,9 @@ constexpr int kDocuments = 100;
                                                                      std::move(expr)));                                \
         auto params = components::logical_plan::make_parameter_node(dispatcher->resource());                           \
         params->add_parameter(id_par{1}, VALUE);                                                                       \
-        auto c = dispatcher->find(session, plan, params);                                                              \
+        auto c = dispatcher->execute_plan(                                                                             \
+            session,                                                                                                   \
+            components::logical_plan::execution_plan_t{dispatcher->resource(), plan, params});                         \
         REQUIRE(c->size() == COUNT);                                                                                   \
     } while (false)
 
@@ -215,7 +233,9 @@ TEST_CASE("integration::cpp::test_index::base") {
                                                                          std::move(expr)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), 10));
-            auto c = dispatcher->find(session, plan, params);
+            auto c = dispatcher->execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{dispatcher->resource(), plan, params});
             REQUIRE(c->size() == 1);
         } while (false);
         CHECK_FIND_COUNT(compare_type::eq, side_t::left, logical_value_t(dispatcher->resource(), 10), 1);

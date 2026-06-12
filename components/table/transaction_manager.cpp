@@ -144,4 +144,24 @@ namespace components::table {
         return lowest;
     }
 
+    uint64_t transaction_manager_t::compact_watermark() const {
+        std::lock_guard guard(lock_);
+        uint64_t watermark = published_horizon_.load(std::memory_order_relaxed);
+        // Committed-but-unpublished ids: every snapshot taken from now on carries
+        // them in in_flight_snapshot, so nothing at/above the lowest one is
+        // visible-to-all yet. Ids start at 1, the -1 cannot underflow.
+        if (!in_flight_commits_.empty()) {
+            watermark = std::min(watermark, *in_flight_commits_.begin() - 1);
+        }
+        for (const auto& [key, txn] : active_) {
+            const auto data = txn->data();
+            watermark = std::min(watermark, data.snapshot_horizon);
+            if (!data.in_flight_snapshot.empty()) {
+                // in_flight_snapshot is sorted ascending (copied from a std::set).
+                watermark = std::min(watermark, data.in_flight_snapshot.front() - 1);
+            }
+        }
+        return watermark;
+    }
+
 } // namespace components::table

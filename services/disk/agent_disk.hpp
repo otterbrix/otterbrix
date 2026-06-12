@@ -319,22 +319,33 @@ namespace services::disk {
         //   when it owns none, IN_MEMORY entries skipped) and whose has_in_memory flags
         //   whether this agent owns >= 1 IN_MEMORY entry — folding the signal
         //   checkpoint_all formerly read via has_in_memory_inner_sync into the fan-out.
-        unique_future<checkpoint_result_t> checkpoint_inner(session_id_t session, wal::id_t current_wal_id);
+        //   compact_watermark is the dispatcher's visible-to-all horizon
+        //   (txn_compact_watermark_msg); compact() refuses the rebuild when any
+        //   version stamp is above it, and the entry's checkpoint is then SKIPPED
+        //   for this round — the .otbx format has no version metadata, so
+        //   persisting a non-compacted table would resurrect dead/uncommitted
+        //   rows on recovery. The skipped entry keeps its old file/sidecar and
+        //   still feeds prev_checkpoint_wal_id into the min() so the WAL keeps
+        //   every record it needs for replay.
+        unique_future<checkpoint_result_t>
+        checkpoint_inner(session_id_t session, wal::id_t current_wal_id, uint64_t compact_watermark);
 
-        // vacuum_inner — cleanup_versions + compact per entry.
-        unique_future<void> vacuum_inner(session_id_t session, uint64_t lowest_active_start_time);
+        // vacuum_inner — cleanup_versions + compact per entry. compact_watermark:
+        //   same visible-to-all horizon contract as checkpoint_inner.
+        unique_future<void>
+        vacuum_inner(session_id_t session, uint64_t lowest_active_start_time, uint64_t compact_watermark);
 
-        // maybe_cleanup_inner — single-OID target. If deleted/total > 0.3 and
-        //   compact_gate != 0, runs table.compact(). compact_gate is a boolean 0/1
-        //   gate (NOT a horizon value): the dispatcher's txn_publish_msg returns 1
-        //   when no other txn is active and 0 otherwise, and the caller forwards that
-        //   verbatim. So compact_gate==0 means "another txn is still active, defer
-        //   reclaim". The gate is a tombstone-timing heuristic only; compact
-        //   correctness rests on the agent mailbox serializing the row_groups_ swap,
-        //   not on this gate. cleanup_versions is intentionally omitted: scan_committed
+        // maybe_cleanup_inner — single-OID target. If deleted/total > 0.3, runs
+        //   table.compact(compact_watermark). compact_watermark is the dispatcher's
+        //   visible-to-all horizon (txn_publish_msg return) forwarded verbatim;
+        //   compact() itself refuses the rebuild when any version stamp is above
+        //   it (active snapshot / in-flight commit still needs the history).
+        //   The agent mailbox serializing the row_groups_ swap covers the data
+        //   race side; the watermark covers version-history visibility.
+        //   cleanup_versions is intentionally omitted: scan_committed
         //   needs intact version metadata to filter tombstones, which cleanup_versions
         //   would strip before compact rebuilds the row_group.
-        unique_future<void> maybe_cleanup_inner(components::catalog::oid_t table_oid, uint64_t compact_gate);
+        unique_future<void> maybe_cleanup_inner(components::catalog::oid_t table_oid, uint64_t compact_watermark);
 
         // on_horizon_advanced_inner — sweeps dropped_storages_, removing entries whose
         //   dropped_at_commit_id < new_horizon. Exceptions FORBIDDEN: std::error_code

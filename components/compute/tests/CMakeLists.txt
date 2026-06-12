@@ -5,6 +5,7 @@ add_definitions(-DDEV_MODE)
 set( ${PROJECT_NAME}_SOURCES
         test_registry.cpp
         test_execution.cpp
+        test_aggregate_kernels.cpp
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})

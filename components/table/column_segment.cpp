@@ -209,6 +209,20 @@ namespace components::table {
             }
         }
 
+        // The fetched view borrows the segment's pinned block buffer; the result
+        // vector outlives that pin (cursors hold scan chunks after the query
+        // finishes, and a post-commit compact() may free the block meanwhile).
+        // Materialize the bytes into the result vector's own string buffer — the
+        // same ownership contract vector_t::set_value and vector_ops::copy follow.
+        std::string_view own_string(vector::vector_t& result, std::string_view borrowed) {
+            if (borrowed.empty()) {
+                return borrowed;
+            }
+            assert(result.auxiliary() && result.auxiliary()->type() == vector::vector_buffer_type::STRING);
+            auto* buffer = static_cast<vector::string_vector_buffer_t*>(result.auxiliary().get());
+            return {reinterpret_cast<char*>(buffer->insert(borrowed)), borrowed.size()};
+        }
+
         void string_fetch_row(column_segment_t& segment,
                               column_fetch_state& state,
                               int64_t row_id,
@@ -227,7 +241,8 @@ namespace components::table {
             } else {
                 string_length = static_cast<uint32_t>(std::abs(dict_offset) - std::abs(base_data[row_id - 1]));
             }
-            result_data[result_idx] = fetch_string_from_dict(segment, dict, baseptr, dict_offset, string_length);
+            result_data[result_idx] =
+                own_string(result, fetch_string_from_dict(segment, dict, baseptr, dict_offset, string_length));
         }
 
         template<typename T>
@@ -845,11 +860,13 @@ namespace components::table {
             for (uint64_t i = 0; i < scan_count; i++) {
                 auto string_length = static_cast<uint32_t>(std::abs(base_data[static_cast<uint64_t>(start) + i]) -
                                                            std::abs(previous_offset));
-                result_data[result_offset + i] = fetch_string_from_dict(segment,
-                                                                        dict,
-                                                                        baseptr,
-                                                                        base_data[static_cast<uint64_t>(start) + i],
-                                                                        string_length);
+                result_data[result_offset + i] =
+                    own_string(result,
+                               fetch_string_from_dict(segment,
+                                                      dict,
+                                                      baseptr,
+                                                      base_data[static_cast<uint64_t>(start) + i],
+                                                      string_length));
                 previous_offset = base_data[static_cast<uint64_t>(start) + i];
             }
         }

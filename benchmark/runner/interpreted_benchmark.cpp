@@ -1,5 +1,7 @@
 #include "interpreted_benchmark.hpp"
 
+#include "benchmark_checkpoint.hpp"
+
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -247,10 +249,15 @@ void interpreted_benchmark_t::load_csv_file(benchmark_state_t& state, const csv_
     constexpr size_t batch_size = 100;
     std::vector<std::string> value_tuples;
     uint64_t row_num = 0;
+    uint64_t bytes_since_checkpoint = 0;
     std::string line;
 
     auto flush_batch = [&]() {
         if (value_tuples.empty()) return;
+        uint64_t batch_bytes = 0;
+        for (const auto& tuple : value_tuples) {
+            batch_bytes += tuple.size();
+        }
         std::string sql = "INSERT INTO " + entry.table + " (" + col_list + ") VALUES ";
         for (size_t i = 0; i < value_tuples.size(); ++i) {
             if (i > 0) sql += ", ";
@@ -260,9 +267,11 @@ void interpreted_benchmark_t::load_csv_file(benchmark_state_t& state, const csv_
         if (cursor->is_error()) {
             std::cerr << "CSV load SQL error for " << entry.table << ": " << cursor->get_error().what << "\n";
             state.failed = true;
+            value_tuples.clear();
             return;
         }
         value_tuples.clear();
+        csv_load_after_batch(state, bytes_since_checkpoint, batch_bytes);
     };
 
     while (std::getline(file, line)) {
@@ -290,9 +299,21 @@ void interpreted_benchmark_t::load_csv_file(benchmark_state_t& state, const csv_
 
         if (value_tuples.size() >= batch_size) {
             flush_batch();
+            if (state.failed) {
+                return;
+            }
         }
     }
     flush_batch();
+    if (state.failed) {
+        return;
+    }
+    if (state.io.csv_checkpoint_interval_bytes == 0 || bytes_since_checkpoint > 0) {
+        checkpoint_if_disk(state, "after CSV file");
+        if (state.failed) {
+            return;
+        }
+    }
 
     std::cout << "  Loaded " << row_num << " rows from " << csv_path.filename().string() << " into " << entry.table
               << "\n";

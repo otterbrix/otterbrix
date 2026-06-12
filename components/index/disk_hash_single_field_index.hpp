@@ -5,6 +5,7 @@
 #include "index.hpp"
 
 #include <cassert>
+#include <memory>
 #include <memory_resource>
 #include <string>
 #include <unordered_map>
@@ -25,7 +26,7 @@ namespace components::index {
         disk_hash_single_field_index_t(std::pmr::memory_resource* resource,
                                        std::string name,
                                        const keys_base_storage_t& keys,
-                                       std::unique_ptr<disk_hash_storage_t> storage);
+                                       disk_hash_storage_ptr storage);
         ~disk_hash_single_field_index_t() override;
 
     private:
@@ -77,7 +78,7 @@ namespace components::index {
                                           const std::function<void(const value_t&, int64_t)>& fn) const final;
         void clean_memory_to_new_elements_impl(std::size_t count) final;
 
-        std::unique_ptr<disk_hash_storage_t> disk_table_;
+        disk_hash_storage_ptr disk_table_;
         mutable result_storage_t scratch_results_;
         pending_txn_map_t pending_inserts_;
         pending_txn_map_t pending_deletes_;

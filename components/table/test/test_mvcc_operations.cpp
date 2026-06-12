@@ -6,6 +6,7 @@
 #include <components/table/transaction_manager.hpp>
 #include <core/file/local_file_system.hpp>
 
+#include <cstring>
 #include <set>
 
 using namespace components::types;
@@ -657,4 +658,99 @@ TEST_CASE("components::table::mvcc::compact_in_flight_commit_window") {
     auto& txn6 = mgr.begin_transaction(s6);
     REQUIRE(scan_values_txn(*table, env, txn6.data()) == expected_new);
     mgr.abort(s6);
+}
+
+// Lifetime bug: string scans must not leave the result chunk pointing into the
+// column segment's block buffer. A client (cursor) keeps the scanned chunk
+// after the query finishes; a post-commit cleanup then runs
+// data_table_t::compact(), which rebuilds the row groups and frees the old
+// blocks — the committed delete's stamps equal the watermark, so the compact
+// legitimately proceeds. If string_scan_partial stored borrowed views, the
+// chunk's string payloads now dangle (the DELETE ... RETURNING flake in
+// test_returning::roundtrip). String bytes must live in the result vector's
+// own string_vector_buffer_t, like every other string producer in the engine.
+TEST_CASE("components::table::mvcc::scanned_strings_survive_compact") {
+    test_env env;
+    std::vector<column_definition_t> columns;
+    columns.emplace_back("name", complex_logical_type(logical_type::STRING_LITERAL));
+    auto table = std::make_unique<data_table_t>(&env.resource, env.block_manager, std::move(columns), "test_strings");
+
+    constexpr uint64_t row_count = 100;
+    auto make_payload = [](uint64_t i) { return std::string("scanned_string_payload_value_") + std::to_string(i); };
+
+    // Append 100 committed string rows.
+    {
+        auto types = table->copy_types();
+        auto chunk = data_chunk_t(&env.resource, types, row_count);
+        for (uint64_t i = 0; i < row_count; i++) {
+            chunk.data[0].set_value(i, logical_value_t(&env.resource, make_payload(i)));
+        }
+        chunk.set_cardinality(row_count);
+        table_append_state state(&env.resource);
+        table->append_lock(state);
+        table->initialize_append(state);
+        table->append(chunk, state);
+        table->finalize_append(state, transaction_data{0, 0});
+    }
+
+    // Scan into a chunk the client holds onto (a cursor). The scan state — and
+    // with it every pinned buffer handle — dies when the query finishes, the
+    // chunk lives on.
+    auto types = table->copy_types();
+    auto result = data_chunk_t(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
+    {
+        std::vector<storage_index_t> column_ids;
+        column_ids.emplace_back(0);
+        table_scan_state scan_state(&env.resource);
+        table->initialize_scan(scan_state, column_ids);
+        table->scan(result, scan_state);
+        REQUIRE(result.size() == row_count);
+        for (uint64_t i = 0; i < row_count; i++) {
+            REQUIRE(result.data[0].data<std::string_view>()[i] == make_payload(i));
+        }
+    }
+
+    // Committed + published delete of rows 0..49 — post-commit cleanup territory.
+    transaction_manager_t mgr(&env.resource);
+    auto session = components::session::session_id_t::generate_uid();
+    auto& txn = mgr.begin_transaction(session);
+    std::pmr::vector<complex_logical_type> id_type(&env.resource);
+    id_type.emplace_back(logical_type::BIGINT);
+    auto row_ids_chunk = data_chunk_t(&env.resource, id_type, 50);
+    for (uint64_t i = 0; i < 50; i++) {
+        row_ids_chunk.data[0].set_value(i, logical_value_t(&env.resource, static_cast<int64_t>(i)));
+    }
+    row_ids_chunk.set_cardinality(50);
+    auto txn_id = txn.data().transaction_id;
+    table_delete_state del_state(&env.resource);
+    table->delete_rows(del_state, row_ids_chunk.data[0], 50, txn_id);
+    auto commit_id = mgr.commit(session);
+    mgr.publish(commit_id);
+    table->commit_all_deletes(txn_id, commit_id);
+
+    // The watermark green-lights the rebuild; the old blocks are freed.
+    REQUIRE(table->compact(mgr.compact_watermark()));
+
+    // Force reuse of the freed block memory: grab same-sized allocations from
+    // the same resource the buffer manager allocates from and scribble over
+    // them (block allocations are header + user size rounded up to the sector,
+    // so probe a small size range around the block allocation size).
+    std::vector<std::pair<void*, size_t>> scribbles;
+    for (size_t extra = 0; extra <= (size_t{16} << 10); extra += 4096) {
+        auto alloc_size = storage::DEFAULT_BLOCK_ALLOC_SIZE + extra;
+        for (int round = 0; round < 16; round++) {
+            void* p = env.resource.allocate(alloc_size);
+            std::memset(p, 0xDB, alloc_size);
+            scribbles.emplace_back(p, alloc_size);
+        }
+    }
+
+    // The previously scanned chunk must still hold the original strings.
+    for (uint64_t i = 0; i < row_count; i++) {
+        REQUIRE(result.data[0].data<std::string_view>()[i] == make_payload(i));
+    }
+
+    for (auto [p, sz] : scribbles) {
+        env.resource.deallocate(p, sz);
+    }
 }

@@ -44,16 +44,19 @@ namespace services::disk {
 
         actor_zeta::unique_future<void> flush(session_id_t session, services::wal::id_t wal_id);
 
-        actor_zeta::unique_future<services::wal::id_t> checkpoint_all(session_id_t session,
-                                                                      services::wal::id_t current_wal_id);
-        actor_zeta::unique_future<void> vacuum_all(session_id_t session, uint64_t lowest_active_start_time);
+        // compact_watermark (here and below): the dispatcher's visible-to-all
+        // horizon (txn_compact_watermark_msg / txn_publish_msg return); any
+        // version stamp above it makes the MVCC-gated compact a no-op.
+        actor_zeta::unique_future<services::wal::id_t>
+        checkpoint_all(session_id_t session, services::wal::id_t current_wal_id, uint64_t compact_watermark);
+        actor_zeta::unique_future<void>
+        vacuum_all(session_id_t session, uint64_t lowest_active_start_time, uint64_t compact_watermark);
         // Batched GC-threshold check + compact: routes each table_oid to its owning
-        // agent's maybe_cleanup_inner with the shared compact_gate (a boolean 0/1
-        // gate, NOT a horizon value — 1 = no other active txn).
+        // agent's maybe_cleanup_inner with the shared compact_watermark.
         // operator_commit_transaction sends one call covering all just-touched tables.
         actor_zeta::unique_future<void> maybe_cleanup_many(execution_context_t ctx,
                                                            std::pmr::vector<components::catalog::oid_t> table_oids,
-                                                           uint64_t compact_gate);
+                                                           uint64_t compact_watermark);
 
         // ddl_add_column / ddl_adopt_computing_schema replaced by pipeline operators.
 

@@ -93,7 +93,14 @@ namespace components::table {
 
         uint64_t calculate_size();
         void cleanup_versions(uint64_t lowest_active_start_time);
-        void compact();
+        // Rebuild row_groups_ keeping only rows visible to the txn-less
+        // "see all committed" scan, dropping all version history. Runs ONLY when
+        // every version stamp is at/below `compact_watermark` — the
+        // visible-to-all horizon from transaction_manager_t::compact_watermark()
+        // — otherwise it is a no-op returning false (MVCC: older snapshots and
+        // in-flight commits still need the history). True = table is fully
+        // compacted (or empty) and safe to checkpoint without version metadata.
+        bool compact(uint64_t compact_watermark);
 
         std::shared_ptr<parallel_table_scan_state_t>
         create_parallel_scan_state(const std::vector<storage_index_t>& column_ids,

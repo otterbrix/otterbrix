@@ -57,6 +57,7 @@ namespace services::dispatcher {
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_accumulate_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_abort_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_publish_msg>,
+            actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_compact_watermark_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::on_drop_resource_marked>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::on_subscriber_empty>,
         };
@@ -300,6 +301,10 @@ namespace services::dispatcher {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::txn_publish_msg, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_compact_watermark_msg>: {
+                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::txn_compact_watermark_msg, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::on_drop_resource_marked>: {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::on_drop_resource_marked, msg);
                 break;
@@ -442,6 +447,24 @@ namespace services::dispatcher {
         trace(log_,
               "manager_dispatcher_t::execute_plan: result received, success: {}",
               exec_result.cursor->is_success());
+        if (exec_result.cursor && exec_result.cursor->is_error()) {
+            // Failure release — IMPLICIT txns only. Executor error paths that
+            // co_return BEFORE their commit/abort tails (validation,
+            // catalog-resolve and sub-query errors) leave the session txn begun
+            // by txn_begin_session_msg ACTIVE forever. A leaked active txn pins
+            // compact_watermark() at its snapshot horizon permanently, blocking
+            // every later compact and (via the checkpoint gate) every per-table
+            // checkpoint. The no-txn / already-ended cases fall through (the
+            // executor's failed-DML tail aborts itself). EXPLICIT txns are left
+            // alive on purpose: the client's ROLLBACK runs the abort-drain
+            // revert cascade (e.g. un-stamping a DROP's catalog tombstones); a
+            // bare abort() here would discard that revert state and leave dead
+            // txn-id delete marks blocking any later re-DELETE of the same rows.
+            if (auto* txn = txn_manager_.find_transaction(session); txn != nullptr && !txn->is_explicit()) {
+                txn_manager_.abort(session);
+                try_trigger_cleanup_if_horizon_advanced();
+            }
+        }
         co_return std::move(exec_result.cursor);
     }
 
@@ -774,20 +797,25 @@ namespace services::dispatcher {
         // The committed txn left the active set at commit(); after the publish
         // barrier the DROP-GC horizon broadcast is safe to evaluate.
         try_trigger_cleanup_if_horizon_advanced();
-        // Return value lives in the COMPACT-GATE space — a plain boolean (1 = go,
-        // 0 = suppress), NOT the commit-id-space GC horizon. Two distinct spaces:
-        //   * commit-id-space GC horizon: lowest_active_snapshot_horizon(), the
-        //     value broadcast by try_trigger_cleanup_if_horizon_advanced above;
-        //     it bounds which tombstones the DROP/version sweep may reclaim.
-        //   * compact-gate boolean (THIS value): whether the commit operator's
-        //     maybe_cleanup fan-out may run a compact at all.
-        // 1 only when no OTHER txn is active (their snapshots could still read
-        // versions a compact would drop); 0 otherwise. agent_disk
-        // maybe_cleanup_inner only ever tests this against ==0, so a bare boolean
-        // is sufficient — a start-time value here would mix the two value spaces
-        // for no benefit. Best-effort heuristic; compact correctness rests on the
-        // disk agent's mailbox serialization, not this gate.
-        co_return txn_manager_.has_active_transactions() ? uint64_t{0} : uint64_t{1};
+        // Return value is the COMPACT-WATERMARK (commit-id value space): the
+        // visible-to-all horizon from txn_manager_.compact_watermark(). It rides
+        // through maybe_cleanup_many into data_table_t::compact(), whose local
+        // stamp scan refuses the rebuild when ANY version stamp is above it —
+        // another active txn's snapshot, or a committed-but-unpublished commit
+        // still sitting in in_flight_commits_, could otherwise lose versions it
+        // must still see (the old 0/1 active-txn gate missed the in-flight
+        // window entirely). Distinct from the commit-id-space GC horizon
+        // broadcast above (lowest_active_snapshot_horizon), which bounds the
+        // DROP-tombstone sweep, not version-history collapse.
+        co_return txn_manager_.compact_watermark();
+    }
+
+    manager_dispatcher_t::unique_future<uint64_t> manager_dispatcher_t::txn_compact_watermark_msg() {
+        // Pure intra-actor read for the checkpoint/vacuum compact paths (see
+        // header). Monotone, so staleness across the mailbox hop is safe.
+        const auto watermark = txn_manager_.compact_watermark();
+        trace(log_, "manager_dispatcher_t::txn_compact_watermark_msg, watermark: {}", watermark);
+        co_return watermark;
     }
 
 } // namespace services::dispatcher

@@ -323,13 +323,13 @@ namespace components::operators {
         // commit (the WAL marker is already durable and replay re-publishes).
         // Routed to the dispatcher (sole txn_manager owner) via txn_publish_msg —
         // the drain handler deliberately left this barrier un-advanced. Returns
-        // the compact gate (lowest active snapshot start_time) used below.
-        uint64_t compact_gate = 0;
+        // the compact watermark (visible-to-all commit-id horizon) used below.
+        uint64_t compact_watermark = 0;
         if (commit_id_ > 0 && ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
             auto [_p, pf] = actor_zeta::send(ctx->current_message_sender,
                                              &services::dispatcher::manager_dispatcher_t::txn_publish_msg,
                                              commit_id_);
-            compact_gate = co_await std::move(pf);
+            compact_watermark = co_await std::move(pf);
         }
 
         // Commit-time physical DROP. operator_dynamic_cascade_delete only
@@ -373,10 +373,11 @@ namespace components::operators {
 
         // MVCC-compact fan-out. For every UNIQUE base-table oid touched by this
         // txn (appends ∪ deletes), nudge the disk manager to compact dead row
-        // versions now that the commit is published. compact_gate == 0 means
-        // active txns still exist → agents skip the compact; it is a best-effort
-        // tombstone-timing heuristic, compact CORRECTNESS rests on agent-mailbox
-        // serialization, not on this gate.
+        // versions now that the commit is published. compact_watermark is the
+        // dispatcher's visible-to-all horizon: data_table_t::compact() refuses
+        // the rebuild when any version stamp is above it (another snapshot or an
+        // in-flight commit still needs the history), so reclaim is deferred, not
+        // forced. Agent-mailbox serialization covers the data-race side.
         //
         // Gated on !base_delete_table_oids.empty(). A commit with deletes is
         // the ONLY way this txn could push a table past the compact's 30%
@@ -425,7 +426,7 @@ namespace components::operators {
                                                                                    ctx->session_tz,
                                                                                    components::catalog::INVALID_OID},
                                                    std::move(safe_oids),
-                                                   compact_gate);
+                                                   compact_watermark);
                 co_await std::move(mcf);
             }
         }

@@ -41,6 +41,9 @@ namespace components::table {
 
         uint64_t total_rows() const;
         uint64_t committed_row_count() const;
+        // True when any row group holds a version stamp above `watermark` —
+        // i.e. some version is NOT visible-to-all snapshots at/below it.
+        bool has_version_above(uint64_t watermark) const;
 
         bool is_empty() const;
 

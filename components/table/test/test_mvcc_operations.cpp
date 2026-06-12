@@ -6,6 +6,8 @@
 #include <components/table/transaction_manager.hpp>
 #include <core/file/local_file_system.hpp>
 
+#include <set>
+
 using namespace components::types;
 using namespace components::vector;
 using namespace components::table;
@@ -369,8 +371,9 @@ TEST_CASE("components::table::mvcc::compact_after_delete") {
     // 50 rows visible
     REQUIRE(scan_count(*table, env) == 50);
 
-    // Compact: physically remove deleted rows
-    table->compact();
+    // Compact: physically remove deleted rows. No other snapshot is active and
+    // the delete is published, so the watermark green-lights the rebuild.
+    REQUIRE(table->compact(mgr.compact_watermark()));
 
     // Still 50 rows visible
     REQUIRE(scan_count(*table, env) == 50);
@@ -475,4 +478,183 @@ TEST_CASE("components::table::mvcc::txn_sees_own_writes") {
     mgr.abort(s1);
     table->revert_append(0, 5);
     mgr.abort(s2);
+}
+
+namespace {
+
+    // Distinct row VALUES (not just counts): compact() rebuilds the collection, so a
+    // dropped old version and a leaked new version can cancel out in a bare count.
+    std::set<int64_t> scan_values_txn(data_table_t& table, test_env& env, transaction_data txn) {
+        std::vector<storage_index_t> column_ids;
+        column_ids.emplace_back(0);
+
+        table_scan_state scan_state(&env.resource);
+        table.initialize_scan(scan_state, column_ids);
+        scan_state.table_state.txn = txn;
+
+        auto types = table.copy_types();
+        std::set<int64_t> values;
+        while (true) {
+            auto result = data_chunk_t(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
+            table.scan(result, scan_state);
+            if (result.size() == 0) {
+                break;
+            }
+            for (uint64_t i = 0; i < result.size(); i++) {
+                values.insert(result.data[0].value(i).value<int64_t>());
+            }
+        }
+        return values;
+    }
+
+    void delete_row0_txn(data_table_t& table, test_env& env, uint64_t txn_id) {
+        std::pmr::vector<complex_logical_type> id_type(&env.resource);
+        id_type.emplace_back(logical_type::BIGINT);
+        auto row_ids_chunk = data_chunk_t(&env.resource, id_type, 1);
+        row_ids_chunk.data[0].set_value(0, logical_value_t(&env.resource, static_cast<int64_t>(0)));
+        row_ids_chunk.set_cardinality(1);
+
+        table_delete_state del_state(&env.resource);
+        table.delete_rows(del_state, row_ids_chunk.data[0], 1, txn_id);
+    }
+
+    std::set<int64_t> make_range(int64_t first, int64_t last) {
+        std::set<int64_t> s;
+        for (int64_t v = first; v <= last; v++) {
+            s.insert(v);
+        }
+        return s;
+    }
+
+} // anonymous namespace
+
+// MVCC violation (b): compact() must not collapse version history that an OLDER
+// active snapshot still needs. txn2's snapshot predates the row-0 update (delete +
+// replacement append, both committed AND published) — after compact, txn2 must
+// still see the PRE-update version of row 0 and must NOT see the replacement.
+TEST_CASE("components::table::mvcc::compact_preserves_old_snapshot_view") {
+    test_env env;
+    auto table = make_int_table(env);
+    transaction_manager_t mgr(&env.resource);
+
+    // txn1: insert rows 0..9, commit, publish, storage-stamp.
+    auto s1 = components::session::session_id_t::generate_uid();
+    auto& txn1 = mgr.begin_transaction(s1);
+    append_rows_txn(*table, env, 0, 10, txn1.data());
+    auto c1 = mgr.commit(s1);
+    mgr.publish(c1);
+    table->commit_append(c1, 0, 10);
+
+    // txn2: snapshot BEFORE the update — must keep seeing {0..9} forever.
+    auto s2 = components::session::session_id_t::generate_uid();
+    auto& txn2 = mgr.begin_transaction(s2);
+    REQUIRE(scan_values_txn(*table, env, txn2.data()) == make_range(0, 9));
+
+    // txn3: "update" row 0 — delete it and append replacement value 100;
+    // commit, storage-stamp BOTH sides, publish. Fully published: only txn2's
+    // older snapshot still needs the pre-update version.
+    auto s3 = components::session::session_id_t::generate_uid();
+    auto& txn3 = mgr.begin_transaction(s3);
+    auto txn3_id = txn3.data().transaction_id;
+    delete_row0_txn(*table, env, txn3_id);
+    append_rows_txn(*table, env, 100, 1, txn3.data()); // physical row 10
+    auto c3 = mgr.commit(s3);
+    table->commit_all_deletes(txn3_id, c3);
+    table->commit_append(c3, 10, 1);
+    mgr.publish(c3);
+
+    // Sanity: a fresh snapshot sees the post-update state.
+    auto s4 = components::session::session_id_t::generate_uid();
+    auto& txn4 = mgr.begin_transaction(s4);
+    auto expected_new = make_range(1, 9);
+    expected_new.insert(100);
+    REQUIRE(scan_values_txn(*table, env, txn4.data()) == expected_new);
+
+    // Compact while txn2's older snapshot is still active: the watermark sits
+    // below c3, so the rebuild must be refused.
+    REQUIRE_FALSE(table->compact(mgr.compact_watermark()));
+
+    // MVCC promise: txn2 still sees the pre-update view — row 0 alive, no 100.
+    REQUIRE(scan_values_txn(*table, env, txn2.data()) == make_range(0, 9));
+    // And the fresh snapshot keeps the post-update view.
+    REQUIRE(scan_values_txn(*table, env, txn4.data()) == expected_new);
+
+    mgr.abort(s2);
+    mgr.abort(s4);
+
+    // With every old snapshot gone the watermark reaches c3: compact proceeds
+    // and reclaims the dead pre-update version.
+    REQUIRE(table->compact(mgr.compact_watermark()));
+    REQUIRE(table->row_group()->total_rows() == 10);
+    auto s6 = components::session::session_id_t::generate_uid();
+    auto& txn6 = mgr.begin_transaction(s6);
+    REQUIRE(scan_values_txn(*table, env, txn6.data()) == expected_new);
+    mgr.abort(s6);
+}
+
+// MVCC violation (a): the mid-update in-flight window. txn3 committed (commit_id
+// allocated, still in in_flight_commits_ — publish() pending), the DELETE side is
+// already storage-stamped with the commit_id but the replacement append is NOT yet
+// commit_append-stamped (storage_publish in flight). A compact() fired in this
+// window (checkpoint path) sees the delete as committed and the replacement as
+// uncommitted — the row vanishes entirely for every snapshot.
+TEST_CASE("components::table::mvcc::compact_in_flight_commit_window") {
+    test_env env;
+    auto table = make_int_table(env);
+    transaction_manager_t mgr(&env.resource);
+
+    // Baseline rows 0..9, committed + published + stamped.
+    auto s1 = components::session::session_id_t::generate_uid();
+    auto& txn1 = mgr.begin_transaction(s1);
+    append_rows_txn(*table, env, 0, 10, txn1.data());
+    auto c1 = mgr.commit(s1);
+    mgr.publish(c1);
+    table->commit_append(c1, 0, 10);
+
+    // txn3 updates row 0: delete + replacement append (value 100).
+    auto s3 = components::session::session_id_t::generate_uid();
+    auto& txn3 = mgr.begin_transaction(s3);
+    auto txn3_id = txn3.data().transaction_id;
+    delete_row0_txn(*table, env, txn3_id);
+    append_rows_txn(*table, env, 100, 1, txn3.data()); // physical row 10
+
+    // Commit allocates c3 and leaves it IN FLIGHT (no publish yet). Stamp only
+    // the delete side — the replacement's commit_append is still in flight.
+    auto c3 = mgr.commit(s3);
+    table->commit_all_deletes(txn3_id, c3);
+
+    // A snapshot taken inside the window holds c3 in in_flight_snapshot: it must
+    // see the OLD version of row 0 and must not see the replacement.
+    auto s4 = components::session::session_id_t::generate_uid();
+    auto& txn4 = mgr.begin_transaction(s4);
+    REQUIRE(scan_values_txn(*table, env, txn4.data()) == make_range(0, 9));
+
+    // Checkpoint-path compact fires inside the window: c3 is in flight, so the
+    // watermark sits below it and the rebuild must be refused.
+    REQUIRE_FALSE(table->compact(mgr.compact_watermark()));
+
+    // The row must NOT vanish: txn4 still sees the pre-update version.
+    REQUIRE(scan_values_txn(*table, env, txn4.data()) == make_range(0, 9));
+
+    // Finish the commit pipeline: stamp the replacement, publish.
+    table->commit_append(c3, 10, 1);
+    mgr.publish(c3);
+
+    // Fresh snapshot sees the post-update state — replacement present, row 0 gone.
+    auto s5 = components::session::session_id_t::generate_uid();
+    auto& txn5 = mgr.begin_transaction(s5);
+    auto expected_new = make_range(1, 9);
+    expected_new.insert(100);
+    REQUIRE(scan_values_txn(*table, env, txn5.data()) == expected_new);
+
+    mgr.abort(s4);
+    mgr.abort(s5);
+
+    // Window closed, snapshots gone: compact proceeds and reclaims the old row 0.
+    REQUIRE(table->compact(mgr.compact_watermark()));
+    REQUIRE(table->row_group()->total_rows() == 10);
+    auto s6 = components::session::session_id_t::generate_uid();
+    auto& txn6 = mgr.begin_transaction(s6);
+    REQUIRE(scan_values_txn(*table, env, txn6.data()) == expected_new);
+    mgr.abort(s6);
 }

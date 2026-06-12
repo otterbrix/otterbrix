@@ -84,6 +84,11 @@ namespace components::table {
         virtual bool fetch(const transaction_data& transaction, int64_t row) = 0;
         virtual void commit_append(uint64_t commit_id, uint64_t start, uint64_t end) = 0;
         virtual uint64_t committed_deleted_count(uint64_t max_count) = 0;
+        // True when ANY stamp in [0, max_count) is not yet visible-to-all under
+        // `watermark`: a pending txn id (>= TRANSACTION_ID_START) or a committed
+        // id > watermark. NOT_DELETED_ID delete slots are "no delete", not stamps.
+        // Feeds data_table_t::compact()'s all-or-nothing MVCC safety gate.
+        virtual bool has_version_above(uint64_t watermark, uint64_t max_count) const = 0;
         virtual bool cleanup(uint64_t lowest_transaction, std::unique_ptr<chunk_info>& result) const;
 
         virtual bool has_deletes() const = 0;
@@ -114,6 +119,7 @@ namespace components::table {
         bool fetch(const transaction_data& transaction, int64_t row) override;
         void commit_append(uint64_t commit_id, uint64_t start, uint64_t end) override;
         uint64_t committed_deleted_count(uint64_t max_count) override;
+        bool has_version_above(uint64_t watermark, uint64_t max_count) const override;
         bool cleanup(uint64_t lowest_transaction, std::unique_ptr<chunk_info>& result) const override;
 
         bool has_deletes() const override;
@@ -144,6 +150,7 @@ namespace components::table {
         void commit_append(uint64_t commit_id, uint64_t start, uint64_t end) override;
         bool cleanup(uint64_t lowest_transaction, std::unique_ptr<chunk_info>& result) const override;
         uint64_t committed_deleted_count(uint64_t max_count) override;
+        bool has_version_above(uint64_t watermark, uint64_t max_count) const override;
 
         void append(uint64_t start, uint64_t end, uint64_t commit_id);
 
@@ -195,6 +202,9 @@ namespace components::table {
         int64_t start() const { return start_; }
         void set_start(int64_t start);
         uint64_t committed_deleted_count(uint64_t count);
+        // True when any stamp in the first `count` rows is above `watermark`
+        // (pending txn id or committed id newer than the visible-to-all horizon).
+        bool has_version_above(uint64_t watermark, uint64_t count);
 
         uint64_t indexing_vector(transaction_data transaction,
                                  uint64_t vector_idx,

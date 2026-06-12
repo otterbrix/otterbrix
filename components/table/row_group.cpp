@@ -558,6 +558,15 @@ namespace components::table {
         return count;
     }
 
+    bool row_group_t::has_version_above(uint64_t watermark) {
+        auto* vi = version_info_.load();
+        if (!vi) {
+            // No version info — every row is plain committed, visible to all.
+            return false;
+        }
+        return vi->has_version_above(watermark, count);
+    }
+
     bool row_group_t::has_unloaded_deletes() const {
         if (deletes_pointers_.empty()) {
             return false;

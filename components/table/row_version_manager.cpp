@@ -87,6 +87,15 @@ namespace components::table {
         return delete_id < TRANSACTION_ID_START ? max_count : 0;
     }
 
+    bool chunk_constant_info::has_version_above(uint64_t watermark, uint64_t /*max_count*/) const {
+        // Pending txn ids (>= TRANSACTION_ID_START) are always above any watermark
+        // (watermarks live in the commit-id/timestamp space far below 2^62).
+        if (insert_id > watermark) {
+            return true;
+        }
+        return delete_id != NOT_DELETED_ID && delete_id > watermark;
+    }
+
     bool chunk_constant_info::cleanup(uint64_t lowest_transaction, std::unique_ptr<chunk_info>&) const {
         if (insert_id > lowest_transaction) {
             return false;
@@ -283,6 +292,28 @@ namespace components::table {
 
     bool chunk_vector_info::has_deletes() const { return any_deleted; }
 
+    bool chunk_vector_info::has_version_above(uint64_t watermark, uint64_t max_count) const {
+        if (same_inserted_id) {
+            if (insert_id > watermark) {
+                return true;
+            }
+        } else {
+            for (uint64_t i = 0; i < max_count; i++) {
+                if (inserted[i] > watermark) {
+                    return true;
+                }
+            }
+        }
+        if (any_deleted) {
+            for (uint64_t i = 0; i < max_count; i++) {
+                if (deleted[i] != NOT_DELETED_ID && deleted[i] > watermark) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     uint64_t chunk_vector_info::committed_deleted_count(uint64_t max_count) {
         if (!any_deleted) {
             return 0;
@@ -326,6 +357,25 @@ namespace components::table {
             deleted_count += vector_info_[i]->committed_deleted_count(max_count);
         }
         return deleted_count;
+    }
+
+    bool row_version_manager_t::has_version_above(uint64_t watermark, uint64_t count) {
+        std::lock_guard l(version_lock_);
+        for (uint64_t r = 0, i = 0; r < count; r += vector::DEFAULT_VECTOR_CAPACITY, i++) {
+            if (i >= vector_info_.size() || !vector_info_[i]) {
+                continue;
+            }
+            // Bound by the live row count: revert_append truncates rows but may
+            // leave stale pending stamps in the tail of a partial vector.
+            uint64_t max_count = std::min<uint64_t>(vector::DEFAULT_VECTOR_CAPACITY, count - r);
+            if (max_count == 0) {
+                break;
+            }
+            if (vector_info_[i]->has_version_above(watermark, max_count)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     chunk_info* row_version_manager_t::get_chunk_info(uint64_t vector_idx) {

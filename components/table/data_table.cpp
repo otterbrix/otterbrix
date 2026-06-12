@@ -130,10 +130,30 @@ namespace components::table {
         row_groups_->cleanup_versions(lowest_active_start_time);
     }
 
-    void data_table_t::compact() {
+    bool data_table_t::compact(uint64_t compact_watermark) {
         auto total = row_groups_->total_rows();
         if (total == 0) {
-            return;
+            return true;
+        }
+
+        // MVCC safety gate (all-or-nothing). The rebuild below scans with the
+        // txn-less "see all committed" view and re-stamps every surviving row
+        // with transaction_data{0,0} — it collapses the version history. That is
+        // only correct when EVERY stamp in the table is already visible to all
+        // current and future snapshots, i.e. no stamp is above the caller's
+        // watermark (transaction_manager_t::compact_watermark()):
+        //   * a pending txn id (>= TRANSACTION_ID_START) means an uncommitted or
+        //     committed-but-not-yet-storage-stamped write: the scan would drop
+        //     the row AND a later positional commit_append would target moved
+        //     rows — the mid-update "row vanishes" window;
+        //   * a committed id above the watermark means some active snapshot (or
+        //     one taken while that commit_id is still in in_flight_commits_)
+        //     must NOT see that insert / must STILL see that deleted row.
+        // The watermark only goes stale in the safe direction: ids above it stay
+        // above any earlier-computed value, so a watermark computed before this
+        // call (it rides actor messages) never green-lights an unsafe compact.
+        if (row_groups_->has_version_above(compact_watermark)) {
+            return false;
         }
 
         auto types = row_groups_->types();
@@ -173,6 +193,7 @@ namespace components::table {
 
         // Swap old collection with compacted one
         row_groups_ = std::move(new_collection);
+        return true;
     }
 
     void data_table_t::scan(vector::data_chunk_t& result, table_scan_state& state) { state.table_state.scan(result); }

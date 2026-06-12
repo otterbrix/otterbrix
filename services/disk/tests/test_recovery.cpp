@@ -13,6 +13,7 @@
 #include <services/wal/manager_wal_replicate.hpp>
 
 #include <filesystem>
+#include <limits>
 #include <thread>
 #include <unistd.h>
 
@@ -163,7 +164,10 @@ TEST_CASE("test_recovery_ddl_then_dml") {
         // replay on the second fixture. Pass wal_id=0 since we don't have a live WAL id
         // tracker in this test path; checkpoint_all is happy to skip the wal-id sidecar
         // when value is 0.
-        auto cp_future = fx.invoke(&manager_disk_t::checkpoint_all, session_id_t{}, services::wal::id_t{0});
+        auto cp_future = fx.invoke(&manager_disk_t::checkpoint_all,
+                                    session_id_t{},
+                                    services::wal::id_t{0},
+                                    std::numeric_limits<uint64_t>::max());
         (void) cp_future;
     }
 
@@ -261,7 +265,10 @@ TEST_CASE("services::disk::recovery::dynamic_schema_persists_across_restart") {
         // Force durability for the on-disk pg_* storages (fsyncs the .otbx files).
         // Without checkpoint, pg_computed_column rows live only in WAL; we still
         // expect them back via the bootstrap-replay path on restart.
-        auto cp_future = fx.invoke(&manager_disk_t::checkpoint_all, session_id_t{}, services::wal::id_t{0});
+        auto cp_future = fx.invoke(&manager_disk_t::checkpoint_all,
+                                    session_id_t{},
+                                    services::wal::id_t{0},
+                                    std::numeric_limits<uint64_t>::max());
         (void) cp_future;
     }
 

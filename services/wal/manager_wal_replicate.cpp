@@ -14,9 +14,11 @@
 
 // Needed for the auto-checkpoint orchestration (run_auto_checkpoint): the WAL
 // manager drives flush_all_indexes on the index manager and checkpoint_all on
-// the disk manager. wal_contract.hpp stays free of these to avoid the cycle
+// the disk manager (+ the compact-watermark fetch from the dispatcher).
+// wal_contract.hpp stays free of these to avoid the cycle
 // (manager_disk.hpp / manager_index.hpp pull only services/wal/base.hpp back).
 #include <services/disk/manager_disk.hpp>
+#include <services/dispatcher/dispatcher.hpp>
 #include <services/index/manager_index.hpp>
 
 namespace services::wal {
@@ -515,9 +517,25 @@ namespace services::wal {
         // wal id — the local equivalent of the operator's current_wal_id round-trip.
         const wal::id_t wal_max_id = global_id_.load(std::memory_order_relaxed);
 
+        // Compact watermark for checkpoint_inner's MVCC-gated compact: the
+        // dispatcher's visible-to-all horizon. Monotone, so the value going
+        // stale across the mailbox hops only DEFERS a compact, never unsafely
+        // allows one. 0 when no dispatcher is wired (test topologies): compacts
+        // and the affected per-table checkpoints are then skipped this round.
+        uint64_t compact_watermark = 0;
+        if (manager_dispatcher_ != actor_zeta::address_t::empty_address()) {
+            auto [_wm, wm_fut] = actor_zeta::send(
+                manager_dispatcher_,
+                &services::dispatcher::manager_dispatcher_t::txn_compact_watermark_msg);
+            compact_watermark = co_await std::move(wm_fut);
+        }
+
         // (c) checkpoint_all returns the wal id up to which storage is now durable.
-        auto [_cp, cp_fut] =
-            actor_zeta::send(manager_disk_, &services::disk::manager_disk_t::checkpoint_all, session, wal_max_id);
+        auto [_cp, cp_fut] = actor_zeta::send(manager_disk_,
+                                              &services::disk::manager_disk_t::checkpoint_all,
+                                              session,
+                                              wal_max_id,
+                                              compact_watermark);
         const wal::id_t checkpoint_wal_id = co_await std::move(cp_fut);
 
         // (d) Truncate WAL below the checkpoint boundary. We are already on the WAL

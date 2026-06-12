@@ -28,6 +28,7 @@ void print_usage() {
               << "  --generate-config=FILE  Generate config file from loaded benchmarks\n"
               << "  --skip-load         Skip setup/load phase (use with --disk)\n"
               << "  --load-only         Only run setup/load, then exit (use with --disk)\n"
+              << "  --csv-checkpoint-mb=N  Periodic CHECKPOINT every N mb during CSV load (disabled by default)\n"
               << "  --verbose           Verbose output\n"
               << "  --help              Show this help\n"
               << "  [pattern]           Regex filter for benchmark names\n"
@@ -77,6 +78,13 @@ int main(int argc, char* argv[]) {
             config.load_only = true;
         } else if (arg == "--verbose" || arg == "-v") {
             config.verbose = true;
+        } else if (arg.starts_with("--csv-checkpoint-mb=")) {
+            const auto mb = std::stoull(arg.substr(20));
+            if (mb == 0) {
+                std::cerr << "--csv-checkpoint-mb must be positive\n";
+                return 1;
+            }
+            config.csv_checkpoint_interval_bytes = mb * otterbrix::benchmark::csv_checkpoint_megabyte_bytes;
         } else if (arg.starts_with("--out=")) {
             config.output_file = arg.substr(6);
         } else if (arg.starts_with("--runs=")) {

@@ -63,7 +63,7 @@ namespace services::planner {
             case node_type::cte_scan_t:
                 return impl::create_plan_cte_scan(context, function_registry, node, std::move(limit), params);
             case node_type::delete_t:
-                return impl::create_plan_delete(context, node);
+                return impl::create_plan_delete(context, node, params);
             case node_type::insert_t:
                 return impl::create_plan_insert(context, function_registry, node, std::move(limit), params);
             case node_type::match_t:
@@ -77,7 +77,7 @@ namespace services::planner {
             case node_type::sort_t:
                 return impl::create_plan_sort(context, node);
             case node_type::update_t:
-                return impl::create_plan_update(context, node);
+                return impl::create_plan_update(context, node, params);
             case node_type::join_t:
                 return impl::create_plan_join(context, function_registry, node, std::move(limit), params);
             case node_type::hash_join_t:

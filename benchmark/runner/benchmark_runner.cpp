@@ -11,6 +11,7 @@
 #include <components/configuration/configuration.hpp>
 #include <integration/cpp/base_spaces.hpp>
 
+#include "benchmark_checkpoint.hpp"
 #include "interpreted_benchmark.hpp"
 #include "sql_benchmark.hpp"
 
@@ -238,6 +239,7 @@ void benchmark_runner_t::run(const benchmark_configuration_t& config) {
         benchmark_state_t state;
         state.dispatcher = instance.dispatcher();
         state.session = session_id_t();
+        state.io = benchmark_io_options_t::from_config(config);
 
         std::set<std::string> loaded_groups;
         for (auto* b : filtered) {
@@ -260,13 +262,7 @@ void benchmark_runner_t::run(const benchmark_configuration_t& config) {
                 std::cerr << "Error loading group " << b->group() << ": " << e.what() << "\n";
             }
         }
-        // Ensure disk state is durable for subsequent --skip-load runs in another process.
-        if (config.disk_on) {
-            auto checkpoint = state.dispatcher->execute_sql(state.session, "CHECKPOINT");
-            if (checkpoint->is_error() && config.verbose) {
-                std::cerr << "CHECKPOINT failed after load-only: " << checkpoint->get_error().what << "\n";
-            }
-        }
+        checkpoint_if_disk(state, "after load-only");
         std::cout << "Load-only complete. " << loaded_groups.size() << " groups loaded.\n";
         return;
     }
@@ -275,7 +271,7 @@ void benchmark_runner_t::run(const benchmark_configuration_t& config) {
     if (!config.output_file.empty()) {
         csv_file.open(config.output_file);
         if (csv_file.is_open()) {
-            csv_file << "name,group,nruns,min_ms,max_ms,avg_ms,median_ms,verified\n";
+            csv_file << "name,group,nruns,min_ms,max_ms,avg_ms,median_ms,p50_ms,p75_ms,p90_ms,p95_ms,p98_ms,p99_ms,verified\n";
         }
     }
 
@@ -288,7 +284,10 @@ void benchmark_runner_t::run(const benchmark_configuration_t& config) {
         if (csv_file.is_open()) {
             csv_file << std::fixed << std::setprecision(3) << result.name << "," << result.group << ","
                      << result.nruns << "," << result.min_ms() << "," << result.max_ms() << "," << result.avg_ms()
-                     << "," << result.median_ms() << "," << (result.verified ? "OK" : "FAIL") << "\n";
+                     << "," << result.median_ms() << "," << result.quantile_ms(50.0) << ","
+                     << result.quantile_ms(75.0) << "," << result.quantile_ms(90.0) << ","
+                     << result.quantile_ms(95.0) << "," << result.quantile_ms(98.0) << ","
+                     << result.quantile_ms(99.0) << "," << (result.verified ? "OK" : "FAIL") << "\n";
         }
     }
 }
@@ -310,6 +309,7 @@ benchmark_result_t benchmark_runner_t::run_single(benchmark_t& bench, const benc
         benchmark_state_t state;
         state.dispatcher = instance.dispatcher();
         state.session = session_id_t();
+        state.io = benchmark_io_options_t::from_config(config);
 
         auto bail_on_fail = [&]() {
             result.verified = false;
@@ -320,6 +320,8 @@ benchmark_result_t benchmark_runner_t::run_single(benchmark_t& bench, const benc
 
         if (!config.skip_load) {
             bench.load(state);
+            if (state.failed) { bail_on_fail(); return result; }
+            checkpoint_if_disk(state, "after load");
             if (state.failed) { bail_on_fail(); return result; }
         }
 

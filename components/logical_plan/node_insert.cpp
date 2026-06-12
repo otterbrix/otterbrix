@@ -8,11 +8,15 @@ namespace components::logical_plan {
 
     node_insert_t::node_insert_t(std::pmr::memory_resource* resource)
         : node_t(resource, node_type::insert_t)
-        , key_translation_(resource) {}
+        , key_translation_(resource)
+        , returning_(resource) {}
 
     std::pmr::vector<expressions::key_t>& node_insert_t::key_translation() { return key_translation_; }
 
     const std::pmr::vector<expressions::key_t>& node_insert_t::key_translation() const { return key_translation_; }
+
+    std::pmr::vector<expressions::expression_ptr>& node_insert_t::returning() { return returning_; }
+    const std::pmr::vector<expressions::expression_ptr>& node_insert_t::returning() const { return returning_; }
 
     hash_t node_insert_t::hash_impl() const { return 0; }
 

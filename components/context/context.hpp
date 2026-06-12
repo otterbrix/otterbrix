@@ -65,7 +65,7 @@ namespace components::pipeline {
         uint64_t dml_delete_txn_id{0};
         catalog::oid_t dml_table_oid{catalog::INVALID_OID};
         // DROP back-channel: operator_dynamic_cascade_delete_t records each
-        // storage oid it dropped (alongside the mark_storage_dropped send). The
+        // storage oid it dropped (alongside the mark_storage_dropped_many send). The
         // executor lifts these into execute_result_t.dropped_storage_oids and
         // ships them in the txn_accumulate payload so COMMIT's drain can drive
         // the DROP-GC value-space remap off the ACTUAL drops (decoupled from

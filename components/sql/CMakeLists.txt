@@ -43,6 +43,7 @@ set(SOURCE_${PROJECT_NAME}
     transformer/impl/transform_update.cpp
     transformer/impl/transform_insert.cpp
     transformer/impl/transform_delete.cpp
+    transformer/impl/transform_returning.cpp
     transformer/impl/transform_index.cpp
     transformer/impl/transform_alter_table.cpp
     transformer/impl/transform_transaction.cpp

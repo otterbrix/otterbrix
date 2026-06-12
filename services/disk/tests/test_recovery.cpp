@@ -1,5 +1,6 @@
 #include <catch2/catch.hpp>
 
+#include "catalog_probe.hpp"
 #include "disk_test_helpers.hpp"
 #include <actor-zeta/spawn.hpp>
 #include <components/catalog/catalog_oids.hpp>
@@ -101,8 +102,9 @@ namespace {
 // 1. test_recovery_system_wal_before_user — system DDL replayed first on restart.
 //    Drive a CREATE NAMESPACE through the active fixture (writes a pg_namespace row +
 //    a WAL physical record), drop the fixture, spin a fresh one and call
-//    load_system_tables_sync. The system table must come back populated, which can only
-//    happen if the system replay path runs before any user-table loading.
+//    bootstrap_system_tables_sync (its load path picks up existing .otbx files). The
+//    system table must come back populated, which can only happen if the system replay
+//    path runs before any user-table loading.
 TEST_CASE("test_recovery_system_wal_before_user") {
     auto dir = recovery_test_dir() + "/sys_first";
     cleanup_dir(dir);
@@ -114,15 +116,16 @@ TEST_CASE("test_recovery_system_wal_before_user") {
         REQUIRE(created_namespace_oid != components::catalog::INVALID_OID);
     }
 
-    // Restart: skip bootstrap (already done), call load_system_tables_sync.
+    // Restart: re-run bootstrap_system_tables_sync, whose load path re-hydrates the
+    // already-created system tables from their .otbx files.
     {
         recovery_fixture fx(dir, /*bootstrap=*/false);
-        // load_system_tables_sync MUST run before any user storage is touched on restart;
+        // bootstrap_system_tables_sync MUST run before any user storage is touched on restart;
         // here we call it explicitly and require the previously-created namespace OID is
         // recovered from pg_namespace via restore_oid_generator_sync (its scan walks
         // pg_namespace as a "fresh OID source", which proves the system table's rows are
         // back in place before user paths run).
-        REQUIRE_NOTHROW(fx.disk->load_system_tables_sync());
+        REQUIRE_NOTHROW(fx.disk->bootstrap_system_tables_sync());
         REQUIRE_NOTHROW(fx.disk->restore_oid_generator_sync());
     }
     cleanup_dir(dir);
@@ -171,13 +174,13 @@ TEST_CASE("test_recovery_ddl_then_dml") {
         (void) cp_future;
     }
 
-    // Restart and verify the DDL state is durable: load_system_tables_sync must succeed,
+    // Restart and verify the DDL state is durable: bootstrap_system_tables_sync must succeed,
     // restore_oid_generator_sync must seed the counter past ns_oid (since pg_namespace
     // now contains its row), and a brand-new namespace allocation yields a strictly
     // higher OID.
     {
         recovery_fixture fx(dir, /*bootstrap=*/false);
-        REQUIRE_NOTHROW(fx.disk->load_system_tables_sync());
+        REQUIRE_NOTHROW(fx.disk->bootstrap_system_tables_sync());
         REQUIRE_NOTHROW(fx.disk->restore_oid_generator_sync());
 
         const auto post_ns_oid = disk_test_helpers::test_create_namespace(fx, std::string("post_recovery_ns"));
@@ -212,7 +215,7 @@ TEST_CASE("test_recovery_orphaned_uncommitted_ddl") {
 
     {
         recovery_fixture fx(dir, /*bootstrap=*/false);
-        REQUIRE_NOTHROW(fx.disk->load_system_tables_sync());
+        REQUIRE_NOTHROW(fx.disk->bootstrap_system_tables_sync());
         REQUIRE_NOTHROW(fx.disk->restore_oid_generator_sync());
 
         // ns_name_to_oid_ is rebuilt by rebuild_lookup_indexes via inline_scan →
@@ -230,7 +233,7 @@ TEST_CASE("test_recovery_orphaned_uncommitted_ddl") {
 //    on restart replays WAL via direct_append_sync (bypassing the operator pipeline).
 //    This test verifies the round trip: register two columns under a 'g' table, drop the
 //    fixture (flushes WAL + checkpoint persists storage), spin a fresh fixture pointing at
-//    the same path, run load_system_tables_sync, and require pg_computed_column reports
+//    the same path, run bootstrap_system_tables_sync, and require pg_computed_column reports
 //    both rows + resolve_table reconstructs both columns from them.
 TEST_CASE("services::disk::recovery::dynamic_schema_persists_across_restart") {
     auto dir = recovery_test_dir() + "/dynamic_schema";
@@ -273,12 +276,13 @@ TEST_CASE("services::disk::recovery::dynamic_schema_persists_across_restart") {
     }
 
     // Restart: bootstrap=false → don't re-create fresh empty system tables; instead
-    // call load_system_tables_sync, which replays WAL via direct_append_sync into
-    // pg_computed_column. After that, pg_computed_column must hold both rows and
-    // resolve_table must reconstruct the dynamic schema for "docs".
+    // bootstrap_system_tables_sync re-hydrates them from disk (its load path) and the
+    // recovery fixture replays WAL via direct_append_sync into pg_computed_column. After
+    // that, pg_computed_column must hold both rows and resolve_table must reconstruct the
+    // dynamic schema for "docs".
     {
         recovery_fixture fx_reopen(dir, /*bootstrap=*/false);
-        REQUIRE_NOTHROW(fx_reopen.disk->load_system_tables_sync());
+        REQUIRE_NOTHROW(fx_reopen.disk->bootstrap_system_tables_sync());
         REQUIRE_NOTHROW(fx_reopen.disk->restore_oid_generator_sync());
 
         // Direct read of pg_computed_column: relid=table_oid → 2 live rows.
@@ -288,10 +292,14 @@ TEST_CASE("services::disk::recovery::dynamic_schema_persists_across_restart") {
         rk.emplace_back("relid");
         std::pmr::vector<components::types::logical_value_t> rv{&fx_reopen.resource};
         rv.emplace_back(toid_lv);
-        auto batches =
-            fx_reopen.invoke(&manager_disk_t::read_chunks_by_key, fx_reopen.ctx(), pg_cc, std::move(rk), std::move(rv));
+        auto batches = fx_reopen.invoke(&manager_disk_t::read_chunks_by_key,
+                                        fx_reopen.ctx(),
+                                        pg_cc,
+                                        std::move(rk),
+                                        test_probe::build_key_chunk(&fx_reopen.resource, std::move(rv)));
         std::uint64_t total = 0;
-        for (const auto& c : batches) total += c.size();
+        for (const auto& c : batches)
+            total += c.size();
         REQUIRE(total == 2);
         bool saw_a = false;
         bool saw_b = false;
@@ -300,9 +308,8 @@ TEST_CASE("services::disk::recovery::dynamic_schema_persists_across_restart") {
             for (std::uint64_t i = 0; i < chunk.size(); ++i) {
                 // pg_computed_column layout: [0]=relid, [1]=attoid, [2]=attname,
                 // [3]=atttypid, [4]=atttypspec, [5]=attversion, [6]=attrefcount.
-                const auto attname = chunk.value(2, i).is_null()
-                                         ? std::string{}
-                                         : std::string(chunk.value(2, i).value<std::string_view>());
+                const auto attname =
+                    chunk.value(2, i).is_null() ? std::string{} : std::string(chunk.value(2, i).value<std::string_view>());
                 const auto atttypid =
                     chunk.value(3, i).is_null()
                         ? components::catalog::INVALID_OID
@@ -324,11 +331,7 @@ TEST_CASE("services::disk::recovery::dynamic_schema_persists_across_restart") {
         // resolve_table on restart must report relkind='g' and reconstruct both columns
         // from the replayed pg_computed_column rows (computed-schema path skips
         // pg_attribute and reads pg_computed_column directly).
-        auto rs = fx_reopen.invoke(&manager_disk_t::resolve_table,
-                                   fx_reopen.ctx(),
-                                   ns_oid,
-                                   std::string("docs"),
-                                   std::uint64_t{0});
+        auto rs = test_probe::probe_table(fx_reopen, fx_reopen.ctx(), ns_oid, std::string("docs"));
         REQUIRE(rs.found);
         REQUIRE(rs.relkind == components::catalog::relkind::computed);
         REQUIRE(rs.columns.size() == 2);

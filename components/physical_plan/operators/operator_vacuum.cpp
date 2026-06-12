@@ -218,7 +218,7 @@ namespace components::operators {
                                                    cc_ctx,
                                                    kPgComputedColumn,
                                                    std::move(cc_keys),
-                                                   std::move(cc_vals));
+                                                   components::operators::make_key_chunk(resource_, std::move(cc_vals)));
                 auto cc_batches = co_await std::move(ccf);
 
                 // Both GC passes below delete by (kPgComputedColumn, col 1=attoid)
@@ -323,7 +323,7 @@ namespace components::operators {
                                                          cc_ctx,
                                                          kPgComputedColumn,
                                                          std::move(cc2_keys),
-                                                         std::move(cc2_vals));
+                                                         components::operators::make_key_chunk(resource_, std::move(cc2_vals)));
                     auto live_cc = co_await std::move(ccf2);
 
                     std::set<std::string> live_attnames;

@@ -1,5 +1,6 @@
 #include <catch2/catch.hpp>
 
+#include "catalog_probe.hpp"
 #include "disk_test_helpers.hpp"
 #include <actor-zeta/spawn.hpp>
 #include <components/catalog/catalog_codes.hpp>
@@ -94,14 +95,14 @@ TEST_CASE("services::disk::error::resolve_unknown_namespace") {
 TEST_CASE("services::disk::error::resolve_unknown_table") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "ns");
-    auto rt = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), ns_oid, std::string("not_a_table"), std::uint64_t{0});
+    auto rt = test_probe::probe_table(fx, fx.ctx(), ns_oid, std::string("not_a_table"));
     REQUIRE_FALSE(rt.found);
 }
 
 // 3. resolve_table with INVALID_OID namespace returns found=false.
 TEST_CASE("services::disk::error::resolve_table_invalid_namespace") {
     fixture fx;
-    auto rt = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), INVALID_OID, std::string("any"), std::uint64_t{0});
+    auto rt = test_probe::probe_table(fx, fx.ctx(), INVALID_OID, std::string("any"));
     REQUIRE_FALSE(rt.found);
 }
 
@@ -153,7 +154,6 @@ TEST_CASE("services::disk::error::empty_name_accepted") {
 TEST_CASE("services::disk::error::resolve_unknown_function") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "ns");
-    auto rf =
-        fx.invoke(&manager_disk_t::resolve_function, fx.ctx(), ns_oid, std::string("unknown_fn"), std::uint64_t{0});
+    auto rf = test_probe::probe_function(fx, fx.ctx(), ns_oid, std::string("unknown_fn"));
     REQUIRE_FALSE(rf.found);
 }

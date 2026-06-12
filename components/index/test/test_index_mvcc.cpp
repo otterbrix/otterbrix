@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <catch2/catch.hpp>
 #include <filesystem>
+#include <memory>
 
 #include "components/index/disk_hash_single_field_index.hpp"
 #include "components/index/hash_single_field_index.hpp"
@@ -39,11 +40,9 @@ namespace {
             resource,
             name,
             keys_base_storage_t{key(resource, "val")},
-            std::make_unique<services::index::disk_hash_table_t>(
-                file,
-                services::index::disk_hash_table_t::default_bucket_count,
-                true,
-                resource));
+            boost::intrusive_ptr(new services::index::disk_hash_table_t(file,
+                                                                        services::index::disk_hash_table_t::default_bucket_count,
+                                                                        resource)));
     }
 
     void run_txn_insert_search_contract(hash_index_mode mode) {

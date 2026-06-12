@@ -29,6 +29,8 @@ namespace components::operators {
         } type = kind::column;
         std::pmr::vector<size_t> full_path;
 
+        expressions::side_t side = expressions::side_t::undefined;
+
         // for coalesce: ordered list of sources (col index or constant)
         struct coalesce_entry {
             explicit coalesce_entry(std::pmr::memory_resource* r)

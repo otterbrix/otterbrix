@@ -957,6 +957,96 @@ namespace services::dispatcher {
             return named_schema{resource};
         }
 
+        // Resolve key paths in a DML node's RETURNING projection expressions
+        // against the schema of the affected rows (the target table's columns).
+        // Mirrors the node_select resolution: get_field keys and arithmetic
+        // operands get their column paths stamped; star_expand with a table
+        // qualifier is validated to expand; bare '*' and constants need nothing.
+        [[nodiscard]] core::error_t resolve_returning_columns(std::pmr::memory_resource* resource,
+                                                              std::pmr::vector<expression_ptr>* returning,
+                                                              const named_schema& schema_left,
+                                                              const named_schema& schema_right,
+                                                              bool same_schema) {
+            auto& exprs = *returning;
+            for (size_t idx = 0; idx < exprs.size();) {
+                if (!exprs[idx] || exprs[idx]->group() != expression_group::scalar) {
+                    idx++;
+                    continue;
+                }
+                auto* scalar_expr = static_cast<scalar_expression_t*>(exprs[idx].get());
+                switch (scalar_expr->type()) {
+                    case scalar_type::get_field: {
+                        auto& key = scalar_expr->params().empty()
+                                        ? scalar_expr->key()
+                                        : std::get<components::expressions::key_t>(scalar_expr->params().front());
+                        if (key.path().empty()) {
+                            // Side-aware: schema_left is the destination table,
+                            // schema_right the USING/FROM table (same as left when
+                            // there is no join). validate_key stamps the key's side
+                            // and sets its path into the matching side's schema.
+                            auto res = validate_key(resource, key, schema_left, schema_right, same_schema);
+                            if (res.has_error()) {
+                                return res.error();
+                            }
+                        }
+                        idx++;
+                        break;
+                    }
+                    case scalar_type::star_expand: {
+                        // 'table.*' (qualified) expands, like SELECT, into one
+                        // get_field per matching column — resolved against the
+                        // destination, then (for a join) the USING/FROM table — each
+                        // carrying its resolved side so it reads the correct chunk.
+                        // Bare '*' keeps an empty key and stays a runtime star_expand
+                        // (the destination row passthrough).
+                        auto& star_key = scalar_expr->key();
+                        if (star_key.storage().empty() || star_key.storage().front() == "*") {
+                            idx++;
+                            break;
+                        }
+                        side_t side = side_t::left;
+                        auto field = find_types(resource, star_key, schema_left);
+                        if (field.has_error()) {
+                            if (same_schema) {
+                                return field.error();
+                            }
+                            field = find_types(resource, star_key, schema_right);
+                            if (field.has_error()) {
+                                return field.error();
+                            }
+                            side = side_t::right;
+                        }
+                        auto& field_paths = field.value();
+                        exprs.erase(exprs.begin() + static_cast<ptrdiff_t>(idx));
+                        for (size_t j = 0; j < field_paths.size(); j++) {
+                            components::expressions::key_t new_key(resource);
+                            if (field_paths[j].type.has_alias()) {
+                                new_key.storage().push_back(std::pmr::string(field_paths[j].type.alias(), resource));
+                            }
+                            new_key.set_path(field_paths[j].path);
+                            new_key.set_side(side);
+                            exprs.insert(exprs.begin() + static_cast<ptrdiff_t>(idx + j),
+                                         make_scalar_expression(resource, scalar_type::get_field, new_key));
+                        }
+                        idx += field_paths.size();
+                        break;
+                    }
+                    case scalar_type::constant:
+                        idx++;
+                        break;
+                    default: {
+                        auto res = resolve_key_paths_in_group(resource, scalar_expr->params(), schema_left);
+                        if (res.has_error()) {
+                            return res.error();
+                        }
+                        idx++;
+                        break;
+                    }
+                }
+            }
+            return core::error_t::no_error();
+        }
+
     } // namespace impl
 
     // ---- V4 plan-tree idx-based check_*_exists ----
@@ -2127,6 +2217,19 @@ namespace services::dispatcher {
                             table_schema.emplace_back(type_from_t{target_relname_ins, column.type});
                         }
                     }
+                    // RETURNING references the target table's columns; the insert
+                    // operator reads the appended rows back from storage (full
+                    // table-ordered schema), so resolve the projection keys here.
+                    if (!insert_node->returning().empty() && !table_schema.empty()) {
+                        auto ret_err = impl::resolve_returning_columns(resource,
+                                                                       &insert_node->returning(),
+                                                                       table_schema,
+                                                                       table_schema,
+                                                                       true);
+                        if (ret_err.contains_error()) {
+                            return ret_err;
+                        }
+                    }
                     // relkind='g' (dynamic-schema) tables accept INSERTs
                     // whose shape differs from the catalog's currently-registered columns,
                     // BUT only for simple types. Complex types (ARRAY/STRUCT/UNION/LIST)
@@ -2387,6 +2490,43 @@ namespace services::dispatcher {
                     }
                 }
                 // TODO: check updates for update_t
+                // RETURNING references the target table's columns (the affected
+                // rows the operator projects from); resolve the projection keys.
+                {
+                    auto* returning = node->type() == node_type::update_t
+                                          ? &reinterpret_cast<node_update_t*>(node)->returning()
+                                          : &reinterpret_cast<node_delete_t*>(node)->returning();
+                    if (!returning->empty() && !table_schema.empty()) {
+                        // The USING/FROM table is a sibling resolve node, not a
+                        // child, so it never reaches incoming_schema. Build its
+                        // schema from table_oid_from() (the catalog columns) and use
+                        // it as the right side: a right-stamped RETURNING key (a
+                        // joined column) resolves against it, while target columns
+                        // resolve against table_schema as before.
+                        const auto from_oid = node->type() == node_type::update_t
+                                                  ? reinterpret_cast<node_update_t*>(node)->table_oid_from()
+                                                  : reinterpret_cast<node_delete_t*>(node)->table_oid_from();
+                        named_schema from_schema(resource);
+                        if (from_oid != components::catalog::INVALID_OID) {
+                            if (const auto* tbl_from = impl::tbl_md_for_oid(idx, from_oid)) {
+                                for (const auto& column : tbl_from->columns) {
+                                    from_schema.emplace_back(type_from_t{tbl_from->name,
+                                                                         column.type,
+                                                                         components::expressions::side_t::right});
+                                }
+                            }
+                        }
+                        const bool has_join = !from_schema.empty();
+                        auto ret_err = impl::resolve_returning_columns(resource,
+                                                                       returning,
+                                                                       table_schema,
+                                                                       has_join ? from_schema : table_schema,
+                                                                       /*same_schema=*/!has_join);
+                        if (ret_err.contains_error()) {
+                            return ret_err;
+                        }
+                    }
+                }
                 return result;
             }
             case node_type::create_index_t: {

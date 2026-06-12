@@ -11,6 +11,8 @@
 #include <components/vector/data_chunk.hpp>
 #include <services/disk/manager_disk.hpp>
 
+#include "catalog_probe.hpp"
+
 #include <limits>
 #include <set>
 #include <string>
@@ -416,8 +418,11 @@ namespace disk_test_helpers {
         std::pmr::vector<components::types::logical_value_t> reg_vals{&fx.resource};
         reg_vals.emplace_back(toid_lv);
         reg_vals.emplace_back(name_lv);
-        auto batches =
-            fx.invoke(&manager_disk_t::read_chunks_by_key, auto_ctx(), pg_cc, std::move(reg_keys), std::move(reg_vals));
+        auto batches = fx.invoke(&manager_disk_t::read_chunks_by_key,
+                                 auto_ctx(),
+                                 pg_cc,
+                                 std::move(reg_keys),
+                                 services::disk::test_probe::build_key_chunk(&fx.resource, std::move(reg_vals)));
 
         std::int64_t max_version = -1;
         catalog::oid_t latest_atttypid = catalog::INVALID_OID;
@@ -486,7 +491,7 @@ namespace disk_test_helpers {
                                  auto_ctx(),
                                  pg_cc,
                                  std::move(unreg_keys),
-                                 std::move(unreg_vals));
+                                 services::disk::test_probe::build_key_chunk(&fx.resource, std::move(unreg_vals)));
 
         std::int64_t max_version = -1;
         catalog::oid_t live_attoid = catalog::INVALID_OID;

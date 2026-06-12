@@ -1,7 +1,8 @@
 #include "agent_disk.hpp"
 #include "manager_disk.hpp"
-#include <fstream>
+#include "inline_scan.hpp" // services::disk::detail::inline_scan (catalog DDL on the agent)
 #include <services/dispatcher/dispatcher.hpp>
+#include <fstream>
 #include <unordered_set>
 
 namespace services::disk {
@@ -46,44 +47,9 @@ namespace services::disk {
         return storages_.find(oid) != storages_.end();
     }
 
-    uint64_t agent_disk_t::total_rows_inner_sync(components::catalog::oid_t oid) const noexcept {
-        auto it = storages_.find(oid);
-        if (it == storages_.end()) {
-            return 0;
-        }
-        const auto& entry = it->second;
-        if (entry == nullptr) {
-            return 0;
-        }
-        return entry->table_storage.table().calculate_size();
-    }
-
-    wal::id_t agent_disk_t::checkpoint_wal_id_inner_sync(components::catalog::oid_t oid) const noexcept {
-        auto it = storages_.find(oid);
-        if (it == storages_.end()) {
-            return wal::id_t{0};
-        }
-        const auto& entry = it->second;
-        if (entry == nullptr) {
-            return wal::id_t{0};
-        }
-        return entry->table_storage.checkpoint_wal_id();
-    }
-
-    bool agent_disk_t::has_in_memory_inner_sync() const noexcept {
-        for (const auto& [oid, entry] : storages_) {
-            if (entry == nullptr) {
-                continue;
-            }
-            if (entry->table_storage.mode() == storage_mode_t::IN_MEMORY) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     // Borrowed pointer — see header. nullptr when the OID isn't owned.
-    const collection_storage_entry_t* agent_disk_t::storage_entry_sync(components::catalog::oid_t oid) const noexcept {
+    const collection_storage_entry_t*
+    agent_disk_t::storage_entry_sync(components::catalog::oid_t oid) const noexcept {
         auto it = storages_.find(oid);
         if (it == storages_.end()) {
             return nullptr;
@@ -100,8 +66,8 @@ namespace services::disk {
     }
 
     bool agent_disk_t::bootstrap_disk_inner_sync(components::catalog::oid_t oid,
-                                                 const std::filesystem::path& otbx_path,
-                                                 wal::id_t sidecar_wal_id) noexcept {
+                                                  const std::filesystem::path& otbx_path,
+                                                  wal::id_t sidecar_wal_id) noexcept {
         // Probe BEFORE constructing the SFBM: on a duplicate key we must not even
         // open the .otbx, because open-then-close would release the live entry's
         // WRITE_LOCK (per-process posix lock).
@@ -127,9 +93,10 @@ namespace services::disk {
         return storages_.try_emplace(oid, std::move(entry)).second;
     }
 
-    bool agent_disk_t::bootstrap_create_disk_inner_sync(components::catalog::oid_t oid,
-                                                        std::vector<components::table::column_definition_t> columns,
-                                                        const std::filesystem::path& otbx_path) noexcept {
+    bool agent_disk_t::bootstrap_create_disk_inner_sync(
+        components::catalog::oid_t oid,
+        std::vector<components::table::column_definition_t> columns,
+        const std::filesystem::path& otbx_path) noexcept {
         if (storages_.find(oid) != storages_.end()) {
             trace(log_,
                   "agent_disk_t::bootstrap_create_disk_inner_sync: agent[{}] oid {} already in slice — drop "
@@ -148,38 +115,67 @@ namespace services::disk {
         return storages_.try_emplace(oid, std::move(entry)).second;
     }
 
+    // Runtime CREATE mailbox handlers (see header). The entry is built on the AGENT's
+    // OWN resource() here on the agent thread, then emplaced via the existing
+    // bootstrap_*_inner_sync helpers (now called intra-actor). Each returns false on
+    // duplicate key, mirroring the helpers' contract.
+    agent_disk_t::unique_future<bool> agent_disk_t::create_storage_inner(components::catalog::oid_t oid) {
+        auto entry = std::make_unique<collection_storage_entry_t>(resource());
+        const bool ok = bootstrap_inner_sync(oid, std::move(entry));
+        if (!ok) {
+            trace(log_,
+                  "agent_disk[{}]::create_storage_inner: oid {} already owned — duplicate",
+                  pool_idx_,
+                  static_cast<unsigned>(oid));
+        }
+        co_return ok;
+    }
+
+    agent_disk_t::unique_future<bool>
+    agent_disk_t::create_storage_with_columns_inner(components::catalog::oid_t oid,
+                                                    std::vector<components::table::column_definition_t> columns) {
+        auto entry = std::make_unique<collection_storage_entry_t>(resource(), std::move(columns));
+        const bool ok = bootstrap_inner_sync(oid, std::move(entry));
+        if (!ok) {
+            trace(log_,
+                  "agent_disk[{}]::create_storage_with_columns_inner: oid {} already owned — duplicate",
+                  pool_idx_,
+                  static_cast<unsigned>(oid));
+        }
+        co_return ok;
+    }
+
+    agent_disk_t::unique_future<bool>
+    agent_disk_t::create_storage_disk_inner(components::catalog::oid_t oid,
+                                            std::vector<components::table::column_definition_t> columns,
+                                            std::filesystem::path otbx_path) {
+        // create_directories runs on the AGENT thread (manager builds nothing). The SFBM
+        // is then constructed by bootstrap_create_disk_inner_sync, which holds the
+        // exclusive posix WRITE_LOCK on the .otbx — agent-only, so no construction race.
+        std::error_code ec;
+        std::filesystem::create_directories(otbx_path.parent_path(), ec);
+        if (ec) {
+            warn(log_,
+                 "agent_disk[{}]::create_storage_disk_inner: create_directories {} failed: {}",
+                 pool_idx_,
+                 otbx_path.parent_path().string(),
+                 ec.message());
+        }
+        const bool ok = bootstrap_create_disk_inner_sync(oid, std::move(columns), otbx_path);
+        if (!ok) {
+            trace(log_,
+                  "agent_disk[{}]::create_storage_disk_inner: oid {} already owned (path={}) — duplicate",
+                  pool_idx_,
+                  static_cast<unsigned>(oid),
+                  otbx_path.string());
+        }
+        co_return ok;
+    }
+
     // WAL-replay direct_* helpers (see header). Mutation logic is intentionally
     // minimal: schema-adoption / column-expansion / type-promotion run upstream in
     // the mailbox body, and replay records arrive pre-aligned with the table schema,
-    // so a direct append/delete/update against the entry's storage adapter is correct.
-    void agent_disk_t::direct_append_sync(components::catalog::oid_t table_oid,
-                                          components::vector::data_chunk_t& data,
-                                          core::date::timezone_offset_t /*session_tz*/,
-                                          const components::table::transaction_data& txn) {
-        auto it = storages_.find(table_oid);
-        if (it == storages_.end()) {
-            trace(log_,
-                  "agent_disk[{}]::direct_append_sync: oid {} not owned by this agent — no-op",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            return;
-        }
-        auto& entry = it->second;
-        if (entry == nullptr) {
-            // Defensive: null entries (legacy record-only markers) are unreachable
-            // now that every DISK OID owns a live SFBM.
-            trace(log_,
-                  "agent_disk[{}]::direct_append_sync: oid {} has null entry (unreachable post-§8.1.B/C) — no-op",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            return;
-        }
-        if (data.size() == 0 || entry->storage == nullptr) {
-            return;
-        }
-        entry->storage->append(data, txn);
-    }
-
+    // so a direct delete/update against the entry's storage adapter is correct.
     void agent_disk_t::direct_delete_sync(components::catalog::oid_t table_oid,
                                           const std::pmr::vector<int64_t>& row_ids,
                                           uint64_t count,
@@ -252,8 +248,6 @@ namespace services::disk {
         entry->storage->update(ids_vec, local);
     }
 
-    auto agent_disk_t::make_type() const noexcept -> const char* { return "agent_disk"; }
-
     actor_zeta::behavior_t agent_disk_t::behavior(actor_zeta::mailbox::message* msg) {
         switch (msg->command()) {
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::fix_wal_id>: {
@@ -284,10 +278,6 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_revert_appends_inner, msg);
                 break;
             }
-            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_revert_append_inner>: {
-                co_await actor_zeta::dispatch(this, &agent_disk_t::storage_revert_append_inner, msg);
-                break;
-            }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_update_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_update_inner, msg);
                 break;
@@ -312,12 +302,16 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::scan_by_keys_inner, msg);
                 break;
             }
-            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_types_inner>: {
-                co_await actor_zeta::dispatch(this, &agent_disk_t::storage_types_inner, msg);
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::read_chunks_by_key_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::read_chunks_by_key_inner, msg);
                 break;
             }
-            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_column_names_inner>: {
-                co_await actor_zeta::dispatch(this, &agent_disk_t::storage_column_names_inner, msg);
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::read_chunks_by_keys_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::read_chunks_by_keys_inner, msg);
+                break;
+            }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_types_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::storage_types_inner, msg);
                 break;
             }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_total_rows_inner>: {
@@ -348,16 +342,40 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_drop_aborted_inner, msg);
                 break;
             }
-            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::register_dropped_storage_inner>: {
-                co_await actor_zeta::dispatch(this, &agent_disk_t::register_dropped_storage_inner, msg);
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::drop_storage_many_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::drop_storage_many_inner, msg);
                 break;
             }
-            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::drop_storage_inner>: {
-                co_await actor_zeta::dispatch(this, &agent_disk_t::drop_storage_inner, msg);
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::append_pg_catalog_row_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::append_pg_catalog_row_inner, msg);
                 break;
             }
-            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::drop_column_inner>: {
-                co_await actor_zeta::dispatch(this, &agent_disk_t::drop_column_inner, msg);
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::delete_pg_catalog_rows_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::delete_pg_catalog_rows_inner, msg);
+                break;
+            }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::update_pg_attribute_commit_id_field_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::update_pg_attribute_commit_id_field_inner, msg);
+                break;
+            }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::compact_relkind_g_storage_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::compact_relkind_g_storage_inner, msg);
+                break;
+            }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::mark_storage_dropped_many_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::mark_storage_dropped_many_inner, msg);
+                break;
+            }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::create_storage_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::create_storage_inner, msg);
+                break;
+            }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::create_storage_with_columns_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::create_storage_with_columns_inner, msg);
+                break;
+            }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::create_storage_disk_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::create_storage_disk_inner, msg);
                 break;
             }
             default:
@@ -672,7 +690,8 @@ namespace services::disk {
     }
 
     agent_disk_t::unique_future<void>
-    agent_disk_t::storage_revert_deletes_inner(uint64_t txn_id, std::pmr::vector<components::catalog::oid_t> tables) {
+    agent_disk_t::storage_revert_deletes_inner(uint64_t txn_id,
+                                               std::pmr::vector<components::catalog::oid_t> tables) {
         // Abort-path twin of storage_publish_deletes_inner: un-stamp this txn's
         // pending delete marks back to NOT_DELETED_ID instead of committing them.
         // txn_id==0 means no real transaction (legacy fast path) — short-circuit.
@@ -710,31 +729,6 @@ namespace services::disk {
             }
             entry->storage->revert_append(it->start_row, it->count);
         }
-        co_return;
-    }
-
-    agent_disk_t::unique_future<void>
-    agent_disk_t::storage_revert_append_inner(components::catalog::oid_t table_oid, int64_t row_start, uint64_t count) {
-        auto it = storages_.find(table_oid);
-        if (it == storages_.end()) {
-            trace(log_,
-                  "agent_disk[{}]::storage_revert_append_inner: oid {} not owned by this agent — no-op",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            co_return;
-        }
-        auto& entry = it->second;
-        if (entry == nullptr) {
-            trace(log_,
-                  "agent_disk[{}]::storage_revert_append_inner: oid {} has null entry — no-op",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            co_return;
-        }
-        if (entry->storage == nullptr || count == 0) {
-            co_return;
-        }
-        entry->storage->revert_append(row_start, count);
         co_return;
     }
 
@@ -824,37 +818,49 @@ namespace services::disk {
         co_return std::move(result);
     }
 
+    std::pmr::vector<components::vector::data_chunk_t>
+    agent_disk_t::scan_batched_local(components::catalog::oid_t table_oid,
+                                     components::table::table_filter_t* filter,
+                                     int64_t limit,
+                                     const std::vector<std::size_t>* projected_cols,
+                                     const components::table::transaction_data& txn) {
+        std::pmr::vector<components::vector::data_chunk_t> batches{resource()};
+        auto it = storages_.find(table_oid);
+        if (it == storages_.end()) {
+            trace(log_,
+                  "agent_disk[{}]::scan_batched_local: oid {} not owned by this agent",
+                  pool_idx_,
+                  static_cast<unsigned>(table_oid));
+            return batches;
+        }
+        auto& entry = it->second;
+        if (entry == nullptr || entry->storage == nullptr) {
+            trace(log_,
+                  "agent_disk[{}]::scan_batched_local: oid {} is a DISK record-only marker",
+                  pool_idx_,
+                  static_cast<unsigned>(table_oid));
+            return batches;
+        }
+        entry->storage->scan_batched(batches, filter, limit, projected_cols, txn);
+        return batches;
+    }
+
+    // Thin mailbox wrapper over scan_batched_local (D6: same-actor callers use the local
+    // helper directly; this exists for the manager→agent mailbox route).
     agent_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
     agent_disk_t::storage_scan_batched_inner(components::catalog::oid_t table_oid,
                                              std::unique_ptr<components::table::table_filter_t> filter,
                                              int64_t limit,
                                              std::vector<size_t> projected_cols,
                                              components::table::transaction_data txn) {
-        std::pmr::vector<components::vector::data_chunk_t> batches{resource()};
-        auto it = storages_.find(table_oid);
-        if (it == storages_.end()) {
-            trace(log_,
-                  "agent_disk[{}]::storage_scan_batched_inner: oid {} not owned by this agent — fallback to manager",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            co_return std::move(batches);
-        }
-        auto& entry = it->second;
-        if (entry == nullptr || entry->storage == nullptr) {
-            trace(log_,
-                  "agent_disk[{}]::storage_scan_batched_inner: oid {} is a DISK record-only marker — "
-                  "fallback to manager",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            co_return std::move(batches);
-        }
         const std::vector<size_t>* projected_ptr = projected_cols.empty() ? nullptr : &projected_cols;
-        entry->storage->scan_batched(batches, filter.get(), limit, projected_ptr, txn);
-        co_return std::move(batches);
+        co_return scan_batched_local(table_oid, filter.get(), limit, projected_ptr, txn);
     }
 
     agent_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
-    agent_disk_t::storage_scan_segment_inner(components::catalog::oid_t table_oid, int64_t start, uint64_t count) {
+    agent_disk_t::storage_scan_segment_inner(components::catalog::oid_t table_oid,
+                                             int64_t start,
+                                             uint64_t count) {
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
             trace(log_,
@@ -892,7 +898,8 @@ namespace services::disk {
         result.reserve(keys.size());
 
         auto it = storages_.find(table_oid);
-        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr || key_col_names.empty()) {
+        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr ||
+            key_col_names.empty()) {
             // Not owned / record-only marker / no key columns: one empty row per key.
             for (std::size_t i = 0; i < keys.size(); ++i) {
                 result.emplace_back();
@@ -944,8 +951,8 @@ namespace services::disk {
                 idx_vec.push_back(key_col_indices[ki]);
                 filter->child_filters.push_back(
                     std::make_unique<components::table::constant_filter_t>(components::expressions::compare_type::eq,
-                                                                           keys.value(ki, i),
-                                                                           std::move(idx_vec)));
+                                                                          keys.value(ki, i),
+                                                                          std::move(idx_vec)));
             }
             std::pmr::vector<components::vector::data_chunk_t> batches{resource()};
             entry->storage->scan_batched(batches, filter.get(), int64_t{-1}, nullptr, txn);
@@ -955,6 +962,131 @@ namespace services::disk {
                 }
             }
             result.emplace_back(std::move(row_ids));
+        }
+        co_return std::move(result);
+    }
+
+    agent_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+    agent_disk_t::read_chunks_by_key_inner(components::catalog::oid_t table_oid,
+                                           std::pmr::vector<std::string> key_col_names,
+                                           components::vector::data_chunk_t keys,
+                                           components::table::transaction_data txn) {
+        // Single key-tuple (keys has exactly one row): resolve the key column NAMES to
+        // storage indices, build an eq-AND filter and scan its own slice directly via
+        // scan_batched_local (D6: no self-send). Empty result on any degenerate input.
+        std::pmr::vector<components::vector::data_chunk_t> empty{resource()};
+        auto it = storages_.find(table_oid);
+        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr ||
+            key_col_names.empty() || keys.size() == 0) {
+            co_return std::move(empty);
+        }
+        auto& entry = it->second;
+
+        // Resolve each key column NAME to a storage column index; an unknown column voids
+        // the whole call (empty result).
+        const auto& cols = entry->storage->columns();
+        std::pmr::vector<std::uint64_t> key_col_indices{resource()};
+        key_col_indices.reserve(key_col_names.size());
+        for (const auto& kname : key_col_names) {
+            std::size_t col_idx = cols.size();
+            for (std::size_t ci = 0; ci < cols.size(); ++ci) {
+                if (cols[ci].name() == kname) {
+                    col_idx = ci;
+                    break;
+                }
+            }
+            if (col_idx == cols.size()) {
+                co_return std::move(empty);
+            }
+            key_col_indices.push_back(static_cast<std::uint64_t>(col_idx));
+        }
+
+        // Each filter constant is keys.value(ki, 0) — a logical_value_t materialized only
+        // here for the filter API (the irreducible floor, same as scan_by_keys_inner). No
+        // row-major key crosses the mailbox; the carrier is the columnar `keys` chunk.
+        auto filter = std::make_unique<components::table::conjunction_and_filter_t>();
+        for (std::size_t ki = 0; ki < key_col_indices.size(); ++ki) {
+            std::pmr::vector<std::uint64_t> idx_vec{resource()};
+            idx_vec.push_back(key_col_indices[ki]);
+            filter->child_filters.push_back(
+                std::make_unique<components::table::constant_filter_t>(components::expressions::compare_type::eq,
+                                                                      keys.value(ki, 0),
+                                                                      std::move(idx_vec)));
+        }
+
+        // All columns (projected = nullptr), no row limit (-1) — same as the prior
+        // manager-side storage_scan_batched_inner call (it passed an empty projected list).
+        co_return scan_batched_local(table_oid, filter.get(), int64_t{-1}, nullptr, txn);
+    }
+
+    agent_disk_t::unique_future<std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>>
+    agent_disk_t::read_chunks_by_keys_inner(components::catalog::oid_t table_oid,
+                                            std::pmr::vector<std::string> key_col_names,
+                                            components::vector::data_chunk_t keys,
+                                            components::table::transaction_data txn) {
+        // result[i] = matched chunks for key-tuple i; one (possibly empty) entry per key,
+        // preserving input order. Name→index resolution runs once for the whole batch, then
+        // each key gets an eq-AND filtered scan via scan_batched_local (D6: no self-send).
+        std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>> result{resource()};
+        result.reserve(keys.size());
+
+        auto it = storages_.find(table_oid);
+        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr ||
+            key_col_names.empty()) {
+            // Not owned / record-only marker / no key columns: one empty entry per key.
+            for (std::size_t i = 0; i < keys.size(); ++i) {
+                result.emplace_back();
+            }
+            co_return std::move(result);
+        }
+        auto& entry = it->second;
+
+        // Resolve key column NAMES to storage indices once (same column set for every key).
+        // Any unknown column degrades the whole batch to empty entries.
+        const auto& cols = entry->storage->columns();
+        std::pmr::vector<std::uint64_t> key_col_indices{resource()};
+        key_col_indices.reserve(key_col_names.size());
+        for (const auto& kname : key_col_names) {
+            std::size_t col_idx = cols.size();
+            for (std::size_t ci = 0; ci < cols.size(); ++ci) {
+                if (cols[ci].name() == kname) {
+                    col_idx = ci;
+                    break;
+                }
+            }
+            if (col_idx == cols.size()) {
+                for (std::size_t i = 0; i < keys.size(); ++i) {
+                    result.emplace_back();
+                }
+                co_return std::move(result);
+            }
+            key_col_indices.push_back(static_cast<std::uint64_t>(col_idx));
+        }
+
+        // Columnar keys: column j == key_col_names[j], row i == key-tuple i. Arity is uniform
+        // across the chunk, so a mismatch (chunk column count != resolved key columns) voids the
+        // whole batch with one empty entry per key. Each filter constant is the single
+        // materialization of a key cell (keys.value(ki, i)): the filter API requires a
+        // logical_value_t, so this is the irreducible floor — no row-major keys cross the mailbox.
+        const std::uint64_t nkeys = keys.size();
+        if (keys.column_count() != key_col_indices.size()) {
+            for (std::uint64_t i = 0; i < nkeys; ++i) {
+                result.emplace_back();
+            }
+            co_return std::move(result);
+        }
+        for (std::uint64_t i = 0; i < nkeys; ++i) {
+            auto filter = std::make_unique<components::table::conjunction_and_filter_t>();
+            for (std::size_t ki = 0; ki < key_col_indices.size(); ++ki) {
+                std::pmr::vector<std::uint64_t> idx_vec{resource()};
+                idx_vec.push_back(key_col_indices[ki]);
+                filter->child_filters.push_back(
+                    std::make_unique<components::table::constant_filter_t>(components::expressions::compare_type::eq,
+                                                                          keys.value(ki, i),
+                                                                          std::move(idx_vec)));
+            }
+            // All columns (projected = nullptr), no row limit (-1) — same as read_chunks_by_key_inner.
+            result.emplace_back(scan_batched_local(table_oid, filter.get(), int64_t{-1}, nullptr, txn));
         }
         co_return std::move(result);
     }
@@ -980,35 +1112,8 @@ namespace services::disk {
         co_return entry->storage->types();
     }
 
-    agent_disk_t::unique_future<std::pmr::vector<std::string>>
-    agent_disk_t::storage_column_names_inner(components::catalog::oid_t table_oid) {
-        auto it = storages_.find(table_oid);
-        if (it == storages_.end()) {
-            trace(log_,
-                  "agent_disk[{}]::storage_column_names_inner: oid {} not owned by this agent — fallback to manager",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            co_return std::pmr::vector<std::string>{resource()};
-        }
-        auto& entry = it->second;
-        if (entry == nullptr || entry->storage == nullptr) {
-            trace(log_,
-                  "agent_disk[{}]::storage_column_names_inner: oid {} is a DISK record-only marker — "
-                  "fallback to manager",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            co_return std::pmr::vector<std::string>{resource()};
-        }
-        const auto& cols = entry->storage->columns();
-        std::pmr::vector<std::string> names{resource()};
-        names.reserve(cols.size());
-        for (const auto& col : cols) {
-            names.push_back(col.name());
-        }
-        co_return std::move(names);
-    }
-
-    agent_disk_t::unique_future<uint64_t> agent_disk_t::storage_total_rows_inner(components::catalog::oid_t table_oid) {
+    agent_disk_t::unique_future<uint64_t>
+    agent_disk_t::storage_total_rows_inner(components::catalog::oid_t table_oid) {
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
             trace(log_,
@@ -1036,19 +1141,26 @@ namespace services::disk {
         co_return;
     }
 
-    agent_disk_t::unique_future<wal::id_t> agent_disk_t::checkpoint_inner(session_id_t /*session*/,
-                                                                          wal::id_t current_wal_id,
-                                                                          uint64_t compact_watermark) {
+    agent_disk_t::unique_future<checkpoint_result_t> agent_disk_t::checkpoint_inner(session_id_t /*session*/,
+                                                                                     wal::id_t current_wal_id,
+                                                                                     uint64_t compact_watermark) {
         trace(log_, "agent_disk[{}]::checkpoint_inner: {} entries in local slice", pool_idx_, storages_.size());
         // Per DISK entry, crash-safe checkpoint sequence (order matters):
         //   compact (MVCC-gated), backup .otbx → .prev, checkpoint(wal_id), persist
         //   the .wal_id sidecar via tmp+rename, then delete the .prev backup on
         //   success. Tally min(prev_checkpoint_wal_id_) for the manager's
-        //   cross-agent std::min. IN_MEMORY twins and null entries are skipped.
+        //   cross-agent std::min. IN_MEMORY twins and null entries are skipped
+        //   for checkpointing, but an IN_MEMORY twin flips has_in_memory so
+        //   checkpoint_all can gate WAL-floor sealing without a separate sync
+        //   slice read (folded from has_in_memory_inner_sync).
         wal::id_t min_prev_id = std::numeric_limits<wal::id_t>::max();
+        bool has_in_memory = false;
         for (auto& [tbl_oid, entry] : storages_) {
             if (entry == nullptr) {
                 continue;
+            }
+            if (entry->table_storage.mode() == storage_mode_t::IN_MEMORY) {
+                has_in_memory = true;
             }
             if (entry->table_storage.mode() != storage_mode_t::DISK) {
                 continue;
@@ -1133,7 +1245,7 @@ namespace services::disk {
 
             min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
         }
-        co_return min_prev_id;
+        co_return checkpoint_result_t{min_prev_id, has_in_memory};
     }
 
     agent_disk_t::unique_future<void> agent_disk_t::vacuum_inner(session_id_t /*session*/,
@@ -1248,7 +1360,8 @@ namespace services::disk {
         // Once the slice drains, ack on_subscriber_empty so the dispatcher clears
         // disk_has_dropped_ and stops broadcasting. Gated on != empty_address() so
         // test fixtures without a dispatcher pass cleanly.
-        if (dropped_storages_.empty() && manager_dispatcher_addr_ != actor_zeta::address_t::empty_address()) {
+        if (dropped_storages_.empty()
+            && manager_dispatcher_addr_ != actor_zeta::address_t::empty_address()) {
             // DISK_KIND matches the dispatcher's subscriber-kind enum.
             constexpr uint8_t DISK_KIND = 1;
             [[maybe_unused]] auto _ = actor_zeta::send(manager_dispatcher_addr_,
@@ -1303,31 +1416,31 @@ namespace services::disk {
         manager_dispatcher_addr_ = std::move(address);
     }
 
-    // Bootstrap-only push-back (see header); runtime DROP uses the mailbox overload below.
-    void agent_disk_t::register_dropped_storage_inner_sync(components::catalog::oid_t oid,
-                                                           uint64_t dropped_at_commit_id,
-                                                           std::filesystem::path path,
-                                                           std::pmr::vector<std::filesystem::path> sidecar_paths) {
-        dropped_storages_.push_back(
-            dropped_storage_entry_t{oid, dropped_at_commit_id, std::move(path), std::move(sidecar_paths)});
+    // See header. Bootstrap-only; after scheduler.start the address is read-only.
+    void agent_disk_t::set_manager_wal_sync(actor_zeta::address_t address) {
+        manager_wal_addr_ = std::move(address);
     }
 
-    // Runtime DROP path. The mailbox serializes this push_back w.r.t.
-    // on_horizon_advanced_inner.
-    agent_disk_t::unique_future<void>
-    agent_disk_t::register_dropped_storage_inner(components::catalog::oid_t oid,
-                                                 uint64_t dropped_at_commit_id,
-                                                 std::filesystem::path path,
-                                                 std::pmr::vector<std::filesystem::path> sidecar_paths) {
-        register_dropped_storage_inner_sync(oid, dropped_at_commit_id, std::move(path), std::move(sidecar_paths));
-        co_return;
+    // GC-slice push-back (see header). Called pre-scheduler-start by base_spaces
+    // catalog rebuild and at runtime by mark_storage_dropped_many_inner.
+    void agent_disk_t::register_dropped_storage_inner_sync(components::catalog::oid_t oid,
+                                                            uint64_t dropped_at_commit_id,
+                                                            std::filesystem::path path,
+                                                            std::pmr::vector<std::filesystem::path> sidecar_paths) {
+        dropped_storages_.push_back(dropped_storage_entry_t{oid,
+                                                             dropped_at_commit_id,
+                                                             std::move(path),
+                                                             std::move(sidecar_paths)});
     }
 
     // Canonical erase + .otbx removal (see header). Idempotent on a missing key;
     // the erase drops the unique_ptr, closing the file_handle_t once. The mailbox
     // serializes this against the only other slice writers (bootstrap pre-start;
     // runtime storage_*_inner handlers only read).
-    agent_disk_t::unique_future<void> agent_disk_t::drop_storage_inner(components::catalog::oid_t oid) {
+    // Canonical single-oid erase + .otbx removal. Used by drop_storage_many_inner,
+    // which loops it over its oid slice. Synchronous (no co_await) — the caller runs
+    // on the agent thread.
+    void agent_disk_t::drop_storage_one_local(components::catalog::oid_t oid) {
         // Read otbx_path BEFORE the erase, while the unique_ptr is still live. Empty
         // path (IN_MEMORY twins) skips the remove block. Remove sequence: .otbx +
         // .wal_id + .prev sidecars + per-oid directory, all via std::error_code
@@ -1340,15 +1453,16 @@ namespace services::disk {
         }
         const auto erased = storages_.erase(oid);
         if (erased == 0) {
-            // Trace, not warn: drop_storage routes to a single agent, so this path
-            // is only hit for a truly-missing OID — benign (idempotent DROP).
+            // Trace, not warn: drop_storage_many over-routes idempotently, so this
+            // path is hit for a truly-missing / not-owned OID — benign (idempotent
+            // DROP).
             trace(log_,
-                  "agent_disk[{}]::drop_storage_inner: oid {} not in local slice (no-op)",
+                  "agent_disk[{}]::drop_storage_one_local: oid {} not in local slice (no-op)",
                   pool_idx_,
                   static_cast<unsigned>(oid));
         } else {
             trace(log_,
-                  "agent_disk[{}]::drop_storage_inner: erased oid {} from local slice",
+                  "agent_disk[{}]::drop_storage_one_local: erased oid {} from local slice",
                   pool_idx_,
                   static_cast<unsigned>(oid));
         }
@@ -1367,45 +1481,425 @@ namespace services::disk {
             std::filesystem::remove(prev, ec);
             std::filesystem::remove(otbx_path.parent_path(), ec);
         }
+    }
+
+    // Batched DROP: one message per agent carries that agent's whole oid slice
+    // (manager partitioned by pool_idx_for_oid). Loops the canonical singular erase;
+    // each oid is idempotent on a missing key, so an over-routed oid is a no-op.
+    agent_disk_t::unique_future<void>
+    agent_disk_t::drop_storage_many_inner(std::pmr::vector<components::catalog::oid_t> oids) {
+        for (auto oid : oids) {
+            drop_storage_one_local(oid);
+        }
         co_return;
     }
 
-    // Mutation half of compact_relkind_g_storage (see header). drop_column is
-    // non-const: it rebuilds the storage_t adapter against the agent's arena because
-    // the adapter holds a data_table_t& that dangles after the rebuild.
-    agent_disk_t::unique_future<void> agent_disk_t::drop_column_inner(components::catalog::oid_t table_oid,
-                                                                      std::pmr::string column_name) {
+    // ---------------------------------------------------------------------------
+    // Catalog DDL handlers (Track A). These moved off the manager loop: the catalog
+    // scan + mutation now run on this (CATALOG / agent-0) thread against the agent's
+    // OWN slice, so the manager no longer borrows the agent's storage_entry across
+    // the actor boundary. WAL goes through manager_wal_addr_ (plain actor_zeta::send +
+    // co_await; the WAL manager self-schedules, so NO scheduler_disk_->enqueue here).
+    // ---------------------------------------------------------------------------
+
+    // Crash-safe pg_catalog row append: WAL physical_insert is written first so a
+    // crash before the storage update can be replayed on restart, then storage is
+    // updated on this agent's own slice. The preprocessing body applies only schema
+    // adoption + alias-keyed column expansion + numeric/string cast rather than the
+    // heavier storage_append_inner pipeline — storage_append_inner adds NOT NULL
+    // rejection, _id dedup, default-value / positional fallback, and broader
+    // is_convertable_to casting, none of which the catalog-append path applied, so
+    // this lighter path keeps WAL-time semantics faithful.
+    agent_disk_t::unique_future<components::pg_catalog_append_range_t>
+    agent_disk_t::append_pg_catalog_row_inner(execution_context_t ctx,
+                                              components::catalog::oid_t table_oid,
+                                              components::vector::data_chunk_t row) {
+        if (manager_wal_addr_ != actor_zeta::address_t::empty_address()) {
+            auto wal_chunk =
+                std::make_unique<components::vector::data_chunk_t>(resource(), row.types(), row.size());
+            wal_chunk->set_cardinality(row.size());
+            for (uint64_t col = 0; col < row.column_count(); col++) {
+                for (uint64_t r = 0; r < row.size(); r++) {
+                    wal_chunk->data[col].set_value(r, row.data[col].value(r));
+                }
+            }
+            // pg_catalog writes route to main_database (ctx.database_oid is always
+            // INVALID_OID for catalog writes).
+            constexpr auto db_oid = components::catalog::well_known_oid::main_database;
+            auto [_w, wf] = actor_zeta::send(manager_wal_addr_,
+                                             &wal::manager_wal_replicate_t::write_physical_insert,
+                                             ctx.session,
+                                             table_oid,
+                                             std::move(wal_chunk),
+                                             std::uint64_t{0},
+                                             static_cast<std::uint64_t>(row.size()),
+                                             ctx.txn.transaction_id,
+                                             db_oid);
+            if (auto wal_id = co_await std::move(wf); wal_id == wal::id_t{}) {
+                trace(log_,
+                      "agent_disk[{}]::append_pg_catalog_row_inner: WAL write returned zero id for oid={}",
+                      pool_idx_,
+                      static_cast<unsigned>(table_oid));
+            }
+        }
+
+        const auto count = static_cast<std::uint64_t>(row.size());
+        uint64_t start_row = 0;
+
+        // Append on this agent's own slice.
         auto it = storages_.find(table_oid);
-        if (it == storages_.end()) {
+        if (it != storages_.end() && it->second != nullptr && it->second->storage != nullptr &&
+            row.size() != 0) {
+            auto* s = it->second->storage.get();
+
+            // rebuild onto this agent's resource (row arrives on the mailbox resource).
+            auto types = row.types();
+            const uint64_t n = row.size();
+            components::vector::data_chunk_t local(resource(), types, n > 0 ? n : 1);
+            local.set_cardinality(0);
+            row.copy(local, 0);
+
+            if (!s->has_schema() && local.column_count() > 0) {
+                s->adopt_schema(local.types());
+            }
+
+            const auto& table_columns = s->columns();
+            if (!table_columns.empty() && local.column_count() < table_columns.size()) {
+                std::pmr::vector<components::types::complex_logical_type> full_types(resource());
+                for (const auto& col_def : table_columns) {
+                    full_types.push_back(col_def.type());
+                }
+
+                std::vector<components::vector::vector_t> expanded_data;
+                expanded_data.reserve(table_columns.size());
+                for (size_t t = 0; t < table_columns.size(); t++) {
+                    bool found = false;
+                    for (uint64_t col = 0; col < local.column_count(); col++) {
+                        if (local.data[col].type().has_alias() &&
+                            local.data[col].type().alias() == table_columns[t].name()) {
+                            expanded_data.push_back(std::move(local.data[col]));
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        expanded_data.emplace_back(resource(), full_types[t], local.size());
+                        expanded_data.back().validity().set_all_invalid(local.size());
+                    }
+                }
+                local.data = std::move(expanded_data);
+            }
+
+            if (s->has_schema() && !table_columns.empty()) {
+                using components::types::is_numeric;
+                using components::types::logical_type;
+                for (size_t i = 0; i < table_columns.size() && i < local.column_count(); i++) {
+                    auto src_type = local.data[i].type().type();
+                    auto tgt_type = table_columns[i].type().type();
+                    if (src_type != tgt_type &&
+                        (is_numeric(src_type) || src_type == logical_type::STRING_LITERAL) &&
+                        (is_numeric(tgt_type) || tgt_type == logical_type::STRING_LITERAL)) {
+                        auto& src_vec = local.data[i];
+                        auto target_type = table_columns[i].type();
+                        if (src_vec.type().has_alias()) {
+                            target_type.set_alias(src_vec.type().alias());
+                        }
+                        components::vector::vector_t casted(resource(), target_type, local.size());
+                        for (uint64_t r = 0; r < local.size(); r++) {
+                            if (src_vec.validity().row_is_valid(r)) {
+                                casted.set_value(r, src_vec.value(r).cast_as(target_type, ctx.session_tz));
+                            } else {
+                                casted.validity().set_invalid(r);
+                            }
+                        }
+                        local.data[i] = std::move(casted);
+                    }
+                }
+            }
+
+            start_row = s->append(local, ctx.txn);
+        } else {
             trace(log_,
-                  "agent_disk[{}]::drop_column_inner: oid {} not owned by this agent — no-op",
+                  "agent_disk[{}]::append_pg_catalog_row_inner: oid {} not owned/empty — no storage append",
                   pool_idx_,
                   static_cast<unsigned>(table_oid));
+        }
+
+        if (ctx.txn.transaction_id == 0 || count == 0) {
+            co_return components::pg_catalog_append_range_t{table_oid, static_cast<int64_t>(start_row), 0};
+        }
+        co_return components::pg_catalog_append_range_t{table_oid, static_cast<int64_t>(start_row), count};
+    }
+
+    agent_disk_t::unique_future<void>
+    agent_disk_t::delete_pg_catalog_rows_inner(execution_context_t ctx,
+                                               components::catalog::oid_t table_oid,
+                                               std::int64_t oid_col_idx,
+                                               components::catalog::oid_t target_oid) {
+        // Read the slice directly. Bind entry NON-const so inline_scan binds the
+        // non-const data_table_t& overload (no const_cast).
+        auto it = storages_.find(table_oid);
+        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
             co_return;
         }
         auto& entry = it->second;
-        if (entry == nullptr) {
-            trace(log_,
-                  "agent_disk[{}]::drop_column_inner: oid {} has null entry — no-op",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
+
+        std::pmr::synchronized_pool_resource scan_resource;
+        std::pmr::vector<std::int64_t> row_ids(resource());
+        detail::inline_scan(entry->table_storage.table(),
+                            {oid_col_idx},
+                            &scan_resource,
+                            [&, oid_col_idx](components::vector::data_chunk_t& chunk, uint64_t i) {
+                                auto v = chunk.value(static_cast<uint64_t>(oid_col_idx), i);
+                                if (v.is_null())
+                                    return true;
+                                if (static_cast<components::catalog::oid_t>(v.value<std::uint32_t>()) ==
+                                    target_oid) {
+                                    row_ids.push_back(chunk.row_ids.data<std::int64_t>()[i]);
+                                }
+                                return true;
+                            });
+        if (row_ids.empty()) {
             co_return;
         }
-        // drop_column takes std::string; the mailbox payload is pmr::string.
-        const std::string attname{column_name.data(), column_name.size()};
-        const bool dropped = entry->drop_column(attname, resource());
-        if (!dropped) {
+        if (manager_wal_addr_ != actor_zeta::address_t::empty_address()) {
+            std::pmr::vector<std::int64_t> wal_ids(row_ids.begin(), row_ids.end(), resource());
+            auto [_w, wf] = actor_zeta::send(manager_wal_addr_,
+                                             &wal::manager_wal_replicate_t::write_physical_delete,
+                                             ctx.session,
+                                             table_oid,
+                                             std::move(wal_ids),
+                                             static_cast<std::uint64_t>(row_ids.size()),
+                                             ctx.txn.transaction_id,
+                                             components::catalog::well_known_oid::main_database);
+            if (auto wal_id = co_await std::move(wf); wal_id == wal::id_t{}) {
+                trace(log_,
+                      "agent_disk[{}]::delete_pg_catalog_rows_inner: WAL write returned zero id for oid={}",
+                      pool_idx_,
+                      static_cast<unsigned>(table_oid));
+            }
+        }
+        direct_delete_sync(table_oid, row_ids, static_cast<std::uint64_t>(row_ids.size()), ctx.txn);
+        co_return;
+    }
+
+    // Implementation pitfall (preserved from the manager body): data_table_t::update()
+    // rewrites EVERY column in the target row (it builds column_ids = [0..count)
+    // unconditionally), so a "patch one column" chunk would NULL out the others. We
+    // read the full row, mutate the target field in the read-back chunk, and write the
+    // whole chunk back.
+    agent_disk_t::unique_future<void> agent_disk_t::update_pg_attribute_commit_id_field_inner(
+        execution_context_t ctx,
+        components::catalog::oid_t attoid,
+        components::pg_attribute_commit_id_backfill_t::kind_t kind,
+        std::uint64_t commit_id) {
+        constexpr auto pg_attr_oid = components::catalog::well_known_oid::pg_attribute_table;
+        auto it = storages_.find(pg_attr_oid);
+        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
+            co_return;
+        }
+        auto& entry = it->second;
+
+        // Scan all columns for the attoid row, capturing row_id + a snapshot of
+        // every column value. attoid is never reused, so at most one row matches.
+        auto& tbl = entry->table_storage.table();
+        const std::size_t col_count = tbl.column_count();
+        std::vector<std::int64_t> all_col_indices;
+        all_col_indices.reserve(col_count);
+        for (std::size_t i = 0; i < col_count; ++i) {
+            all_col_indices.push_back(static_cast<std::int64_t>(i));
+        }
+
+        std::pmr::synchronized_pool_resource scan_resource;
+        std::pmr::vector<std::int64_t> row_ids(resource());
+        std::pmr::vector<components::types::logical_value_t> row_values(resource());
+        row_values.reserve(col_count);
+
+        detail::inline_scan(tbl,
+                            all_col_indices,
+                            &scan_resource,
+                            [&](components::vector::data_chunk_t& chunk, uint64_t i) {
+                                auto v0 = chunk.value(0, i);
+                                if (v0.is_null())
+                                    return true;
+                                if (static_cast<components::catalog::oid_t>(v0.value<std::uint32_t>()) !=
+                                    attoid)
+                                    return true;
+                                row_ids.push_back(chunk.row_ids.data<std::int64_t>()[i]);
+                                for (std::size_t c = 0; c < col_count; ++c) {
+                                    row_values.push_back(chunk.value(static_cast<uint64_t>(c), i));
+                                }
+                                return false; // single-row identity — short-circuit
+                            });
+        if (row_ids.empty()) {
             trace(log_,
-                  "agent_disk[{}]::drop_column_inner: oid {} column '{}' not found / DISK no-op",
+                  "agent_disk[{}]::update_pg_attribute_commit_id_field_inner: attoid={} not found (skipping)",
                   pool_idx_,
-                  static_cast<unsigned>(table_oid),
-                  attname);
-        } else {
+                  static_cast<unsigned>(attoid));
+            co_return;
+        }
+
+        // Patch the target column: 10 = added_at_commit_id, 11 = dropped_at_commit_id.
+        const std::size_t patch_col_idx =
+            (kind == components::pg_attribute_commit_id_backfill_t::kind_t::added_at) ? 10u : 11u;
+        if (patch_col_idx >= row_values.size()) {
             trace(log_,
-                  "agent_disk[{}]::drop_column_inner: oid {} dropped column '{}'",
+                  "agent_disk[{}]::update_pg_attribute_commit_id_field_inner: patch_col_idx={} out of range "
+                  "(col_count={})",
                   pool_idx_,
-                  static_cast<unsigned>(table_oid),
-                  attname);
+                  patch_col_idx,
+                  col_count);
+            co_return;
+        }
+        row_values[patch_col_idx] =
+            components::types::logical_value_t(resource(), static_cast<std::int64_t>(commit_id));
+
+        // Build a full-width update chunk: every column keeps its scanned value, only
+        // patch_col_idx gets the new commit_id. Aliases mirror the table's column names
+        // so direct_update_sync's name-match routing lands each vector on the correct
+        // storage column.
+        const auto& table_columns = entry->table_storage.table().columns();
+        std::pmr::vector<components::types::complex_logical_type> chunk_types(resource());
+        chunk_types.reserve(table_columns.size());
+        for (const auto& col_def : table_columns) {
+            auto t = col_def.type();
+            t.set_alias(col_def.name());
+            chunk_types.push_back(std::move(t));
+        }
+        components::vector::data_chunk_t patch(resource(), chunk_types, 1);
+        patch.set_cardinality(1);
+        for (std::size_t c = 0; c < table_columns.size() && c < row_values.size(); ++c) {
+            if (row_values[c].is_null()) {
+                patch.data[c].validity().set_invalid(0);
+            } else {
+                patch.data[c].set_value(0, row_values[c]);
+            }
+        }
+
+        // WAL physical_update: the chunk mirrors the patch chunk full-width so replay's
+        // direct_update_sync takes the same alias-matching path.
+        if (manager_wal_addr_ != actor_zeta::address_t::empty_address()) {
+            auto wal_chunk = std::make_unique<components::vector::data_chunk_t>(resource(), chunk_types, 1);
+            wal_chunk->set_cardinality(1);
+            for (std::size_t c = 0; c < table_columns.size() && c < row_values.size(); ++c) {
+                if (row_values[c].is_null()) {
+                    wal_chunk->data[c].validity().set_invalid(0);
+                } else {
+                    wal_chunk->data[c].set_value(0, row_values[c]);
+                }
+            }
+            std::pmr::vector<std::int64_t> wal_row_ids(row_ids.begin(), row_ids.end(), resource());
+            auto [_w, wf] = actor_zeta::send(manager_wal_addr_,
+                                             &wal::manager_wal_replicate_t::write_physical_update,
+                                             ctx.session,
+                                             pg_attr_oid,
+                                             std::move(wal_row_ids),
+                                             std::move(wal_chunk),
+                                             static_cast<std::uint64_t>(row_ids.size()),
+                                             ctx.txn.transaction_id,
+                                             components::catalog::well_known_oid::main_database);
+            if (auto wal_id = co_await std::move(wf); wal_id == wal::id_t{}) {
+                trace(log_,
+                      "agent_disk[{}]::update_pg_attribute_commit_id_field_inner: WAL write returned zero id "
+                      "for attoid={}",
+                      pool_idx_,
+                      static_cast<unsigned>(attoid));
+            }
+        }
+
+        direct_update_sync(pg_attr_oid, row_ids, patch);
+        co_return;
+    }
+
+    // Whole-op intra-agent compaction: read own slice (mode + columns), compute the
+    // columns NOT in live_attnames, drop each via entry->drop_column on its own slice,
+    // and return the dropped count. This eliminates the per-column manager↔agent
+    // round-trips the former manager body did.
+    agent_disk_t::unique_future<std::uint64_t>
+    agent_disk_t::compact_relkind_g_storage_inner(components::catalog::oid_t table_oid,
+                                                  std::set<std::string> live_attnames) {
+        auto it = storages_.find(table_oid);
+        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
+            co_return 0;
+        }
+        auto& entry = it->second;
+        if (entry->table_storage.mode() != storage_mode_t::IN_MEMORY) {
+            trace(log_,
+                  "agent_disk[{}]::compact_relkind_g_storage_inner: skip DISK-backed oid={} (out of scope)",
+                  pool_idx_,
+                  static_cast<unsigned>(table_oid));
+            co_return 0;
+        }
+
+        std::vector<std::string> to_drop;
+        {
+            const auto& cols = entry->table_storage.table().columns();
+            to_drop.reserve(cols.size());
+            for (const auto& c : cols) {
+                if (live_attnames.find(c.name()) == live_attnames.end()) {
+                    to_drop.push_back(c.name());
+                }
+            }
+        }
+
+        std::uint64_t dropped = 0;
+        for (const auto& attname : to_drop) {
+            if (entry->drop_column(attname, resource())) {
+                ++dropped;
+            } else {
+                trace(log_,
+                      "agent_disk[{}]::compact_relkind_g_storage_inner: oid {} column '{}' not "
+                      "found / DISK no-op",
+                      pool_idx_,
+                      static_cast<unsigned>(table_oid),
+                      attname);
+            }
+        }
+        co_return dropped;
+    }
+
+    // Runtime DROP path, canonical per-oid mark: read otbx_path + derive .wal_id/.prev
+    // sidecars from the own slice, then record the GC entry via
+    // register_dropped_storage_inner_sync. Replaces the manager-side storage_entry borrow
+    // at mark_storage_dropped_many. Synchronous (no co_await) — the caller runs on the
+    // agent thread.
+    void agent_disk_t::mark_storage_dropped_one_local(components::catalog::oid_t table_oid,
+                                                      uint64_t dropped_at_commit_id) {
+        trace(log_,
+              "agent_disk[{}]::mark_storage_dropped_one_local: oid {} commit_id {}",
+              pool_idx_,
+              static_cast<unsigned>(table_oid),
+              dropped_at_commit_id);
+        std::filesystem::path otbx_path;
+        std::pmr::vector<std::filesystem::path> sidecars{resource()};
+        if (auto it = storages_.find(table_oid); it != storages_.end() && it->second != nullptr) {
+            otbx_path = it->second->otbx_path;
+            if (!otbx_path.empty()) {
+                auto wal_id_sidecar = otbx_path;
+                wal_id_sidecar += ".wal_id";
+                sidecars.push_back(std::move(wal_id_sidecar));
+                auto prev_sidecar = otbx_path;
+                prev_sidecar += ".prev";
+                sidecars.push_back(std::move(prev_sidecar));
+            }
+        }
+        // IN_MEMORY storages leave otbx_path/sidecars empty, but we still record a GC
+        // entry so disk_has_dropped_ bookkeeping is uniform (sweep no-ops on empty path).
+        register_dropped_storage_inner_sync(table_oid,
+                                            dropped_at_commit_id,
+                                            std::move(otbx_path),
+                                            std::move(sidecars));
+    }
+
+    // Batched DROP-mark: one message per agent carries that agent's whole oid slice
+    // (manager partitioned by pool_idx_for_oid) plus the shared dropped_at_commit_id.
+    // Loops the canonical per-oid mark; an over-routed / not-owned oid records an empty
+    // GC entry (no-op sweep), matching the IN_MEMORY case.
+    agent_disk_t::unique_future<void>
+    agent_disk_t::mark_storage_dropped_many_inner(std::pmr::vector<components::catalog::oid_t> table_oids,
+                                                  uint64_t dropped_at_commit_id) {
+        for (auto table_oid : table_oids) {
+            mark_storage_dropped_one_local(table_oid, dropped_at_commit_id);
         }
         co_return;
     }

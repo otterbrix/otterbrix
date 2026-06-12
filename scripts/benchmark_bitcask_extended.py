@@ -55,109 +55,17 @@ import csv
 import os
 import random
 import shutil
-import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-
-def die(msg: str) -> None:
-    print(f"ERROR: {msg}", file=sys.stderr)
-    sys.exit(1)
-
-
-def run_process(args: list[str], cwd: Path, suppress_output: bool) -> None:
-    if suppress_output:
-        proc = subprocess.run(
-            args,
-            cwd=str(cwd),
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        if proc.returncode != 0:
-            raise subprocess.CalledProcessError(proc.returncode, args, output=proc.stdout)
-        return
-    subprocess.run(args, cwd=str(cwd), check=True)
-
-
-def generate_csv(csv_path: Path, rows: int, payload_bytes: int, shuffle_ids: bool) -> None:
-    if rows <= 0:
-        die("--rows must be > 0")
-    payload = "x" * payload_bytes
-    with csv_path.open("w", encoding="utf-8", newline="") as f:
-        f.write("id,payload\n")
-        if shuffle_ids:
-            step = rows - 1
-            for i in range(rows):
-                row_id = ((i * step) % rows) + 1
-                f.write(f"{row_id},{payload}\n")
-        else:
-            for i in range(rows):
-                f.write(f"{i + 1},{payload}\n")
-
-
-def create_scenario(path: Path, setup_sql: str, query_sql: str) -> None:
-    path.mkdir(parents=True, exist_ok=True)
-    (path / "_setup.sql").write_text(setup_sql.strip() + "\n", encoding="utf-8")
-    (path / "query.sql").write_text(query_sql.strip() + "\n", encoding="utf-8")
-
-
-def read_runner_csv(csv_path: Path) -> tuple[float, float, float, str]:
-    rows: list[dict[str, str]] = []
-    with csv_path.open("r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            rows.append(row)
-    if not rows:
-        die(f"Cannot parse benchmark output: {csv_path}")
-    avg_ms = sum(float(r["avg_ms"]) for r in rows) / len(rows)
-    median_ms = sum(float(r["median_ms"]) for r in rows) / len(rows)
-    timed_total_ms = sum(float(r["avg_ms"]) * float(r["nruns"]) for r in rows)
-    verified = "OK" if all(r["verified"] == "OK" for r in rows) else "FAIL"
-    return avg_ms, median_ms, timed_total_ms, verified
-
-
-def run_query_benchmark(
-    runner: Path, scenario_dir: Path, runs: int, suppress_output: bool
-) -> tuple[float, float, float, str]:
-    out_csv = scenario_dir / "result.csv"
-    cmd = [str(runner), "--file=query.sql", f"--runs={runs}", "--disk", f"--out={out_csv}"]
-    wall_start = time.perf_counter()
-    run_process(cmd, scenario_dir, suppress_output)
-    wall_ms = (time.perf_counter() - wall_start) * 1000.0
-    avg_ms, median_ms, timed_total_ms, verified = read_runner_csv(out_csv)
-    overhead_ms = max(0.0, wall_ms - timed_total_ms)
-    return avg_ms, median_ms, overhead_ms, verified
-
-
-def run_load_only_benchmark(runner: Path, scenario_dir: Path, suppress_output: bool) -> float:
-    cmd = [str(runner), "--file=query.sql", "--disk", "--load-only"]
-    wall_start = time.perf_counter()
-    run_process(cmd, scenario_dir, suppress_output)
-    return (time.perf_counter() - wall_start) * 1000.0
-
-
-def run_restart_benchmark(
-    runner: Path, scenario_dir: Path, runs: int, suppress_output: bool
-) -> tuple[float, float, float, str]:
-    out_csv = scenario_dir / "restart.csv"
-    cmd = [
-        str(runner),
-        "--file=query.sql",
-        f"--runs={runs}",
-        "--disk",
-        "--skip-load",
-        f"--out={out_csv}",
-    ]
-    wall_start = time.perf_counter()
-    run_process(cmd, scenario_dir, suppress_output)
-    wall_ms = (time.perf_counter() - wall_start) * 1000.0
-    avg_ms, median_ms, timed_total_ms, verified = read_runner_csv(out_csv)
-    startup_overhead_ms = max(0.0, wall_ms - timed_total_ms)
-    return avg_ms, median_ms, startup_overhead_ms, verified
+from benchlib import QUANTILE_PCTS
+from benchlib import generate_csv
+from benchlib import measure_load_only
+from benchlib import measure_lookup
+from benchlib import measure_restart
+from benchlib import timing_quantile_pairs
+from benchlib import write_scenario
 
 
 @dataclass
@@ -172,6 +80,16 @@ class BenchRow:
 
 def append_row(rows: list[BenchRow], benchmark: str, scenario: str, metric: str, value: float, unit: str, status: str) -> None:
     rows.append(BenchRow(benchmark, scenario, metric, value, unit, status))
+
+
+def append_query_quantiles(rows: list[BenchRow], benchmark: str, scenario: str, query) -> None:
+    for metric_name, value in timing_quantile_pairs(query.quantiles_ms):
+        append_row(rows, benchmark, scenario, metric_name, value, "ms", query.verified)
+
+
+def append_restart_quantiles(rows: list[BenchRow], benchmark: str, scenario: str, restart) -> None:
+    for metric_name, value in timing_quantile_pairs(restart.restart_quantiles_ms, prefix="restart_"):
+        append_row(rows, benchmark, scenario, metric_name, value, "ms", restart.verified)
 
 
 def write_summary_csv(path: Path, rows: list[BenchRow]) -> None:
@@ -204,11 +122,18 @@ def main() -> None:
     parser.add_argument("--shuffle-ids", action="store_true", help="Use pseudo-random id permutation.")
     parser.add_argument("--keep-workspace", action="store_true", help="Do not remove workspace after run.")
     parser.add_argument("--show-runner-output", action="store_true")
+    parser.add_argument(
+        "--checkpoint-mb",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Forward --csv-checkpoint-mb=N to benchmark_runner during load (0=off, periodic CHECKPOINT every N MiB).",
+    )
     args = parser.parse_args()
 
     runner = Path(args.runner).resolve()
     if not runner.exists():
-        die(f"runner does not exist: {runner}")
+        raise RuntimeError(f"runner does not exist: {runner}")
 
     suppress_output = not args.show_runner_output
     workspace = Path(args.workspace)
@@ -230,9 +155,24 @@ def main() -> None:
             scenario_dir = workspace / f"write_{scenario}"
             setup_sql = prepare_base_setup(db_name, base_csv, use_hash, 1000, 200)
             query_sql = "-- @expected_rows 1\nSELECT * FROM " + db_name + ".kv WHERE id = 1;"
-            create_scenario(scenario_dir, setup_sql, query_sql)
-            load_ms = run_load_only_benchmark(runner, scenario_dir, suppress_output)
+            write_scenario(scenario_dir, setup_sql, "query.sql", query_sql)
+            load_ms = measure_load_only(
+                runner,
+                scenario_dir,
+                query_file="query.sql",
+                checkpoint_mb=args.checkpoint_mb,
+                suppress_output=suppress_output,
+            )
             append_row(summary_rows, "write_load_only", scenario, "load_shutdown_ms", load_ms, "ms", "OK")
+            append_row(
+                summary_rows,
+                "write_load_only",
+                scenario,
+                "insert_ops_s",
+                args.rows / max(1e-9, load_ms / 1000.0),
+                "ops/s",
+                "OK",
+            )
 
         # 2) Mixed workload (multi-statement timed query)
         for scenario, use_hash in [("btree", False), ("bitcask_hash", True)]:
@@ -248,11 +188,29 @@ def main() -> None:
                 f"DELETE FROM {db_name}.kv WHERE id = {args.rows + 10};\n"
                 f"SELECT * FROM {db_name}.kv WHERE id = {hot_key};"
             )
-            create_scenario(scenario_dir, setup_sql, mixed_sql)
-            avg_ms, median_ms, overhead_ms, status = run_query_benchmark(runner, scenario_dir, args.runs, suppress_output)
-            append_row(summary_rows, "mixed_read_write", scenario, "avg_ms", avg_ms, "ms", status)
-            append_row(summary_rows, "mixed_read_write", scenario, "median_ms", median_ms, "ms", status)
-            append_row(summary_rows, "mixed_read_write", scenario, "overhead_ms", overhead_ms, "ms", status)
+            write_scenario(scenario_dir, setup_sql, "query.sql", mixed_sql)
+            query = measure_lookup(
+                runner,
+                scenario_dir,
+                query_file="query.sql",
+                runs=args.runs,
+                out_name="result.csv",
+                checkpoint_mb=args.checkpoint_mb,
+                suppress_output=suppress_output,
+            )
+            append_row(summary_rows, "mixed_read_write", scenario, "avg_ms", query.avg_ms, "ms", query.verified)
+            append_row(summary_rows, "mixed_read_write", scenario, "median_ms", query.median_ms, "ms", query.verified)
+            append_query_quantiles(summary_rows, "mixed_read_write", scenario, query)
+            append_row(summary_rows, "mixed_read_write", scenario, "overhead_ms", query.overhead_ms, "ms", query.verified)
+            append_row(
+                summary_rows,
+                "mixed_read_write",
+                scenario,
+                "query_ops_s",
+                args.runs / max(1e-9, query.wall_ms / 1000.0),
+                "ops/s",
+                query.verified,
+            )
 
         # 3) Range query benchmark
         for scenario, use_hash in [("btree", False), ("bitcask_hash", True)]:
@@ -262,11 +220,29 @@ def main() -> None:
             start_id = max(1, args.rows // 2)
             end_id = min(args.rows, start_id + 5000)
             range_sql = f"-- @expected_rows {end_id - start_id + 1}\nSELECT * FROM {db_name}.kv WHERE id >= {start_id} AND id <= {end_id};"
-            create_scenario(scenario_dir, setup_sql, range_sql)
-            avg_ms, median_ms, overhead_ms, status = run_query_benchmark(runner, scenario_dir, args.runs, suppress_output)
-            append_row(summary_rows, "range_query", scenario, "avg_ms", avg_ms, "ms", status)
-            append_row(summary_rows, "range_query", scenario, "median_ms", median_ms, "ms", status)
-            append_row(summary_rows, "range_query", scenario, "overhead_ms", overhead_ms, "ms", status)
+            write_scenario(scenario_dir, setup_sql, "query.sql", range_sql)
+            query = measure_lookup(
+                runner,
+                scenario_dir,
+                query_file="query.sql",
+                runs=args.runs,
+                out_name="result.csv",
+                checkpoint_mb=args.checkpoint_mb,
+                suppress_output=suppress_output,
+            )
+            append_row(summary_rows, "range_query", scenario, "avg_ms", query.avg_ms, "ms", query.verified)
+            append_row(summary_rows, "range_query", scenario, "median_ms", query.median_ms, "ms", query.verified)
+            append_query_quantiles(summary_rows, "range_query", scenario, query)
+            append_row(summary_rows, "range_query", scenario, "overhead_ms", query.overhead_ms, "ms", query.verified)
+            append_row(
+                summary_rows,
+                "range_query",
+                scenario,
+                "query_ops_s",
+                args.runs / max(1e-9, query.wall_ms / 1000.0),
+                "ops/s",
+                query.verified,
+            )
 
         # 4) Startup scaling by segment settings (bitcask only)
         for flush_threshold, segment_limit in [(1000, 200), (200, 50), (50, 20)]:
@@ -276,15 +252,39 @@ def main() -> None:
             setup_sql = prepare_base_setup(db_name, base_csv, True, flush_threshold, segment_limit)
             key = rng.randrange(1, args.rows + 1)
             query_sql = f"-- @expected_rows 1\nSELECT * FROM {db_name}.kv WHERE id = {key};"
-            create_scenario(scenario_dir, setup_sql, query_sql)
-            load_ms = run_load_only_benchmark(runner, scenario_dir, suppress_output)
-            avg_ms, median_ms, startup_overhead_ms, status = run_restart_benchmark(
-                runner, scenario_dir, args.restart_runs, suppress_output
+            write_scenario(scenario_dir, setup_sql, "query.sql", query_sql)
+            restart = measure_restart(
+                runner,
+                scenario_dir,
+                query_file="query.sql",
+                restart_runs=args.restart_runs,
+                restart_out_name="restart.csv",
+                checkpoint_mb=args.checkpoint_mb,
+                suppress_output=suppress_output,
             )
-            append_row(summary_rows, "startup_scaling", scenario, "load_shutdown_ms", load_ms, "ms", "OK")
-            append_row(summary_rows, "startup_scaling", scenario, "restart_avg_ms", avg_ms, "ms", status)
-            append_row(summary_rows, "startup_scaling", scenario, "restart_median_ms", median_ms, "ms", status)
-            append_row(summary_rows, "startup_scaling", scenario, "startup_overhead_ms", startup_overhead_ms, "ms", status)
+            append_row(summary_rows, "startup_scaling", scenario, "load_shutdown_ms", restart.load_shutdown_ms, "ms", "OK")
+            append_row(summary_rows, "startup_scaling", scenario, "restart_avg_ms", restart.restart_avg_ms, "ms", restart.verified)
+            append_row(summary_rows, "startup_scaling", scenario, "restart_median_ms", restart.restart_median_ms, "ms", restart.verified)
+            append_restart_quantiles(summary_rows, "startup_scaling", scenario, restart)
+            append_row(summary_rows, "startup_scaling", scenario, "startup_overhead_ms", restart.startup_overhead_ms, "ms", restart.verified)
+            append_row(
+                summary_rows,
+                "startup_scaling",
+                scenario,
+                "insert_ops_s",
+                args.rows / max(1e-9, restart.load_shutdown_ms / 1000.0),
+                "ops/s",
+                "OK",
+            )
+            append_row(
+                summary_rows,
+                "startup_scaling",
+                scenario,
+                "restart_query_ops_s",
+                args.restart_runs / max(1e-9, restart.restart_wall_ms / 1000.0),
+                "ops/s",
+                restart.verified,
+            )
 
         # 5) Flush-threshold sensitivity (point lookup)
         for flush_threshold in [50, 200, 1000, 5000]:
@@ -294,11 +294,29 @@ def main() -> None:
             setup_sql = prepare_base_setup(db_name, base_csv, True, flush_threshold, 200)
             key = rng.randrange(1, args.rows + 1)
             query_sql = f"-- @expected_rows 1\nSELECT * FROM {db_name}.kv WHERE id = {key};"
-            create_scenario(scenario_dir, setup_sql, query_sql)
-            avg_ms, median_ms, overhead_ms, status = run_query_benchmark(runner, scenario_dir, args.runs, suppress_output)
-            append_row(summary_rows, "flush_threshold_sensitivity", scenario, "avg_ms", avg_ms, "ms", status)
-            append_row(summary_rows, "flush_threshold_sensitivity", scenario, "median_ms", median_ms, "ms", status)
-            append_row(summary_rows, "flush_threshold_sensitivity", scenario, "overhead_ms", overhead_ms, "ms", status)
+            write_scenario(scenario_dir, setup_sql, "query.sql", query_sql)
+            query = measure_lookup(
+                runner,
+                scenario_dir,
+                query_file="query.sql",
+                runs=args.runs,
+                out_name="result.csv",
+                checkpoint_mb=args.checkpoint_mb,
+                suppress_output=suppress_output,
+            )
+            append_row(summary_rows, "flush_threshold_sensitivity", scenario, "avg_ms", query.avg_ms, "ms", query.verified)
+            append_row(summary_rows, "flush_threshold_sensitivity", scenario, "median_ms", query.median_ms, "ms", query.verified)
+            append_query_quantiles(summary_rows, "flush_threshold_sensitivity", scenario, query)
+            append_row(summary_rows, "flush_threshold_sensitivity", scenario, "overhead_ms", query.overhead_ms, "ms", query.verified)
+            append_row(
+                summary_rows,
+                "flush_threshold_sensitivity",
+                scenario,
+                "query_ops_s",
+                args.runs / max(1e-9, query.wall_ms / 1000.0),
+                "ops/s",
+                query.verified,
+            )
 
         # 6) Hot-key vs uniform point lookup (bitcask only)
         for scenario, key in [("hot_key", 1), ("uniform_key", rng.randrange(1, args.rows + 1))]:
@@ -306,11 +324,29 @@ def main() -> None:
             scenario_dir = workspace / f"hot_{scenario}"
             setup_sql = prepare_base_setup(db_name, base_csv, True, 1000, 200)
             query_sql = f"-- @expected_rows 1\nSELECT * FROM {db_name}.kv WHERE id = {key};"
-            create_scenario(scenario_dir, setup_sql, query_sql)
-            avg_ms, median_ms, overhead_ms, status = run_query_benchmark(runner, scenario_dir, args.runs, suppress_output)
-            append_row(summary_rows, "hotkey_vs_uniform", scenario, "avg_ms", avg_ms, "ms", status)
-            append_row(summary_rows, "hotkey_vs_uniform", scenario, "median_ms", median_ms, "ms", status)
-            append_row(summary_rows, "hotkey_vs_uniform", scenario, "overhead_ms", overhead_ms, "ms", status)
+            write_scenario(scenario_dir, setup_sql, "query.sql", query_sql)
+            query = measure_lookup(
+                runner,
+                scenario_dir,
+                query_file="query.sql",
+                runs=args.runs,
+                out_name="result.csv",
+                checkpoint_mb=args.checkpoint_mb,
+                suppress_output=suppress_output,
+            )
+            append_row(summary_rows, "hotkey_vs_uniform", scenario, "avg_ms", query.avg_ms, "ms", query.verified)
+            append_row(summary_rows, "hotkey_vs_uniform", scenario, "median_ms", query.median_ms, "ms", query.verified)
+            append_query_quantiles(summary_rows, "hotkey_vs_uniform", scenario, query)
+            append_row(summary_rows, "hotkey_vs_uniform", scenario, "overhead_ms", query.overhead_ms, "ms", query.verified)
+            append_row(
+                summary_rows,
+                "hotkey_vs_uniform",
+                scenario,
+                "query_ops_s",
+                args.runs / max(1e-9, query.wall_ms / 1000.0),
+                "ops/s",
+                query.verified,
+            )
 
         # 7) Large row-id list behavior (bitcask only): same key receives many logical matches
         duplicate_rows = min(args.rows, 40_000)
@@ -325,11 +361,29 @@ def main() -> None:
         scenario_dir = workspace / "large_rowlist"
         setup_sql = prepare_base_setup(db_name, dup_csv, True, 1000, 200)
         query_sql = f"-- @expected_rows {duplicate_rows}\nSELECT * FROM {db_name}.kv WHERE id = 7;"
-        create_scenario(scenario_dir, setup_sql, query_sql)
-        avg_ms, median_ms, overhead_ms, status = run_query_benchmark(runner, scenario_dir, args.runs, suppress_output)
-        append_row(summary_rows, "large_rowid_list", "bitcask_hash", "avg_ms", avg_ms, "ms", status)
-        append_row(summary_rows, "large_rowid_list", "bitcask_hash", "median_ms", median_ms, "ms", status)
-        append_row(summary_rows, "large_rowid_list", "bitcask_hash", "overhead_ms", overhead_ms, "ms", status)
+        write_scenario(scenario_dir, setup_sql, "query.sql", query_sql)
+        query = measure_lookup(
+            runner,
+            scenario_dir,
+            query_file="query.sql",
+            runs=args.runs,
+            out_name="result.csv",
+            checkpoint_mb=args.checkpoint_mb,
+            suppress_output=suppress_output,
+        )
+        append_row(summary_rows, "large_rowid_list", "bitcask_hash", "avg_ms", query.avg_ms, "ms", query.verified)
+        append_row(summary_rows, "large_rowid_list", "bitcask_hash", "median_ms", query.median_ms, "ms", query.verified)
+        append_query_quantiles(summary_rows, "large_rowid_list", "bitcask_hash", query)
+        append_row(summary_rows, "large_rowid_list", "bitcask_hash", "overhead_ms", query.overhead_ms, "ms", query.verified)
+        append_row(
+            summary_rows,
+            "large_rowid_list",
+            "bitcask_hash",
+            "query_ops_s",
+            args.runs / max(1e-9, query.wall_ms / 1000.0),
+            "ops/s",
+            query.verified,
+        )
 
         out_csv = workspace / "bitcask_extended_summary.csv"
         write_summary_csv(out_csv, summary_rows)

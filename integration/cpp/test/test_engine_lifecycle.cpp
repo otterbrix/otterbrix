@@ -3,6 +3,7 @@
 #include <integration/cpp/otterbrix.hpp>
 
 #include <array>
+#include <mutex>
 #include <sstream>
 #include <thread>
 
@@ -375,6 +376,40 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
     constexpr int batch_size = 100;
     static const database_name_t eviction_database_name = "evictiondb";
 
+    // session_id_t's constructor discards the fetch_add result and RE-READS the
+    // atomic counter (components/session/session.cpp:28-29), so two threads
+    // constructing concurrently can both observe the same counter value — and
+    // data_ is a 1-second-resolution timestamp, so the ids come out IDENTICAL.
+    // A duplicate session id makes both operations share one transaction in
+    // transaction_manager_t (begin_transaction is idempotent per session): the
+    // first commit drains/erases the shared txn and the other op fails. That is
+    // an engine bug (reported separately); until it is fixed the test serializes
+    // only the CONSTRUCTION — dispatch and engine-side execution stay fully
+    // concurrent, which is the pressure this case exists to apply.
+    std::mutex session_mutex;
+    auto make_session = [&session_mutex]() {
+        std::lock_guard<std::mutex> guard(session_mutex);
+        return otterbrix::session_id_t();
+    };
+
+    auto describe_failure = [](const components::cursor::cursor_t_ptr& cursor, size_t expected_size) -> std::string {
+        if (!cursor) {
+            return "null cursor";
+        }
+        if (cursor->is_error()) {
+            // The error code is spelled out too: the known checkpoint-vs-resolve
+            // engine race surfaces as table_not_exists with an EMPTY what.
+            const auto error = cursor->get_error();
+            return "error cursor: code " + std::to_string(static_cast<int>(error.type)) + ", what: '" +
+                   std::string(error.what.begin(), error.what.end()) + "'";
+        }
+        if (cursor->size() < expected_size) {
+            return "short result: got " + std::to_string(cursor->size()) + ", expected at least " +
+                   std::to_string(expected_size);
+        }
+        return {};
+    };
+
     INFO("initialization") {
         {
             auto session = otterbrix::session_id_t();
@@ -395,7 +430,8 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
         }
     }
 
-    auto insert_batch = [&](size_t collection, int iter) {
+    // Returns an empty string on success, the failure description otherwise.
+    auto insert_batch = [&](size_t collection, int iter) -> std::string {
         std::stringstream query;
         query << "INSERT INTO " << eviction_database_name << ".eviction_col_" << collection
               << " (name, count, c0, c1, c2, c3, c4, c5) VALUES ";
@@ -404,57 +440,67 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
             query << "('name_" << num << "', " << num << ", " << num << ", " << num << ", " << num << ", " << num
                   << ", " << num << ", " << num << ")" << (row == batch_size - 1 ? ";" : ", ");
         }
-        auto session = otterbrix::session_id_t();
+        auto session = make_session();
         auto cur = dispatcher->execute_sql(session, query.str());
-        return cur->is_success() && cur->size() == static_cast<size_t>(batch_size);
+        auto failure = describe_failure(cur, static_cast<size_t>(batch_size));
+        if (failure.empty() && cur->size() != static_cast<size_t>(batch_size)) {
+            failure = "insert size mismatch: got " + std::to_string(cur->size());
+        }
+        return failure;
     };
 
     INFO("preload: several row groups per collection, checkpointed") {
         // Multiple row groups (row group = 1024 rows) per table make each later
         // full scan a long burst of segment pin/unpin calls.
-        std::array<bool, num_collections> results{};
+        std::array<std::string, num_collections> failures{};
         std::vector<std::thread> threads;
         threads.reserve(num_collections);
         for (size_t id = 0; id < num_collections; ++id) {
             threads.emplace_back(
                 [&](size_t collection) {
-                    bool thread_ok = true;
-                    for (int iter = 0; iter < preload_batches && thread_ok; ++iter) {
-                        thread_ok = insert_batch(collection, iter);
+                    for (int iter = 0; iter < preload_batches; ++iter) {
+                        auto failure = insert_batch(collection, iter);
+                        if (!failure.empty()) {
+                            failures[collection] = "batch " + std::to_string(iter) + ": " + failure;
+                            break;
+                        }
                     }
-                    results[collection] = thread_ok;
                 },
                 id);
         }
         for (size_t id = 0; id < num_collections; ++id) {
             threads[id].join();
         }
-        for (bool res : results) {
-            REQUIRE(res);
+        for (size_t id = 0; id < num_collections; ++id) {
+            INFO("collection " << id << ": " << failures[id]);
+            REQUIRE(failures[id].empty());
         }
     }
 
     INFO("scan storm: 8 client threads, both disk agents busy") {
-        std::array<bool, num_threads> results{};
+        std::array<std::string, num_threads> failures{};
 
         auto work = [&](size_t id) {
             const size_t collection = id % num_collections;
             const std::string table = eviction_database_name + ".eviction_col_" + std::to_string(collection);
-            bool thread_ok = true;
-            for (int iter = 0; iter < num_iterations && thread_ok; ++iter) {
+            for (int iter = 0; iter < num_iterations; ++iter) {
                 if (id < num_collections && iter % 10 == 0) {
                     // One writer per collection keeps WAL auto-checkpoints
                     // running on the disk threads during the storm.
-                    thread_ok = insert_batch(collection, preload_batches + iter / 10);
-                    if (!thread_ok) {
-                        break;
+                    auto failure = insert_batch(collection, preload_batches + iter / 10);
+                    if (!failure.empty()) {
+                        failures[id] = "iter " + std::to_string(iter) + " insert: " + failure;
+                        return;
                     }
                 }
-                auto session = otterbrix::session_id_t();
+                auto session = make_session();
                 auto cur = dispatcher->execute_sql(session, "SELECT * FROM " + table + ";");
-                thread_ok = cur->is_success() && cur->size() >= static_cast<size_t>(preload_batches * batch_size);
+                auto failure = describe_failure(cur, static_cast<size_t>(preload_batches * batch_size));
+                if (!failure.empty()) {
+                    failures[id] = "iter " + std::to_string(iter) + " scan: " + failure;
+                    return;
+                }
             }
-            results[id] = thread_ok;
         };
 
         std::vector<std::thread> threads;
@@ -465,8 +511,9 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
         for (size_t id = 0; id < num_threads; ++id) {
             threads[id].join();
         }
-        for (bool res : results) {
-            REQUIRE(res);
+        for (size_t id = 0; id < num_threads; ++id) {
+            INFO("thread " << id << ": " << failures[id]);
+            REQUIRE(failures[id].empty());
         }
     }
 

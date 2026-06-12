@@ -1191,12 +1191,10 @@ namespace services::disk {
                   deleted,
                   total,
                   compact_watermark);
-            // compact_watermark is the dispatcher's visible-to-all horizon
-            // (txn_publish_msg return). compact() itself refuses the rebuild when
-            // any version stamp is above it — a concurrent snapshot or an
-            // in-flight (committed-but-unpublished) commit still needs the
-            // history — so reclaim is merely deferred to a later commit. The
-            // agent mailbox serializing the row_groups_ swap covers the data-race
+            // compact() refuses the rebuild when any version stamp is above the
+            // watermark (concurrent snapshot / in-flight commit still needs the
+            // history); reclaim is merely deferred to a later commit. The agent
+            // mailbox serializing the row_groups_ swap covers the data-race
             // side; the watermark covers version visibility.
             // Compact alone (no preceding cleanup_versions): scan_committed
             // depends on intact version metadata to filter tombstones;

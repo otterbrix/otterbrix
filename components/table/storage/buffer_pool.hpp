@@ -68,7 +68,7 @@ namespace components::table::storage {
         std::atomic<uint64_t> total_dead_nodes_;
         // serializes purge passes and the slow-path dequeue against an
         // in-flight purge (which briefly holds nodes in purge_nodes_);
-        // no longer guards queue access itself
+        // does not guard q itself (q is lock-free)
         std::mutex purge_lock_;
         std::vector<buffer_eviction_node_t> purge_nodes_;
     };

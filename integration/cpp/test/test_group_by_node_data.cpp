@@ -75,7 +75,7 @@ namespace {
             GROUP BY c.campaign_name ORDER BY product_count DESC;)";
 
         // The raw AST lives in an arena — raw_parser allocations are never
-        // freed individually (mirrors how embedders manage parser memory).
+        // freed individually.
         std::pmr::monotonic_buffer_resource arena(resource);
         auto* raw = raw_parser(&arena, sql);
         REQUIRE(raw != nullptr);

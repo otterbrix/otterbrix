@@ -5,24 +5,12 @@
 // validity_mask_t over external buffers carries its resource
 // ==========================================================
 //
-// The pointer constructor (components/vector/validation.hpp)
-//
-//     validity_mask_t(std::pmr::memory_resource* resource, uint64_t* ptr)
-//
-// wraps an externally owned bit buffer AND records the memory resource that
-// every allocating member function draws from (components/vector/validation.cpp):
-//
-//   - copy ctor      -> make_shared<validity_data_t>(resource_, ...)
-//   - copy operator= -> make_shared<validity_data_t>(resource_, ...)
-//   - combine()      -> make_shared<validity_data_t>(resource_, ...)
-//   - slice(offset)  -> validity_mask_t(resource(), count)
-//   - set(row,false) and set_invalid/set_valid lazy resize(resource_, ...)
-//     paths — only reachable when validity_mask_ is null
-//
-// The previous single-argument form left resource_ == nullptr, so every path
-// above dereferenced a null resource (SIGSEGV). The [validity-null-resource]
-// cases below crashed before the fix; they now assert the actual copy /
-// combine / slice bit semantics on pointer-constructed masks.
+// The pointer constructor validity_mask_t(resource, ptr) wraps an externally
+// owned bit buffer AND records the memory resource that every allocating
+// member function draws from: copy ctor, copy operator=, combine(),
+// slice(offset), and the lazy-resize paths of set()/set_invalid/set_valid.
+// The [validity-null-resource] cases assert those allocating paths on
+// pointer-constructed masks.
 //
 // Note: all_valid() is defined as !validity_mask_, so a pointer-constructed
 // mask over a non-null buffer is never "all valid" even when every bit is set;
@@ -104,9 +92,8 @@ TEST_CASE("validity_mask_t: copy and move of all-valid / pointer-constructed mas
 }
 
 // ---------------------------------------------------------------------------
-// Allocating paths on pointer-constructed masks. Each case dereferenced the
-// null resource_ and crashed (SIGSEGV) before the resource-carrying
-// constructor landed; now they assert the resulting bit state.
+// Allocating paths on pointer-constructed masks: each must allocate from the
+// carried resource and leave the external buffer untouched.
 // ---------------------------------------------------------------------------
 
 TEST_CASE("validity_mask_t: copy-constructing from a pointer-constructed mask with an invalid bit",

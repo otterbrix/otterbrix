@@ -803,8 +803,7 @@ namespace services::dispatcher {
         // stamp scan refuses the rebuild when ANY version stamp is above it —
         // another active txn's snapshot, or a committed-but-unpublished commit
         // still sitting in in_flight_commits_, could otherwise lose versions it
-        // must still see (the old 0/1 active-txn gate missed the in-flight
-        // window entirely). Distinct from the commit-id-space GC horizon
+        // must still see. Distinct from the commit-id-space GC horizon
         // broadcast above (lowest_active_snapshot_horizon), which bounds the
         // DROP-tombstone sweep, not version-history collapse.
         co_return txn_manager_.compact_watermark();

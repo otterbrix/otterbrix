@@ -528,7 +528,7 @@ namespace {
 
 } // anonymous namespace
 
-// MVCC violation (b): compact() must not collapse version history that an OLDER
+// MVCC violation: compact() must not collapse version history that an OLDER
 // active snapshot still needs. txn2's snapshot predates the row-0 update (delete +
 // replacement append, both committed AND published) — after compact, txn2 must
 // still see the PRE-update version of row 0 and must NOT see the replacement.
@@ -592,7 +592,7 @@ TEST_CASE("components::table::mvcc::compact_preserves_old_snapshot_view") {
     mgr.abort(s6);
 }
 
-// MVCC violation (a): the mid-update in-flight window. txn3 committed (commit_id
+// MVCC violation: the mid-update in-flight window. txn3 committed (commit_id
 // allocated, still in in_flight_commits_ — publish() pending), the DELETE side is
 // already storage-stamped with the commit_id but the replacement append is NOT yet
 // commit_append-stamped (storage_publish in flight). A compact() fired in this

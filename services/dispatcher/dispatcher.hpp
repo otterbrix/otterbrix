@@ -138,8 +138,7 @@ namespace services::dispatcher {
         // COMPACT-WATERMARK (txn_manager_.compact_watermark(), commit-id value
         // space): the visible-to-all horizon the maybe_cleanup fan-out hands to
         // data_table_t::compact(). Any version stamp above it (another txn's
-        // snapshot, an in-flight commit) makes the compact a no-op, so the
-        // watermark replaces the old 0/1 gate with the exact safety condition.
+        // snapshot, an in-flight commit) makes the compact a no-op.
         unique_future<uint64_t> txn_publish_msg(uint64_t commit_id);
         // Read-only fetch of txn_manager_.compact_watermark() for the
         // checkpoint/vacuum paths (operator_checkpoint, operator_vacuum and the

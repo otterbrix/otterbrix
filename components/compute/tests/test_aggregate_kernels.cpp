@@ -5,13 +5,7 @@ using namespace components::compute;
 using namespace components::types;
 using namespace components::vector;
 
-// Characterization: builtin aggregate kernels over EMPTY input
-// ============================================================
-//
-// components/compute/kernels/aggregate.cpp registers five builtin aggregates
-// (sum, min, max, count — including the zero-argument COUNT(*) kernel — and
-// avg). These tests pin down their behavior when the consumed chunk has zero
-// rows:
+// Builtin aggregate kernels (compute/kernels/aggregate.cpp) over EMPTY input:
 //
 //   - sum / min / max / avg : one NA (NULL) placeholder per consumed batch;
 //   - count / count(*)      : one UBIGINT zero per consumed batch;

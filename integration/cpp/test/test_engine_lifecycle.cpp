@@ -7,20 +7,15 @@
 #include <sstream>
 #include <thread>
 
-// Reproduction tests for two downstream (otterstax) findings:
+// Engine lifecycle invariants:
 //
-// 1. TSAN showed intrusive_ptr<otterbrix_t> use_count() hitting 0 while TWO
-//    owners were still alive -> the whole engine was deleted prematurely (UAF).
-//    The factory (make_otterbrix) and the downstream wrapper hold one reference
-//    each and were verified correct, so the suspicion is an operation on the
-//    execute path losing one reference. These cases pin use_count() == 2 after
-//    every operation the downstream wrapper performs.
+// 1. With multiple owners of an intrusive_ptr<otterbrix_t>, no operation on
+//    the execute path may lose a reference — every owner must keep the engine
+//    alive on its own. The refcount cases pin use_count() after each operation.
 //
-// 2. A data race at buffer_pool.cpp:33: eviction_queue_t::add_to_eviction_queue
-//    pushes into std::queue without taking purge_lock_, racing against
-//    try_dequeue_with_lock/purge and against concurrent unpin calls from other
-//    threads. The concurrent case drives storage_append_inner +
-//    storage_scan_batched + unpin paths from 4 client threads with disk on.
+// 2. The buffer pool eviction queue must survive concurrent unpin pressure:
+//    add_to_eviction_queue from client/scan threads racing against
+//    try_dequeue_with_lock/purge on the disk manager threads.
 
 static const database_name_t lifecycle_database_name = "lifecycledb";
 static const collection_name_t lifecycle_collection_one = "lifecycle_col_one";
@@ -40,9 +35,9 @@ namespace {
         return columns;
     }
 
-    // Mirrors the downstream wrapper (OtterbrixDataManager): holds the engine
-    // by value as a second/third owner and funnels every operation through
-    // dispatcher()->execute_sql / execute_plan with a fresh session per call.
+    // Embedder-style wrapper: holds the engine by value as an extra owner and
+    // funnels every operation through the dispatcher with a fresh session per
+    // call.
     class lifecycle_wrapper_t final {
     public:
         explicit lifecycle_wrapper_t(otterbrix::otterbrix_ptr engine)
@@ -114,8 +109,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount", "[engin
     }
 
     INFO("create collection via raw node, reading the planner-stamped oid") {
-        // Same idiom the downstream wrapper uses: keep the create node and read
-        // table_oid() off it after execute_plan stamped it.
+        // Keep the create node: execute_plan stamps table_oid() onto it.
         auto create = components::logical_plan::make_node_create_collection(resource,
                                                                             core::relname_t{lifecycle_collection_two},
                                                                             lifecycle_columns(resource),
@@ -166,10 +160,9 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount", "[engin
 }
 
 TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_client_thread", "[engine-lifecycle]") {
-    // Downstream calls into the engine from non-actor client threads; replicate
-    // the same operation sequence from a second std::thread. REQUIRE behaves
-    // badly off the main thread, so snapshots are collected and checked after
-    // join (same pattern as test_connections).
+    // Same sequence, but driven from a non-actor client thread. Catch2 REQUIRE
+    // is unsafe off the main thread, so results are snapshotted and checked
+    // after join.
     auto config = test_create_config("/tmp/test_engine_lifecycle/refcount_thread");
     test_clear_directory(config);
     components::compute::function_registry_t::reset_default();
@@ -258,10 +251,9 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_client_th
 }
 
 TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_wrapper_style", "[engine-lifecycle]") {
-    // Closest replica of the downstream UAF scenario: a wrapper object owns a
-    // by-value copy of the engine (third owner while alive), all SQL goes
-    // through it from a non-actor client thread, including the LIMIT 0 schema
-    // probes downstream get_schema issues per table.
+    // A wrapper owning a by-value copy of the engine (third owner while alive)
+    // must keep it alive while a non-actor client thread issues SQL through it,
+    // including per-table LIMIT 0 schema probes.
     auto config = test_create_config("/tmp/test_engine_lifecycle/refcount_wrapper");
     test_clear_directory(config);
     components::compute::function_registry_t::reset_default();
@@ -301,7 +293,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_wrapper_s
                 ++op;
             }
             {
-                // get_schema idiom: LIMIT 0 probe per table.
+                // Schema probe: LIMIT 0 per table.
                 auto cur = wrapper.execute_sql("SELECT * FROM " + lifecycle_database_name + "." +
                                                lifecycle_collection_one + " LIMIT 0;");
                 ok[op] = cur->is_success();
@@ -350,16 +342,15 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_wrapper_s
 }
 
 TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_eviction", "[engine-lifecycle]") {
-    // Functional smoke under a plain build; under TSAN this drives concurrent
-    // unpin -> eviction_queue_t::add_to_eviction_queue (buffer_pool.cpp:33,
-    // unsynchronized std::queue push) from client/scan threads vs the disk
-    // manager threads. disk.on stays true so appends/scans run through
-    // manager_disk's standard_buffer_manager_t.
+    // Functional smoke under a plain build; under TSAN it drives concurrent
+    // unpin -> eviction_queue_t::add_to_eviction_queue from client/scan threads
+    // against try_dequeue_with_lock/purge on the disk manager threads. disk.on
+    // must stay true so appends/scans run through standard_buffer_manager_t.
     auto config = test_create_config("/tmp/test_engine_lifecycle/eviction");
     test_clear_directory(config);
     // Aggressive auto-checkpointing keeps checkpoint_all running on the disk
-    // threads while the other agent's scans pin/unpin checkpointed (persistent)
-    // blocks — the exact unpin-vs-purge interleaving of the downstream race.
+    // threads while scans pin/unpin checkpointed (persistent) blocks —
+    // exercising the unpin-vs-purge interleaving.
     config.wal.auto_checkpoint_threshold_bytes = 1024;
     // pool_idx_for_oid reserves agent 0 for catalog oids and maps user tables
     // to 1 + (oid % (agent - 1)); with the default agent = 2 every user table
@@ -376,16 +367,11 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
     constexpr int batch_size = 100;
     static const database_name_t eviction_database_name = "evictiondb";
 
-    // session_id_t's constructor discards the fetch_add result and RE-READS the
-    // atomic counter (components/session/session.cpp:28-29), so two threads
-    // constructing concurrently can both observe the same counter value — and
-    // data_ is a 1-second-resolution timestamp, so the ids come out IDENTICAL.
-    // A duplicate session id makes both operations share one transaction in
-    // transaction_manager_t (begin_transaction is idempotent per session): the
-    // first commit drains/erases the shared txn and the other op fails. That is
-    // an engine bug (reported separately); until it is fixed the test serializes
-    // only the CONSTRUCTION — dispatch and engine-side execution stay fully
-    // concurrent, which is the pressure this case exists to apply.
+    // Duplicate session ids would be fatal here: begin_transaction is
+    // idempotent per session, so two operations sharing an id share one
+    // transaction and the first commit erases it under the other. Serialize
+    // only session CONSTRUCTION — dispatch and engine-side execution stay
+    // fully concurrent, which is the pressure this case exists to apply.
     std::mutex session_mutex;
     auto make_session = [&session_mutex]() {
         std::lock_guard<std::mutex> guard(session_mutex);
@@ -397,8 +383,8 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
             return "null cursor";
         }
         if (cursor->is_error()) {
-            // The error code is spelled out too: the known checkpoint-vs-resolve
-            // engine race surfaces as table_not_exists with an EMPTY what.
+            // Spell out the error code: some failures (e.g. table_not_exists)
+            // arrive with an empty what.
             const auto error = cursor->get_error();
             return "error cursor: code " + std::to_string(static_cast<int>(error.type)) + ", what: '" +
                    std::string(error.what.begin(), error.what.end()) + "'";

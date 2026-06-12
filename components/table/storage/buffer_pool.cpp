@@ -1,5 +1,6 @@
 #include "buffer_pool.hpp"
 #include <cstdlib>
+#include <new>
 #include <stdexcept>
 #include <string>
 
@@ -29,19 +30,45 @@ namespace components::table::storage {
         return handle_ptr;
     }
 
+    eviction_queue_t::~eviction_queue_t() {
+        buffer_eviction_node_t* ptr = nullptr;
+        while (q.pop(ptr)) {
+            destroy_node(ptr);
+        }
+    }
+
+    void eviction_queue_t::enqueue(buffer_eviction_node_t&& node) {
+        auto* ptr = static_cast<buffer_eviction_node_t*>(
+            resource_->allocate(sizeof(buffer_eviction_node_t), alignof(buffer_eviction_node_t)));
+        new (ptr) buffer_eviction_node_t(std::move(node));
+        q.push(ptr);
+        approx_q_size_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void eviction_queue_t::destroy_node(buffer_eviction_node_t* node) {
+        node->~buffer_eviction_node_t();
+        resource_->deallocate(node, sizeof(buffer_eviction_node_t), alignof(buffer_eviction_node_t));
+    }
+
     bool eviction_queue_t::add_to_eviction_queue(buffer_eviction_node_t&& node) {
-        q.push(std::move(node));
+        enqueue(std::move(node));
         return ++evict_queue_insertions_ % INSERT_INTERVAL == 0;
+    }
+
+    bool eviction_queue_t::try_dequeue(buffer_eviction_node_t& node) {
+        buffer_eviction_node_t* ptr = nullptr;
+        if (!q.pop(ptr)) {
+            return false;
+        }
+        approx_q_size_.fetch_sub(1, std::memory_order_relaxed);
+        node = std::move(*ptr);
+        destroy_node(ptr);
+        return true;
     }
 
     bool eviction_queue_t::try_dequeue_with_lock(buffer_eviction_node_t& node) {
         std::lock_guard lock(purge_lock_);
-        if (q.empty()) {
-            return false;
-        }
-        node = std::move(q.front());
-        q.pop();
-        return true;
+        return try_dequeue(node);
     }
 
     void eviction_queue_t::purge() {
@@ -51,7 +78,7 @@ namespace components::table::storage {
         std::lock_guard lock{purge_lock_, std::adopt_lock};
 
         uint64_t purge_size = INSERT_INTERVAL * PURGE_SIZE_MULTIPLIER;
-        uint64_t approx_q_size = q.size();
+        uint64_t approx_q_size = approx_q_size_.load(std::memory_order_relaxed);
 
         if (approx_q_size < purge_size * EARLY_OUT_MULTIPLIER) {
             return;
@@ -61,7 +88,7 @@ namespace components::table::storage {
         while (max_purges != 0) {
             purge_iteration(purge_size);
 
-            approx_q_size = q.size();
+            approx_q_size = approx_q_size_.load(std::memory_order_relaxed);
 
             if (approx_q_size < purge_size * EARLY_OUT_MULTIPLIER) {
                 break;
@@ -86,15 +113,11 @@ namespace components::table::storage {
         }
 
         uint64_t actually_dequeued = purge_size;
-        auto it = purge_nodes_.begin();
         for (size_t i = 0; i < purge_size; i++) {
-            if (q.empty()) {
+            if (!try_dequeue(purge_nodes_[i])) {
                 actually_dequeued = i;
                 break;
             }
-            *it = std::move(q.front());
-            q.pop();
-            ++it;
         }
 
         uint64_t alive_nodes = 0;
@@ -102,7 +125,7 @@ namespace components::table::storage {
             auto& node = purge_nodes_[i];
             auto handle = node.try_get_block_handle();
             if (handle) {
-                q.push(std::move(node));
+                enqueue(std::move(node));
                 alive_nodes++;
             }
         }
@@ -114,13 +137,13 @@ namespace components::table::storage {
     void eviction_queue_t::iterate_unloadable_blocks(FN fn) {
         for (;;) {
             buffer_eviction_node_t node;
-            if (q.empty()) {
+            if (!try_dequeue(node)) {
+                // retry under purge_lock_: a concurrent purge may briefly
+                // hold alive nodes outside the queue (in purge_nodes_)
                 if (!try_dequeue_with_lock(node)) {
                     return;
                 }
             }
-            node = std::move(q.front());
-            q.pop();
 
             auto handle = node.try_get_block_handle();
             if (!handle) {
@@ -153,7 +176,7 @@ namespace components::table::storage {
             const auto type = static_cast<file_buffer_type>(type_idx + 1);
             const auto& type_queue_size = eviction_queue_sizes[type_idx];
             for (uint64_t queue_idx = 0; queue_idx < type_queue_size; queue_idx++) {
-                queues.push_back(std::make_unique<eviction_queue_t>(type));
+                queues.push_back(std::make_unique<eviction_queue_t>(type, resource));
             }
         }
     }

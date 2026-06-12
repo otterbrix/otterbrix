@@ -68,14 +68,15 @@ namespace services::index {
             case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::remove_many>:
                 co_await actor_zeta::dispatch(this, &index_agent_disk_t::remove_many, msg);
                 break;
+            case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::force_flush>:
+                co_await actor_zeta::dispatch(this, &index_agent_disk_t::force_flush, msg);
+                break;
             default:
                 break;
         }
     }
 
     auto index_agent_disk_t::make_type() const noexcept -> const char* { return "index_agent_disk"; }
-
-    bool index_agent_disk_t::is_dropped() const { return is_dropped_; }
 
     index_agent_disk_t::unique_future<void> index_agent_disk_t::drop(session_id_t session) {
         trace(log_, "index_agent_disk_t::drop, session: {}", session.data());
@@ -158,12 +159,15 @@ namespace services::index {
         co_return core::error_t::no_error();
     }
 
-    // Synchronous owner-side entry — called by manager_index_t outside the
-    // actor mailbox.
-    void index_agent_disk_t::force_flush_sync() {
+    index_agent_disk_t::unique_future<void> index_agent_disk_t::force_flush(session_id_t session) {
+        // A dropped agent has no backing — flushing it would be a use-after-free,
+        // so skip. The is_dropped_ guard lives here now (was the owner-side check
+        // in manager_index_t::flush_all_indexes before this became a mailbox op).
+        trace(log_, "index_agent_disk_t::force_flush, session: {}", session.data());
         if (index_disk_ && !is_dropped_) {
             index_disk_->force_flush();
         }
+        co_return;
     }
 
 } //namespace services::index

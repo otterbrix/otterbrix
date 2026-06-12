@@ -99,7 +99,7 @@ namespace components::operators {
                                                  exec_ctx,
                                                  kPgNamespace,
                                                  std::move(ns_keys),
-                                                 std::move(ns_vals));
+                                                 components::operators::make_key_chunk(resource_, std::move(ns_vals)));
                 auto ns_batches = co_await std::move(nf);
                 if (!ns_batches.empty() && ns_batches[0].size() != 0 && ns_batches[0].column_count() >= 1) {
                     auto ns_oid_v = ns_batches[0].value(0, 0);
@@ -126,7 +126,7 @@ namespace components::operators {
                                              exec_ctx,
                                              kPgType,
                                              std::move(typ_keys),
-                                             std::move(typ_vals));
+                                             components::operators::make_key_chunk(resource_, std::move(typ_vals)));
             auto batches = co_await std::move(tf);
 
             if (!batches.empty() && batches.front().size() != 0 && batches.front().column_count() >= 4) {

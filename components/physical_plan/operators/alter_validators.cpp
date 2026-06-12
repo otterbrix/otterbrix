@@ -1,6 +1,7 @@
 #include "alter_validators.hpp"
 
 #include <components/catalog/system_table_schemas.hpp>
+#include <components/physical_plan/operators/operator_data.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <services/disk/manager_disk.hpp>
@@ -30,7 +31,7 @@ namespace components::operators::alter_validators {
                                           exec_ctx,
                                           pg_attr_oid,
                                           std::move(keys),
-                                          std::move(vals));
+                                          components::operators::make_key_chunk(resource, std::move(vals)));
         std::pmr::vector<components::vector::data_chunk_t> batches = co_await std::move(fut);
 
         // pg_attribute column layout (system_table_schemas.cpp::pg_attribute_columns):
@@ -101,7 +102,7 @@ namespace components::operators::alter_validators {
                                           exec_ctx,
                                           pg_dep_oid,
                                           std::move(keys),
-                                          std::move(vals));
+                                          components::operators::make_key_chunk(resource, std::move(vals)));
         std::pmr::vector<components::vector::data_chunk_t> batches = co_await std::move(fut);
 
         std::pmr::vector<std::pair<int, catalog::oid_t>> out(resource);

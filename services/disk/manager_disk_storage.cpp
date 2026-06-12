@@ -9,15 +9,10 @@ namespace services::disk {
     uint64_t manager_disk_t::direct_append_sync(catalog::oid_t table_oid,
                                                 components::vector::data_chunk_t& data,
                                                 core::date::timezone_offset_t session_tz) {
-        return direct_append_sync(table_oid, data, session_tz, components::table::transaction_data{0, 0});
-    }
-
-    uint64_t manager_disk_t::direct_append_sync(catalog::oid_t table_oid,
-                                                components::vector::data_chunk_t& data,
-                                                core::date::timezone_offset_t session_tz,
-                                                const components::table::transaction_data& txn) {
-        // The storage_entry_sync borrow is safe here: direct_append_sync runs only
-        // pre-scheduler-start (WAL replay / bootstrap) or inside the manager mailbox.
+        // Bootstrap / WAL-replay only (pre-scheduler-start). Replay records carry no
+        // MVCC txn, so the append commits under transaction_data{0, 0}. The
+        // storage_entry_sync borrow is safe in this single-threaded window.
+        const components::table::transaction_data txn{0, 0};
         components::storage::storage_t* s = nullptr;
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
@@ -96,16 +91,12 @@ namespace services::disk {
     void manager_disk_t::direct_delete_sync(catalog::oid_t table_oid,
                                             const std::pmr::vector<int64_t>& row_ids,
                                             uint64_t count) {
-        direct_delete_sync(table_oid, row_ids, count, components::table::transaction_data{0, 0});
-    }
-
-    void manager_disk_t::direct_delete_sync(catalog::oid_t table_oid,
-                                            const std::pmr::vector<int64_t>& row_ids,
-                                            uint64_t count,
-                                            const components::table::transaction_data& txn) {
+        // Bootstrap / WAL-replay only; routes the physical delete to the owning agent
+        // under transaction_data{0, 0} (replay carries no MVCC txn).
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
-            agents_[pool_idx]->direct_delete_sync(table_oid, row_ids, count, txn);
+            agents_[pool_idx]->direct_delete_sync(
+                table_oid, row_ids, count, components::table::transaction_data{0, 0});
         }
     }
 
@@ -128,16 +119,20 @@ namespace services::disk {
               "manager_disk_t::create_storage , session : {} , oid : {}",
               session.data(),
               static_cast<unsigned>(table_oid));
-        // Route CREATE through the agent slice. Safety contract:
-        //   1. No agent mailbox handler MUTATES storages_ (find-only).
-        //   2. The new OID is not yet visible to any router: this handler
-        //      publishes it.
-        //   3. The manager actor processes one message at a time.
+        // Pure router: the IN_MEMORY entry is built with the AGENT's own resource() on
+        // the agent thread (create_storage_inner). Only the oid crosses the mailbox; no
+        // entry is constructed on the manager thread.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
-            auto twin = std::make_unique<collection_storage_entry_t>(agent->resource());
-            const bool ok = agent->bootstrap_inner_sync(table_oid, std::move(twin));
+            auto [needs_sched, fut] =
+                actor_zeta::otterbrix::send(agent->address(), &agent_disk_t::create_storage_inner, table_oid);
+            if (needs_sched) {
+                scheduler_disk_->enqueue(agent.get());
+            }
+            // Await so the storage exists before the future resolves; the bool result
+            // signals dup-key — drop it (the agent already logged the duplicate).
+            const bool ok = co_await std::move(fut);
             if (!ok) {
                 trace(log_,
                       "manager_disk_t::create_storage: agent[{}] already owned oid {}",
@@ -157,13 +152,20 @@ namespace services::disk {
               "manager_disk_t::create_storage_with_columns , session : {} , oid : {}",
               session.data(),
               static_cast<unsigned>(table_oid));
-        // Route CREATE through the agent slice. Safety contract: see
-        // create_storage above.
+        // Pure router: columns cross the mailbox by value (same as today's by-value
+        // parameter); the entry is built on the agent thread via
+        // create_storage_with_columns_inner. No entry on the manager thread.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
-            auto twin = std::make_unique<collection_storage_entry_t>(agent->resource(), std::move(columns));
-            const bool ok = agent->bootstrap_inner_sync(table_oid, std::move(twin));
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                                   &agent_disk_t::create_storage_with_columns_inner,
+                                                                   table_oid,
+                                                                   std::move(columns));
+            if (needs_sched) {
+                scheduler_disk_->enqueue(agent.get());
+            }
+            const bool ok = co_await std::move(fut);
             if (!ok) {
                 trace(log_,
                       "manager_disk_t::create_storage_with_columns: agent[{}] already owned oid {}",
@@ -183,15 +185,12 @@ namespace services::disk {
               "manager_disk_t::create_storage_disk , session : {} , oid : {}",
               session.data(),
               static_cast<unsigned>(table_oid));
+        // Pure router for runtime CREATE TABLE … DISK. The manager only derives the
+        // path string; create_directories + SFBM construction (which holds the
+        // exclusive posix WRITE_LOCK) both run on the agent thread via
+        // create_storage_disk_inner. Only oid/columns(by value)/path cross the mailbox.
         auto otbx_path = config_.path / std::to_string(static_cast<unsigned>(database_oid)) /
                          std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
-        std::filesystem::create_directories(otbx_path.parent_path());
-        // Runtime CREATE TABLE … DISK. The SFBM is constructed on the routed agent
-        // via bootstrap_create_disk_inner_sync; the manager never opens .otbx
-        // (single_file_block_manager_t holds an exclusive posix WRITE_LOCK, so only
-        // the agent path may emplace). Same sync-call safety contract as
-        // create_storage above. The helper is noexcept and probes storages_ before
-        // constructing the SFBM, so the dup-key path is observable-but-non-fatal.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
@@ -200,36 +199,66 @@ namespace services::disk {
                   static_cast<unsigned>(table_oid),
                   pool_idx,
                   otbx_path.string());
-            const bool ok = agent->bootstrap_create_disk_inner_sync(table_oid, std::move(columns), otbx_path);
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                                   &agent_disk_t::create_storage_disk_inner,
+                                                                   table_oid,
+                                                                   std::move(columns),
+                                                                   std::move(otbx_path));
+            if (needs_sched) {
+                scheduler_disk_->enqueue(agent.get());
+            }
+            const bool ok = co_await std::move(fut);
             if (!ok) {
                 trace(log_,
-                      "manager_disk_t::create_storage_disk: agent[{}] already owns oid {} (path={})",
+                      "manager_disk_t::create_storage_disk: agent[{}] already owns oid {}",
                       pool_idx,
-                      static_cast<unsigned>(table_oid),
-                      otbx_path.string());
+                      static_cast<unsigned>(table_oid));
             }
         }
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::drop_storage(session_id_t session, catalog::oid_t table_oid) {
-        trace(log_,
-              "manager_disk_t::drop_storage , session : {} , oid : {}",
-              session.data(),
-              static_cast<unsigned>(table_oid));
-        // The agent owns the canonical erase + filesystem-remove in
-        // drop_storage_inner, idempotent on a missing key (DROP IF EXISTS / WAL
-        // re-drop / not-routed-here all log a no-op). co_await preserves ordering
-        // w.r.t. operator_dynamic_cascade_delete's subsequent sends.
-        if (!agents_.empty()) {
-            const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
-            auto& agent = agents_[pool_idx];
-            auto [needs_sched, fut] =
-                actor_zeta::otterbrix::send(agent->address(), &agent_disk_t::drop_storage_inner, table_oid);
+    manager_disk_t::unique_future<void>
+    manager_disk_t::drop_storage_many(session_id_t /*session*/,
+                                      std::pmr::vector<components::catalog::oid_t> table_oids) {
+        // Partition oids per owning agent (pool_idx_for_oid), then fan out one
+        // drop_storage_many_inner per agent in PARALLEL — a per-oid singular drop
+        // would route one agent per oid with a co_await each, so N drops cost N
+        // round-trips; here they cost one (at most num_agents parallel sends). Each
+        // agent's inner loops the same idempotent erase, so an over-routed oid no-ops.
+        // Same partition-by-agent shape as storage_publish_commits.
+        if (agents_.empty()) {
+            co_return;
+        }
+        std::pmr::vector<std::pmr::vector<components::catalog::oid_t>> per_agent{resource()};
+        per_agent.reserve(agents_.size());
+        for (std::size_t i = 0; i < agents_.size(); ++i) {
+            per_agent.emplace_back();
+        }
+        for (auto oid : table_oids) {
+            const std::size_t pool_idx = pool_idx_for_oid(oid, agents_.size());
+            per_agent[pool_idx].push_back(oid);
+        }
+        std::pmr::vector<unique_future<void>> agent_futures{resource()};
+        agent_futures.reserve(per_agent.size());
+        for (std::size_t i = 0; i < per_agent.size(); ++i) {
+            if (per_agent[i].empty()) {
+                continue;
+            }
+            auto& agent = agents_[i];
+            if (agent == nullptr) {
+                continue;
+            }
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                                   &agent_disk_t::drop_storage_many_inner,
+                                                                   std::move(per_agent[i]));
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }
-            co_await std::move(fut);
+            agent_futures.emplace_back(std::move(fut));
+        }
+        for (auto& f : agent_futures) {
+            co_await std::move(f);
         }
         co_return;
     }
@@ -241,8 +270,9 @@ namespace services::disk {
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
-            auto [needs_sched, fut] =
-                actor_zeta::otterbrix::send(agent->address(), &agent_disk_t::storage_types_inner, table_oid);
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                                   &agent_disk_t::storage_types_inner,
+                                                                   table_oid);
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }
@@ -256,8 +286,9 @@ namespace services::disk {
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
-            auto [needs_sched, fut] =
-                actor_zeta::otterbrix::send(agent->address(), &agent_disk_t::storage_total_rows_inner, table_oid);
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                                   &agent_disk_t::storage_total_rows_inner,
+                                                                   table_oid);
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }
@@ -278,12 +309,12 @@ namespace services::disk {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                  &agent_disk_t::storage_scan,
-                                                                  session,
-                                                                  table_oid,
-                                                                  std::move(filter),
-                                                                  limit,
-                                                                  txn);
+                                                                   &agent_disk_t::storage_scan,
+                                                                   session,
+                                                                   table_oid,
+                                                                   std::move(filter),
+                                                                   limit,
+                                                                   txn);
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }
@@ -303,12 +334,12 @@ namespace services::disk {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                  &agent_disk_t::storage_scan_batched_inner,
-                                                                  table_oid,
-                                                                  std::move(filter),
-                                                                  limit,
-                                                                  projected_cols,
-                                                                  txn);
+                                                                   &agent_disk_t::storage_scan_batched_inner,
+                                                                   table_oid,
+                                                                   std::move(filter),
+                                                                   limit,
+                                                                   projected_cols,
+                                                                   txn);
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }
@@ -326,10 +357,10 @@ namespace services::disk {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                  &agent_disk_t::storage_fetch_inner,
-                                                                  table_oid,
-                                                                  row_ids,
-                                                                  count);
+                                                                   &agent_disk_t::storage_fetch_inner,
+                                                                   table_oid,
+                                                                   row_ids,
+                                                                   count);
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }
@@ -347,10 +378,10 @@ namespace services::disk {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                  &agent_disk_t::storage_scan_segment_inner,
-                                                                  table_oid,
-                                                                  start,
-                                                                  count);
+                                                                   &agent_disk_t::storage_scan_segment_inner,
+                                                                   table_oid,
+                                                                   start,
+                                                                   count);
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }
@@ -375,11 +406,11 @@ namespace services::disk {
             auto& agent = agents_[idx];
             if (agent != nullptr) {
                 auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                      &agent_disk_t::storage_append_inner,
-                                                                      table_oid,
-                                                                      std::move(data),
-                                                                      ctx.txn,
-                                                                      ctx.session_tz);
+                                                                       &agent_disk_t::storage_append_inner,
+                                                                       table_oid,
+                                                                       std::move(data),
+                                                                       ctx.txn,
+                                                                       ctx.session_tz);
                 if (needs_sched) {
                     scheduler_disk_->enqueue(agent.get());
                 }
@@ -401,11 +432,11 @@ namespace services::disk {
             auto& agent = agents_[idx];
             if (agent != nullptr) {
                 auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                      &agent_disk_t::storage_update_inner,
-                                                                      table_oid,
-                                                                      std::move(row_ids),
-                                                                      std::move(data),
-                                                                      ctx.txn);
+                                                                       &agent_disk_t::storage_update_inner,
+                                                                       table_oid,
+                                                                       std::move(row_ids),
+                                                                       std::move(data),
+                                                                       ctx.txn);
                 if (needs_sched) {
                     scheduler_disk_->enqueue(agent.get());
                 }
@@ -424,11 +455,11 @@ namespace services::disk {
             auto& agent = agents_[idx];
             if (agent != nullptr) {
                 auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                      &agent_disk_t::storage_delete_rows_inner,
-                                                                      table_oid,
-                                                                      std::move(row_ids),
-                                                                      count,
-                                                                      ctx.txn);
+                                                                       &agent_disk_t::storage_delete_rows_inner,
+                                                                       table_oid,
+                                                                       std::move(row_ids),
+                                                                       count,
+                                                                       ctx.txn);
                 if (needs_sched) {
                     scheduler_disk_->enqueue(agent.get());
                 }
@@ -440,80 +471,10 @@ namespace services::disk {
 
     // MVCC commit/revert methods
 
-    manager_disk_t::unique_future<void> manager_disk_t::storage_publish_commit(execution_context_t /*ctx*/,
-                                                                               catalog::oid_t table_oid,
-                                                                               uint64_t commit_id,
-                                                                               int64_t row_start,
-                                                                               uint64_t count) {
-        // Wraps the single range into the plural storage_publish_commits_inner payload.
-        if (agents_.empty())
-            co_return;
-        const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
-        auto& agent = agents_[idx];
-        if (agent == nullptr)
-            co_return;
-        std::pmr::vector<components::pg_catalog_append_range_t> ranges{resource()};
-        ranges.push_back(components::pg_catalog_append_range_t{table_oid, row_start, count});
-        auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                              &agent_disk_t::storage_publish_commits_inner,
-                                                              commit_id,
-                                                              std::move(ranges));
-        if (needs_sched) {
-            scheduler_disk_->enqueue(agent.get());
-        }
-        co_await std::move(fut);
-        co_return;
-    }
-
-    manager_disk_t::unique_future<void> manager_disk_t::storage_revert_append(execution_context_t /*ctx*/,
-                                                                              catalog::oid_t table_oid,
-                                                                              int64_t row_start,
-                                                                              uint64_t count) {
-        if (!agents_.empty()) {
-            const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
-            auto& agent = agents_[pool_idx];
-            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                  &agent_disk_t::storage_revert_append_inner,
-                                                                  table_oid,
-                                                                  row_start,
-                                                                  count);
-            if (needs_sched) {
-                scheduler_disk_->enqueue(agent.get());
-            }
-            co_await std::move(fut);
-        }
-        co_return;
-    }
-
-    manager_disk_t::unique_future<void>
-    manager_disk_t::storage_publish_delete(execution_context_t ctx, catalog::oid_t table_oid, uint64_t commit_id) {
-        // Wraps the single oid into the plural storage_publish_deletes_inner payload.
-        // txn_id 0 (no real transaction) short-circuits, matching the twin's guard.
-        const auto txn_id = ctx.txn.transaction_id;
-        if (txn_id == 0 || agents_.empty())
-            co_return;
-        const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
-        auto& agent = agents_[idx];
-        if (agent == nullptr)
-            co_return;
-        std::pmr::vector<components::catalog::oid_t> tables{resource()};
-        tables.push_back(table_oid);
-        auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                              &agent_disk_t::storage_publish_deletes_inner,
-                                                              txn_id,
-                                                              commit_id,
-                                                              std::move(tables));
-        if (needs_sched) {
-            scheduler_disk_->enqueue(agent.get());
-        }
-        co_await std::move(fut);
-        co_return;
-    }
-
     manager_disk_t::unique_future<void>
     manager_disk_t::storage_publish_commits(execution_context_t /*ctx*/,
-                                            uint64_t commit_id,
-                                            std::vector<components::pg_catalog_append_range_t> ranges) {
+                                           uint64_t commit_id,
+                                           std::vector<components::pg_catalog_append_range_t> ranges) {
         // Fanout: ranges may mix catalog and user OIDs; the agent inner handler is
         // idempotent for not-owned OIDs, so over-routing is safe.
         if (!agents_.empty()) {
@@ -537,9 +498,9 @@ namespace services::disk {
                     continue;
                 auto& agent = agents_[i];
                 auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                      &agent_disk_t::storage_publish_commits_inner,
-                                                                      commit_id,
-                                                                      std::move(per_agent[i]));
+                                                                       &agent_disk_t::storage_publish_commits_inner,
+                                                                       commit_id,
+                                                                       std::move(per_agent[i]));
                 if (needs_sched) {
                     scheduler_disk_->enqueue(agent.get());
                 }
@@ -553,8 +514,8 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<void> manager_disk_t::storage_publish_deletes(execution_context_t ctx,
-                                                                                uint64_t commit_id,
-                                                                                std::set<catalog::oid_t> tables) {
+                                                                               uint64_t commit_id,
+                                                                               std::set<catalog::oid_t> tables) {
         const auto txn_id = ctx.txn.transaction_id;
         if (txn_id == 0)
             co_return;
@@ -577,10 +538,10 @@ namespace services::disk {
                     continue;
                 auto& agent = agents_[i];
                 auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                      &agent_disk_t::storage_publish_deletes_inner,
-                                                                      txn_id,
-                                                                      commit_id,
-                                                                      std::move(per_agent[i]));
+                                                                       &agent_disk_t::storage_publish_deletes_inner,
+                                                                       txn_id,
+                                                                       commit_id,
+                                                                       std::move(per_agent[i]));
                 if (needs_sched) {
                     scheduler_disk_->enqueue(agent.get());
                 }
@@ -617,8 +578,8 @@ namespace services::disk {
                     continue;
                 auto& agent = agents_[i];
                 auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                      &agent_disk_t::storage_revert_appends_inner,
-                                                                      std::move(per_agent[i]));
+                                                                       &agent_disk_t::storage_revert_appends_inner,
+                                                                       std::move(per_agent[i]));
                 if (needs_sched) {
                     scheduler_disk_->enqueue(agent.get());
                 }
@@ -631,8 +592,8 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::storage_revert_deletes(execution_context_t ctx,
-                                                                               std::vector<catalog::oid_t> tables) {
+    manager_disk_t::unique_future<void>
+    manager_disk_t::storage_revert_deletes(execution_context_t ctx, std::vector<catalog::oid_t> tables) {
         // Abort-path mirror of storage_publish_deletes: same partition-by-agent
         // fanout, but the agent inner un-stamps this txn's pending delete marks
         // back to NOT_DELETED_ID (revert_all_deletes) instead of stamping a commit_id.
@@ -657,9 +618,9 @@ namespace services::disk {
                     continue;
                 auto& agent = agents_[i];
                 auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                      &agent_disk_t::storage_revert_deletes_inner,
-                                                                      txn_id,
-                                                                      std::move(per_agent[i]));
+                                                                       &agent_disk_t::storage_revert_deletes_inner,
+                                                                       txn_id,
+                                                                       std::move(per_agent[i]));
                 if (needs_sched) {
                     scheduler_disk_->enqueue(agent.get());
                 }

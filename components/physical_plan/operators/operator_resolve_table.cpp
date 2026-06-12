@@ -137,7 +137,7 @@ namespace components::operators {
                                                         exec_ctx,
                                                         kPgClass,
                                                         std::move(key_cols),
-                                                        std::move(key_vals));
+                                                        components::operators::make_key_chunk(resource_, std::move(key_vals)));
             auto lookup_batches = co_await std::move(lookup_f);
             if (lookup_batches.empty() || lookup_batches[0].size() == 0 || lookup_batches[0].column_count() == 0 ||
                 lookup_batches[0].value(0, 0).is_null()) {
@@ -164,7 +164,7 @@ namespace components::operators {
                                                exec_ctx,
                                                kPgClass,
                                                std::move(pc_keys),
-                                               std::move(pc_vals));
+                                               components::operators::make_key_chunk(resource_, std::move(pc_vals)));
             auto pc_batches = co_await std::move(pcf);
             if (!pc_batches.empty() && pc_batches[0].size() != 0 && pc_batches[0].column_count() >= 4) {
                 found_ = true;
@@ -215,7 +215,7 @@ namespace components::operators {
                                                exec_ctx,
                                                kPgRewrite,
                                                std::move(pr_keys),
-                                               std::move(pr_vals));
+                                               components::operators::make_key_chunk(resource_, std::move(pr_vals)));
             auto pr_batches = co_await std::move(prf);
             if (!pr_batches.empty() && pr_batches[0].size() != 0 && pr_batches[0].column_count() >= 5) {
                 auto ev_action = pr_batches[0].value(4, 0);
@@ -263,7 +263,7 @@ namespace components::operators {
                                                exec_ctx,
                                                kPgComputedColumn,
                                                std::move(cc_keys),
-                                               std::move(cc_vals));
+                                               components::operators::make_key_chunk(resource_, std::move(cc_vals)));
             auto cc_batches = co_await std::move(ccf);
 
             struct cc_candidate_t {
@@ -389,7 +389,7 @@ namespace components::operators {
                                                exec_ctx,
                                                kPgAttribute,
                                                std::move(pa_keys),
-                                               std::move(pa_vals));
+                                               components::operators::make_key_chunk(resource_, std::move(pa_vals)));
             auto pa_batches = co_await std::move(paf);
 
             // Column visible to this snapshot iff added_at_commit_id <= start_time

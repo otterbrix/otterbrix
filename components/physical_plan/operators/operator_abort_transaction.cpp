@@ -178,9 +178,9 @@ namespace components::operators {
         //     removed (their catalog rows are reverted by the swap_appends revert
         //     above, but the on-disk storage + index engine are not catalog rows).
         //     created_indexes drop_index per (table_oid, name); created_storage
-        //     oids unregister_collection THEN drop_storage per oid (index before
-        //     disk so no consumer references a freed collection — co_await the
-        //     unregister before the drop, two-phase per oid pair like the COMMIT
+        //     oids unregister_collection (ALL) THEN one drop_storage_many (index
+        //     before disk so no consumer references a freed collection — every
+        //     unregister is awaited before the batched disk drop, like the COMMIT
         //     teardown). drop_index / drop_storage tolerate an unknown target, so
         //     a CREATE that never fully materialized is safe to tear down.
         if (txn_data.transaction_id != 0) {
@@ -199,19 +199,40 @@ namespace components::operators {
                     co_await std::move(f);
                 }
             }
-            for (auto oid : created_storage_oids) {
+            // Batched CREATE-rollback removal: ALL unregister_collection
+            // (manager_index) THEN ONE drop_storage_many (manager_disk), awaiting
+            // every unregister before any disk drop so no index consumer references a
+            // collection whose backing storage the disk actor is about to free
+            // (index-before-disk, preserved GLOBALLY — strictly stronger than the
+            // previous per-oid interleave). unregister_collection acts on the index
+            // MANAGER's own maps, so the N sends pipeline onto one mailbox;
+            // drop_storage_many partitions the oids per disk agent and fans out in
+            // parallel. drop_storage tolerates an unknown target, so a CREATE that
+            // never fully materialized is still safe to tear down.
+            if (!created_storage_oids.empty()) {
                 if (ctx->index_address != actor_zeta::address_t::empty_address()) {
-                    auto [_u, uf] = actor_zeta::send(ctx->index_address,
-                                                     &services::index::manager_index_t::unregister_collection,
-                                                     ctx->session,
-                                                     oid);
-                    co_await std::move(uf);
+                    std::pmr::vector<actor_zeta::unique_future<void>> unregister_futures{resource()};
+                    unregister_futures.reserve(created_storage_oids.size());
+                    for (auto oid : created_storage_oids) {
+                        auto [_u, uf] = actor_zeta::send(ctx->index_address,
+                                                         &services::index::manager_index_t::unregister_collection,
+                                                         ctx->session,
+                                                         oid);
+                        unregister_futures.push_back(std::move(uf));
+                    }
+                    // Await EVERY unregister before any disk drop (index-before-disk).
+                    for (auto& uf : unregister_futures) {
+                        co_await std::move(uf);
+                    }
                 }
                 if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
+                    std::pmr::vector<components::catalog::oid_t> drop_oids{created_storage_oids.begin(),
+                                                                          created_storage_oids.end(),
+                                                                          resource()};
                     auto [_d, df] = actor_zeta::send(ctx->disk_address,
-                                                     &services::disk::manager_disk_t::drop_storage,
+                                                     &services::disk::manager_disk_t::drop_storage_many,
                                                      ctx->session,
-                                                     oid);
+                                                     std::move(drop_oids));
                     co_await std::move(df);
                 }
             }

@@ -63,7 +63,7 @@ namespace components::operators {
                                            exec_ctx,
                                            pg_attr,
                                            std::move(pa_keys),
-                                           std::move(pa_vals));
+                                           components::operators::make_key_chunk(resource_, std::move(pa_vals)));
         std::pmr::vector<components::vector::data_chunk_t> attr_batches = co_await std::move(paf);
 
         catalog::oid_t attoid = catalog::INVALID_OID;

@@ -1307,16 +1307,35 @@ namespace services::index {
     manager_index_t::unique_future<void> manager_index_t::flush_all_indexes(session_id_t session) {
         trace(log_, "manager_index_t::flush_all_indexes, session: {}", session.data());
 
-        // Await all pending agent operations to ensure no in-flight writes
+        // Await all pending agent operations first: this is the cross-handler
+        // ordering barrier (e.g. the agent-drop futures parked by
+        // on_horizon_advanced) — a force_flush must never start before an
+        // in-flight drop finishes.
         for (auto& f : pending_void_) {
             co_await std::move(f);
         }
         pending_void_.clear();
-        // Now safe to call synchronously — no actor messaging, avoids TSan race
+
+        // Fan out force_flush as a mailbox op per owned disk agent (no direct
+        // cross-actor synchronous call). Two-phase: send every message with no
+        // intervening co_await so the agents flush in parallel, then await all
+        // futures. Each force_flush naturally orders behind any pending
+        // insert/remove already queued in that agent's FIFO, and the is_dropped
+        // guard now lives inside the agent handler.
+        std::pmr::vector<unique_future<void>> futures(resource_);
+        futures.reserve(disk_agents_owned_.size());
         for (auto& agent : disk_agents_owned_) {
-            if (agent && !agent->is_dropped()) {
-                agent->force_flush_sync();
+            if (!agent) {
+                continue;
             }
+            auto addr = agent->address();
+            auto [needs_sched, fut] =
+                actor_zeta::otterbrix::send(addr, &index_agent_disk_t::force_flush, session);
+            schedule_agent(addr, needs_sched);
+            futures.emplace_back(std::move(fut));
+        }
+        for (auto& f : futures) {
+            co_await std::move(f);
         }
         co_return;
     }
@@ -1353,8 +1372,8 @@ namespace services::index {
             // a new DROP TABLE re-marks the subscriber. The ack future is parked
             // in pending_void_ as a cross-handler ordering barrier: flush_all_indexes
             // co_awaits every pending_void_ future (including the agent-drop
-            // futures emitted above) BEFORE calling force_flush_sync(), so a
-            // force_flush can never race an in-flight agent drop (a btree-path
+            // futures emitted above) BEFORE fanning out its force_flush messages,
+            // so a force_flush can never race an in-flight agent drop (a btree-path
             // use-after-free).
             constexpr uint8_t INDEX_KIND = 2;
             pending_void_.emplace_back(

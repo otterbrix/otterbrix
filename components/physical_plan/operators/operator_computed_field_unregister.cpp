@@ -70,7 +70,7 @@ namespace components::operators {
                                          exec_ctx,
                                          pg_computed_column,
                                          std::move(r_keys),
-                                         std::move(r_vals));
+                                         components::operators::make_key_chunk(resource_, std::move(r_vals)));
         auto batches = co_await std::move(rf);
 
         // pick the latest live row matching attoid_ (max attversion AND attrefcount > 0).

@@ -18,14 +18,14 @@ namespace components::operators {
         };
 
         kind type{kind::field_ref};
+        // Used for arithmetic.
+        expressions::scalar_type arith_op{expressions::scalar_type::invalid};
 
         // Used for field_ref, coalesce, case_when.
         // For field_ref: group_key_t::kind::column with full_path set.
         // Alias is always read from key.name.
         group_key_t key;
 
-        // Used for arithmetic.
-        expressions::scalar_type arith_op{expressions::scalar_type::invalid};
         std::pmr::vector<expressions::param_storage> operands;
 
         // Used for constant.
@@ -36,6 +36,19 @@ namespace components::operators {
             , operands(r)
             , constant_value(r, nullptr) {}
     };
+
+    // Evaluate a projection column list against ONE input chunk, producing an
+    // output chunk with one column per select_column_t (row count == input row
+    // count). Because the projection is a 1:1 row mapping, a <=1024-row input
+    // yields a <=1024-row output, so callers stay within DEFAULT_VECTOR_CAPACITY
+    // by feeding one chunk at a time and accumulating a chunks_vector_t.
+    // Shared by operator_select_t and the DML operators' RETURNING path.
+    core::result_wrapper_t<vector::data_chunk_t> evaluate_projection(std::pmr::memory_resource* resource,
+                                                                     const std::pmr::vector<select_column_t>& columns,
+                                                                     vector::data_chunk_t* left_input,
+                                                                     const logical_plan::storage_parameters& parameters,
+                                                                     core::date::timezone_offset_t session_tz,
+                                                                     vector::data_chunk_t* right_input = nullptr);
 
     // operator_select_t — always the last operator before DISTINCT.
     // Processes rows one-by-one (evaluation mode): output row count equals input row count.

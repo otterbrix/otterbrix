@@ -27,6 +27,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_computed_schema.cpp
         test_subqueries.cpp
         test_hash_join.cpp
+        test_returning.cpp
         test_parser_extension.cpp
 )
 

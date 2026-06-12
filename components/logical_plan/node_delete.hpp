@@ -14,6 +14,9 @@ namespace components::logical_plan {
                                const node_match_ptr& match,
                                const node_limit_ptr& limit);
 
+        std::pmr::vector<expressions::expression_ptr>& returning();
+        const std::pmr::vector<expressions::expression_ptr>& returning() const;
+
         // table_oid for the USING-clause table (DELETE FROM tableA USING tableB).
         // enrich_logical_plan stamps this from the sibling resolve_table for
         // the USING target. create_plan_delete passes it to the USING-side
@@ -33,6 +36,7 @@ namespace components::logical_plan {
 
         components::catalog::oid_t table_oid_from_{components::catalog::INVALID_OID};
         std::vector<catalog::fk_info_t> referencing_fks_;
+        std::pmr::vector<expressions::expression_ptr> returning_;
     };
 
     using node_delete_ptr = boost::intrusive_ptr<node_delete_t>;

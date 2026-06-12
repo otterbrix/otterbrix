@@ -9,10 +9,14 @@ namespace components::logical_plan {
     node_delete_t::node_delete_t(std::pmr::memory_resource* resource,
                                  const node_match_ptr& match,
                                  const node_limit_ptr& limit)
-        : node_t(resource, node_type::delete_t) {
+        : node_t(resource, node_type::delete_t)
+        , returning_(resource) {
         append_child(match);
         append_child(limit);
     }
+
+    std::pmr::vector<expressions::expression_ptr>& node_delete_t::returning() { return returning_; }
+    const std::pmr::vector<expressions::expression_ptr>& node_delete_t::returning() const { return returning_; }
 
     hash_t node_delete_t::hash_impl() const { return 0; }
 

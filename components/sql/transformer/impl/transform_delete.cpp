@@ -15,6 +15,15 @@ namespace components::sql::transform {
                                               core::dbname_t{qn.dbname},
                                               core::relname_t{qn.relname},
                                               make_compare_expression(resource_, compare_type::all_true)));
+            if (node.returningList) {
+                name_collection_t rnames;
+                rnames.left_name = qn;
+                rnames.left_alias = construct_alias(node.relation->alias);
+                del->returning() = transform_returning(node.returningList, rnames, plan);
+                if (error_.contains_error()) {
+                    return nullptr;
+                }
+            }
             // Tag the target table for catalog resolution and emit
             // resolve_constraint(referencing) so enrich reads descendant FKs
             // are stamped on the plan tree by Pass 1.
@@ -46,6 +55,12 @@ namespace components::sql::transform {
                                                                               core::dbname_t{names.left_name.dbname},
                                                                               core::relname_t{names.left_name.relname},
                                                                               where_expr));
+        if (node.returningList) {
+            del->returning() = transform_returning(node.returningList, names, plan);
+            if (error_.contains_error()) {
+                return nullptr;
+            }
+        }
         // Wrap with namespace + table resolve nodes for the primary (LEFT)
         // table and emit resolve_constraint(referencing) for FK cascade enrich.
         auto wrapped = maybe_wrap_with_catalog_resolve_table(resource_,

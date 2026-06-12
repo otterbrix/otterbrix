@@ -222,6 +222,12 @@ namespace components::sql::transform {
         // sibling resolve_table for the target, and table_oid_from() for the
         // UPDATE ... FROM source).
         auto upd = logical_plan::make_node_update_many(resource_, match, updates, false);
+        if (node.returningList) {
+            upd->returning() = transform_returning(node.returningList, names, plan);
+            if (error_.contains_error()) {
+                return nullptr;
+            }
+        }
         // Catalog-resolve wrap for UPDATE target table. Emit
         // resolve_constraint(outgoing) so enrich reads FKs from the plan tree
         // (FK info stamped by operator_resolve_constraint_t). When UPDATE ...

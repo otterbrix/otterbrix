@@ -33,7 +33,7 @@ namespace otterbrix {
         auto session = otterbrix::session_id_t();
         string name = "t";
         name += to_string(indx++);
-        space->dispatcher()->create_collection(session, "tmp", name);
+        space->dispatcher()->execute_sql(session, "CREATE TABLE tmp." + name + "();");
         auto res = make_shared<Relation>(from, group, match, sort, select, name, limit);
         return res;
     }

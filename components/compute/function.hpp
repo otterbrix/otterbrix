@@ -283,7 +283,20 @@ namespace components::compute {
     // WARNING: array size, names order, uid and signatures has to be the same as in register_default_functions()
     // TODO: could be constexpr after C++20
     // TODO: initialize DEFAULT_FUNCTIONS with register_default_functions() call
-    static const std::array<std::pair<std::string, registered_func_id>, 8> DEFAULT_FUNCTIONS{
+    namespace detail {
+        inline kernel_signature_t vector_distance_signature() {
+            auto arg_matcher = [] {
+                return any_type_matcher(std::pmr::vector<types::logical_type>{types::logical_type::ARRAY,
+                                                                              types::logical_type::LIST,
+                                                                              types::logical_type::STRING_LITERAL});
+            };
+            return kernel_signature_t{function_type_t::row,
+                                      {arg_matcher(), arg_matcher()},
+                                      {output_type::fixed(types::logical_type::DOUBLE)}};
+        }
+    } // namespace detail
+
+    static const std::array<std::pair<std::string, registered_func_id>, 12> DEFAULT_FUNCTIONS{
         std::pair<std::string, registered_func_id>{"sum",
                                                    {0,
                                                     {kernel_signature_t{function_type_t::aggregate,
@@ -335,9 +348,16 @@ namespace components::compute {
              {kernel_signature_t{
                  function_type_t::row,
                  {input_type::make_always_true(), input_type::make_always_true(), input_type::make_always_true()},
-                 {output_type::fixed(types::logical_type::STRING_LITERAL)}}}}}};
+                 {output_type::fixed(types::logical_type::STRING_LITERAL)}}}}},
+        // distance functions
+        std::pair<std::string, registered_func_id>{"l2_distance", {8, {detail::vector_distance_signature()}}},
+        std::pair<std::string, registered_func_id>{"cosine_distance", {9, {detail::vector_distance_signature()}}},
+        std::pair<std::string, registered_func_id>{"inner_product", {10, {detail::vector_distance_signature()}}},
+        std::pair<std::string, registered_func_id>{"negative_inner_product",
+                                                   {11, {detail::vector_distance_signature()}}}};
 
     void register_default_functions(function_registry_t& registry);
     void register_string_functions(function_registry_t& registry);
+    void register_vector_distance_functions(function_registry_t& registry);
 
 } // namespace components::compute

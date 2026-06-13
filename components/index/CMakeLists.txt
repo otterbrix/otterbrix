@@ -6,6 +6,7 @@ set(${PROJECT_NAME}_SOURCES
         single_field_index.cpp
         hash_single_field_index.cpp
         disk_hash_single_field_index.cpp
+        vector_index.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}
@@ -23,6 +24,7 @@ target_link_libraries(
         otterbrix::context
         otterbrix::logical_plan
         otterbrix::log
+        otterbrix::vector_search
         dl
         Boost::boost
 )

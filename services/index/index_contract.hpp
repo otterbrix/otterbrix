@@ -9,11 +9,13 @@
 #include <components/context/execution_context.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/index/forward.hpp>
+#include <components/index/index.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/session/session.hpp>
 #include <components/table/row_version_manager.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <limits>
 
 #include <core/result_wrapper.hpp>
 
@@ -23,6 +25,19 @@ namespace services::index {
     using index_name_t = std::string;
     using transaction_data = components::table::transaction_data;
     using execution_context_t = components::execution_context_t;
+
+    // Result of a kNN probe against the index service
+    struct knn_search_result_t {
+        bool index_used{false};
+        bool dim_mismatch{false};
+        uint64_t expected_dim{0};
+        std::vector<components::index::knn_score_t> hits;
+    };
+
+    struct create_index_result_t {
+        uint32_t id{std::numeric_limits<uint32_t>::max()};
+        bool graph_loaded{false};
+    };
 
     struct index_contract {
         template<typename T>
@@ -84,13 +99,19 @@ namespace services::index {
                                              uint64_t row_count,
                                              core::date::timezone_offset_t session_tz);
 
-        // DDL: index management
-        unique_future<uint32_t> create_index(session_id_t session,
-                                             components::catalog::oid_t table_oid,
-                                             index_name_t index_name,
-                                             components::index::keys_base_storage_t keys,
-                                             components::logical_plan::index_type type,
-                                             core::date::timezone_offset_t session_tz);
+        // DDL: index management. Carries the HNSW/vector params alongside the
+        // oid-based plumbing; non-vector index types ignore the vector fields.
+        unique_future<create_index_result_t> create_index(session_id_t session,
+                                                          components::catalog::oid_t table_oid,
+                                                          index_name_t index_name,
+                                                          components::index::keys_base_storage_t keys,
+                                                          components::logical_plan::index_type type,
+                                                          components::vector_search::metric_type metric,
+                                                          uint64_t hnsw_m,
+                                                          uint64_t hnsw_ef_construction,
+                                                          bool try_load_graph,
+                                                          uint64_t expected_rows,
+                                                          core::date::timezone_offset_t session_tz);
         unique_future<void>
         drop_index(session_id_t session, components::catalog::oid_t table_oid, index_name_t index_name);
 
@@ -114,6 +135,16 @@ namespace services::index {
                                    uint64_t start_time,
                                    uint64_t txn_id,
                                    core::date::timezone_offset_t session_tz);
+
+        unique_future<knn_search_result_t> knn_search(session_id_t session,
+                                                      components::catalog::oid_t table_oid,
+                                                      components::index::keys_base_storage_t keys,
+                                                      std::vector<double> query,
+                                                      uint64_t k,
+                                                      components::vector_search::metric_type metric);
+
+        // SET hnsw.ef_search (0 = index default).
+        unique_future<void> set_ef_search(uint64_t ef);
 
         unique_future<void> flush_all_indexes(session_id_t session);
 
@@ -198,6 +229,8 @@ namespace services::index {
                                                             &index_contract::drop_index,
                                                             &index_contract::search,
                                                             &index_contract::search_with_preferred_type,
+                                                            &index_contract::knn_search,
+                                                            &index_contract::set_ef_search,
                                                             &index_contract::flush_all_indexes,
                                                             &index_contract::tables_without_indexes,
                                                             &index_contract::get_indexed_keys,

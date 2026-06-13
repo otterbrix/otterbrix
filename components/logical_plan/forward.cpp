@@ -70,6 +70,10 @@ namespace components::logical_plan {
                 return "vacuum_t";
             case node_type::having_t:
                 return "having_t";
+            case node_type::vector_search_t:
+                return "vector_search_t";
+            case node_type::set_ef_search_t:
+                return "set_ef_search_t";
             case node_type::alter_table_t:
                 return "alter_table_t";
             case node_type::create_constraint_t:

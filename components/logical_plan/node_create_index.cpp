@@ -32,6 +32,8 @@ namespace components::logical_plan {
                 return "hashed";
             case index_type::wildcard:
                 return "wildcard";
+            case index_type::vector_hnsw:
+                return "vector_hnsw";
             case index_type::no_valid:
                 return "no_valid";
         }

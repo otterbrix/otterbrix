@@ -132,6 +132,13 @@ find_package(BZip2 1.0.8 REQUIRED)
 find_package(actor-zeta REQUIRED)
 find_package(FastFloat REQUIRED)
 
+# hnswlib (header-only, Apache 2.0) — via conan.
+find_package(hnswlib REQUIRED)
+if (NOT TARGET hnswlib)
+    add_library(hnswlib INTERFACE)
+    target_link_libraries(hnswlib INTERFACE hnswlib::hnswlib)
+endif()
+
 if (ENABLE_ASAN AND NOT APPLE)
     # build abseil-cpp locally to avoid ABI issues (skip on macOS ARM64 due to SSE flags)
     include(FetchContent)

@@ -465,6 +465,9 @@ namespace components::sql::transform {
                                     }
                                     return k;
                                 }
+                                if (sub_op == "<->" || sub_op == "<=>" || sub_op == "<#>") {
+                                    return transform_distance_expr(sub, names, plan->parameters.get());
+                                }
                             }
                             error_ = core::error_t(
                                 core::error_code_t::sql_parse_error,
@@ -693,6 +696,55 @@ namespace components::sql::transform {
             }
         }
         return make_function_expression(resource_, std::move(funcname), std::move(args));
+    }
+
+    expression_ptr transformer::transform_distance_expr(A_Expr* node,
+                                                        const name_collection_t& names,
+                                                        logical_plan::parameter_node_t* params) {
+        auto op_str = std::string_view(strVal(node->name->lst.front().data));
+        std::string funcname;
+        if (op_str == "<->") {
+            funcname = "l2_distance";
+        } else if (op_str == "<=>") {
+            funcname = "cosine_distance";
+        } else if (op_str == "<#>") {
+            funcname = "negative_inner_product";
+        } else {
+            error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                   std::pmr::string{"unknown vector distance operator", resource_});
+            return nullptr;
+        }
+
+        std::pmr::vector<param_storage> args{resource_};
+        args.reserve(2);
+        auto add_side = [this, &names, &params, &args](Node* side) -> bool {
+            if (!side) {
+                error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                       std::pmr::string{"vector distance operator is missing an operand", resource_});
+                return false;
+            }
+            switch (nodeTag(side)) {
+                case T_ColumnRef: {
+                    auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(side), names);
+                    key.deduce_side(names);
+                    args.emplace_back(std::move(key.field));
+                    return true;
+                }
+                case T_A_Indirection: {
+                    auto key = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(side), names);
+                    key.deduce_side(names);
+                    args.emplace_back(std::move(key.field));
+                    return true;
+                }
+                default:
+                    args.emplace_back(add_param_value(side, params));
+                    return true;
+            }
+        };
+        if (!add_side(node->lexpr) || !add_side(node->rexpr)) {
+            return nullptr;
+        }
+        return make_function_expression(params->parameters().resource(), std::move(funcname), std::move(args));
     }
 
     expression_ptr transformer::transform_a_indirection(A_Indirection* node,

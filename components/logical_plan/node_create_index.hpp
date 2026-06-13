@@ -4,6 +4,7 @@
 #include "node.hpp"
 #include <components/catalog/catalog_oids.hpp>
 #include <components/expressions/key.hpp>
+#include <vector_search/distance_metrics.hpp>
 
 #include <vector>
 
@@ -18,6 +19,7 @@ namespace components::logical_plan {
         multikey,
         hashed,
         wildcard,
+        vector_hnsw,
         no_valid = 255
     };
 
@@ -46,6 +48,22 @@ namespace components::logical_plan {
 
         const std::string& indexname() const noexcept { return indexname_; }
 
+        // HNSW parameters
+        components::vector_search::metric_type metric() const noexcept { return metric_; }
+        uint64_t hnsw_m() const noexcept { return hnsw_m_; }
+        uint64_t hnsw_ef_construction() const noexcept { return hnsw_ef_construction_; }
+        void set_vector_params(components::vector_search::metric_type metric,
+                               uint64_t m,
+                               uint64_t ef_construction) noexcept {
+            metric_ = metric;
+            hnsw_m_ = m;
+            hnsw_ef_construction_ = ef_construction;
+        }
+
+        // Transient: try loading graph snapshot
+        bool try_load_graph() const noexcept { return try_load_graph_; }
+        void set_try_load_graph(bool value) noexcept { try_load_graph_ = value; }
+
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
@@ -57,6 +75,10 @@ namespace components::logical_plan {
         components::catalog::oid_t index_oid_{components::catalog::INVALID_OID};
         std::vector<components::catalog::oid_t> column_attoids_;
         std::string indkey_;
+        components::vector_search::metric_type metric_{components::vector_search::metric_type::l2};
+        uint64_t hnsw_m_{16};
+        uint64_t hnsw_ef_construction_{64};
+        bool try_load_graph_{false};
     };
 
     using node_create_index_ptr = boost::intrusive_ptr<node_create_index_t>;

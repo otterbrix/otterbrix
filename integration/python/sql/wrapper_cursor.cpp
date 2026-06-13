@@ -39,7 +39,11 @@ namespace {
                 return py::float_(value.value<double>());
             case physical_type::STRING:
                 return py::str(std::string(value.value<std::string_view>()));
-            case physical_type::LIST: {
+            case physical_type::LIST:
+            case physical_type::ARRAY: {
+                // ARRAY (fixed-size, e.g. a DOUBLE[2] embedding) and LIST both
+                // expose their elements through children(); surface them as a
+                // Python list instead of None.
                 py::list result;
                 for (const auto& child : value.children()) {
                     result.append(from_value(child));

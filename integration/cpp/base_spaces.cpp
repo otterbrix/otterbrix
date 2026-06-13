@@ -383,12 +383,28 @@ namespace otterbrix {
         // lazily by resolve_table when the storage is first loaded.
         (void) disk_ptr;
 
-        if (!wal_records.empty()) {
-            trace(log_, "spaces::PHASE 3 - Skipping {} indexes (WAL replay handled them)", index_definitions.size());
-        } else if (!index_definitions.empty()) {
-            auto session = components::session::session_id_t();
-
+        // WAL replay restores persistent indexes; vector indexes need recreating
+        std::vector<components::logical_plan::node_create_index_ptr> indexes_to_create;
+        if (wal_records.empty()) {
             for (auto& index_def : index_definitions) {
+                index_def->set_try_load_graph(true);
+                indexes_to_create.push_back(index_def);
+            }
+        } else {
+            for (auto& index_def : index_definitions) {
+                if (index_def->type() == components::logical_plan::index_type::vector_hnsw) {
+                    index_def->set_try_load_graph(true);
+                    indexes_to_create.push_back(index_def);
+                }
+            }
+            trace(log_,
+                  "spaces::PHASE 3 - WAL replay handled {} persistent index(es); restoring {} vector index(es)",
+                  index_definitions.size() - indexes_to_create.size(),
+                  indexes_to_create.size());
+        }
+        if (!indexes_to_create.empty()) {
+            auto session = components::session::session_id_t();
+            for (auto& index_def : indexes_to_create) {
                 trace(log_, "spaces::creating index: {}", index_def->name());
                 auto cursor = wrapper_dispatcher_->execute_plan(
                     session,

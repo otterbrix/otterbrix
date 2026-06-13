@@ -23,6 +23,7 @@ class OtterbrixConan(ConanFile):
         self.requires("bzip2/1.0.8@")
         self.requires("actor-zeta/1.2.0@")
         self.requires("fast_float/8.1.0@")
+        self.requires("hnswlib/0.8.0@")
 
     # options = {
     #     "actor-zeta/*:cxx_standard": [17],

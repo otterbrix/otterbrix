@@ -12,7 +12,11 @@ RUN    pip3 install --upgrade pip && \
 WORKDIR /app
 
 COPY ./conanfile.py ./conanfile.py
-RUN conan install . --build missing  \
+# Vendored local recipe for hnswlib (header-only); export into the conan cache
+# so `conan install` can resolve hnswlib/0.8.0 (persists for the later install).
+COPY ./conan ./conan
+RUN conan export ./conan/hnswlib && \
+    conan install . --build missing  \
     --build fmt \
     --build spdlog  \
     -s build_type=Release \

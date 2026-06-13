@@ -125,53 +125,78 @@ namespace components::operators {
                     std::pmr::string{"unsupported compare_type in expression to filter conversion", resource}};
             case expressions::compare_type::is_null:
             case expressions::compare_type::is_not_null: {
-                const auto& path = std::get<expressions::key_t>(expression->left()).path();
-                std::pmr::vector<uint64_t> indices(path.begin(), path.end(), path.get_allocator().resource());
+                const auto& key = std::get<expressions::key_t>(expression->left());
+                const auto& path = key.path();
+                std::pmr::vector<uint64_t> indices(path.get_allocator().resource());
+                if (!path.empty()) {
+                    indices.assign(path.begin(), path.end());
+                } else {
+                    auto col_name = key.as_string();
+                    for (size_t i = 0; i < types.size(); ++i) {
+                        if (types[i].has_alias() && types[i].alias() == col_name) {
+                            indices.push_back(static_cast<uint64_t>(i));
+                            break;
+                        }
+                    }
+                }
                 return std::unique_ptr<table::table_filter_t>(
                     std::make_unique<table::is_null_filter_t>(expression->type(), std::move(indices)));
             }
             default: {
-                assert(std::holds_alternative<expressions::key_t>(expression->left()));
-                const auto& path = std::get<expressions::key_t>(expression->left()).path();
+                const auto& key = std::get<expressions::key_t>(expression->left());
+                const auto& path = key.path();
                 auto id = std::get<core::parameter_id_t>(expression->right());
-                std::pmr::vector<uint64_t> indices(path.begin(), path.end(), path.get_allocator().resource());
                 auto it = parameters->parameters.find(id);
                 if (it == parameters->parameters.end()) {
                     return core::error_t{
                         core::error_code_t::invalid_parameter,
                         std::pmr::string{"parameter not found in expression to filter conversion", resource}};
                 }
-                // Coerce STRING parameter to ENUM ordinal when the target column is an ENUM:
-                // compare semantics see int32 storage on both sides, so the literal must be
-                // resolved to its ordinal up-front (else the filter matches 0 rows).
-                const auto& col_type = types[indices[0]];
-                const auto& param_value = it->second;
-                if (col_type.type() == types::logical_type::ENUM &&
-                    param_value.type().type() == types::logical_type::STRING_LITERAL) {
-                    auto key = param_value.value<std::string_view>();
-                    auto coerced = types::logical_value_t::create_enum(resource, col_type, key);
-                    if (coerced.type().type() == types::logical_type::NA) {
-                        return core::error_t{core::error_code_t::invalid_parameter,
-                                             std::pmr::string{std::string{"enum value '"} + std::string{key} +
-                                                                  "' not found in ENUM column",
-                                                              resource}};
+                std::pmr::vector<uint64_t> indices(path.get_allocator().resource());
+                if (!path.empty()) {
+                    indices.assign(path.begin(), path.end());
+                } else {
+                    auto col_name = key.as_string();
+                    for (size_t i = 0; i < types.size(); ++i) {
+                        if (types[i].has_alias() && types[i].alias() == col_name) {
+                            indices.push_back(static_cast<uint64_t>(i));
+                            break;
+                        }
                     }
-                    // Storage holds the ordinal as int32 (ENUM physical_type=INT32).
-                    // constant_filter_t's compare path doesn't auto-coerce ENUM<->INT32,
-                    // so wrap the ordinal as a plain INT32 logical_value_t.
-                    types::logical_value_t ordinal_val{resource, coerced.value<int32_t>()};
-                    return std::unique_ptr<table::table_filter_t>(
-                        std::make_unique<table::constant_filter_t>(expression->type(),
-                                                                   std::move(ordinal_val),
-                                                                   std::move(indices)));
                 }
-                if (!param_value.is_null() && param_value.type() != col_type) {
-                    auto coerced = param_value.cast_as(col_type, session_tz);
-                    if (!coerced.is_null()) {
+                if (!indices.empty()) {
+                    // Coerce STRING parameter to ENUM ordinal when the target column is an ENUM:
+                    // compare semantics see int32 storage on both sides, so the literal must be
+                    // resolved to its ordinal up-front (else the filter matches 0 rows).
+                    const auto& col_type = types[indices[0]];
+                    const auto& param_value = it->second;
+                    if (col_type.type() == types::logical_type::ENUM &&
+                        param_value.type().type() == types::logical_type::STRING_LITERAL) {
+                        auto key_sv = param_value.value<std::string_view>();
+                        auto coerced = types::logical_value_t::create_enum(resource, col_type, key_sv);
+                        if (coerced.type().type() == types::logical_type::NA) {
+                            return core::error_t{core::error_code_t::invalid_parameter,
+                                                 std::pmr::string{std::string{"enum value '"} + std::string{key_sv} +
+                                                                      "' not found in ENUM column",
+                                                                  resource}};
+                        }
+                        // Storage holds the ordinal as int32 (ENUM physical_type=INT32).
+                        // constant_filter_t's compare path doesn't auto-coerce ENUM<->INT32,
+                        // so wrap the ordinal as a plain INT32 logical_value_t.
+                        types::logical_value_t ordinal_val{resource, coerced.value<int32_t>()};
                         return std::unique_ptr<table::table_filter_t>(
                             std::make_unique<table::constant_filter_t>(expression->type(),
-                                                                       std::move(coerced),
+                                                                       std::move(ordinal_val),
                                                                        std::move(indices)));
+                    }
+                    if (!param_value.is_null() && param_value.type() != col_type) {
+                        auto coerced = param_value.cast_as(col_type, session_tz);
+                        if (!coerced.is_null()) {
+                            return std::unique_ptr<table::table_filter_t>(
+                                std::make_unique<table::constant_filter_t>(expression->type(),
+                                                                           std::move(coerced),
+                                                                           std::move(indices)));
+                        }
                     }
                 }
                 return std::unique_ptr<table::table_filter_t>(

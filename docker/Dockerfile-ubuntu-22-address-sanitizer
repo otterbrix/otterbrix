@@ -26,7 +26,10 @@ RUN rm /bin/sh && ln -s /bin/bash /bin/sh
 
 WORKDIR /app/build
 COPY ./conanfile.py ./conanfile.py
-RUN conan install conanfile.py --build missing -s build_type=Release -s compiler.cppstd=gnu20
+# Vendored local recipe for hnswlib (header-only); export into the conan
+# cache so `conan install` can resolve hnswlib/0.8.0.
+COPY ./conan /app/conan
+RUN conan export /app/conan/hnswlib && conan install conanfile.py --build missing -s build_type=Release -s compiler.cppstd=gnu20
 
 WORKDIR /app
 COPY ./integration ./integration

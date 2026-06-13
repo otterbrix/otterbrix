@@ -67,6 +67,13 @@ namespace components::index {
         return result;
     }
 
+    std::vector<knn_score_t> index_t::knn_search(const float*,
+                                                  std::size_t,
+                                                  std::size_t,
+                                                  vector_search::metric_type) const {
+        return {};
+    }
+
     index_t::index_t(std::pmr::memory_resource* resource,
                      components::logical_plan::index_type type,
                      std::string name,

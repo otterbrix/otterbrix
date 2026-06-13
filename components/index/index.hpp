@@ -5,8 +5,14 @@
 #include <components/table/row_version_manager.hpp>
 #include <core/pmr.hpp>
 #include <functional>
+#include <vector_search/distance_metrics.hpp>
 
 namespace components::index {
+
+    struct knn_score_t {
+        int64_t row_index;
+        double  distance;
+    };
 
     struct index_value_t {
         int64_t row_index;
@@ -111,6 +117,12 @@ namespace components::index {
                                          uint64_t start_time,
                                          uint64_t txn_id,
                                          core::date::timezone_offset_t local_timezone) const;
+
+        // Approximate kNN search.
+        virtual std::vector<knn_score_t> knn_search(const float* query,
+                                                    std::size_t dim,
+                                                    std::size_t k,
+                                                    vector_search::metric_type metric) const;
 
         void insert(value_t key, int64_t row_index, uint64_t txn_id, core::date::timezone_offset_t local_timezone);
         void mark_delete(value_t key, int64_t row_index, uint64_t txn_id, core::date::timezone_offset_t local_timezone);

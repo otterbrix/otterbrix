@@ -16,6 +16,7 @@ add_subdirectory(context)
 add_subdirectory(sql)
 add_subdirectory(types)
 add_subdirectory(vector)
+add_subdirectory(vector_search)
 add_subdirectory(table)
 add_subdirectory(storage)
 

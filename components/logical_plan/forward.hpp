@@ -51,6 +51,8 @@ namespace components::logical_plan {
         checkpoint_t,
         vacuum_t,
         having_t,
+        vector_search_t,
+        set_ef_search_t,
         alter_table_t,
         create_constraint_t,
         // Planner-emitted rewrite nodes

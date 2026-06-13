@@ -74,6 +74,8 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_allocate_oids.cpp
         operators/resolved_table_metadata.cpp
 
+        operators/operator_vector_search.cpp
+
         operators/arithmetic_eval.cpp
 )
 

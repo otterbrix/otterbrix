@@ -50,6 +50,7 @@ set(SOURCE_${PROJECT_NAME}
     transformer/impl/transform_checkpoint.cpp
     transformer/impl/transform_set_timezone.cpp
     transformer/impl/transform_vacuum.cpp
+    transformer/impl/transform_set.cpp
     transformer/impl/transform_sequence.cpp
     transformer/impl/transform_view.cpp
     transformer/impl/transform_matview.cpp

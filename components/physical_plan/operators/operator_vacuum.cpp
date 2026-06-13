@@ -7,6 +7,7 @@
 #include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <services/disk/manager_disk.hpp>
+#include <services/dispatcher/dispatcher.hpp>
 #include <services/index/manager_index.hpp>
 
 #include <algorithm>
@@ -30,11 +31,26 @@ namespace components::operators {
     actor_zeta::unique_future<void> operator_vacuum_t::await_async_and_resume(pipeline::context_t* ctx) {
         const std::uint64_t lowest = ctx->lowest_active_start_time;
 
+        // Compact watermark for vacuum_inner's MVCC-gated compact: the
+        // dispatcher's visible-to-all horizon. lowest_active_start_time is NOT a
+        // substitute — it lives in start-time space and ignores in-flight
+        // (committed-but-unpublished) commits whose versions a compact would
+        // drop. 0 when no dispatcher is wired: compacts are then skipped.
+        std::uint64_t compact_watermark = 0;
+        if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
+            auto [_wm, wmf] = actor_zeta::send(ctx->current_message_sender,
+                                               &services::dispatcher::manager_dispatcher_t::txn_compact_watermark_msg);
+            compact_watermark = co_await std::move(wmf);
+        }
+
         // cleanup_versions + compact across every user storage. The disk manager
         // iterates its own storages_ map, so one global call suffices.
         {
-            auto [_v, vf] =
-                actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::vacuum_all, ctx->session, lowest);
+            auto [_v, vf] = actor_zeta::send(ctx->disk_address,
+                                             &services::disk::manager_disk_t::vacuum_all,
+                                             ctx->session,
+                                             lowest,
+                                             compact_watermark);
             co_await std::move(vf);
         }
 
@@ -202,7 +218,7 @@ namespace components::operators {
                                                    cc_ctx,
                                                    kPgComputedColumn,
                                                    std::move(cc_keys),
-                                                   std::move(cc_vals));
+                                                   components::operators::make_key_chunk(resource_, std::move(cc_vals)));
                 auto cc_batches = co_await std::move(ccf);
 
                 // Both GC passes below delete by (kPgComputedColumn, col 1=attoid)
@@ -307,7 +323,7 @@ namespace components::operators {
                                                          cc_ctx,
                                                          kPgComputedColumn,
                                                          std::move(cc2_keys),
-                                                         std::move(cc2_vals));
+                                                         components::operators::make_key_chunk(resource_, std::move(cc2_vals)));
                     auto live_cc = co_await std::move(ccf2);
 
                     std::set<std::string> live_attnames;

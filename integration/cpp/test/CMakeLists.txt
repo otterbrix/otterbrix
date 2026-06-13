@@ -19,6 +19,8 @@ set( ${PROJECT_NAME}_SOURCES
         test_connections.cpp
         test_udfs.cpp
         test_batch_execution.cpp
+        test_group_by_node_data.cpp
+        test_group_operator_contracts.cpp
         test_arithmetic.cpp
         test_clean_break_startup.cpp
         test_column_projection.cpp
@@ -26,7 +28,9 @@ set( ${PROJECT_NAME}_SOURCES
         test_pushdown_filter.cpp
         test_subqueries.cpp
         test_hash_join.cpp
+        test_returning.cpp
         test_parser_extension.cpp
+        test_engine_lifecycle.cpp
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})

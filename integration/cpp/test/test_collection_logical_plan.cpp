@@ -90,19 +90,19 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, table_database_name, table_collection_name, columns);
+            test_create_collection(dispatcher, session, table_database_name, table_collection_name, columns);
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, table_database_name, table_other_collection_name, columns);
+            test_create_collection(dispatcher, session, table_database_name, table_other_collection_name, columns);
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, table_database_name, table_collection_left, columns_left);
+            test_create_collection(dispatcher, session, table_database_name, table_collection_left, columns_left);
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, table_database_name, table_collection_right, columns_right);
+            test_create_collection(dispatcher, session, table_database_name, table_collection_right, columns_right);
         }
     }
 

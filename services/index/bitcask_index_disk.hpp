@@ -35,7 +35,8 @@ namespace services::index {
                              std::pmr::memory_resource* resource,
                              uint64_t flush_threshold,
                              uint64_t segment_record_limit,
-                             std::pmr::set<std::uint64_t> committed_txn_ids);
+                             std::pmr::set<std::uint64_t> committed_txn_ids,
+                             disk_hash_table_ptr shared_hash_index = nullptr);
         ~bitcask_index_disk_t() override;
 
         // Factory returning the instance, or a core::error_t when on-disk
@@ -78,6 +79,10 @@ namespace services::index {
                                                       const std::vector<std::pair<value_t, size_t>>& values);
         [[nodiscard]] core::error_t apply_txn_deletes(uint64_t txn_id,
                                                       const std::vector<std::pair<value_t, size_t>>& values);
+        void insert_bulk_unchecked(const value_t& key, size_t value);
+
+        bool load_hash_key_at(uint32_t segment_id, uint64_t value_offset, std::string& out_key) const;
+        bool load_hash_key_at_unlocked(uint32_t segment_id, uint64_t value_offset, std::string& out_key) const;
 
     private:
         enum class record_kind_t : uint8_t
@@ -115,12 +120,10 @@ namespace services::index {
         void rotate_active_segment_if_needed();
         uint64_t allocate_next_segment_id();
         void merge_immutable_segments();
-        static uint32_t segment_id_from_path(const std::filesystem::path& path);
         row_ids_t current_rows(const value_t& key) const;
         bool
         read_rows_at(uint32_t segment_id, uint64_t value_offset, row_ids_t& rows, value_t* out_key = nullptr) const;
         std::string key_bytes_for_hash(const value_t& key) const;
-        bool load_full_key_for_hash_ref(uint32_t log_file_id, uint64_t log_offset, std::string& out_key) const;
         void erase_all_refs_for_key(std::string_view key_bytes);
         void append_snapshot(const value_t& key, const row_ids_t& rows);
         void append_tombstone(const value_t& key);
@@ -142,6 +145,7 @@ namespace services::index {
         [[nodiscard]] core::error_t write_applied_log_offset(uint64_t offset) const;
         void flush_if_needed();
         void force_flush_unlocked();
+        void install_hash_key_loader();
 
         std::filesystem::path path_;
         std::filesystem::path hash_index_file_path_;
@@ -150,13 +154,15 @@ namespace services::index {
         mutable core::filesystem::local_file_system_t fs_;
         std::unique_ptr<core::filesystem::file_handle_t> file_;
         std::unique_ptr<core::filesystem::file_handle_t> txn_log_file_;
-        std::unique_ptr<disk_hash_table_t> hash_index_;
+        disk_hash_table_ptr hash_index_;
         uint64_t next_timestamp_{0};
         std::atomic<uint64_t> next_segment_id_{1};
         uint64_t active_segment_id_{0};
         uint64_t active_segment_records_{0};
         uint64_t segment_record_limit_{default_segment_record_limit_};
         bool bulk_mode_{false};
+        bool bulk_rehash_guard_active_{false};
+        bool bulk_prev_rehash_suppressed_{false};
         mutable std::shared_mutex mutex_;
         std::unique_ptr<bitcask_task_executor_t> task_executor_;
         // WAL-replay committed transaction ids — the recover gate (M1.1) applies

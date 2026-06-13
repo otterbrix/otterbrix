@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <services/disk/manager_disk.hpp>
+#include <services/dispatcher/dispatcher.hpp>
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
@@ -37,13 +38,26 @@ namespace components::operators {
             wal_max_id = co_await std::move(wif);
         }
 
+        // Compact watermark for checkpoint_inner's MVCC-gated compact: the
+        // dispatcher's visible-to-all horizon (current_message_sender is the
+        // dispatcher — the executor wires parent_address_ into the context).
+        // 0 when no dispatcher is wired (test topologies): compacts and the
+        // affected per-table checkpoints are then skipped, never unsafe.
+        std::uint64_t compact_watermark = 0;
+        if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
+            auto [_wm, wmf] = actor_zeta::send(ctx->current_message_sender,
+                                               &services::dispatcher::manager_dispatcher_t::txn_compact_watermark_msg);
+            compact_watermark = co_await std::move(wmf);
+        }
+
         // checkpoint_all. No-op when disk is off.
         services::wal::id_t checkpoint_wal_id{0};
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             auto [_cp, cpf] = actor_zeta::send(ctx->disk_address,
                                                &services::disk::manager_disk_t::checkpoint_all,
                                                ctx->session,
-                                               wal_max_id);
+                                               wal_max_id,
+                                               compact_watermark);
             checkpoint_wal_id = co_await std::move(cpf);
         }
 

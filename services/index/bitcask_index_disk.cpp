@@ -1,5 +1,6 @@
 #include "bitcask_index_disk.hpp"
 
+#include "bitcask_hash_key_loader.hpp"
 #include "absl/crc/crc32c.h"
 #include <components/index/logical_value_binary_codec.hpp>
 
@@ -183,7 +184,8 @@ namespace services::index {
                                                std::pmr::memory_resource* resource,
                                                uint64_t flush_threshold,
                                                uint64_t segment_record_limit,
-                                               std::pmr::set<std::uint64_t> committed_txn_ids)
+                                               std::pmr::set<std::uint64_t> committed_txn_ids,
+                                               disk_hash_table_ptr shared_hash_index)
         : index_disk_t(flush_threshold)
         , path_(path)
         , hash_index_file_path_(path_ / hash_index_file)
@@ -193,12 +195,14 @@ namespace services::index {
         , task_executor_(std::make_unique<bitcask_task_executor_t>())
         , committed_txn_ids_(committed_txn_ids.begin(), committed_txn_ids.end(), resource) {
         initialize_storage();
-        // Keep file identity stable for the facade reader: rehash recreates
-        // hash_index.bin and can leave other open handles on stale inode.
-        hash_index_ = std::make_unique<disk_hash_table_t>(hash_index_file_path_,
-                                                          disk_hash_table_t::default_bucket_count,
-                                                          false,
-                                                          resource_);
+        if (shared_hash_index) {
+            hash_index_ = std::move(shared_hash_index);
+        } else {
+            hash_index_ = boost::intrusive_ptr(new disk_hash_table_t(hash_index_file_path_,
+                                                                     disk_hash_table_t::default_bucket_count,
+                                                                     resource_));
+        }
+        install_hash_key_loader();
         load_from_disk();
         if (crc_failure_) {
             // Direct ctor aborts on corruption; only create() tolerates a CRC
@@ -250,20 +254,68 @@ namespace services::index {
         , task_executor_(std::make_unique<bitcask_task_executor_t>())
         , committed_txn_ids_(committed_txn_ids.begin(), committed_txn_ids.end(), resource) {
         initialize_storage();
-        hash_index_ = std::make_unique<disk_hash_table_t>(hash_index_file_path_,
-                                                          disk_hash_table_t::default_bucket_count,
-                                                          false,
-                                                          resource_);
+        hash_index_ = boost::intrusive_ptr(new disk_hash_table_t(hash_index_file_path_,
+                                                                 disk_hash_table_t::default_bucket_count,
+                                                                 resource_));
+        install_hash_key_loader();
         // Caller (factory) is responsible for load_from_disk +
         // open_active_segment + recover_txn_log_unlocked.
     }
 
-    bitcask_index_disk_t::~bitcask_index_disk_t() { force_flush(); }
+    bitcask_index_disk_t::~bitcask_index_disk_t() {
+        if (hash_index_) {
+            hash_index_->set_full_key_loader(nullptr);
+        }
+        force_flush();
+    }
+
+    void bitcask_index_disk_t::install_hash_key_loader() {
+        hash_index_->set_full_key_loader(
+            [this](uint32_t segment_id, uint64_t value_offset, std::string& out_key, bool lock_bitcask) {
+                return lock_bitcask ? load_hash_key_at(segment_id, value_offset, out_key)
+                                    : load_hash_key_at_unlocked(segment_id, value_offset, out_key);
+            });
+    }
+
+    bool bitcask_index_disk_t::load_hash_key_at_unlocked(uint32_t segment_id,
+                                                         uint64_t value_offset,
+                                                         std::string& out_key) const {
+        row_ids_t rows(resource_);
+        value_t key(resource_, nullptr);
+        if (!read_rows_at(segment_id, value_offset, rows, &key)) {
+            return false;
+        }
+        out_key = key_bytes_for_hash(key);
+        return true;
+    }
+
+    bool bitcask_index_disk_t::load_hash_key_at(uint32_t segment_id,
+                                                uint64_t value_offset,
+                                                std::string& out_key) const {
+        std::shared_lock lock(mutex_);
+        return load_hash_key_at_unlocked(segment_id, value_offset, out_key);
+    }
 
     void bitcask_index_disk_t::enqueue_task(std::function<void()> task) { task_executor_->enqueue(std::move(task)); }
 
     void bitcask_index_disk_t::set_bulk_mode(bool enabled) {
         std::unique_lock lock(mutex_);
+        if (enabled) {
+            if (!bulk_mode_ && hash_index_) {
+                bulk_prev_rehash_suppressed_ = hash_index_->set_auto_rehash_suppressed(true);
+                bulk_rehash_guard_active_ = true;
+            }
+            bulk_mode_ = true;
+            return;
+        }
+
+        if (!enabled && bulk_mode_ && hash_index_ && bulk_rehash_guard_active_) {
+            hash_index_->set_auto_rehash_suppressed(bulk_prev_rehash_suppressed_);
+            bulk_rehash_guard_active_ = false;
+            if (!bulk_prev_rehash_suppressed_) {
+                hash_index_->trigger_rehash_if_needed();
+            }
+        }
         bulk_mode_ = enabled;
     }
 
@@ -278,22 +330,28 @@ namespace services::index {
         return components::index::codec::encode_disk_hash_key(normalized);
     }
 
-    uint32_t bitcask_index_disk_t::segment_id_from_path(const std::filesystem::path& path) {
-        uint64_t id = 0;
-        if (!parse_segment_id(path, id)) {
-            // -fno-exceptions build: abort instead of throw on I/O failure.
-            assert(false && "bitcask I/O failure");
-            std::abort();
-        }
-        return static_cast<uint32_t>(id);
-    }
-
     void bitcask_index_disk_t::load_from_disk() {
+        const bool prev_rehash_suppressed = hash_index_->set_auto_rehash_suppressed(true);
+        struct restore_rehash_state_t {
+            disk_hash_table_t* table{nullptr};
+            bool prev{false};
+            ~restore_rehash_state_t() {
+                if (table) {
+                    table->set_auto_rehash_suppressed(prev);
+                }
+            }
+        } restore_rehash_state{hash_index_.get(), prev_rehash_suppressed};
+
         auto segments = collect_segments();
         if (segments.empty()) {
             active_segment_id_ = 1;
             next_segment_id_.store(2);
             active_data_file_path_ = segment_file_path(path_, active_segment_id_);
+            restore_rehash_state.table = nullptr;
+            hash_index_->set_auto_rehash_suppressed(prev_rehash_suppressed);
+            if (!prev_rehash_suppressed) {
+                hash_index_->trigger_rehash_if_needed();
+            }
             return;
         }
 
@@ -346,10 +404,7 @@ namespace services::index {
                     hash_index_->put(key_bytes,
                                      rows.empty() ? -1 : static_cast<int64_t>(rows.back()),
                                      static_cast<uint32_t>(segment.id),
-                                     payload_offset,
-                                     [this](uint32_t log_file_id, uint64_t log_offset, std::string& out_key) {
-                                         return load_full_key_for_hash_ref(log_file_id, log_offset, out_key);
-                                     });
+                                     payload_offset);
                 } else {
                     break;
                 }
@@ -370,6 +425,12 @@ namespace services::index {
         next_segment_id_.store(segments.back().id + 1);
         active_segment_records_ = active_segment.record_count;
         active_data_file_path_ = active_segment.path;
+
+        restore_rehash_state.table = nullptr;
+        hash_index_->set_auto_rehash_suppressed(prev_rehash_suppressed);
+        if (!prev_rehash_suppressed) {
+            hash_index_->trigger_rehash_if_needed();
+        }
     }
 
     std::vector<bitcask_index_disk_t::segment_info_t> bitcask_index_disk_t::collect_segments() const {
@@ -469,23 +530,9 @@ namespace services::index {
         return static_cast<record_kind_t>(header.kind) == record_kind_t::value;
     }
 
-    bool bitcask_index_disk_t::load_full_key_for_hash_ref(uint32_t log_file_id,
-                                                          uint64_t log_offset,
-                                                          std::string& out_key) const {
-        row_ids_t rows(resource_);
-        value_t key(resource_, nullptr);
-        if (!read_rows_at(log_file_id, log_offset, rows, &key)) {
-            return false;
-        }
-        out_key = key_bytes_for_hash(key);
-        return true;
-    }
-
     bitcask_index_disk_t::row_ids_t bitcask_index_disk_t::current_rows(const value_t& key) const {
         const auto key_bytes = key_bytes_for_hash(key);
-        auto ref = hash_index_->get(key_bytes, [this](uint32_t log_file_id, uint64_t log_offset, std::string& out_key) {
-            return load_full_key_for_hash_ref(log_file_id, log_offset, out_key);
-        });
+        auto ref = hash_index_->get(key_bytes, false);
         if (!ref.has_value()) {
             return row_ids_t(resource_);
         }
@@ -497,9 +544,7 @@ namespace services::index {
     }
 
     void bitcask_index_disk_t::erase_all_refs_for_key(std::string_view key_bytes) {
-        while (hash_index_->erase(key_bytes, [this](uint32_t log_file_id, uint64_t log_offset, std::string& out_key) {
-            return load_full_key_for_hash_ref(log_file_id, log_offset, out_key);
-        })) {
+        while (hash_index_->erase(key_bytes, false)) {
         }
     }
 
@@ -513,10 +558,7 @@ namespace services::index {
         hash_index_->put(key_bytes,
                          rows.empty() ? -1 : static_cast<int64_t>(rows.back()),
                          static_cast<uint32_t>(active_segment_id_),
-                         offset + sizeof(record_header_t),
-                         [this](uint32_t log_file_id, uint64_t log_offset, std::string& out_key) {
-                             return load_full_key_for_hash_ref(log_file_id, log_offset, out_key);
-                         });
+                         offset + sizeof(record_header_t));
         ++active_segment_records_;
     }
 
@@ -794,14 +836,20 @@ namespace services::index {
         flush_if_needed();
     }
 
+    void bitcask_index_disk_t::insert_bulk_unchecked(const value_t& key, size_t value) {
+        std::unique_lock lock(mutex_);
+        // Fast path for bulk loading: skip duplicate check and disk read.
+        // Caller must ensure bulk_mode is enabled and keys are unique.
+        row_ids_t rows(resource_);
+        rows.emplace_back(value);
+        append_snapshot(key, rows);
+        mark_operation_dirty();
+        // flush_if_needed() is skipped in bulk_mode anyway
+    }
+
     void bitcask_index_disk_t::remove(value_t key) {
         std::unique_lock lock(mutex_);
-        if (!hash_index_
-                 ->get(key_bytes_for_hash(key),
-                       [this](uint32_t log_file_id, uint64_t log_offset, std::string& out_key) {
-                           return load_full_key_for_hash_ref(log_file_id, log_offset, out_key);
-                       })
-                 .has_value()) {
+        if (!hash_index_->get(key_bytes_for_hash(key), false).has_value()) {
             return;
         }
         append_tombstone(key);
@@ -868,10 +916,7 @@ namespace services::index {
 
     void bitcask_index_disk_t::find(const value_t& value, result& res) const {
         std::shared_lock lock(mutex_);
-        auto ref = hash_index_->get(key_bytes_for_hash(value),
-                                    [this](uint32_t log_file_id, uint64_t log_offset, std::string& out_key) {
-                                        return load_full_key_for_hash_ref(log_file_id, log_offset, out_key);
-                                    });
+        auto ref = hash_index_->get(key_bytes_for_hash(value), false);
         if (!ref.has_value()) {
             return;
         }
@@ -923,6 +968,17 @@ namespace services::index {
         if (immutable_segments.empty()) {
             return;
         }
+        const bool prev_rehash_suppressed = hash_index_->set_auto_rehash_suppressed(true);
+        struct restore_rehash_state_t {
+            disk_hash_table_t* table{nullptr};
+            bool prev{false};
+            ~restore_rehash_state_t() {
+                if (table) {
+                    table->set_auto_rehash_suppressed(prev);
+                }
+            }
+        } restore_rehash_state{hash_index_.get(), prev_rehash_suppressed};
+
         const auto merged_segment_id = allocate_next_segment_id();
         const auto merged_path = segment_file_path(path_, merged_segment_id);
         const auto temp_path = merge_temp_file_path(path_, merged_segment_id);
@@ -978,14 +1034,17 @@ namespace services::index {
             hash_index_->put(merged_ref.key_bytes,
                              merged_ref.row,
                              static_cast<uint32_t>(merged_segment_id),
-                             merged_ref.offset,
-                             [this](uint32_t log_file_id, uint64_t log_offset, std::string& out_key) {
-                                 return load_full_key_for_hash_ref(log_file_id, log_offset, out_key);
-                             });
+                             merged_ref.offset);
         }
 
         for (const auto& segment : immutable_segments) {
             remove_file(fs_, segment.path);
+        }
+
+        restore_rehash_state.table = nullptr;
+        hash_index_->set_auto_rehash_suppressed(prev_rehash_suppressed);
+        if (!prev_rehash_suppressed) {
+            hash_index_->trigger_rehash_if_needed();
         }
     }
 
@@ -1038,10 +1097,9 @@ namespace services::index {
         // directory. A fresh executor replaces the stopped one.
         task_executor_ = std::make_unique<bitcask_task_executor_t>();
         initialize_storage();
-        hash_index_ = std::make_unique<disk_hash_table_t>(hash_index_file_path_,
-                                                          disk_hash_table_t::default_bucket_count,
-                                                          false,
-                                                          resource_);
+        hash_index_ = boost::intrusive_ptr(new disk_hash_table_t(hash_index_file_path_,
+                                                                 disk_hash_table_t::default_bucket_count,
+                                                                 resource_));
         load_from_disk();
         open_active_segment();
         // committed_txn_ids_ is intentionally left as-is: the txn log it gated

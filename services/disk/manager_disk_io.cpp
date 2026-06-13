@@ -6,7 +6,17 @@ namespace services::disk {
     namespace catalog = components::catalog;
     using namespace detail;
 
-    void manager_disk_t::sync(disk_sync_pack_t pack) { manager_wal_ = pack.wal; }
+    void manager_disk_t::sync(disk_sync_pack_t pack) {
+        manager_wal_ = pack.wal;
+        // Fan the WAL address into every agent so the CATALOG agent can write physical
+        // WAL records for catalog DDL on its own thread. Bootstrap-only (single-threaded,
+        // agents already spawned in the ctor). No-op when no agents (empty config path).
+        for (auto& agent : agents_) {
+            if (agent != nullptr) {
+                agent->set_manager_wal_sync(pack.wal);
+            }
+        }
+    }
 
     void manager_disk_t::create_agent(int count_agents) {
         // Roles align with pool_idx_for_oid: slot 0 = CATALOG (pg_* system
@@ -28,45 +38,48 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<wal::id_t> manager_disk_t::checkpoint_all(session_id_t session,
-                                                                            wal::id_t current_wal_id) {
-        trace(log_, "manager_disk_t::checkpoint_all , session : {} , wal_id : {}", session.data(), current_wal_id);
+                                                                            wal::id_t current_wal_id,
+                                                                            uint64_t compact_watermark) {
+        trace(log_,
+              "manager_disk_t::checkpoint_all , session : {} , wal_id : {} , compact_watermark : {}",
+              session.data(),
+              current_wal_id,
+              compact_watermark);
 
-        // Fan checkpoint_inner to every agent; each returns
-        // min(prev_checkpoint_wal_id_) over its DISK entries, or max() sentinel when
-        // it owns no DISK entry.
-        std::pmr::vector<unique_future<wal::id_t>> agent_futures{resource()};
+        // Fan checkpoint_inner to every agent; each returns a checkpoint_result_t with
+        // min(prev_checkpoint_wal_id_) over its DISK entries (max() sentinel when it owns
+        // none) AND a has_in_memory flag — folding the former post-await
+        // has_in_memory_inner_sync read into the fan-out so no synchronous cross-actor
+        // slice read remains.
+        std::pmr::vector<unique_future<checkpoint_result_t>> agent_futures{resource()};
         agent_futures.reserve(agents_.size());
         for (auto& agent_ptr : agents_) {
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent_ptr->address(),
                                                                   &agent_disk_t::checkpoint_inner,
                                                                   session,
-                                                                  current_wal_id);
+                                                                  current_wal_id,
+                                                                  uint64_t{compact_watermark});
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent_ptr.get());
             }
             agent_futures.emplace_back(std::move(fut));
         }
 
+        // Aggregate: min over min_prev_checkpoint_wal_id AND OR over has_in_memory.
         wal::id_t min_prev_id = std::numeric_limits<wal::id_t>::max();
+        bool any_in_memory = false;
         for (auto& f : agent_futures) {
-            auto agent_min = co_await std::move(f);
-            min_prev_id = std::min(min_prev_id, agent_min);
+            auto agent_result = co_await std::move(f);
+            min_prev_id = std::min(min_prev_id, agent_result.min_prev_checkpoint_wal_id);
+            any_in_memory = any_in_memory || agent_result.has_in_memory;
         }
 
         if (!agents_.empty()) {
             // IN_MEMORY-twin WAL-seal suppression. The min() tally can't tell "no
             // DISK entry + no IN_MEMORY twin" (safe to seal) from "no DISK entry +
             // IN_MEMORY twin" (must NOT seal — those tables still need replay
-            // records). has_in_memory_inner_sync supplies the missing signal. The
-            // mailbox-free sync read is legal here: we just awaited every agent's
-            // mailbox, so agents are idle and the manager is their only writer.
-            bool any_in_memory = false;
-            for (const auto& agent_ptr : agents_) {
-                if (agent_ptr != nullptr && agent_ptr->has_in_memory_inner_sync()) {
-                    any_in_memory = true;
-                    break;
-                }
-            }
+            // records). any_in_memory comes from the checkpoint_inner fan-out above,
+            // so no synchronous slice read is needed here.
 
             // Seal only when some agent actually checkpointed a DISK entry (min_prev_id
             // still max() => none did) AND no IN_MEMORY twin exists anywhere.
@@ -93,7 +106,8 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<void> manager_disk_t::vacuum_all(session_id_t session,
-                                                                   uint64_t lowest_active_start_time) {
+                                                                   uint64_t lowest_active_start_time,
+                                                                   uint64_t compact_watermark) {
         trace(log_, "manager_disk_t::vacuum_all , session : {}", session.data());
 
         // Per-agent vacuum_inner runs the canonical cleanup_versions + compact.
@@ -103,7 +117,8 @@ namespace services::disk {
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent_ptr->address(),
                                                                   &agent_disk_t::vacuum_inner,
                                                                   session,
-                                                                  lowest_active_start_time);
+                                                                  lowest_active_start_time,
+                                                                  uint64_t{compact_watermark});
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent_ptr.get());
             }
@@ -121,7 +136,7 @@ namespace services::disk {
     manager_disk_t::unique_future<void>
     manager_disk_t::maybe_cleanup_many(execution_context_t /*ctx*/,
                                        std::pmr::vector<components::catalog::oid_t> table_oids,
-                                       uint64_t compact_gate) {
+                                       uint64_t compact_watermark) {
         // Each table_oid routes to its owning agent's maybe_cleanup_inner so the
         // threshold check + compact (row_group rebuild) is mailbox-serialized with
         // every same-oid access. Running it manager-side via a storage_entry_sync
@@ -146,7 +161,7 @@ namespace services::disk {
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
                                                                   &agent_disk_t::maybe_cleanup_inner,
                                                                   table_oid,
-                                                                  compact_gate);
+                                                                  uint64_t{compact_watermark});
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }

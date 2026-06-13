@@ -113,7 +113,7 @@ namespace components::operators {
                                           exec_ctx,
                                           kPgProc,
                                           std::move(pr_keys),
-                                          std::move(pr_vals));
+                                          components::operators::make_key_chunk(resource_, std::move(pr_vals)));
         auto batches = co_await std::move(fut);
 
         // Materialise the matched rows into a fresh chunk. Capacity is sized to

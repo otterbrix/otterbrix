@@ -135,7 +135,7 @@ TEST_CASE("integration::cpp::test_sql_features::in_list") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name);
+            test_create_collection(dispatcher, session, database_name, collection_name);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -211,7 +211,7 @@ TEST_CASE("integration::cpp::test_sql_features::between") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name);
+            test_create_collection(dispatcher, session, database_name, collection_name);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -287,7 +287,7 @@ TEST_CASE("integration::cpp::test_sql_features::like") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name);
+            test_create_collection(dispatcher, session, database_name, collection_name);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -371,7 +371,7 @@ TEST_CASE("integration::cpp::test_sql_features::distinct") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name);
+            test_create_collection(dispatcher, session, database_name, collection_name);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -433,7 +433,7 @@ TEST_CASE("integration::cpp::test_sql_features::count_distinct") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name);
+            test_create_collection(dispatcher, session, database_name, collection_name);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -500,7 +500,7 @@ TEST_CASE("integration::cpp::test_sql_features::having") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name);
+            test_create_collection(dispatcher, session, database_name, collection_name);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -566,7 +566,7 @@ TEST_CASE("integration::cpp::test_sql_features::edge_cases") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name);
+            test_create_collection(dispatcher, session, database_name, collection_name);
         }
     }
 
@@ -766,7 +766,7 @@ TEST_CASE("integration::cpp::test_sql_features::case_when") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name);
+            test_create_collection(dispatcher, session, database_name, collection_name);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -827,7 +827,7 @@ TEST_CASE("integration::cpp::test_sql_features::case_when_in_aggregate") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name);
+            test_create_collection(dispatcher, session, database_name, collection_name);
         }
         {
             auto session = otterbrix::session_id_t();

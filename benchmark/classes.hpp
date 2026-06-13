@@ -1,7 +1,9 @@
 #pragma once
 
 #include <benchmark/benchmark.h>
+#include <components/logical_plan/node_create_index.hpp>
 #include <components/logical_plan/node_insert.hpp>
+#include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
 #include <integration/cpp/base_spaces.hpp>
 
@@ -55,9 +57,13 @@ template<bool on_wal, bool on_disk>
 void create_index(const collection_name_t& collection_name) {
     auto* dispatcher = test_spaces<on_wal, on_disk>::get().dispatcher();
     auto session = otterbrix::session_id_t();
-    auto plan = make_node_create_index(dispatcher->resource());
-    plan->keys().emplace_back(dispatcher->resource(), "count");
-    dispatcher->create_index(session, database_name, collection_name, plan);
+    auto node = make_node_create_index(dispatcher->resource());
+    node->keys().emplace_back(dispatcher->resource(), "count");
+    auto plan = components::sql::transform::maybe_wrap_with_catalog_resolve_table(dispatcher->resource(),
+                                                                                  database_name,
+                                                                                  collection_name,
+                                                                                  node);
+    dispatcher->execute_plan(session, execution_plan_t{dispatcher->resource(), plan, nullptr});
 }
 
 template<bool on_wal, bool on_disk>

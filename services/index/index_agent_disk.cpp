@@ -12,7 +12,8 @@ namespace services::index {
                                                       uint64_t bitcask_flush_threshold,
                                                       uint64_t bitcask_segment_record_limit,
                                                       uint64_t btree_flush_threshold,
-                                                      std::pmr::set<std::uint64_t> committed_txn_ids) {
+                                                      std::pmr::set<std::uint64_t> committed_txn_ids,
+                                                      disk_hash_table_ptr shared_hash_index) {
             // index_type::hashed → bitcask LSM. Everything else (single / composite /
             // multikey / wildcard) → ordered B+tree.
             //
@@ -23,7 +24,8 @@ namespace services::index {
                                                               resource,
                                                               bitcask_flush_threshold,
                                                               bitcask_segment_record_limit,
-                                                              std::move(committed_txn_ids));
+                                                              std::move(committed_txn_ids),
+                                                              std::move(shared_hash_index));
             }
             return std::make_unique<btree_index_disk_t>(path, resource, btree_flush_threshold);
         }
@@ -38,7 +40,8 @@ namespace services::index {
                                            uint64_t bitcask_segment_record_limit,
                                            uint64_t btree_flush_threshold,
                                            log_t& log,
-                                           std::pmr::set<std::uint64_t> committed_txn_ids)
+                                           std::pmr::set<std::uint64_t> committed_txn_ids,
+                                           disk_hash_table_ptr shared_hash_index)
         : actor_zeta::basic_actor<index_agent_disk_t>(resource)
         , log_(log.clone())
         , index_disk_(make_index_disk(path_db / std::to_string(static_cast<unsigned>(table_oid)) / index_name,
@@ -47,7 +50,8 @@ namespace services::index {
                                       bitcask_flush_threshold,
                                       bitcask_segment_record_limit,
                                       btree_flush_threshold,
-                                      std::move(committed_txn_ids)))
+                                      std::move(committed_txn_ids),
+                                      std::move(shared_hash_index)))
         , table_oid_(table_oid) {
         trace(log_, "index_agent_disk::create {} (table_oid={})", index_name, static_cast<unsigned>(table_oid));
     }
@@ -68,14 +72,15 @@ namespace services::index {
             case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::remove_many>:
                 co_await actor_zeta::dispatch(this, &index_agent_disk_t::remove_many, msg);
                 break;
+            case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::force_flush>:
+                co_await actor_zeta::dispatch(this, &index_agent_disk_t::force_flush, msg);
+                break;
             default:
                 break;
         }
     }
 
     auto index_agent_disk_t::make_type() const noexcept -> const char* { return "index_agent_disk"; }
-
-    bool index_agent_disk_t::is_dropped() const { return is_dropped_; }
 
     index_agent_disk_t::unique_future<void> index_agent_disk_t::drop(session_id_t session) {
         trace(log_, "index_agent_disk_t::drop, session: {}", session.data());
@@ -126,7 +131,11 @@ namespace services::index {
         // btree / txn_id==0 direct path stays assert+abort terminal: there is no
         // recoverable failure to surface, so a clean run returns no_error().
         for (const auto& [key, row_id] : values) {
-            index_disk_->insert(key, row_id);
+            if (bitcask) {
+                bitcask->insert_bulk_unchecked(key, row_id);
+            } else {
+                index_disk_->insert(key, row_id);
+            }
         }
         if (bitcask) {
             bitcask->force_flush();
@@ -158,12 +167,15 @@ namespace services::index {
         co_return core::error_t::no_error();
     }
 
-    // Synchronous owner-side entry — called by manager_index_t outside the
-    // actor mailbox.
-    void index_agent_disk_t::force_flush_sync() {
+    index_agent_disk_t::unique_future<void> index_agent_disk_t::force_flush(session_id_t session) {
+        // A dropped agent has no backing — flushing it would be a use-after-free,
+        // so skip. The is_dropped_ guard lives here now (was the owner-side check
+        // in manager_index_t::flush_all_indexes before this became a mailbox op).
+        trace(log_, "index_agent_disk_t::force_flush, session: {}", session.data());
         if (index_disk_ && !is_dropped_) {
             index_disk_->force_flush();
         }
+        co_return;
     }
 
 } //namespace services::index

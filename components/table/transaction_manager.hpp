@@ -33,6 +33,18 @@ namespace components::table {
         // commit-id space after the dropped-committed remap) against it.
         uint64_t lowest_active_snapshot_horizon() const;
 
+        // Visible-to-all horizon for data_table_t::compact(): every commit_id at
+        // or below the returned value is visible to EVERY current snapshot and to
+        // every snapshot taken later. Computed atomically as the min of
+        //   * published_horizon_ (floor for future snapshots),
+        //   * min(in_flight_commits_) - 1 (committed-unpublished ids and anything
+        //     newer stay protected — future snapshots reject them via
+        //     in_flight_snapshot),
+        //   * per active txn: min(snapshot_horizon, min(in_flight_snapshot) - 1).
+        // Monotonic in the safe direction: a value computed now is never above a
+        // value computed later, so it can ride actor messages without re-checks.
+        uint64_t compact_watermark() const;
+
         // ProcArray atomic publish barrier: moves a committed txn out of
         // in_flight_commits_ and advances published_horizon_. MUST be called at
         // the end of the commit pipeline (after WAL fsync + storage_publish_*),

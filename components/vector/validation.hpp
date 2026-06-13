@@ -49,8 +49,8 @@ namespace components::vector {
         }
 
         explicit validity_mask_t(std::pmr::memory_resource* resource, uint64_t size);
-        explicit validity_mask_t(uint64_t* ptr)
-            : resource_(nullptr)
+        validity_mask_t(std::pmr::memory_resource* resource, uint64_t* ptr)
+            : resource_(resource)
             , validity_mask_(ptr)
             , count_(DEFAULT_VECTOR_CAPACITY) {}
         validity_mask_t(const validity_mask_t& other);

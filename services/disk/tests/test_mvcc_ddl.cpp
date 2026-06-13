@@ -1,5 +1,6 @@
 #include <catch2/catch.hpp>
 
+#include "catalog_probe.hpp"
 #include "disk_test_helpers.hpp"
 #include <actor-zeta/spawn.hpp>
 #include <components/catalog/catalog_codes.hpp>
@@ -135,7 +136,7 @@ TEST_CASE("services::disk::mvcc::auto_commit_drop_invisible") {
     const auto table_oid =
         disk_test_helpers::test_create_table(fx, ns_oid, std::string("t"), cols, catalog::relkind::regular);
     disk_test_helpers::test_drop_table(fx, table_oid);
-    auto rr = fx.invoke(&manager_disk_t::resolve_table, fx.auto_ctx(), ns_oid, std::string("t"), std::uint64_t{0});
+    auto rr = test_probe::probe_table(fx, fx.auto_ctx(), ns_oid, std::string("t"));
     REQUIRE_FALSE(rr.found);
 }
 
@@ -170,7 +171,7 @@ TEST_CASE("services::disk::mvcc::uncommitted_delete_invisible_to_other_readers")
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{3}, table_oid);
         // Intentionally no MVCC swap (no storage_publish_commits call).
     }
-    auto rr = fx.invoke(&manager_disk_t::resolve_table, fx.auto_ctx(), ns_oid, std::string("doomed"), std::uint64_t{0});
+    auto rr = test_probe::probe_table(fx, fx.auto_ctx(), ns_oid, std::string("doomed"));
     REQUIRE(rr.found);
 }
 
@@ -239,8 +240,7 @@ TEST_CASE("services::disk::mvcc::uncommitted_drop_index_invisible") {
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{3}, index_oid);
         // Intentionally no MVCC swap (no storage_publish_commits call).
     }
-    auto rr =
-        fx.invoke(&manager_disk_t::resolve_table, fx.auto_ctx(), ns_oid, std::string("idx_doomed"), std::uint64_t{0});
+    auto rr = test_probe::probe_table(fx, fx.auto_ctx(), ns_oid, std::string("idx_doomed"));
     REQUIRE(rr.found);
 }
 
@@ -259,7 +259,7 @@ TEST_CASE("services::disk::mvcc::uncommitted_drop_type_invisible") {
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{3}, type_oid);
         // Intentionally no MVCC swap (no storage_publish_commits call).
     }
-    auto rr = fx.invoke(&manager_disk_t::resolve_type, fx.auto_ctx(), ns_oid, std::string("widget"), std::uint64_t{0});
+    auto rr = test_probe::probe_type(fx, fx.auto_ctx(), ns_oid, std::string("widget"));
     REQUIRE(rr.found);
 }
 
@@ -298,19 +298,16 @@ TEST_CASE("services::disk::mvcc::test_ddl_rollback_cleans_up") {
     }
     REQUIRE(table_oid >= FIRST_USER_OID);
     // Before rollback: invisible to other sessions (insert_id >= TRANSACTION_ID_START).
-    auto before_other =
-        fx.invoke(&manager_disk_t::resolve_table, fx.auto_ctx(), ns_oid, std::string("ephemeral"), std::uint64_t{0});
+    auto before_other = test_probe::probe_table(fx, fx.auto_ctx(), ns_oid, std::string("ephemeral"));
     REQUIRE_FALSE(before_other.found);
     // Revert via batched API. The test captured append ranges above
     // (from append_pg_catalog_row return values).
     fx.invoke(&manager_disk_t::storage_revert_appends, fx.txn_ctx(txn), std::move(appends_for_test));
     // After rollback: still not found — no orphan rows.
-    auto after =
-        fx.invoke(&manager_disk_t::resolve_table, fx.auto_ctx(), ns_oid, std::string("ephemeral"), std::uint64_t{0});
+    auto after = test_probe::probe_table(fx, fx.auto_ctx(), ns_oid, std::string("ephemeral"));
     REQUIRE_FALSE(after.found);
     // Same txn also cannot find the rolled-back table.
-    auto after_same =
-        fx.invoke(&manager_disk_t::resolve_table, fx.txn_ctx(txn), ns_oid, std::string("ephemeral"), std::uint64_t{0});
+    auto after_same = test_probe::probe_table(fx, fx.txn_ctx(txn), ns_oid, std::string("ephemeral"));
     REQUIRE_FALSE(after_same.found);
 }
 
@@ -340,10 +337,8 @@ TEST_CASE("services::disk::mvcc::drop_cascade_uncommitted_invisible_to_other_rea
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, fx.txn_ctx(uncommitted), pg_dep, std::int64_t{3}, ns_oid);
         // Intentionally no MVCC swap (no storage_publish_commits call).
     }
-    auto rt_after =
-        fx.invoke(&manager_disk_t::resolve_table, fx.auto_ctx(), ns_oid, std::string("t"), std::uint64_t{0});
-    auto idx_after =
-        fx.invoke(&manager_disk_t::resolve_table, fx.auto_ctx(), ns_oid, std::string("child_idx"), std::uint64_t{0});
+    auto rt_after = test_probe::probe_table(fx, fx.auto_ctx(), ns_oid, std::string("t"));
+    auto idx_after = test_probe::probe_table(fx, fx.auto_ctx(), ns_oid, std::string("child_idx"));
     REQUIRE(rt_after.found);
     REQUIRE(idx_after.found);
 }
@@ -378,8 +373,7 @@ TEST_CASE("services::disk::mvcc::dynamic_schema_register_invisible_until_commit"
     }
 
     // Other-session read (txn=0) must NOT see the uncommitted column.
-    auto resolved_other =
-        fx.invoke(&manager_disk_t::resolve_table, fx.auto_ctx(), ns_oid, std::string("docs"), std::uint64_t{0});
+    auto resolved_other = test_probe::probe_table(fx, fx.auto_ctx(), ns_oid, std::string("docs"));
     REQUIRE(resolved_other.found);
     REQUIRE(resolved_other.relkind == components::catalog::relkind::computed);
     REQUIRE(resolved_other.columns.size() == 0);
@@ -391,8 +385,7 @@ TEST_CASE("services::disk::mvcc::dynamic_schema_register_invisible_until_commit"
               std::move(pending_ranges));
 
     // Fresh reader (txn=0) now sees the committed column.
-    auto resolved_after =
-        fx.invoke(&manager_disk_t::resolve_table, fx.auto_ctx(), ns_oid, std::string("docs"), std::uint64_t{0});
+    auto resolved_after = test_probe::probe_table(fx, fx.auto_ctx(), ns_oid, std::string("docs"));
     REQUIRE(resolved_after.found);
     REQUIRE(resolved_after.columns.size() == 1);
     REQUIRE(resolved_after.columns[0].attname == "a");
@@ -425,8 +418,7 @@ TEST_CASE("services::disk::mvcc::dynamic_schema_register_rollback_undoes") {
     }
 
     // Before rollback: invisible to other readers (uncommitted).
-    auto before =
-        fx.invoke(&manager_disk_t::resolve_table, fx.auto_ctx(), ns_oid, std::string("docs"), std::uint64_t{0});
+    auto before = test_probe::probe_table(fx, fx.auto_ctx(), ns_oid, std::string("docs"));
     REQUIRE(before.found);
     REQUIRE(before.columns.size() == 0);
 
@@ -434,12 +426,10 @@ TEST_CASE("services::disk::mvcc::dynamic_schema_register_rollback_undoes") {
     fx.invoke(&manager_disk_t::storage_revert_appends, fx.txn_ctx(txn1), std::move(pending_ranges));
 
     // After rollback: still no column visible from any reader.
-    auto after_other =
-        fx.invoke(&manager_disk_t::resolve_table, fx.auto_ctx(), ns_oid, std::string("docs"), std::uint64_t{0});
+    auto after_other = test_probe::probe_table(fx, fx.auto_ctx(), ns_oid, std::string("docs"));
     REQUIRE(after_other.found);
     REQUIRE(after_other.columns.size() == 0);
-    auto after_same =
-        fx.invoke(&manager_disk_t::resolve_table, fx.txn_ctx(txn1), ns_oid, std::string("docs"), std::uint64_t{0});
+    auto after_same = test_probe::probe_table(fx, fx.txn_ctx(txn1), ns_oid, std::string("docs"));
     REQUIRE(after_same.found);
     REQUIRE(after_same.columns.size() == 0);
 }
@@ -479,13 +469,16 @@ TEST_CASE("services::disk::mvcc::dynamic_schema_register_visible_in_same_txn") {
         fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.txn_ctx(txn1), pg_cc, std::move(row));
     }
 
-    // resolve_table from the SAME txn — inline_scan goes through committed_version_operator
-    // with (current_version_, current_version_), so own-uncommitted writes are NOT visible.
+    // Resolve from the SAME txn using PRODUCTION semantics: operator_resolve_table issues
+    // read_chunks_by_key with the caller's real ctx->txn (committed_scan=false), so the txn
+    // reads its own in-flight catalog write back (read-your-own-writes). This matches the
+    // production resolve path; the deleted disk resolve_table scanned committed-only and
+    // would have hidden it.
     auto resolved_self =
-        fx.invoke(&manager_disk_t::resolve_table, fx.txn_ctx(txn1), ns_oid, std::string("docs"), std::uint64_t{0});
+        test_probe::probe_table(fx, fx.txn_ctx(txn1), ns_oid, std::string("docs"), /*committed_scan=*/false);
     REQUIRE(resolved_self.found);
     REQUIRE(resolved_self.relkind == components::catalog::relkind::computed);
-    REQUIRE(resolved_self.columns.size() == 0);
+    REQUIRE(resolved_self.columns.size() == 1);
 }
 
 // Concurrent INSERTs into a relkind='g' table can register the

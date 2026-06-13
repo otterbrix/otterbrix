@@ -50,6 +50,7 @@ target_link_libraries(
         otterbrix_${PROJECT_NAME} PRIVATE
         otterbrix::expressions
         otterbrix::file
+        otterbrix::session
         otterbrix::types
         otterbrix::vector
 

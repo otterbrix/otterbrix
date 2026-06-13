@@ -92,7 +92,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
         auto create_collection = [&](const collection_name_t& collection,
                                      const std::vector<table::column_definition_t>& columns) {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, table_database_name, collection, columns);
+            test_create_collection(dispatcher, session, table_database_name, collection, columns);
         };
 
         {

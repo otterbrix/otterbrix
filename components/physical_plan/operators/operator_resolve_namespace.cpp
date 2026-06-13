@@ -90,7 +90,7 @@ namespace components::operators {
                                            exec_ctx,
                                            kPgNamespace,
                                            std::move(ns_keys),
-                                           std::move(ns_vals));
+                                           components::operators::make_key_chunk(resource_, std::move(ns_vals)));
         auto ns_batches = co_await std::move(nsf);
 
         bool resolved = false;

@@ -3,8 +3,10 @@
 #include "block_handle.hpp"
 
 #include <array>
-#include <queue>
+#include <memory_resource>
 #include <thread>
+
+#include <boost/lockfree/queue.hpp>
 
 namespace components::table::storage {
 
@@ -22,12 +24,17 @@ namespace components::table::storage {
     };
 
     struct eviction_queue_t {
-        explicit eviction_queue_t(const file_buffer_type file_buffer_type)
+        eviction_queue_t(const file_buffer_type file_buffer_type, std::pmr::memory_resource* resource)
             : buffer_type(file_buffer_type)
+            , resource_(resource)
+            , q(INITIAL_QUEUE_CAPACITY)
+            , approx_q_size_(0)
             , evict_queue_insertions_(0)
             , total_dead_nodes_(0) {}
+        ~eviction_queue_t();
 
         bool add_to_eviction_queue(buffer_eviction_node_t&& node);
+        bool try_dequeue(buffer_eviction_node_t& node);
         bool try_dequeue_with_lock(buffer_eviction_node_t& node);
         void purge();
         template<typename FN>
@@ -38,19 +45,30 @@ namespace components::table::storage {
 
     private:
         void purge_iteration(uint64_t purge_size);
+        void enqueue(buffer_eviction_node_t&& node);
+        void destroy_node(buffer_eviction_node_t* node);
 
     public:
         const file_buffer_type buffer_type;
-        std::queue<buffer_eviction_node_t> q;
 
     private:
         constexpr static uint64_t INSERT_INTERVAL = 4096;
         constexpr static uint64_t PURGE_SIZE_MULTIPLIER = 2;
         constexpr static uint64_t EARLY_OUT_MULTIPLIER = 4;
         constexpr static uint64_t ALIVE_NODE_MULTIPLIER = 4;
+        constexpr static uint64_t INITIAL_QUEUE_CAPACITY = 256;
 
+        std::pmr::memory_resource* resource_;
+        // lock-free MPMC queue of heap nodes: producers (unpin on scan/disk
+        // threads) push without taking purge_lock_; stores raw pointers
+        // because boost::lockfree requires a trivially-copyable element type
+        boost::lockfree::queue<buffer_eviction_node_t*> q;
+        std::atomic<uint64_t> approx_q_size_;
         std::atomic<uint64_t> evict_queue_insertions_;
         std::atomic<uint64_t> total_dead_nodes_;
+        // serializes purge passes and the slow-path dequeue against an
+        // in-flight purge (which briefly holds nodes in purge_nodes_);
+        // does not guard q itself (q is lock-free)
         std::mutex purge_lock_;
         std::vector<buffer_eviction_node_t> purge_nodes_;
     };

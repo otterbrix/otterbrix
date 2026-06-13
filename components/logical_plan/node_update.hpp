@@ -20,6 +20,9 @@ namespace components::logical_plan {
         const std::pmr::vector<expressions::update_expr_ptr>& updates() const;
         bool upsert() const;
 
+        std::pmr::vector<expressions::expression_ptr>& returning();
+        const std::pmr::vector<expressions::expression_ptr>& returning() const;
+
         // UPDATE ... FROM source-side table_oid (the USING-clause table).
         // enrich_logical_plan stamps this from the sibling resolve_table for the
         // FROM target. Default INVALID_OID — caller must check before using.
@@ -35,6 +38,7 @@ namespace components::logical_plan {
 
     private:
         std::pmr::vector<expressions::update_expr_ptr> update_expressions_;
+        std::pmr::vector<expressions::expression_ptr> returning_;
         bool upsert_;
         components::catalog::oid_t table_oid_from_{components::catalog::INVALID_OID};
 

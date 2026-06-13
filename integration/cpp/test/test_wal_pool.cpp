@@ -34,7 +34,7 @@ static const collection_name_t collection_name_2 = "testcollection2";
             for (const auto& type : types) {                                                                           \
                 columns.emplace_back(type.alias(), type);                                                              \
             }                                                                                                          \
-            dispatcher->create_collection(session, DB, COLL, columns);                                                 \
+            test_create_collection(dispatcher, session, DB, COLL, columns);                                            \
         }                                                                                                              \
     } while (false)
 
@@ -70,7 +70,9 @@ static const collection_name_t collection_name_2 = "testcollection2";
                                                                      std::move(expr)));                                \
         auto params = components::logical_plan::make_parameter_node(dispatcher->resource());                           \
         params->add_parameter(id_par{1}, VALUE);                                                                       \
-        auto c = dispatcher->find(session, plan, params);                                                              \
+        auto c = dispatcher->execute_plan(                                                                             \
+            session,                                                                                                   \
+            components::logical_plan::execution_plan_t{dispatcher->resource(), plan, params});                         \
         REQUIRE(c->size() == COUNT);                                                                                   \
     } while (false)
 
@@ -224,7 +226,7 @@ TEST_CASE("integration::cpp::test_wal_pool::multiple_collections_routing") {
             for (const auto& type : types) {
                 columns.emplace_back(type.alias(), type);
             }
-            dispatcher->create_collection(session, database_name, collection_name_2, columns);
+            test_create_collection(dispatcher, session, database_name, collection_name_2, columns);
         }
         FILL_COLLECTION_WAL(database_name, collection_name_2, kDocuments);
 

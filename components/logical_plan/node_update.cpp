@@ -12,6 +12,7 @@ namespace components::logical_plan {
                                  bool upsert)
         : node_t(resource, node_type::update_t)
         , update_expressions_(updates)
+        , returning_(resource)
         , upsert_(upsert) {
         append_child(match);
         append_child(limit);
@@ -20,6 +21,9 @@ namespace components::logical_plan {
     const std::pmr::vector<expressions::update_expr_ptr>& node_update_t::updates() const { return update_expressions_; }
 
     bool node_update_t::upsert() const { return upsert_; }
+
+    std::pmr::vector<expressions::expression_ptr>& node_update_t::returning() { return returning_; }
+    const std::pmr::vector<expressions::expression_ptr>& node_update_t::returning() const { return returning_; }
 
     hash_t node_update_t::hash_impl() const { return 0; }
 

@@ -1,6 +1,8 @@
 #include "operator_delete.hpp"
 #include "predicates/predicate.hpp"
+#include <components/vector/vector_operations.hpp>
 
+#include <algorithm>
 #include <components/context/context.hpp>
 #include <components/context/execution_context.hpp>
 #include <services/disk/manager_disk.hpp>
@@ -12,10 +14,12 @@ namespace components::operators {
     operator_delete::operator_delete(std::pmr::memory_resource* resource,
                                      log_t log,
                                      components::catalog::oid_t table_oid,
+                                     std::pmr::vector<select_column_t> returning,
                                      expressions::expression_ptr expr)
         : read_write_operator_t(resource, log, operator_type::remove)
         , table_oid_(table_oid)
-        , expression_(std::move(expr)) {}
+        , expression_(std::move(expr))
+        , returning_(std::move(returning)) {}
 
     void operator_delete::accept_resolved_metadata(resolved_table_metadata_t metadata) {
         // See operator_insert for the contract.
@@ -26,12 +30,31 @@ namespace components::operators {
     }
 
     void operator_delete::on_execute_impl(pipeline::context_t* pipeline_context) {
+        // RETURNING: record the scan positions of matched rows into a separate
+        // indexing vector as we match (ids stays row-id/dict-index for the
+        // storage delete). After matching, gather those rows from returning_source
+        // in one vectorized copy and project them straight into output_.
+        const bool collect_returning = !returning_.empty();
+        vector::indexing_vector_t returning_indexing(resource_);
+        size_t returning_count = 0;
+        const vector::data_chunk_t* returning_source = nullptr;
+        // Right (USING) side for joined RETURNING: the chosen right-row index per
+        // matched target row, gathered in lockstep with returning_indexing so the
+        // projection reads joined columns from the same matched pair.
+        vector::indexing_vector_t returning_indexing_right(resource_);
+        const vector::data_chunk_t* returning_source_right = nullptr;
         // Predicate matching only — table.delete_rows() is now handled by
         // await_async_and_resume via send(disk_address_, &manager_disk_t::storage_delete_rows).
         if (left_ && left_->output() && right_ && right_->output()) {
             modified_ = operators::make_operator_write_data(left_->output()->resource());
             auto& chunk_left = left_->output()->data_chunk();
             auto& chunk_right = right_->output()->data_chunk();
+            if (collect_returning) {
+                returning_source = &chunk_left;
+                returning_indexing.reset(chunk_left.size());
+                returning_source_right = &chunk_right;
+                returning_indexing_right.reset(chunk_left.size());
+            }
             auto types_left = chunk_left.types();
             auto types_right = chunk_right.types();
             auto ids_capacity = vector::DEFAULT_VECTOR_CAPACITY;
@@ -51,10 +74,17 @@ namespace components::operators {
                     auto check_result = predicate->check(chunk_left, chunk_right, i, j);
                     if (!check_result.has_error() && check_result.value()) {
                         ids.data<int64_t>()[index++] = static_cast<int64_t>(i);
+                        if (collect_returning) {
+                            returning_indexing.set_index(returning_count, i);
+                            returning_indexing_right.set_index(returning_count, j);
+                            returning_count++;
+                        }
                         if (index >= ids_capacity) {
                             ids.resize(ids_capacity, ids_capacity * 2);
                             ids_capacity *= 2;
                         }
+                        // Match found, no need to scan further
+                        break;
                     }
                 }
             }
@@ -70,6 +100,10 @@ namespace components::operators {
             output_ = left_->output(); // pass-through for downstream fk_cascade operators
             modified_ = operators::make_operator_write_data(left_->output()->resource());
             auto& chunk = left_->output()->data_chunk();
+            if (collect_returning) {
+                returning_source = &chunk;
+                returning_indexing.reset(chunk.size());
+            }
             auto types = chunk.types();
 
             vector::vector_t ids(left_->output()->resource(), types::logical_type::BIGINT, chunk.size());
@@ -91,6 +125,9 @@ namespace components::operators {
                     } else {
                         ids.data<int64_t>()[index++] = chunk.row_ids.data<int64_t>()[i];
                     }
+                    if (collect_returning) {
+                        returning_indexing.set_index(returning_count++, i);
+                    }
                 }
             }
             ids.resize(chunk.size(), index);
@@ -102,6 +139,49 @@ namespace components::operators {
                 modified_->updated_types_map()[{std::pmr::string(type.alias(), left_->output()->resource()), type}] +=
                     index;
             }
+        }
+
+        // RETURNING: gather the matched rows from the scan chunk in one
+        // vectorized copy, then project the requested columns straight into
+        // output_ (split to honor the vector capacity bound). Done here, before
+        // the storage delete, while the scan data is still in memory.
+        if (collect_returning && returning_source != nullptr) {
+            chunks_vector_t projected(resource_);
+            if (returning_count > 0) {
+                vector::data_chunk_t affected(resource_, returning_source->types(), returning_count);
+                returning_source->copy(affected, returning_indexing, returning_count);
+                auto batches = split_chunk_into_batches(resource_, std::move(affected));
+
+                // Joined RETURNING (DELETE ... USING): gather the matched right
+                // (USING) rows in lockstep and split identically — same row count,
+                // same windows — so batch b of each side covers the same pairs.
+                chunks_vector_t batches_right(resource_);
+                if (returning_source_right != nullptr) {
+                    vector::data_chunk_t affected_right(resource_, returning_source_right->types(), returning_count);
+                    returning_source_right->copy(affected_right, returning_indexing_right, returning_count);
+                    batches_right = split_chunk_into_batches(resource_, std::move(affected_right));
+                }
+
+                for (size_t b = 0; b < batches.size(); b++) {
+                    auto& batch = batches[b];
+                    if (batch.size() == 0) {
+                        continue;
+                    }
+                    vector::data_chunk_t* right_batch = b < batches_right.size() ? &batches_right[b] : nullptr;
+                    auto proj = evaluate_projection(resource_,
+                                                    returning_,
+                                                    &batch,
+                                                    pipeline_context->parameters,
+                                                    pipeline_context->session_tz,
+                                                    right_batch);
+                    if (proj.has_error()) {
+                        set_error(proj.error());
+                        return;
+                    }
+                    projected.emplace_back(std::move(proj.value()));
+                }
+            }
+            set_output(make_operator_data(resource_, std::move(projected)));
         }
 
         if (modified_ && modified_->size() > 0 && table_oid_ != components::catalog::INVALID_OID) {
@@ -206,15 +286,19 @@ namespace components::operators {
         ctx->dml_delete_txn_id = ctx->txn.transaction_id;
         ctx->dml_table_oid = table_oid_;
 
-        // 6. Build result chunk (need types from storage).
-        auto [_t, tf] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::storage_types,
-                                         ctx->session,
-                                         table_oid_);
-        auto types = co_await std::move(tf);
-        data_chunk_t chunk(resource_, types, modified_size);
-        chunk.set_cardinality(modified_size);
-        set_output(make_operator_data(resource_, std::move(chunk)));
+        // 6. Build result chunk. With RETURNING, output_ already holds the
+        // projected deleted rows (set by on_execute_impl); otherwise emit a
+        // typed chunk whose cardinality carries the affected-row count.
+        if (returning_.empty()) {
+            auto [_t, tf] = actor_zeta::send(ctx->disk_address,
+                                             &services::disk::manager_disk_t::storage_types,
+                                             ctx->session,
+                                             table_oid_);
+            auto types = co_await std::move(tf);
+            data_chunk_t chunk(resource_, types, modified_size);
+            chunk.set_cardinality(modified_size);
+            set_output(make_operator_data(resource_, std::move(chunk)));
+        }
         mark_executed();
     }
 

@@ -202,7 +202,7 @@ namespace components::table {
             auto& buffer_manager = segment.block->block_manager.buffer_manager;
             auto handle = buffer_manager.pin(segment.block);
             auto dataptr = handle.ptr() + segment.block_offset();
-            vector::validity_mask_t mask(reinterpret_cast<uint64_t*>(dataptr));
+            vector::validity_mask_t mask(buffer_manager.resource(), reinterpret_cast<uint64_t*>(dataptr));
             auto& result_mask = result.validity();
             if (!mask.row_is_valid(static_cast<uint64_t>(row_id))) {
                 result_mask.set_invalid(result_idx);
@@ -244,7 +244,7 @@ namespace components::table {
             auto& buffer_manager = segment.block->block_manager.buffer_manager;
             auto handle = buffer_manager.pin(segment.block);
             auto dataptr = handle.ptr() + segment.block_offset();
-            vector::validity_mask_t mask(reinterpret_cast<uint64_t*>(dataptr));
+            vector::validity_mask_t mask(buffer_manager.resource(), reinterpret_cast<uint64_t*>(dataptr));
 
             return table_filter_dispatch(filter, mask.row_is_valid(static_cast<uint64_t>(row_id)));
         }
@@ -350,7 +350,8 @@ namespace components::table {
                 return append_count;
             }
 
-            vector::validity_mask_t mask(reinterpret_cast<uint64_t*>(handle.ptr()));
+            vector::validity_mask_t mask(segment.block->block_manager.buffer_manager.resource(),
+                                         reinterpret_cast<uint64_t*>(handle.ptr()));
             for (uint64_t i = 0; i < append_count; i++) {
                 auto idx = data.referenced_indexing->get_index(offset + i);
                 if (!data.validity.row_is_valid(idx)) {
@@ -1510,7 +1511,7 @@ namespace components::table {
         if (start_bit % 8 != 0) {
             uint64_t byte_pos = start_bit / 8;
             uint64_t bit_end = (byte_pos + 1) * 8;
-            vector::validity_mask_t mask(reinterpret_cast<uint64_t*>(handle.ptr()));
+            vector::validity_mask_t mask(buffer_manager.resource(), reinterpret_cast<uint64_t*>(handle.ptr()));
             for (uint64_t i = start_bit; i < bit_end; i++) {
                 mask.set_valid(i);
             }

@@ -77,6 +77,9 @@ namespace components::table {
         void revert_all_deletes(uint64_t txn_id);
 
         uint64_t committed_row_count();
+        // True when any version stamp in this row group is above `watermark`
+        // (pending txn id or commit id newer than the visible-to-all horizon).
+        bool has_version_above(uint64_t watermark);
 
         void initialize_append(row_group_append_state& append_state);
         void append(row_group_append_state& append_state, vector::data_chunk_t& chunk, uint64_t append_count);

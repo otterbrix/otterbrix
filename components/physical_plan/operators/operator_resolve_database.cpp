@@ -75,7 +75,7 @@ namespace components::operators {
                                            exec_ctx,
                                            kPgDatabase,
                                            std::move(db_keys),
-                                           std::move(db_vals));
+                                           components::operators::make_key_chunk(resource_, std::move(db_vals)));
         auto db_batches = co_await std::move(dbf);
 
         bool resolved = false;

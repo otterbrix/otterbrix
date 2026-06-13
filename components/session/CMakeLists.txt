@@ -23,5 +23,5 @@ set_property(TARGET otterbrix_${PROJECT_NAME} PROPERTY EXPORT_NAME ${PROJECT_NAM
 target_include_directories(otterbrix_${PROJECT_NAME} PUBLIC)
 
 if (DEV_MODE)
-    #add_subdirectory(tests)
+    add_subdirectory(tests)
 endif()

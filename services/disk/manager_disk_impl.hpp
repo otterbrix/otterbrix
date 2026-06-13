@@ -4,6 +4,7 @@
 // Centralises includes and exposes the shared helpers that all TUs need.
 
 #include "manager_disk.hpp"
+#include "inline_scan.hpp" // services::disk::detail::inline_scan (shared with agent_disk)
 
 #include <actor-zeta/spawn.hpp>
 #include <algorithm>
@@ -42,18 +43,6 @@ namespace services::disk {
             return components::types::logical_value_t(r, std::move(v));
         }
 
-        inline components::types::logical_value_t lv_i32(std::pmr::memory_resource* r, std::int32_t v) {
-            return components::types::logical_value_t(r, v);
-        }
-
-        inline components::types::logical_value_t lv_i64(std::pmr::memory_resource* r, std::int64_t v) {
-            return components::types::logical_value_t(r, v);
-        }
-
-        inline components::types::logical_value_t lv_bool(std::pmr::memory_resource* r, bool v) {
-            return components::types::logical_value_t(r, v);
-        }
-
         // ---------------------------------------------------------------------------
         // make_row: allocate a single-row data_chunk_t and fill it via a lambda.
         // Usage: make_row(resource, def->columns, [&](data_chunk_t& chunk, auto* res) { ... })
@@ -84,96 +73,8 @@ namespace services::disk {
             return v.value<std::string_view>() == std::string_view(s);
         }
 
-        // ---------------------------------------------------------------------------
-        // inline_scan: scan all committed rows of a data_table_t, projecting the given
-        // column indices.  Calls fn(chunk, row_index) for every row; returning false
-        // from fn stops the scan early.
-        // ---------------------------------------------------------------------------
-
-        namespace detail_impl_ {
-            template<typename Range, typename Fn>
-            void inline_scan_range(components::table::data_table_t& table,
-                                   const Range& col_indices,
-                                   std::pmr::memory_resource* resource,
-                                   Fn&& fn) {
-                std::vector<components::table::storage_index_t> col_ids;
-                const auto& all_cols = table.columns();
-                // row_group_t::scan_committed writes to result.data[column.primary_index()] —
-                // i.e. it indexes by storage column position, not by row in `col_ids`. So the
-                // chunk must have a slot at every storage column index that appears in
-                // col_indices. Use the projected_cols ctor to allocate buffers only for the
-                // requested columns (other slots are placeholders, no data buffer).
-                std::pmr::vector<components::types::complex_logical_type> all_types(resource);
-                all_types.reserve(all_cols.size());
-                for (const auto& c : all_cols) {
-                    all_types.push_back(c.type());
-                }
-                std::vector<size_t> projected;
-                projected.reserve(
-                    static_cast<std::size_t>(std::distance(std::begin(col_indices), std::end(col_indices))));
-                for (auto idx : col_indices) {
-                    col_ids.emplace_back(static_cast<uint64_t>(idx));
-                    projected.push_back(static_cast<std::size_t>(idx));
-                }
-
-                components::table::table_scan_state state(resource);
-                table.initialize_scan(state, col_ids);
-
-                while (true) {
-                    components::vector::data_chunk_t chunk(resource,
-                                                           all_types,
-                                                           projected,
-                                                           components::vector::DEFAULT_VECTOR_CAPACITY);
-                    table.scan(chunk, state);
-                    if (chunk.size() == 0)
-                        break;
-                    for (uint64_t i = 0; i < chunk.size(); ++i) {
-                        if (!fn(chunk, i))
-                            return;
-                    }
-                }
-            }
-        } // namespace detail_impl_
-
-        template<typename Fn>
-        void inline_scan(components::table::data_table_t& table,
-                         std::initializer_list<std::int64_t> col_indices,
-                         std::pmr::memory_resource* resource,
-                         Fn&& fn) {
-            detail_impl_::inline_scan_range(table, col_indices, resource, std::forward<Fn>(fn));
-        }
-
-        template<typename Fn>
-        void inline_scan(components::table::data_table_t& table,
-                         const std::vector<std::int64_t>& col_indices,
-                         std::pmr::memory_resource* resource,
-                         Fn&& fn) {
-            detail_impl_::inline_scan_range(table, col_indices, resource, std::forward<Fn>(fn));
-        }
-
-        // const overload: data_table_t::scan is read-only but not declared const,
-        // so the const_cast is safe.
-        template<typename Fn>
-        void inline_scan(const components::table::data_table_t& table,
-                         std::initializer_list<std::int64_t> col_indices,
-                         std::pmr::memory_resource* resource,
-                         Fn&& fn) {
-            detail_impl_::inline_scan_range(const_cast<components::table::data_table_t&>(table),
-                                            col_indices,
-                                            resource,
-                                            std::forward<Fn>(fn));
-        }
-
-        template<typename Fn>
-        void inline_scan(const components::table::data_table_t& table,
-                         const std::vector<std::int64_t>& col_indices,
-                         std::pmr::memory_resource* resource,
-                         Fn&& fn) {
-            detail_impl_::inline_scan_range(const_cast<components::table::data_table_t&>(table),
-                                            col_indices,
-                                            resource,
-                                            std::forward<Fn>(fn));
-        }
+        // inline_scan(...) lives in services/disk/inline_scan.hpp (shared with agent_disk);
+        // it is in namespace services::disk::detail, so "using namespace detail" exposes it here.
 
         // ---------------------------------------------------------------------------
         // rebuild_chunk: copy a data_chunk_t into a new one backed by `resource`.

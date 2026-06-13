@@ -10,6 +10,7 @@
 #include <memory>
 #include <services/disk/manager_disk.hpp>
 #include <services/dispatcher/dispatcher.hpp>
+#include <services/index/disk_hash_table.hpp>
 #include <services/index/index_agent_disk.hpp>
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
@@ -457,8 +458,25 @@ namespace otterbrix {
             // Spawn args must match manager_index_t::create_index so the agent is
             // equivalent to one from the runtime DDL path. Ctor takes a non-pmr
             // index_name_t (std::string) but row.name is pmr::string, hence the copy.
-            //
-            // Final arg: the WAL committed-txn set, used by the bitcask agent's
+            const auto index_name = std::string(row.name.data(), row.name.size());
+            services::index::disk_hash_table_ptr shared_hash_storage;
+            if (row.type == components::logical_plan::index_type::hashed && !disk_config.path.empty()) {
+                const auto base = disk_config.path / std::to_string(static_cast<unsigned>(row.table_oid)) / index_name;
+                std::filesystem::create_directories(base);
+                try {
+                    shared_hash_storage = boost::intrusive_ptr(new services::index::disk_hash_table_t(
+                        base / "hash_index.bin",
+                        services::index::disk_hash_table_t::default_bucket_count,
+                        &resource));
+                } catch (const std::exception& e) {
+                    trace(log_,
+                          "bootstrap_indexes_sync: disk hash storage init failed for {}: {}",
+                          index_name,
+                          e.what());
+                }
+            }
+
+            // the WAL committed-txn set, used by the bitcask agent's
             // txn-log recover gate. Materialised here as a pmr::set on this
             // instance's resource (the resource the agent and its index store).
             // A copy of the committed ids per agent — legal value transfer during
@@ -466,25 +484,28 @@ namespace otterbrix {
             std::pmr::set<std::uint64_t> committed_for_agent(committed_txn_ids.begin(),
                                                              committed_txn_ids.end(),
                                                              &resource);
-            auto agent =
-                actor_zeta::spawn<services::index::index_agent_disk_t>(&resource,
-                                                                       disk_config.path,
-                                                                       row.table_oid,
-                                                                       std::string(row.name.data(), row.name.size()),
-                                                                       row.type,
-                                                                       disk_config.bitcask_flush_threshold,
-                                                                       disk_config.bitcask_segment_record_limit,
-                                                                       disk_config.btree_flush_threshold,
-                                                                       log_,
-                                                                       std::move(committed_for_agent));
+
+            auto agent = actor_zeta::spawn<services::index::index_agent_disk_t>(
+                &resource,
+                disk_config.path,
+                row.table_oid,
+                index_name,
+                row.type,
+                disk_config.bitcask_flush_threshold,
+                disk_config.bitcask_segment_record_limit,
+                disk_config.btree_flush_threshold,
+                log_,
+                std::move(committed_for_agent),
+                shared_hash_storage);
             auto agent_addr = agent->address();
 
             manager_index_->bootstrap_index_sync(row.table_oid,
-                                                 std::move(row.name),
-                                                 row.type,
-                                                 std::move(row.keys),
-                                                 agent_addr,
-                                                 std::move(agent));
+                                                  std::move(row.name),
+                                                  row.type,
+                                                  std::move(row.keys),
+                                                  agent_addr,
+                                                  std::move(agent),
+                                                  std::move(shared_hash_storage));
             ++indexes_wired;
         }
 

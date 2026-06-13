@@ -121,7 +121,8 @@ namespace services::index {
                                   components::logical_plan::index_type type,
                                   components::index::keys_base_storage_t keys,
                                   actor_zeta::address_t disk_agent_addr,
-                                  index_agent_disk_ptr disk_agent_owned);
+                                  index_agent_disk_ptr disk_agent_owned,
+                                  disk_hash_table_ptr shared_hash_storage = nullptr);
 
         // Restore a dropped-table entry from pg_class.delete_id (alias of
         // mark_table_dropped_sync).

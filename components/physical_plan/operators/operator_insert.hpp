@@ -2,6 +2,7 @@
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/physical_plan/operators/operator.hpp>
+#include <components/physical_plan/operators/operator_select.hpp>
 #include <components/physical_plan/operators/resolved_table_metadata.hpp>
 
 #include <optional>
@@ -10,7 +11,15 @@ namespace components::operators {
 
     class operator_insert final : public read_write_operator_t {
     public:
-        operator_insert(std::pmr::memory_resource* resource, log_t log, catalog::oid_t table_oid);
+        // `returning` holds the RETURNING projection columns (empty when the
+        // statement has no RETURNING clause). When non-empty, the operator reads
+        // the appended segment back from storage (so DB-applied DEFAULTs and
+        // generated columns are present) and projects these columns into its
+        // output instead of an empty result chunk.
+        operator_insert(std::pmr::memory_resource* resource,
+                        log_t log,
+                        catalog::oid_t table_oid,
+                        std::pmr::vector<select_column_t> returning);
 
         catalog::oid_t table_oid() const noexcept { return table_oid_; }
 
@@ -33,6 +42,7 @@ namespace components::operators {
 
         catalog::oid_t table_oid_;
         std::optional<resolved_table_metadata_t> resolved_metadata_;
+        std::pmr::vector<select_column_t> returning_;
     };
 
 } // namespace components::operators

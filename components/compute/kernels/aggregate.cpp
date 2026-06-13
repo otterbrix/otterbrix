@@ -29,7 +29,7 @@ namespace {
                 has_any = true;
             }
             if (!has_any) {
-                return logical_value_t(std::pmr::null_memory_resource(), logical_type::NA);
+                return logical_value_t(v.resource(), logical_type::NA);
             }
             return logical_value_t{v.resource(), raw_sum};
         }
@@ -44,7 +44,7 @@ namespace {
                 has_any = true;
             }
             if (!has_any) {
-                return logical_value_t(std::pmr::null_memory_resource(), logical_type::NA);
+                return logical_value_t(v.resource(), logical_type::NA);
             }
             return logical_value_t{v.resource(), raw_sum};
         }
@@ -78,7 +78,7 @@ namespace {
                 }
             }
             if (!has_any) {
-                return logical_value_t(std::pmr::null_memory_resource(), logical_type::NA);
+                return logical_value_t(v.resource(), logical_type::NA);
             }
             return logical_value_t{v.resource(), best};
         }
@@ -96,7 +96,7 @@ namespace {
                 }
             }
             if (!has_any) {
-                return logical_value_t(std::pmr::null_memory_resource(), logical_type::NA);
+                return logical_value_t(v.resource(), logical_type::NA);
             }
             return logical_value_t{v.resource(), T(best)};
         }
@@ -138,7 +138,7 @@ namespace {
                 }
             }
             if (!has_any) {
-                return logical_value_t(std::pmr::null_memory_resource(), logical_type::NA);
+                return logical_value_t(v.resource(), logical_type::NA);
             }
             return logical_value_t{v.resource(), best};
         }
@@ -156,7 +156,7 @@ namespace {
                 }
             }
             if (!has_any) {
-                return logical_value_t(std::pmr::null_memory_resource(), logical_type::NA);
+                return logical_value_t(v.resource(), logical_type::NA);
             }
             return logical_value_t{v.resource(), T(best)};
         }
@@ -247,7 +247,7 @@ namespace {
             default:
                 throw std::runtime_error("operators::aggregate::sum unable to process given types");
         }
-        return logical_value_t(std::pmr::null_memory_resource(), logical_type::NA);
+        return logical_value_t(v.resource(), logical_type::NA);
     }
 
     template<template<typename...> class OP>
@@ -315,7 +315,7 @@ namespace {
             default:
                 throw std::runtime_error("operators::aggregate::sum unable to process given types");
         }
-        return logical_value_t(std::pmr::null_memory_resource(), logical_type::NA);
+        return logical_value_t(v1.resource(), logical_type::NA);
     }
 
     template<template<typename...> class OP>
@@ -383,7 +383,7 @@ namespace {
             default:
                 throw std::runtime_error("operators::aggregate::sum unable to process given types");
         }
-        return logical_value_t(std::pmr::null_memory_resource(), logical_type::NA);
+        return logical_value_t(v.resource(), logical_type::NA);
     }
 
     logical_value_t sum(const vector_t& v, size_t count) { return operator_switch<sum_operator_t>(v, count); }
@@ -393,12 +393,13 @@ namespace {
     logical_value_t max(const vector_t& v, size_t count) { return operator_switch<max_operator_t>(v, count); }
 
     struct sum_kernel_state : kernel_state {
-        logical_value_t value{std::pmr::null_memory_resource(), logical_type::NA};
+        explicit sum_kernel_state(std::pmr::memory_resource* resource)
+            : value(resource, logical_type::NA) {}
+        logical_value_t value;
     };
 
-    static core::result_wrapper_t<kernel_state_ptr> sum_init(kernel_context&, kernel_init_args) {
-        auto c = std::make_unique<sum_kernel_state>();
-        c->value = logical_value_t{std::pmr::null_memory_resource(), logical_type::NA};
+    static core::result_wrapper_t<kernel_state_ptr> sum_init(kernel_context& ctx, kernel_init_args) {
+        auto c = std::make_unique<sum_kernel_state>(ctx.exec_context().resource());
         return c;
     }
 
@@ -416,12 +417,13 @@ namespace {
     static core::error_t sum_finalize(aggregate_kernel_context&) { return core::error_t::no_error(); }
 
     struct min_kernel_state : kernel_state {
-        logical_value_t value{std::pmr::null_memory_resource(), logical_type::NA};
+        explicit min_kernel_state(std::pmr::memory_resource* resource)
+            : value(resource, logical_type::NA) {}
+        logical_value_t value;
     };
 
-    static core::result_wrapper_t<kernel_state_ptr> min_init(kernel_context&, kernel_init_args) {
-        auto c = std::make_unique<min_kernel_state>();
-        c->value = logical_value_t{std::pmr::null_memory_resource(), logical_type::NA};
+    static core::result_wrapper_t<kernel_state_ptr> min_init(kernel_context& ctx, kernel_init_args) {
+        auto c = std::make_unique<min_kernel_state>(ctx.exec_context().resource());
         return c;
     }
 
@@ -439,12 +441,13 @@ namespace {
     static core::error_t min_finalize(aggregate_kernel_context&) { return core::error_t::no_error(); }
 
     struct max_kernel_state : kernel_state {
-        logical_value_t value{std::pmr::null_memory_resource(), logical_type::NA};
+        explicit max_kernel_state(std::pmr::memory_resource* resource)
+            : value(resource, logical_type::NA) {}
+        logical_value_t value;
     };
 
-    static core::result_wrapper_t<kernel_state_ptr> max_init(kernel_context&, kernel_init_args) {
-        auto c = std::make_unique<max_kernel_state>();
-        c->value = logical_value_t{std::pmr::null_memory_resource(), logical_type::NA};
+    static core::result_wrapper_t<kernel_state_ptr> max_init(kernel_context& ctx, kernel_init_args) {
+        auto c = std::make_unique<max_kernel_state>(ctx.exec_context().resource());
         return c;
     }
 
@@ -495,14 +498,15 @@ namespace {
     static core::error_t count_finalize(aggregate_kernel_context&) { return core::error_t::no_error(); }
 
     struct avg_kernel_state : kernel_state {
+        explicit avg_kernel_state(std::pmr::memory_resource* resource)
+            : count(0)
+            , value(resource, logical_type::NA) {}
         size_t count;
-        logical_value_t value{std::pmr::null_memory_resource(), logical_type::NA};
+        logical_value_t value;
     };
 
-    static core::result_wrapper_t<kernel_state_ptr> avg_init(kernel_context&, kernel_init_args) {
-        auto c = std::make_unique<avg_kernel_state>();
-        c->count = size_t{0};
-        c->value = logical_value_t{std::pmr::null_memory_resource(), logical_type::NA};
+    static core::result_wrapper_t<kernel_state_ptr> avg_init(kernel_context& ctx, kernel_init_args) {
+        auto c = std::make_unique<avg_kernel_state>(ctx.exec_context().resource());
         return c;
     }
 
@@ -520,7 +524,7 @@ namespace {
     static core::error_t avg_merge(aggregate_kernel_context& ctx, kernel_state&& from, kernel_state&) {
         auto& s = static_cast<avg_kernel_state&>(from);
         if (s.count == 0) {
-            ctx.batch_results.emplace_back(std::pmr::null_memory_resource(), logical_type::NA);
+            ctx.batch_results.emplace_back(ctx.batch_results.get_allocator().resource(), logical_type::NA);
             return core::error_t::no_error();
         }
         ctx.batch_results.push_back(operator_switch<divide_operator_t>(s.value, s.count));

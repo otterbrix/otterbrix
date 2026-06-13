@@ -303,39 +303,6 @@ namespace services::disk {
         }
     }
 
-    void manager_disk_t::load_system_tables_sync() {
-        // Walks sys_dir and re-hydrates every pg_* catalog table via
-        // load_storage_disk_sync, which constructs the SFBM on agents_[0]
-        // (catalog agent). Skip-if-present probe via has_storage_sync
-        // prevents double-load.
-        if (config_.path.empty()) {
-            return;
-        }
-        const auto sys_db_oid = catalog::well_known_oid::main_database;
-        auto sys_dir = config_.path / std::to_string(static_cast<unsigned>(sys_db_oid));
-        if (!std::filesystem::exists(sys_dir)) {
-            return;
-        }
-        for (const auto& def : components::catalog::all_system_tables()) {
-            const auto tbl_oid = well_known_oid_for_system_table(def.name);
-            if (tbl_oid == catalog::INVALID_OID)
-                continue;
-            if (!agents_.empty() && agents_[0] != nullptr) {
-                if (agents_[0]->has_storage_sync(tbl_oid))
-                    continue;
-            }
-            auto otbx = sys_dir / std::to_string(static_cast<unsigned>(tbl_oid)) / "table.otbx";
-            if (!std::filesystem::exists(otbx)) {
-                continue;
-            }
-            trace(log_,
-                  "manager_disk_t::load_system_tables_sync loading : {} oid={}",
-                  std::string(def.name),
-                  static_cast<unsigned>(tbl_oid));
-            load_storage_disk_sync(tbl_oid, sys_db_oid, otbx);
-        }
-    }
-
     void manager_disk_t::restore_oid_generator_sync() {
         // agents_[0] (catalog agent) owns all catalog SFBM entries.
         // Pre-scheduler-start, single-threaded.

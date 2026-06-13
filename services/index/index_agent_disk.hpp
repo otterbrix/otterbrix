@@ -9,6 +9,7 @@
 // fold the first error into their returned core::error_t.
 
 #include "index_disk.hpp"
+#include "disk_hash_table.hpp"
 
 #include <core/result_wrapper.hpp>
 
@@ -28,6 +29,7 @@
 #include <core/btree/btree.hpp>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <memory_resource>
 #include <set>
 
@@ -63,11 +65,11 @@ namespace services::index {
                            uint64_t bitcask_segment_record_limit,
                            uint64_t btree_flush_threshold,
                            log_t& log,
-                           std::pmr::set<std::uint64_t> committed_txn_ids);
+                           std::pmr::set<std::uint64_t> committed_txn_ids,
+                           disk_hash_table_ptr shared_hash_index);
         ~index_agent_disk_t();
 
         components::catalog::oid_t table_oid() const { return table_oid_; }
-        bool is_dropped() const;
 
         unique_future<void> drop(session_id_t session);
         // Wipe the agent's stored index data while keeping the agent alive and
@@ -81,13 +83,17 @@ namespace services::index {
         unique_future<core::error_t>
         remove_many(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values);
 
-        // Synchronous flush — bypasses actor mailbox, safe to call from owning manager
-        void force_flush_sync();
+        // Mailbox flush handler — fanned out by manager_index_t::flush_all_indexes.
+        // Guards on is_dropped_ internally (a dropped agent has no backing), then
+        // forces the backend to persist. Ordered behind any pending insert/remove
+        // ops in this agent's FIFO, so it never races an in-flight write.
+        unique_future<void> force_flush(session_id_t session);
 
         using dispatch_traits = actor_zeta::dispatch_traits<&index_agent_disk_t::drop,
                                                             &index_agent_disk_t::clear,
                                                             &index_agent_disk_t::insert_many,
-                                                            &index_agent_disk_t::remove_many>;
+                                                            &index_agent_disk_t::remove_many,
+                                                            &index_agent_disk_t::force_flush>;
 
         auto make_type() const noexcept -> const char*;
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
